@@ -105,3 +105,10 @@ ruler, with cached compact drawing, viewport outline and click navigation.
 See [arrangement-overview.md](arrangement-overview.md). Command preserves grid visibility; alternating
 four-unit bands and the native input repair are in this review milestone.
 Native visual and physical-input acceptance remain pending.
+
+The unified bottom clip view supports collapse/reopen with retained selection,
+Arrangement audio source waveforms and position/length/source/play-start/loop
+controls, MIDI source controls alongside the note editor, and existing Session
+source panels. It does not yet provide audio clip gain, pitch, warp/time-stretch,
+direct numeric entry or draggable detail markers. See [clip-view.md](clip-view.md).
+Native visual/interaction acceptance remains pending with the user.

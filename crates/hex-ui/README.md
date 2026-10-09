@@ -217,3 +217,12 @@ track menu dispatches canonical hybrid insertion commands. See
 Arrangement edit-cursor state and overlay live in `editor/edit_cursor.rs`.
 Command-E dispatches canonical audio/MIDI split commands using the clicked
 position independently of playback. See [edit cursor](../../docs/edit-cursor.md).
+
+The unified clip detail pane has a compact open/close chevron and keeps selected
+clips/notes when collapsed. Hiding cancels note gestures and releases MIDI focus.
+Arrangement audio provides a cached stereo source waveform, ruler and markers,
+with canonical position/length/source/play-start/loop edits in a narrow left
+column. MIDI uses the existing note editor with its source controls on the left;
+Session audio retains its existing source controls in the shared slot. Gain,
+pitch, warp modes, numeric entry and marker dragging remain follow-ups.
+See ../../docs/clip-view.md for contracts and user acceptance checks.

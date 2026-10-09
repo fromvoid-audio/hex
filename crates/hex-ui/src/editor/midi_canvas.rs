@@ -161,6 +161,7 @@ impl EditorView {
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
         let mut roll = div()
+            .id("midi-note-roll")
             .relative()
             .h_full()
             .flex_1()
@@ -170,7 +171,8 @@ impl EditorView {
             .border_1()
             .border_color(rgb(Palette::BORDER))
             .track_focus(&self.midi_focus)
-            .key_context("hex_midi");
+            .key_context("hex_midi")
+            .debug_selector(|| "midi-note-roll".into());
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
@@ -935,7 +937,7 @@ impl EditorView {
             .h(px(228.0))
             .flex_shrink_0()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(rgb(Palette::SURFACE))
             .border_t_1()
             .border_color(rgb(Palette::BORDER));
@@ -1013,293 +1015,352 @@ impl EditorView {
             }
             group
         };
-        panel = panel.child(
-            div()
-                .h(px(22.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_1()
-                .children(arrangement.map(|_| source_button(
-                    super::midi_source_controls::SourceField::ArrangementLength,
-                    "−",
-                    "shorten arrangement length by one midi grid step",
-                    "lengthen arrangement length by one midi grid step",
-                )))
-                .children([source_button(
-                    super::midi_source_controls::SourceField::SourceLength,
-                    "−",
-                    "shorten source extent by one midi grid step · authored notes and loop markers are retained",
-                    "extend source extent by one midi grid step",
-                )])
-                .children([source_button(
-                    super::midi_source_controls::SourceField::SourceStart,
-                    "−",
-                    "move source start earlier by one midi grid step",
-                    "move source start later by one midi grid step",
-                )])
-                .children([source_button(
-                    super::midi_source_controls::SourceField::LoopStart,
-                    "−",
-                    "move retained loop start earlier by one midi grid step",
-                    "move retained loop start later by one midi grid step",
-                )])
-                .children([source_button(
-                    super::midi_source_controls::SourceField::LoopEnd,
-                    "−",
-                    "move retained loop end earlier by one midi grid step",
-                    "move retained loop end later by one midi grid step",
-                )])
-                .children([source_button(
-                    super::midi_source_controls::SourceField::Looping,
-                    if source_values.looping { "↻" } else { "○" },
-                    "toggle source looping · disabled loop markers are retained",
-                    "toggle source looping · disabled loop markers are retained",
-                )]),
-        );
-        panel = panel.child(
+        let mut source_column = div()
+            .id("midi-source-controls")
+            .w(px(190.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .p(px(4.0))
+            .border_r_1()
+            .border_color(rgb(Palette::BORDER))
+            .bg(rgb(Palette::RAISED))
+            .debug_selector(|| "midi-source-controls".into());
+        let source_row = |control| {
             div()
                 .h(px(28.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .gap_1()
-                .px_1()
-                .child(theme::text("piano roll"))
-                .children([self.midi_button(
-                    grid.label(),
-                    if cfg!(target_os = "macos") {
-                        "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping"
-                    } else {
-                        "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping"
-                    },
-                    cx.listener(|v, _, _, cx| {
-                        v.cycle_midi_grid();
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    if self.midi_draw_mode { "//" } else { "/" },
-                    if self.midi_draw_mode {
-                        "draw mode on · click or drag to draw · press b for normal mode"
-                    } else {
-                        "normal mode · double-click to add or remove · press b for draw mode"
-                    },
-                    cx.listener(|v, _, _, cx| {
-                        v.midi_draw_mode = !v.midi_draw_mode;
-                        v.cancel_midi_note_gesture();
-                        v.midi_group_gesture = None;
-                        v.midi_marquee = None;
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    if self.midi_draw_pitch_locked { "l" } else { "m" },
-                    if self.midi_draw_pitch_locked {
-                        "pitch-locked draw · hold option for melodic draw"
-                    } else {
-                        "melodic draw · hold option for pitch-locked draw"
-                    },
-                    cx.listener(|v, _, _, cx| {
-                        v.midi_draw_pitch_locked = !v.midi_draw_pitch_locked;
-                        v.cancel_midi_note_gesture();
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "←",
-                    "pan piano roll left",
-                    cx.listener(|v, _, _, cx| {
-                        v.pan_piano(false);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "→",
-                    "pan piano roll right",
-                    cx.listener(|v, _, _, cx| {
-                        v.pan_piano(true);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
+                .child(control)
+        };
+        source_column = source_column.children(arrangement.map(|_| {
+            source_row(source_button(
+                super::midi_source_controls::SourceField::ArrangementLength,
+                "−",
+                "shorten arrangement length by one midi grid step",
+                "lengthen arrangement length by one midi grid step",
+            ))
+        }));
+        source_column = source_column.children([source_row(source_button(
+                    super::midi_source_controls::SourceField::SourceLength,
                     "−",
-                    "zoom piano roll out",
-                    cx.listener(|v, _, _, cx| {
-                        v.zoom_piano(false);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "+",
-                    "zoom piano roll in",
-                    cx.listener(|v, _, _, cx| {
-                        v.zoom_piano(true);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "⤢",
-                    "fit midi clip in piano roll",
-                    cx.listener(|v, _, _, cx| {
-                        v.fit_piano();
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "o−",
-                    "lower piano roll pitch range",
-                    cx.listener(|v, _, _, cx| {
-                        v.cancel_midi_note_gesture();
-                        v.piano_pitch_low = v.piano_pitch_low.saturating_sub(12).min(104);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "o+",
-                    "raise piano roll pitch range",
-                    cx.listener(|v, _, _, cx| {
-                        v.cancel_midi_note_gesture();
-                        v.piano_pitch_low = v.piano_pitch_low.saturating_add(12).min(104);
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "♭",
-                    if group_selected { "selected notes down one semitone" } else { "selected note down one semitone" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Pitch(-1),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Pitch(-1));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "♯",
-                    if group_selected { "selected notes up one semitone" } else { "selected note up one semitone" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Pitch(1),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Pitch(1));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
+                    "shorten source extent by one midi grid step · authored notes and loop markers are retained",
+                    "extend source extent by one midi grid step",
+                ))])
+                .children([source_row(source_button(
+                    super::midi_source_controls::SourceField::SourceStart,
                     "−",
-                    if group_selected { "shorten selected notes one grid" } else { "shorten selected note one grid" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Duration(-1),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Duration(-1));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "+",
-                    if group_selected { "lengthen selected notes one grid" } else { "lengthen selected note one grid" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Duration(1),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Duration(1));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "v−",
-                    if group_selected { "selected notes velocity down 8" } else { "selected note velocity down 8" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Velocity(-8),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Velocity(-8));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "v+",
-                    if group_selected { "selected notes velocity up 8" } else { "selected note velocity up 8" },
-                    cx.listener(move |v, _, _, cx| {
-                        if group_selected {
-                            v.adjust_selected_group(
-                                super::midi_group_drag::GroupParameter::Velocity(8),
-                                clip_id,
-                                revision,
-                                generation,
-                                selection_epoch,
-                            );
-                        } else if let Some(n) = selected.filter(|n| v.midi_selection.primary() == Some(*n)) {
-                            v.update_note_field(n, revision, generation, NoteField::Velocity(8));
-                        }
-                        cx.notify();
-                    }),
-                )])
-                .children([self.midi_button(
-                    "×",
-                    "delete selected note · backspace",
-                    cx.listener(|v, _, _, cx| {
-                        v.remove_selected_note();
-                        cx.notify();
-                    }),
-                )])
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .max_w(px(240.0))
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(rgb(Palette::MUTED))
-                        .child(theme::text(status)),
-                ),
-        );
-        panel = panel.child(
+                    "move source start earlier by one midi grid step",
+                    "move source start later by one midi grid step",
+                ))])
+                .children([source_row(source_button(
+                    super::midi_source_controls::SourceField::LoopStart,
+                    "−",
+                    "move retained loop start earlier by one midi grid step",
+                    "move retained loop start later by one midi grid step",
+                ))])
+                .children([source_row(source_button(
+                    super::midi_source_controls::SourceField::LoopEnd,
+                    "−",
+                    "move retained loop end earlier by one midi grid step",
+                    "move retained loop end later by one midi grid step",
+                ))])
+                .children([source_row(source_button(
+                    super::midi_source_controls::SourceField::Looping,
+                    if source_values.looping { "↻" } else { "○" },
+                    "toggle source looping · disabled loop markers are retained",
+                    "toggle source looping · disabled loop markers are retained",
+                ))]);
+        let toolbar = div()
+            .h(px(28.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .child(theme::text("piano roll"))
+            .children([self.midi_button(
+                grid.label(),
+                if cfg!(target_os = "macos") {
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping"
+                } else {
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping"
+                },
+                cx.listener(|v, _, _, cx| {
+                    v.cycle_midi_grid();
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                if self.midi_draw_mode { "//" } else { "/" },
+                if self.midi_draw_mode {
+                    "draw mode on · click or drag to draw · press b for normal mode"
+                } else {
+                    "normal mode · double-click to add or remove · press b for draw mode"
+                },
+                cx.listener(|v, _, _, cx| {
+                    v.midi_draw_mode = !v.midi_draw_mode;
+                    v.cancel_midi_note_gesture();
+                    v.midi_group_gesture = None;
+                    v.midi_marquee = None;
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                if self.midi_draw_pitch_locked {
+                    "l"
+                } else {
+                    "m"
+                },
+                if self.midi_draw_pitch_locked {
+                    "pitch-locked draw · hold option for melodic draw"
+                } else {
+                    "melodic draw · hold option for pitch-locked draw"
+                },
+                cx.listener(|v, _, _, cx| {
+                    v.midi_draw_pitch_locked = !v.midi_draw_pitch_locked;
+                    v.cancel_midi_note_gesture();
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "←",
+                "pan piano roll left",
+                cx.listener(|v, _, _, cx| {
+                    v.pan_piano(false);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "→",
+                "pan piano roll right",
+                cx.listener(|v, _, _, cx| {
+                    v.pan_piano(true);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "−",
+                "zoom piano roll out",
+                cx.listener(|v, _, _, cx| {
+                    v.zoom_piano(false);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "+",
+                "zoom piano roll in",
+                cx.listener(|v, _, _, cx| {
+                    v.zoom_piano(true);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "⤢",
+                "fit midi clip in piano roll",
+                cx.listener(|v, _, _, cx| {
+                    v.fit_piano();
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "o−",
+                "lower piano roll pitch range",
+                cx.listener(|v, _, _, cx| {
+                    v.cancel_midi_note_gesture();
+                    v.piano_pitch_low = v.piano_pitch_low.saturating_sub(12).min(104);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "o+",
+                "raise piano roll pitch range",
+                cx.listener(|v, _, _, cx| {
+                    v.cancel_midi_note_gesture();
+                    v.piano_pitch_low = v.piano_pitch_low.saturating_add(12).min(104);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "♭",
+                if group_selected {
+                    "selected notes down one semitone"
+                } else {
+                    "selected note down one semitone"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Pitch(-1),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Pitch(-1));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "♯",
+                if group_selected {
+                    "selected notes up one semitone"
+                } else {
+                    "selected note up one semitone"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Pitch(1),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Pitch(1));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "−",
+                if group_selected {
+                    "shorten selected notes one grid"
+                } else {
+                    "shorten selected note one grid"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Duration(-1),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Duration(-1));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "+",
+                if group_selected {
+                    "lengthen selected notes one grid"
+                } else {
+                    "lengthen selected note one grid"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Duration(1),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Duration(1));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "v−",
+                if group_selected {
+                    "selected notes velocity down 8"
+                } else {
+                    "selected note velocity down 8"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Velocity(-8),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Velocity(-8));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "v+",
+                if group_selected {
+                    "selected notes velocity up 8"
+                } else {
+                    "selected note velocity up 8"
+                },
+                cx.listener(move |v, _, _, cx| {
+                    if group_selected {
+                        v.adjust_selected_group(
+                            super::midi_group_drag::GroupParameter::Velocity(8),
+                            clip_id,
+                            revision,
+                            generation,
+                            selection_epoch,
+                        );
+                    } else if let Some(n) =
+                        selected.filter(|n| v.midi_selection.primary() == Some(*n))
+                    {
+                        v.update_note_field(n, revision, generation, NoteField::Velocity(8));
+                    }
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                "×",
+                "delete selected note · backspace",
+                cx.listener(|v, _, _, cx| {
+                    v.remove_selected_note();
+                    cx.notify();
+                }),
+            )])
+            .child(div().flex_1())
+            .child(
+                div()
+                    .max_w(px(240.0))
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text(status)),
+            );
+        let roll_area = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .children([self.piano_keys(pitch_low)])
+            .children([roll]);
+        panel = panel.child(source_column).child(
             div()
                 .flex_1()
+                .min_w_0()
                 .min_h_0()
                 .flex()
-                .children([self.piano_keys(pitch_low)])
-                .children([roll]),
+                .flex_col()
+                .child(toolbar)
+                .child(roll_area),
         );
         Some(panel)
     }

@@ -144,7 +144,7 @@ impl EditorView {
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
-        let midi_editor = self.midi_editor(cx);
+        let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()
@@ -152,8 +152,7 @@ impl Render for EditorView {
                 .flex()
                 .flex_col()
                 .child(self.session_grid(window, cx))
-                .children(super::session_audio_panel::view(self, cx))
-                .children(midi_editor)
+                .child(clip_view)
                 .child(self.mixer_strip(cx))
         } else {
             div()
@@ -162,7 +161,7 @@ impl Render for EditorView {
                 .flex()
                 .flex_col()
                 .child(self.arrangement(window, cx))
-                .children(midi_editor)
+                .child(clip_view)
                 .child(self.mixer_strip(cx))
         };
         let workspace = div()
