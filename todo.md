@@ -98,11 +98,14 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   from that editing position, never resumes the paused playhead. Preserve text/note
   editor shortcut focus and bounded ordered seek/start delivery, with Stop still
   effective under queue pressure. Verify start position and stop/restart natively.
-- [ ] **preserve zoom when the project grows** — separate focused fix. Moving,
+- [x] **preserve zoom when the project grows** — separate focused fix. Moving,
   copying or pasting to the right may expand timeline/project extent, but must
   retain the user's zoom and viewport. Fit/overview navigation remain explicit
   user actions. Check normal/ripple paste, clip/time drags, new imports and Undo;
   preserve valid minimum/maximum coordinate bounds without implicit zoom-out.
+  Source implemented; controller worker-event regressions, strict UI Clippy,
+  formatting and source guards pass. Final local CI and native acceptance remain
+  distinct; the focused PR records clean-commit evidence.
 - [ ] **project actions in macOS File menu** — separate focused UI PR after
   keyboard paste anchoring. Put Open Project, Save and Save As in the screen-top
   native File menu and remove corresponding toolbar actions. Preserve existing
