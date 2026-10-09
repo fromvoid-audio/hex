@@ -144,7 +144,10 @@ serial effects. Registered instruments can be inserted into an empty slot,
 replaced transactionally, removed or bypassed. Replacement preserves the device
 ID and bypass flag; instruments have no effect-chain reorder actions. The admitted
 sine instrument has no parameter descriptors, so the panel invents no controls.
-Unavailable or malformed state remains visible rather than silently resetting.
+An absent instrument leaves no placeholder block in the chain. Settled user
+removals retire controls without a stale-target warning; loss of a target while
+it still owns a draft or pending gesture remains diagnosed. Unavailable or
+malformed state remains visible rather than silently resetting.
 
 Session parameter reads, patches and transient gestures resolve processing class
 from canonical track-slot ownership. A gesture retains and revalidates class and
@@ -156,8 +159,9 @@ or UI codec.
 
 Session tests cover class refusal, instrument insert/remove Undo/Redo, replacement
 identity and bypass, parameter/gesture refusal for sine, and save/reopen. Rendered
-GPUI tests cover instrument-first order and routed actions alongside Utility;
-nine existing device-panel gesture tests pass. Full local CI and native acceptance
-are separate gates. This panel does not register FM4 or implement Operator;
+GPUI coverage also exercises settled Utility and sine removal, Undo restoration,
+warning cleanup, and fixed panel geometry; active/draft target-loss diagnostics
+remain covered separately. Full local CI and native acceptance are separate gates.
+This panel does not register FM4 or implement Operator;
 general instrument replacement-tail comparison remains part of the FM4 admission
 work.

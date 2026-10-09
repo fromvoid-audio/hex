@@ -121,6 +121,102 @@ fn pump_until(
     }
 }
 
+#[gpui::test]
+fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("default instrument")
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let panel_before = visual.debug_bounds("device-panel").expect("device panel");
+    let remove_effect = Box::leak(format!("device-remove-{}", device.value()).into_boxed_str());
+    let bounds = visual
+        .debug_bounds(remove_effect)
+        .expect("effect remove action");
+    let click_point = point(bounds.center().x, bounds.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .project
+                .track(track)
+                .is_some_and(|track| track.devices().is_empty())
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.message, None);
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(!view.device_panel.has_control_for(device));
+        assert!(!view.device_panel.views.contains_key(&device));
+    });
+    let panel_after_effect = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel_after_effect.size.height, panel_before.size.height);
+
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .project
+                .track(track)
+                .is_some_and(|track| track.devices().iter().any(|item| item.id() == device))
+        })
+    });
+    visual.run_until_parked();
+
+    let remove_instrument =
+        Box::leak(format!("instrument-remove-{}", instrument.value()).into_boxed_str());
+    let bounds = visual
+        .debug_bounds(remove_instrument)
+        .expect("instrument remove action");
+    let click_point = point(bounds.center().x, bounds.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .project
+                .track(track)
+                .is_some_and(|track| track.instrument().is_none())
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.message, None);
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(!view.device_panel.views.contains_key(&instrument));
+    });
+    assert!(
+        visual.debug_bounds("instrument-empty").is_none(),
+        "removing the instrument leaves the chain without a placeholder block"
+    );
+    let panel_after_instrument = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel_after_instrument.size.height, panel_before.size.height);
+
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state.project.track(track).is_some_and(|track| {
+                track
+                    .instrument()
+                    .is_some_and(|item| item.id() == instrument)
+            })
+        })
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("instrument-empty").is_none());
+}
+
 fn utility_fixture() -> (
     hex_project::Project,
     TrackId,
