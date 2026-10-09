@@ -129,30 +129,32 @@ fn open_numeric_control(
     cx: &mut TestAppContext,
     kind: NumericControlKind,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
+    let spec = NumericSpec::new(
+        -1.0,
+        1.0,
+        0.0,
+        NumericScale::Bipolar,
+        2,
+        None::<std::sync::Arc<str>>,
+    )
+    .expect("numeric spec");
+    open_numeric_control_with_spec(cx, kind, spec, 0.0)
+}
+
+fn open_numeric_control_with_spec(
+    cx: &mut TestAppContext,
+    kind: NumericControlKind,
+    spec: NumericSpec,
+    value: f64,
+) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
     cx.update(crate::bind_numeric_control_keys);
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let control = cx
         .update_window(handle, |_, window, cx| {
             let control = cx.new(|cx| {
-                NumericControl::new(
-                    cx,
-                    "test-control",
-                    "gain",
-                    kind,
-                    NumericSpec::new(
-                        -1.0,
-                        1.0,
-                        0.0,
-                        NumericScale::Bipolar,
-                        2,
-                        None::<std::sync::Arc<str>>,
-                    )
-                    .expect("numeric spec"),
-                    0.0,
-                    STYLE,
-                )
-                .expect("numeric control")
+                NumericControl::new(cx, "test-control", "gain", kind, spec, value, STYLE)
+                    .expect("numeric control")
             });
             let root_control = control.clone();
             window.replace_root(cx, |_, cx| TestRoot {
@@ -348,6 +350,70 @@ fn rendered_knob_reset_emits_one_complete_default_gesture(cx: &mut TestAppContex
             (crate::NumericEventPhase::Commit, 0.0),
         ]
     );
+}
+
+#[gpui::test]
+fn rendered_decibel_control_steps_resets_types_and_cancels_in_linear_units(
+    cx: &mut TestAppContext,
+) {
+    let spec = NumericSpec::new(
+        0.0,
+        f64::from(56.234_13_f32),
+        1.0,
+        NumericScale::LinearAmplitudeDecibels,
+        2,
+        Some("db"),
+    )
+    .expect("dB amplitude spec");
+    let (handle, control) = open_numeric_control_with_spec(cx, NumericControlKind::Knob, spec, 1.0);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let knob = visual.debug_bounds("test-control-knob").expect("knob");
+    let knob_point = point(knob.center().x, knob.center().y);
+    visual.simulate_click(knob_point, Modifiers::default());
+    visual.simulate_keystrokes("up");
+    control.read_with(cx, |control, _| {
+        assert!((control.value() - 10.0_f64.powf(1.0 / 20.0)).abs() < 1.0e-12)
+    });
+    visual.simulate_keystrokes("shift-up");
+    control.read_with(cx, |control, _| {
+        assert!((control.value() - 10.0_f64.powf(1.1 / 20.0)).abs() < 1.0e-12)
+    });
+
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: knob_point,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    control.read_with(cx, |control, _| assert_eq!(control.value(), 1.0));
+
+    let value_bounds = visual
+        .debug_bounds("test-control-value")
+        .expect("numeric value field");
+    let value_point = point(value_bounds.center().x, value_bounds.center().y);
+    visual.simulate_mouse_down(value_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("6 db");
+    visual.simulate_keystrokes("enter");
+    let six_db = 10.0_f64.powf(6.0 / 20.0);
+    control.read_with(cx, |control, _| {
+        assert!(!control.is_editing());
+        assert!((control.value() - six_db).abs() < 1.0e-12);
+    });
+
+    visual.simulate_mouse_down(value_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("9 db");
+    visual.simulate_keystrokes("escape");
+    control.read_with(cx, |control, _| {
+        assert!(!control.is_editing());
+        assert!((control.value() - six_db).abs() < 1.0e-12);
+    });
 }
 
 #[gpui::test]

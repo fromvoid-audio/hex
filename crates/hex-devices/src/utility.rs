@@ -3,7 +3,7 @@ use hex_lattice::{InvalidMatrix, StereoFrame, StereoMatrix};
 use hex_lattice::{NativeDeviceDefinition, NativeProcessorRuntime, PreparedNativeProcessor};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
+    ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::fmt;
 
@@ -194,6 +194,7 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             unit: Some("linear"),
         },
         default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::LinearAmplitudeDecibels,
     },
     ParameterDescriptor {
         id: parameter::BALANCE,
@@ -204,6 +205,7 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             unit: None,
         },
         default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::WIDTH,
@@ -214,6 +216,7 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             unit: None,
         },
         default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::CHANNEL,
@@ -222,36 +225,42 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             labels: CHANNEL_LABELS,
         },
         default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::INVERT_LEFT,
         label: "invert left",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::INVERT_RIGHT,
         label: "invert right",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::MONO,
         label: "mono",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::MUTE,
         label: "mute",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::MID_SIDE_ENABLED,
         label: "mid-side",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::MID_SIDE_BALANCE,
@@ -262,18 +271,21 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             unit: None,
         },
         default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::DC_REMOVE,
         label: "dc remove",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::BASS_MONO,
         label: "bass mono",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::BASS_MONO_CUTOFF,
@@ -284,12 +296,14 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
             unit: Some("hz"),
         },
         default: ParameterValue::Float(200.0),
+        presentation: ParameterPresentation::Linear,
     },
     ParameterDescriptor {
         id: parameter::BASS_MONO_AUDITION,
         label: "bass mono audition",
         kind: ParameterKind::Bool,
         default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
     },
 ];
 
@@ -999,7 +1013,7 @@ mod tests {
     #[test]
     fn utility_definition_owns_validated_portable_state_and_generic_metadata() {
         use hex_lattice::NativeDeviceRegistry;
-        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterPresentation, ParameterValue};
 
         let definitions: [&dyn NativeDeviceDefinition; 1] = [&UTILITY_DEFINITION];
         let registry = NativeDeviceRegistry::new(&definitions).unwrap();
@@ -1016,6 +1030,22 @@ mod tests {
         for descriptor in UTILITY_DEFINITION.descriptors() {
             descriptor.validate_descriptor().unwrap();
         }
+        assert_eq!(
+            UTILITY_DEFINITION.descriptors()[0].presentation,
+            ParameterPresentation::LinearAmplitudeDecibels
+        );
+        assert!(matches!(
+            UTILITY_DEFINITION.descriptors()[0].kind,
+            ParameterKind::Float {
+                unit: Some("linear"),
+                ..
+            }
+        ));
+        assert!(
+            UTILITY_DEFINITION.descriptors()[1..]
+                .iter()
+                .all(|descriptor| descriptor.presentation == ParameterPresentation::Linear)
+        );
 
         let patched = registry
             .patch_parameter(&state, parameter::GAIN, ParameterValue::Float(2.0))
