@@ -66,11 +66,16 @@ impl SessionPlayback {
         );
 
         self.route_scratch.copy_from_slice(&self.routes);
+        let mut candidate_route_floors = [None; MAX_TRACKS];
         let mut report = SessionHandoffReport {
             cancelled_pending: [None; MAX_TRACKS],
             cancelled_pending_len: 0,
         };
         let mut source_changed = timing_changed;
+        // Instrument-only edits are route-local. Source or timing edits keep
+        // the established global historical floor and carry every active
+        // Session MIDI route across it.
+        let mut midi_route_changed = [timing_changed; MAX_TRACKS];
         self.release_scratch.clear();
         let mut next_order = previous.release_order;
         let mut track_map = [usize::MAX; MAX_TRACKS];
@@ -85,6 +90,11 @@ impl SessionPlayback {
                     RouteOwner::Session { .. } | RouteOwner::SessionAudio { .. }
                 ) {
                     source_changed = true;
+                    if matches!(old_route.owner, RouteOwner::Session { .. }) {
+                        if let Some(changed) = midi_route_changed.get_mut(old_index) {
+                            *changed = true;
+                        }
+                    }
                 } else if matches!(old_route.owner, RouteOwner::Arrangement) {
                     let old_track = previous
                         .revision
@@ -146,6 +156,15 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::RevisionTrackMismatch);
             };
             *mapped_index = new_index;
+            if let Some(floor) = previous
+                .route_historical_floors
+                .get(old_index)
+                .copied()
+                .flatten()
+                && let Some(candidate_floor) = candidate_route_floors.get_mut(new_index)
+            {
+                *candidate_floor = Some(floor);
+            }
             route.owner = match old_route.owner {
                 RouteOwner::Arrangement => RouteOwner::Arrangement,
                 RouteOwner::Silence => RouteOwner::Silence,
@@ -158,15 +177,33 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::UnknownClip)?;
                         if next.track != old_route.id {
                             source_changed = true;
+                            if let Some(changed) = midi_route_changed.get_mut(old_index) {
+                                *changed = true;
+                            }
                             RouteOwner::Silence
                         } else {
-                            if !next.source_matches(old) {
+                            if !next.source_content_matches(old) {
                                 source_changed = true;
+                                if let Some(changed) = midi_route_changed.get_mut(old_index) {
+                                    *changed = true;
+                                }
+                            }
+                            if !next.instrument_config_matches(old) {
+                                if let Some(changed) = midi_route_changed.get_mut(old_index) {
+                                    *changed = true;
+                                }
+                                if let Some(floor) = candidate_route_floors.get_mut(new_index) {
+                                    *floor =
+                                        Some(floor.map_or(old_beat, |prior| prior.max(old_beat)));
+                                }
                             }
                             RouteOwner::Session { clip, launch }
                         }
                     } else {
                         source_changed = true;
+                        if let Some(changed) = midi_route_changed.get_mut(old_index) {
+                            *changed = true;
+                        }
                         RouteOwner::Silence
                     }
                 }
@@ -231,7 +268,31 @@ impl SessionPlayback {
             }
         }
 
+        // Source/timing edits retain the historical global-floor policy: all
+        // currently active Session MIDI routes need copied voices to bridge
+        // that floor. Instrument-only edits leave this global flag false and
+        // remain scoped to their own stable track IDs.
+        if source_changed {
+            for (old_index, route) in previous.routes.iter().enumerate() {
+                if matches!(route.owner, RouteOwner::Session { .. })
+                    && let Some(changed) = midi_route_changed.get_mut(old_index)
+                {
+                    *changed = true;
+                }
+            }
+        }
+
         self.suppression_scratch.clear();
+        self.suppression_scratch
+            .extend(previous.suppressions.iter().copied().filter(|entry| {
+                entry.until_frame > previous.performance_frame
+                    && previous
+                        .routes
+                        .iter()
+                        .position(|route| route.id == entry.track)
+                        .and_then(|index| midi_route_changed.get(index))
+                        .is_none_or(|changed| !changed)
+            }));
         for entry in &previous.releases {
             if entry.voice.end_frame() <= previous.performance_frame {
                 continue;
@@ -239,12 +300,16 @@ impl SessionPlayback {
             if self.release_scratch.len() >= self.release_capacity {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
-            let remapped_gate = if source_changed {
+            let route_changed = midi_route_changed
+                .get(entry.track_index)
+                .copied()
+                .unwrap_or(false);
+            let remapped_gate = if route_changed {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
                 None
             };
-            let voice = if source_changed && entry.continuation.is_some() {
+            let voice = if route_changed && entry.continuation.is_some() {
                 entry
                     .voice
                     .reconcile_at(previous.performance_frame, remapped_gate)
@@ -257,6 +322,9 @@ impl SessionPlayback {
             };
             let mut copied = *entry;
             copied.voice = voice;
+            if route_changed && remapped_gate.is_none() {
+                copied.continuation = None;
+            }
             let old_index = previous
                 .routes
                 .get(entry.track_index)
@@ -271,7 +339,7 @@ impl SessionPlayback {
                 copied.track_index = usize::MAX;
             }
             self.release_scratch.push(copied);
-            if source_changed && let Some(continuation) = copied.continuation {
+            if route_changed && let Some(continuation) = copied.continuation {
                 if self.suppression_scratch.len() >= self.release_capacity {
                     return Err(SessionPlaybackError::ReleaseBankFull);
                 }
@@ -285,8 +353,11 @@ impl SessionPlayback {
             }
         }
 
-        if source_changed {
+        if source_changed || midi_route_changed.iter().any(|changed| *changed) {
             for (old_index, old_route) in previous.routes.iter().enumerate() {
+                if !midi_route_changed.get(old_index).copied().unwrap_or(false) {
+                    continue;
+                }
                 let RouteOwner::Session { clip, launch } = old_route.owner else {
                     continue;
                 };
@@ -295,12 +366,15 @@ impl SessionPlayback {
                     .session()
                     .midi_clip(clip)
                     .ok_or(SessionPlaybackError::UnknownClip)?;
+                if !old_clip.instrument_enabled() {
+                    continue;
+                }
                 let end = previous
                     .performance_frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                 let old_template = old_clip.instrument_template();
-                if let Some(floor) = previous.historical_floor {
+                if let Some(floor) = previous.historical_floor_for(old_index) {
                     old_template
                         .query_after_onset(
                             launch,
@@ -323,6 +397,12 @@ impl SessionPlayback {
                         .map_err(SessionPlaybackError::Midi)?;
                 }
                 for span in self.spans.spans().copied() {
+                    // A note whose onset is exactly the publication boundary
+                    // belongs to the candidate graph; it has not yet sounded
+                    // under the old instrument configuration.
+                    if span.start_frame >= previous.performance_frame {
+                        continue;
+                    }
                     let key = ContinuationKey {
                         clip: span.clip,
                         note: span.note,
@@ -333,7 +413,9 @@ impl SessionPlayback {
                     }
                     let candidate_clip = self.revision.session().midi_clip(clip);
                     let candidate_occurrence = candidate_clip
-                        .filter(|candidate| candidate.track == old_route.id)
+                        .filter(|candidate| {
+                            candidate.track == old_route.id && candidate.instrument_enabled()
+                        })
                         .and_then(|candidate| {
                             candidate.occurrence(span.note, span.iteration, launch)
                         });
@@ -411,14 +493,6 @@ impl SessionPlayback {
                     }
                 }
             }
-        } else {
-            self.suppression_scratch.extend(
-                previous
-                    .suppressions
-                    .iter()
-                    .copied()
-                    .filter(|entry| entry.until_frame > previous.performance_frame),
-            );
         }
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
@@ -649,6 +723,7 @@ impl SessionPlayback {
         self.playing = previous.playing;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
+        self.route_historical_floors = candidate_route_floors;
         self.route_state_generation = if visible_state_changed {
             previous.route_state_generation.wrapping_add(1)
         } else {
@@ -683,9 +758,6 @@ fn remap_release_gate(
     let Some(continuation) = entry.continuation else {
         return Ok(None);
     };
-    if entry.voice.gate_end_frame() <= previous.performance_frame {
-        return Ok(None);
-    }
     let key = continuation.key;
     let Some((_, RouteOwner::Session { clip, launch })) = previous
         .routes
@@ -705,6 +777,9 @@ fn remap_release_gate(
     if next.track != entry.track_id {
         return Ok(None);
     }
+    if !next.instrument_enabled() {
+        return Ok(None);
+    }
     let Some(occurrence) = next.occurrence(key.note, key.iteration, launch) else {
         return Ok(None);
     };
@@ -715,6 +790,11 @@ fn remap_release_gate(
         && occurrence.velocity == continuation.velocity;
     if !matches {
         return Ok(None);
+    }
+    if entry.voice.gate_end_frame() <= previous.performance_frame {
+        // A voice already in release keeps its original gate and sampler law;
+        // the matching candidate occurrence remains suppressed until it ends.
+        return Ok(Some(entry.voice.gate_end_frame()));
     }
     timing
         .beat_to_frame(occurrence.gate_end)

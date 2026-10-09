@@ -380,6 +380,19 @@ non-front resident, streamed, rollback and release-tail fixtures. Clean full loc
 CI and review remain with the integration owner; no native device/listening
 acceptance is claimed.
 
+Pulse2135 Session instrument continuity: route reuse now includes MIDI source,
+instrument ID, full versioned state and enabled status, while effect position
+remains history-compatible. Changed enabled configurations carry matching old
+held/releasing voices under their original sampler and suppress only that
+route's matching candidate occurrences; bypass/removal releases old voices
+without candidate suppression or disabled-period chase. Exact-cut onsets belong
+to the candidate. Route-local re-enable floors follow TrackIds across graph
+handoffs and reset on seek/stop, while source/timing edits retain the global
+floor and carry other active Session routes. Engine, Session, callback allocation,
+strict Clippy, formatting and architecture/style checks pass on the frozen
+source; full local CI remains with the integration owner. See
+[instrument continuity](docs/lattice-instruments.md).
+
 Menu follow-up2115: user accepted and manually merged PR37 into the stacked
 integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and
 open-panel/focus-switching2117 is implemented in the focused detail-pane branch;
