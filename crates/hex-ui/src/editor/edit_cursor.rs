@@ -6,33 +6,39 @@ use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
-const BLINK_INTERVAL: Duration = Duration::from_secs(1);
+const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
 
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
     pub(super) track: TrackId,
     pub(super) frame: u64,
     pub(super) generation: u64,
-    pub(super) bright: bool,
-    pub(super) last_blink: Instant,
+    pub(super) pulse_color: u32,
+    pub(super) pulse_started: Instant,
 }
 
 impl EditCursor {
     fn pulse(&mut self, now: Instant) -> bool {
-        if now.saturating_duration_since(self.last_blink) < BLINK_INTERVAL {
+        let elapsed = now.saturating_duration_since(self.pulse_started);
+        let phase = (elapsed.as_millis() % PULSE_PERIOD.as_millis()) as f64
+            / PULSE_PERIOD.as_millis() as f64;
+        let blend = (1.0 - (phase * std::f64::consts::TAU).cos()) * 0.5;
+        let mut color = 0;
+        for shift in [16, 8, 0] {
+            let white = f64::from((Palette::TEXT >> shift) & 0xff);
+            let cyan = f64::from((Palette::CYAN >> shift) & 0xff);
+            let channel = (white + (cyan - white) * blend).round() as u32;
+            color |= channel << shift;
+        }
+        if color == self.pulse_color {
             return false;
         }
-        self.bright = !self.bright;
-        self.last_blink = now;
+        self.pulse_color = color;
         true
     }
 
     pub(super) fn color(&self) -> u32 {
-        if self.bright {
-            Palette::TEXT
-        } else {
-            Palette::CYAN
-        }
+        self.pulse_color
     }
 }
 
@@ -82,8 +88,8 @@ impl EditorView {
             track,
             frame,
             generation: self.project_generation,
-            bright: true,
-            last_blink: Instant::now(),
+            pulse_color: Palette::TEXT,
+            pulse_started: Instant::now(),
         });
         self.time_selection = Some(TimeSelection {
             anchor_track: track,
@@ -268,7 +274,7 @@ impl EditorView {
 mod tests {
     use super::*;
     #[test]
-    fn cursor_pulse_changes_white_and_cyan_only_at_one_second_intervals() {
+    fn cursor_pulse_interpolates_smoothly_and_uses_elapsed_time_without_drift() {
         let now = Instant::now();
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).expect("project"), 4)
@@ -285,18 +291,24 @@ mod tests {
             track,
             frame: 0,
             generation: 0,
-            bright: true,
-            last_blink: now,
+            pulse_color: Palette::TEXT,
+            pulse_started: now,
         };
-        assert!(!cursor.pulse(now + Duration::from_millis(999)));
-        assert!(cursor.bright);
+        assert!(!cursor.pulse(now));
         assert_eq!(cursor.color(), Palette::TEXT);
-        assert!(cursor.pulse(now + Duration::from_secs(1)));
-        assert!(!cursor.bright);
+        assert!(cursor.pulse(now + Duration::from_millis(300)));
+        let midpoint = cursor.color();
+        assert_ne!(midpoint, Palette::TEXT);
+        assert_ne!(midpoint, Palette::CYAN);
+        assert!(cursor.pulse(now + Duration::from_millis(600)));
         assert_eq!(cursor.color(), Palette::CYAN);
-        assert!(!cursor.pulse(now + Duration::from_millis(1999)));
-        assert!(cursor.pulse(now + Duration::from_secs(2)));
-        assert!(cursor.bright);
+        assert!(cursor.pulse(now + Duration::from_millis(900)));
+        assert_eq!(cursor.color(), midpoint);
+        assert!(cursor.pulse(now + Duration::from_millis(1_200)));
         assert_eq!(cursor.color(), Palette::TEXT);
+        // A skipped timer tick resumes the same phase, rather than toggling once.
+        assert!(cursor.pulse(now + Duration::from_millis(3_000)));
+        assert_eq!(cursor.color(), Palette::CYAN);
+        assert!(!cursor.pulse(now + Duration::from_millis(3_000)));
     }
 }

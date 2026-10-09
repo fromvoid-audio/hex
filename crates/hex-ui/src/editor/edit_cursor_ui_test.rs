@@ -249,9 +249,53 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         ))
         .expect("selected track receives steady range fill");
     let selected_lane = lane(&mut visual, ids[2]);
+    let handlebar = visual
+        .debug_bounds(Box::leak(
+            format!("time-selection-handle-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .expect("selection handle exists for hover");
+    assert_eq!(handlebar.origin.y, selected_lane.origin.y);
+    assert!(
+        (f32::from(handlebar.size.height) - f32::from(selected_lane.size.height) / 3.0).abs() < 1.0,
+        "handle {:?}, lane {:?}",
+        handlebar.size.height,
+        selected_lane.size.height
+    );
     assert_eq!(shading.origin.y, selected_lane.origin.y);
     assert_eq!(shading.size.height, selected_lane.size.height);
     assert!(shading.size.width > px(1.0));
+
+    let reselect_start = point(
+        selected_lane.origin.x + selected_lane.size.width * 0.35,
+        selected_lane.origin.y + selected_lane.size.height * 0.75,
+    );
+    let reselect_end = point(
+        last_lane.origin.x + last_lane.size.width * 0.45,
+        last_lane.origin.y + last_lane.size.height * 0.75,
+    );
+    visual.simulate_mouse_down(reselect_start, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.time_range_move_gesture.is_none(),
+            "below the handle must not move the old area"
+        );
+        assert!(
+            view.time_selection_gesture.is_some(),
+            "selection can restart inside itself"
+        );
+    });
+    visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(reselect_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let range = view.normalized_time_selection().expect("replacement range");
+        assert_eq!(range.tracks(), &ids[2..]);
+        assert_eq!(view.selected_track, Some(ids[3]));
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "reselection does not edit project content"
+        );
+    });
 
     let reverse_start = point(
         last_lane.origin.x + last_lane.size.width * 0.8,
@@ -329,7 +373,7 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
 
     let grab = point(
         source.origin.x + source.size.width * 0.3,
-        source.origin.y + source.size.height / 2.0,
+        source.origin.y + source.size.height * 0.25,
     );
     let destination = point(
         target.origin.x + target.size.width * 0.5,
@@ -372,4 +416,72 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
             "release must not also collapse the area to a click"
         );
     });
+}
+
+#[gpui::test]
+fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut TestAppContext) {
+    for moving in [true, false] {
+        let (project, source, _, _) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+            ))
+            .expect("lane");
+        let click = point(
+            lane.origin.x + lane.size.width * 0.125,
+            lane.origin.y + lane.size.height * 0.75,
+        );
+        visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+        editor.update(cx, |view, cx| {
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: source,
+                end_track: source,
+                anchor_frame: 0,
+                end_frame: 96_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let top = point(click.x, lane.origin.y + lane.size.height * 0.2);
+        visual.simulate_mouse_move(top, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::OpenHand)
+        );
+        let start = if moving { top } else { click };
+        let end = point(lane.origin.x + lane.size.width * 0.2, start.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.time_range_move_gesture.is_some(), moving);
+            assert_eq!(view.time_selection_gesture.is_some(), !moving);
+        });
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.active_clip_drag.is_none(),
+                "selected zones must not drag a single clip"
+            )
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            if moving {
+                assert!(matches!(
+                    view.last_enqueued_edit,
+                    Some(Command::MoveTimeRange { .. })
+                ));
+            } else {
+                assert!(view.last_enqueued_edit.is_none());
+                let range = view
+                    .normalized_time_selection()
+                    .expect("new selection over clip");
+                assert!(range.start() > 0);
+                assert!(range.end() < 96_000);
+            }
+        });
+    }
 }

@@ -7,15 +7,15 @@ snapping. Click selection retains the clip body/edge drag contracts. The cursor
 is distinct from the audio playhead: placement does not seek, wait for audio
 acknowledgment, or require an output device.
 
-A one-device-pixel line now spans only the selected track rows. It switches
-between full-opacity white and cyan every second; row dividers paint above it.
+A one-device-pixel line now spans only the selected track rows. It smoothly interpolates
+between full-opacity white and cyan over a 1.2-second cycle; row dividers paint above it.
 An 8px downward marker immediately below the ruler and a matching upward marker
 at the arranger bottom remain steady. All share the same frame/viewport mapping
 and exclude the track-header column. Horizontal dragging creates a steady
 translucent time area, and vertical dragging extends it across tracks. The last
 track reached is subtly highlighted as focused. See [time-selection.md](time-selection.md)
 for range gestures and canonical editing. The existing timer requests a redraw
-only when a zero-width cursor changes color; no callback or per-sample work is
+only when a zero-width cursor’s interpolated RGB color changes; no callback or per-sample work is
 added. Native paint timing is unmeasured.
 
 Command-E splits the clip containing that cursor on its clicked track. A selected

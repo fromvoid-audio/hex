@@ -2233,3 +2233,9 @@ materialized as finite one-shot gates; boundary carry notes retrigger. This foll
 the existing split/overwrite policy, not a verified Live equivalence. Expansion
 is bounded conservatively over intersecting source clips. Native selection/focus/
 shortcut checks and sustained-note listening remain open; see time-selection.md.
+
+Selection move originally intercepted all selected empty background, preventing
+reselection inside the area. The requested upper-third hover handle now scopes
+moving, while its lower two thirds allow a new selection. Within a selected area,
+these zones take priority over individual clips. Native hover/pulse acceptance is
+pending; no input/paint timing has been measured.

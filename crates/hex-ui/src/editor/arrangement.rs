@@ -370,6 +370,8 @@ impl EditorView {
                             started
                         });
                         if started {
+                            // Selection handles own the gesture even when a clip is underneath.
+                            cx.stop_propagation();
                             window.refresh();
                         }
                     });
