@@ -1,10 +1,14 @@
-use hex_devices::SineTable;
+use hex_devices::{
+    SineTable,
+    utility::{UTILITY_DEFINITION, parameter as utility_parameter},
+};
 use hex_engine::{
-    Invalid, PreparedSessionInventory, Renderer, compile,
+    Audio, Invalid, PreparedSessionInventory, Renderer, compile,
     midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
     playback::{Playback, PlaybackCommand},
 };
-use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+use hex_lattice::NativeDeviceDefinition;
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
     BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
@@ -512,7 +516,266 @@ fn session_bank_ignores_notes_outside_the_emitted_source_window() {
 }
 
 #[test]
-fn arrangement_and_session_compilers_refuse_non_front_instrument_order() {
+fn ordered_instrument_segment_oracle_covers_audio_midi_and_hybrid_tracks() {
+    let (mut editor, track) = setup();
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "memory/ordered.wav".into(),
+            sample_rate: 48_000,
+            frames: 24_000,
+        })
+        .unwrap()
+    {
+        Created::Asset(id) => id,
+        _ => panic!("asset"),
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 24_000,
+            source_offset: 0,
+            source_length: 24_000,
+            looping: false,
+        })
+        .unwrap();
+    let midi = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 110,
+        })
+        .unwrap();
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let utility = UTILITY_DEFINITION.default_state().unwrap();
+    let invert = UTILITY_DEFINITION
+        .patch_parameter(
+            &utility,
+            utility_parameter::INVERT_RIGHT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let swap = UTILITY_DEFINITION
+        .patch_parameter(
+            &utility,
+            utility_parameter::CHANNEL,
+            ParameterValue::Choice(3),
+        )
+        .unwrap();
+    let prefix_id = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: Some(instrument),
+            state: invert.clone(),
+        })
+        .unwrap()
+    {
+        Created::Device(id) => id,
+        _ => panic!("prefix effect"),
+    };
+    let suffix_id = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: swap.clone(),
+        })
+        .unwrap()
+    {
+        Created::Device(id) => id,
+        _ => panic!("suffix effect"),
+    };
+    let prefix_matrix = UTILITY_DEFINITION.prepare_effect_matrix(&invert).unwrap();
+    let suffix_matrix = UTILITY_DEFINITION.prepare_effect_matrix(&swap).unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![[0.25, -0.5]; 24_000]).unwrap(),
+    )]);
+    let render = |project: &hex_project::Project| {
+        let compiled = compile::project(project, &media).unwrap();
+        let mut renderer = Renderer::new(&compiled);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 24_000];
+        renderer.render(&mut output).unwrap();
+        output
+    };
+    let mut audio_only = editor.project().snapshot();
+    let mut midi_only = editor.project().snapshot();
+    for snapshot in [&mut audio_only, &mut midi_only] {
+        let target = &mut snapshot.tracks[0];
+        target.devices.clear();
+        target.instrument_position = Some(0);
+    }
+    if let hex_project::TrackContentSnapshot::Hybrid {
+        audio_clips: _,
+        midi_clips,
+    } = &mut audio_only.tracks[0].content
+    {
+        midi_clips.clear();
+    }
+    if let hex_project::TrackContentSnapshot::Hybrid {
+        audio_clips,
+        midi_clips: _,
+    } = &mut midi_only.tracks[0].content
+    {
+        audio_clips.clear();
+    }
+    let audio = render(&hex_project::Project::from_snapshot(audio_only).unwrap());
+    let midi = render(&hex_project::Project::from_snapshot(midi_only).unwrap());
+
+    let base_project = editor.project().clone();
+    let renders_at_position = |position: usize| {
+        let mut candidate = Editor::new(base_project.clone(), 32).unwrap();
+        let before = match position {
+            0 => Some(prefix_id),
+            1 => Some(suffix_id),
+            _ => None,
+        };
+        candidate
+            .execute(Command::MoveTrackDevice {
+                device: instrument,
+                track,
+                before,
+            })
+            .unwrap();
+        assert_eq!(
+            candidate
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument_position(),
+            Some(position)
+        );
+        render(candidate.project())
+    };
+    for (position, prefix, suffix) in [
+        (0, None, Some(prefix_matrix.then(suffix_matrix).unwrap())),
+        (1, Some(prefix_matrix), Some(suffix_matrix)),
+        (2, Some(prefix_matrix.then(suffix_matrix).unwrap()), None),
+    ] {
+        let actual = renders_at_position(position);
+        for frame in 0..actual.len() {
+            let mut expected = prefix.map_or(audio[frame], |matrix| matrix.apply(audio[frame]));
+            expected[0] += midi[frame][0];
+            expected[1] += midi[frame][1];
+            if let Some(matrix) = suffix {
+                expected = matrix.apply(expected);
+            }
+            for channel in 0..2 {
+                assert!(
+                    (actual[frame][channel] - expected[channel]).abs() < 0.000_001,
+                    "position {position}, frame {frame}, channel {channel}: actual {:?}, expected {:?}",
+                    actual[frame],
+                    expected
+                );
+            }
+        }
+    }
+
+    // Audio-only and MIDI-only sources enter the same ordered chain at their
+    // respective source positions.
+    let mut ordered_audio_only = editor.project().snapshot();
+    let mut ordered_midi_only = editor.project().snapshot();
+    if let hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut ordered_audio_only.tracks[0].content
+    {
+        midi_clips.clear();
+    }
+    if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } =
+        &mut ordered_midi_only.tracks[0].content
+    {
+        audio_clips.clear();
+    }
+    let actual_audio_only =
+        render(&hex_project::Project::from_snapshot(ordered_audio_only).unwrap());
+    let actual_midi_only = render(&hex_project::Project::from_snapshot(ordered_midi_only).unwrap());
+    for frame in 0..actual_audio_only.len() {
+        let expected = suffix_matrix.apply(prefix_matrix.apply(audio[frame]));
+        for channel in 0..2 {
+            assert!((actual_audio_only[frame][channel] - expected[channel]).abs() < 0.000_001);
+        }
+        let expected_midi = suffix_matrix.apply(midi[frame]);
+        for channel in 0..2 {
+            assert!((actual_midi_only[frame][channel] - expected_midi[channel]).abs() < 0.000_001);
+        }
+    }
+    assert!(editor.project().device(suffix_id).is_some());
+}
+
+#[test]
+fn cancelling_prefix_suffix_matrices_still_process_midi_through_the_suffix() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let utility = UTILITY_DEFINITION.default_state().unwrap();
+    let inverted = UTILITY_DEFINITION
+        .patch_parameter(
+            &utility,
+            utility_parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: Some(instrument),
+            state: inverted.clone(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: inverted,
+        })
+        .unwrap();
+    let compiled = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    renderer.play();
+    let mut actual = [[0.0; 2]; 256];
+    renderer.render(&mut actual).unwrap();
+
+    let table = SineTable::new();
+    let voice = table.prepare_voice(48_000, 60, 100).unwrap();
+    let expected: Vec<_> = (0..actual.len())
+        .map(|frame| {
+            let sample = -table.sample(voice, frame as u64, 12_000);
+            [sample, -sample]
+        })
+        .collect();
+    // Prefix and suffix cancel for audio-only input, but MIDI enters between
+    // them and must still see the non-identity suffix exactly once.
+    assert_eq!(actual.as_slice(), expected.as_slice());
+}
+
+#[test]
+fn session_inventory_admits_non_front_instrument_and_keeps_slot_validation() {
     let (mut editor, track) = setup();
     let instrument = editor
         .project()
@@ -521,12 +784,23 @@ fn arrangement_and_session_compilers_refuse_non_front_instrument_order() {
         .instrument()
         .unwrap()
         .id();
+    editor
+        .execute(Command::MoveTrackDevice {
+            device: instrument,
+            track,
+            before: None,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().track(track).unwrap().instrument_position(),
+        Some(0)
+    );
+    let effect_state = UTILITY_DEFINITION.default_state().unwrap();
     let effect = match editor
         .execute(Command::InsertDevice {
             track,
-            before: None,
-            state: NativeDeviceState::new(DeviceTypeId::new("test.effect").unwrap(), 1, Vec::new())
-                .unwrap(),
+            before: Some(instrument),
+            state: effect_state,
         })
         .unwrap()
     {
@@ -544,12 +818,107 @@ fn arrangement_and_session_compilers_refuse_non_front_instrument_order() {
         editor.project().track(track).unwrap().instrument_position(),
         Some(1)
     );
-    assert!(compile::project(editor.project(), &BTreeMap::new()).is_err());
+    assert!(compile::project(editor.project(), &BTreeMap::new()).is_ok());
     assert!(
-        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None,)
-            .is_err()
+        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+            .is_ok()
     );
     assert!(editor.project().device(effect).is_some());
+}
+
+#[test]
+fn stateful_front_instrument_enters_the_effect_chain_once() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 1),
+            pitch: 69,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let unfiltered = editor.project().clone();
+    let utility = UTILITY_DEFINITION.default_state().unwrap();
+    let dc_remove = UTILITY_DEFINITION
+        .patch_parameter(
+            &utility,
+            utility_parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: dc_remove.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().track(track).unwrap().instrument_position(),
+        Some(0)
+    );
+
+    let render = |source: &hex_project::Project, media: &BTreeMap<hex_project::AssetId, Audio>| {
+        let compiled = compile::project(source, media).unwrap();
+        let mut renderer = Renderer::new(&compiled);
+        renderer.play();
+        let mut frames = vec![[0.0; 2]; 64];
+        renderer.render(&mut frames).unwrap();
+        frames
+    };
+    let empty_media = BTreeMap::new();
+    let raw_instrument = render(&unfiltered, &empty_media);
+    let filtered_instrument = render(editor.project(), &empty_media);
+
+    let mut audio_editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let audio_track = match audio_editor
+        .execute(Command::AddTrack {
+            name: "oracle".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("audio track"),
+    };
+    let asset = match audio_editor
+        .execute(Command::AddAsset {
+            path: "memory/front-stateful-oracle.wav".into(),
+            sample_rate: 48_000,
+            frames: raw_instrument.len() as u64,
+        })
+        .unwrap()
+    {
+        Created::Asset(id) => id,
+        _ => panic!("audio asset"),
+    };
+    audio_editor
+        .execute(Command::PlaceClip {
+            track: audio_track,
+            asset,
+            start: 0,
+            duration: raw_instrument.len() as u64,
+            source_offset: 0,
+            source_length: raw_instrument.len() as u64,
+            looping: false,
+        })
+        .unwrap();
+    audio_editor
+        .execute(Command::InsertDevice {
+            track: audio_track,
+            before: None,
+            state: dc_remove,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, raw_instrument).unwrap())]);
+    let audio_oracle = render(audio_editor.project(), &media);
+    for (actual, expected) in filtered_instrument.iter().zip(audio_oracle) {
+        for channel in 0..2 {
+            assert!((actual[channel] - expected[channel]).abs() < 1.0e-6);
+        }
+    }
 }
 
 #[test]

@@ -280,7 +280,27 @@ impl NativeRuntimeChain {
 
     /// Process the summed track signal through all registered stateful entries.
     pub fn process_block(&mut self, frames: &mut [StereoFrame]) {
-        for entry in &mut self.entries {
+        Self::process_entries(&mut self.entries, frames);
+    }
+
+    /// Process a control-prevalidated effect segment without ending the
+    /// surrounding transactional block. The range indexes the prepared effect
+    /// order; callers must begin once and commit only after the full render block.
+    pub fn process_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+    ) -> Result<(), DeviceContractError> {
+        let entries = self
+            .entries
+            .get_mut(range)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        Self::process_entries(entries, frames);
+        Ok(())
+    }
+
+    fn process_entries(entries: &mut [RuntimeEntry], frames: &mut [StereoFrame]) {
+        for entry in entries {
             if entry.bypassed {
                 if let Some(runtime) = entry.scratch.as_mut() {
                     runtime.process_bypassed_block(frames);
@@ -792,5 +812,64 @@ mod tests {
         let mut reset_history = [[1.0, 1.0]];
         incompatible_rate.process_block(&mut reset_history);
         assert_eq!(reset_history, [[1.0, 1.0]]);
+    }
+
+    #[test]
+    fn segmented_processing_shares_one_transaction_and_rolls_back_all_ranges() {
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&IndependentDefinition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepared = registry
+            .prepare_processor(
+                &registry
+                    .default_state(DeviceTypeId::from_static("test.independent"))
+                    .unwrap(),
+                48_000,
+            )
+            .unwrap()
+            .unwrap();
+        let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
+        let make_instance = |device_id| PreparedProcessorInstance {
+            track_id: 3,
+            device_id,
+            device_type: DeviceTypeId::from_static("test.independent"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            definition: Some(std::sync::Arc::clone(&prepared)),
+        };
+        let mut chain = NativeRuntimeChain::new(vec![make_instance(9), make_instance(10)]).unwrap();
+
+        chain.begin_block();
+        let mut first = [[1.0, 1.0]];
+        chain.process_range(0..1, &mut first).unwrap();
+        chain.process_range(1..2, &mut first).unwrap();
+        chain.commit_block();
+
+        chain.begin_block();
+        let mut speculative = [[2.0, 2.0]];
+        chain.process_range(0..1, &mut speculative).unwrap();
+        chain.process_range(1..2, &mut speculative).unwrap();
+        // A later render-stage failure leaves both segment histories uncommitted.
+        chain.begin_block();
+        let mut retry = [[2.0, 2.0]];
+        chain.process_range(0..1, &mut retry).unwrap();
+        chain.process_range(1..2, &mut retry).unwrap();
+        chain.commit_block();
+        assert_eq!(retry, [[4.0, 4.0]]);
+
+        chain.begin_block();
+        let mut next = [[3.0, 3.0]];
+        chain.process_range(0..1, &mut next).unwrap();
+        chain.process_range(1..2, &mut next).unwrap();
+        chain.commit_block();
+        assert_eq!(next, [[10.0, 10.0]]);
+
+        chain.begin_block();
+        let mut untouched = [[7.0, 7.0]];
+        assert_eq!(
+            chain.process_range(0..3, &mut untouched),
+            Err(DeviceContractError::InvalidDescriptor)
+        );
+        assert_eq!(untouched, [[7.0, 7.0]]);
     }
 }

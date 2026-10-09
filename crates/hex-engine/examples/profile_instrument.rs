@@ -4,9 +4,10 @@ use hex_engine::{
     compile,
     playback::{Playback, PlaybackCommand},
 };
+use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{
-    BeatTime, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project, Snapshot, Tempo,
-    TempoPoint, TrackContentSnapshot, TrackSnapshot,
+    BeatTime, DeviceSnapshot, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project,
+    Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{error::Error, hint::black_box, time::Instant};
 
@@ -17,7 +18,7 @@ const PREVIOUS_INLINE_SAMPLER_BYTES: usize = 40;
 const WARMUP_BLOCKS: usize = 100;
 const MEASURED_BLOCKS: usize = 3_000;
 
-fn fixture() -> Result<Project, hex_project::Invalid> {
+fn fixture(instrument_position: usize) -> Result<Project, Box<dyn Error>> {
     let mut next_id = 1_u64;
     let mut tracks = Vec::with_capacity(TRACKS);
     let two_quarters = BeatTime::from_ratio(2, 1)?.raw();
@@ -26,8 +27,19 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         next_id += 1;
         let instrument_id = next_id;
         next_id += 1;
+        let prefix_id = next_id;
+        next_id += 1;
+        let suffix_id = next_id;
+        next_id += 1;
         let clip_id = next_id;
         next_id += 1;
+        let utility_state =
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))?;
+        let utility_state = hex_engine::patch_native_device_parameter(
+            &utility_state,
+            ParameterId::from_static(1),
+            ParameterValue::Float(0.999),
+        )?;
         let notes = (0..NOTES_PER_TRACK)
             .map(|note_index| {
                 let id = next_id;
@@ -49,13 +61,24 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             balance: 0.0,
             muted: false,
             soloed: false,
-            devices: Vec::new(),
+            devices: vec![
+                DeviceSnapshot {
+                    id: prefix_id,
+                    bypassed: false,
+                    state: utility_state.clone(),
+                },
+                DeviceSnapshot {
+                    id: suffix_id,
+                    bypassed: false,
+                    state: utility_state,
+                },
+            ],
             instrument: Some(hex_project::DeviceSnapshot {
                 id: instrument_id,
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
             }),
-            instrument_position: Some(0),
+            instrument_position: Some(instrument_position),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
@@ -69,7 +92,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             }]),
         });
     }
-    Project::from_snapshot(Snapshot {
+    Ok(Project::from_snapshot(Snapshot {
         sample_rate: RATE,
         next_id,
         assets: Vec::new(),
@@ -79,7 +102,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
-    })
+    })?)
 }
 
 fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_engine::Invalid> {
@@ -100,10 +123,16 @@ fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_e
     }
     let elapsed = started.elapsed();
     timings.sort_unstable();
+    let output_digest = output
+        .iter()
+        .flatten()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+            (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+        });
     let total_frames = block_size * MEASURED_BLOCKS;
     let deadline_us = block_size as f64 / f64::from(RATE) * 1_000_000.0;
     println!(
-        "block={block_size:3} frames total={total_frames} elapsed={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x",
+        "block={block_size:3} frames total={total_frames} elapsed={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x output_digest={output_digest:016x}",
         elapsed.as_secs_f64(),
         timings[timings.len() - 1] as f64 / 1_000.0,
         timings[timings.len() - 1] as f64 / (deadline_us * 1_000.0),
@@ -112,7 +141,16 @@ fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_e
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let editable = fixture()?;
+    let arguments: Vec<_> = std::env::args().collect();
+    let instrument_position = if arguments.iter().any(|argument| argument == "--gap-end") {
+        2
+    } else if arguments.iter().any(|argument| argument == "--ordered-gap") {
+        1
+    } else {
+        0
+    };
+    println!("instrument position: {instrument_position}");
+    let editable = fixture(instrument_position)?;
     let project = compile::project(&editable, &Default::default())?;
     let sampler_references = project.midi_note_sampler_reference_count()?;
     let old_sampler_bytes = sampler_references

@@ -202,14 +202,6 @@ fn compile_project<'a>(
     let mut midi_bank_bytes = 0_usize;
     let mut midi_bank_references = 0_usize;
     for track in snapshot.tracks() {
-        if track
-            .instrument_position()
-            .is_some_and(|position| position != 0)
-        {
-            return Err(Invalid(
-                "playback does not support an instrument after serial effects",
-            ));
-        }
         // Validate a present slot even when it is bypassed or has no current
         // MIDI clips; unknown/future definitions must refuse graph publication.
         let instrument_config = track
@@ -283,8 +275,8 @@ fn compile_project<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let (effects, device_chain) =
-            compile_device_effects(track, registry, snapshot.sample_rate())?;
+        let effect_plan = compile_device_effects(track, registry, snapshot.sample_rate())?;
+        let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
                 stateful_count = stateful_count
@@ -311,7 +303,10 @@ fn compile_project<'a>(
                 muted,
                 track.balance(),
                 instrument,
-                effects,
+                track.instrument_position().unwrap_or(0),
+                effect_plan.fused,
+                effect_plan.prefix,
+                effect_plan.suffix,
                 device_chain,
             )?
             .with_track_id(track.id()),
@@ -326,24 +321,28 @@ fn compile_project<'a>(
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }
 
+struct CompiledEffectPlan {
+    fused: Option<hex_lattice::StereoMatrix>,
+    prefix: Option<hex_lattice::StereoMatrix>,
+    suffix: Option<hex_lattice::StereoMatrix>,
+    device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
+}
+
 fn compile_device_effects(
     track: &hex_project::Track,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     sample_rate: u32,
-) -> Result<
-    (
-        Option<hex_lattice::StereoMatrix>,
-        Vec<hex_lattice::PreparedProcessorInstance>,
-    ),
-    Invalid,
-> {
+) -> Result<CompiledEffectPlan, Invalid> {
     let mut matrix = hex_lattice::StereoMatrix::identity();
+    let mut prefix = hex_lattice::StereoMatrix::identity();
+    let mut suffix = hex_lattice::StereoMatrix::identity();
     let mut devices = Vec::new();
     devices
         .try_reserve_exact(track.devices().len())
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
     let mut stateful = false;
-    for device in track.devices() {
+    let split = track.instrument_position().unwrap_or(0);
+    for (index, device) in track.devices().iter().enumerate() {
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
@@ -358,6 +357,11 @@ fn compile_device_effects(
             prepared_device.matrix
         };
         matrix = matrix.then(prepared).map_err(|error| Invalid(error.0))?;
+        if index < split {
+            prefix = prefix.then(prepared).map_err(|error| Invalid(error.0))?;
+        } else {
+            suffix = suffix.then(prepared).map_err(|error| Invalid(error.0))?;
+        }
         devices.push(hex_lattice::PreparedProcessorInstance {
             track_id: track.id().value(),
             device_id: device.id().value(),
@@ -369,12 +373,22 @@ fn compile_device_effects(
         });
     }
     if stateful {
-        Ok((None, devices))
+        Ok(CompiledEffectPlan {
+            fused: None,
+            prefix: None,
+            suffix: None,
+            device_chain: devices,
+        })
     } else {
-        Ok((
-            (matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix),
-            Vec::new(),
-        ))
+        let non_identity = |matrix: hex_lattice::StereoMatrix| {
+            (matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix)
+        };
+        Ok(CompiledEffectPlan {
+            fused: non_identity(matrix),
+            prefix: non_identity(prefix),
+            suffix: non_identity(suffix),
+            device_chain: Vec::new(),
+        })
     }
 }
 

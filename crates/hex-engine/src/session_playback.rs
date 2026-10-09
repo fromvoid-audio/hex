@@ -234,6 +234,8 @@ pub struct SessionPlayback {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
+    tail_suffix_starts: Vec<usize>,
+    tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
     release_capacity: usize,
@@ -319,6 +321,16 @@ impl SessionPlayback {
             .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
             .map_err(|_| SessionPlaybackError::Allocation)?;
         tail_groups.resize_with(SESSION_TAIL_GROUP_CAPACITY, || None);
+        let mut tail_suffix_starts = Vec::new();
+        tail_suffix_starts
+            .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        tail_suffix_starts.resize(SESSION_TAIL_GROUP_CAPACITY, 0);
+        let mut tail_suffix_matrices = Vec::new();
+        tail_suffix_matrices
+            .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        tail_suffix_matrices.resize(SESSION_TAIL_GROUP_CAPACITY, None);
         let mut tail_mixes = Vec::new();
         tail_mixes
             .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
@@ -356,6 +368,8 @@ impl SessionPlayback {
             device_chains,
             tail_groups,
             tail_mixes,
+            tail_suffix_starts,
+            tail_suffix_matrices,
             releases,
             release_scratch,
             release_capacity,
