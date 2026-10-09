@@ -136,6 +136,10 @@ pub enum Request {
         track: hex_project::TrackId,
         frame: u64,
     },
+    InsertTimeRange {
+        track: hex_project::TrackId,
+        frame: u64,
+    },
     Undo,
     Redo,
     SaveNew(PathBuf),
@@ -610,6 +614,29 @@ fn run_worker(
                                 replacement_revision = Some(prepared);
                             }
                             status = Some("time selection pasted".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                } else {
+                    error = Some("time clipboard is empty · copy a selection first".into());
+                }
+            }
+            Request::InsertTimeRange { track, frame } => {
+                if let Some(clipboard) = &range_clipboard {
+                    match session.command_prepared_revision(
+                        Command::InsertTimeRange {
+                            clipboard: Arc::clone(clipboard),
+                            track,
+                            frame,
+                        },
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    ) {
+                        Ok((_, prepared)) => {
+                            if session.project() != state.project.as_ref() {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
+                            status = Some("time selection inserted".into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
                     }
@@ -1230,6 +1257,23 @@ mod service_tests {
         assert!(copied.error.is_none());
         assert_eq!(copied.state.revision, placed.state.revision);
         assert!(copied.playback.is_none());
+        service
+            .submit(Request::InsertTimeRange {
+                track,
+                frame: 120_000,
+            })
+            .expect("insert from worker clipboard");
+        let inserted = next_event(&service);
+        assert!(inserted.error.is_none());
+        assert_eq!(inserted.state.revision, copied.state.revision + 1);
+        assert_eq!(inserted.state.project.tracks()[0].midi_clips().len(), 2);
+        service.submit(Request::Undo).expect("undo insert");
+        let insert_undone = next_event(&service);
+        assert_eq!(insert_undone.state.revision, inserted.state.revision + 1);
+        assert_eq!(
+            insert_undone.state.project.tracks()[0].midi_clips().len(),
+            1
+        );
         let mut other =
             hex_project::Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
         other
@@ -1253,7 +1297,10 @@ mod service_tests {
             .expect("refused cut");
         let refused_cut = next_event(&service);
         assert!(refused_cut.error.is_some());
-        assert_eq!(refused_cut.state.project, copied.state.project);
+        let mut refused_snapshot = refused_cut.state.project.snapshot();
+        let copied_snapshot = copied.state.project.snapshot();
+        refused_snapshot.next_id = copied_snapshot.next_id;
+        assert_eq!(refused_snapshot, copied_snapshot);
         service
             .submit(Request::Open(directory.0.join("missing.hex")))
             .expect("refused open");

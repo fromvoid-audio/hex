@@ -4,6 +4,8 @@ use crate::{
     MidiClip, MidiNote, MidiSource, NoteId, Project, TrackId,
 };
 use std::sync::Arc;
+mod insert;
+pub(crate) use insert::insert;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeRange {

@@ -16,6 +16,11 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    InsertTimeRange {
+        clipboard: std::sync::Arc<crate::RangeClipboard>,
+        track: TrackId,
+        frame: u64,
+    },
     MoveTimeRange {
         range: crate::TimeRange,
         track: TrackId,
@@ -876,6 +881,11 @@ impl Project {
                 track,
                 frame,
             } => crate::time_range::paste(self, &clipboard, track, frame),
+            Command::InsertTimeRange {
+                clipboard,
+                track,
+                frame,
+            } => crate::time_range::insert(self, &clipboard, track, frame),
             Command::MoveTimeRange {
                 range,
                 track,

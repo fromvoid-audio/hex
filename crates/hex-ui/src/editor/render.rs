@@ -1,10 +1,11 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack, OpenProject,
-    PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, Redo, RemoveTrack,
-    SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop,
-    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
+    OpenProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, Redo,
+    RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop,
+    ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn,
+    ZoomOut,
 };
 use crate::theme::{self, Palette};
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -539,6 +540,10 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &PasteTimeSelection, window, cx| {
                 view.paste_time_selection(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &InsertTimeSelection, window, cx| {
+                view.insert_time_selection(window);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {

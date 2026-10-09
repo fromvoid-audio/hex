@@ -176,3 +176,7 @@ change. The original one-shot/intro/loop phase policy is in `docs/midi.md`.
 The pure `preview_clip_fragment` helper exposes validated control-side audio
 fragment metadata for view previews. It preserves source mapping, inherited fade
 domains and the original clip ID without editing the project or copying PCM.
+
+Selected-row `InsertTimeRange` opens a frame-based gap and pastes a finite time
+rectangle atomically; bounded shifting/materialization lives in `time_range/insert.rs`.
+No project schema or device callback responsibility is added.

@@ -820,3 +820,49 @@ fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut
         });
     }
 }
+
+#[gpui::test]
+fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            window.focus(&view.focus);
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: target,
+                end_track: source,
+                anchor_frame: 96_000,
+                end_frame: 48_000,
+            });
+        })
+    });
+    visual.simulate_keystrokes("cmd-shift-c");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.last_time_request, Some(("copy", None)))
+    });
+    visual.simulate_keystrokes("cmd-shift-v");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_time_request,
+            Some(("insert", Some((source, 48_000))))
+        )
+    });
+    visual.simulate_keystrokes("cmd-v");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_time_request,
+            Some(("paste", Some((source, 48_000))))
+        )
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            view.last_time_request = None;
+            window.focus(&view.midi_focus);
+        })
+    });
+    visual.simulate_keystrokes("cmd-shift-v");
+    editor.read_with(cx, |view, _| assert!(view.last_time_request.is_none()));
+}

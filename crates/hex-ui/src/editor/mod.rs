@@ -145,6 +145,7 @@ actions!(
         CopyTimeSelection,
         CutTimeSelection,
         PasteTimeSelection,
+        InsertTimeSelection,
         DuplicateClip,
         SplitClip,
         SetLoopFromClip,
@@ -268,8 +269,10 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-v", PasteTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-v", InsertTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-d", DuplicateClip, Some("hex_editor")),
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
@@ -422,6 +425,8 @@ pub(super) struct EditorView {
     drag_move_event_count: usize,
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
+    #[cfg(test)]
+    last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]
     last_trim_release_snap: Option<bool>,
     #[cfg(test)]
@@ -607,6 +612,8 @@ impl EditorView {
             drag_move_event_count: 0,
             #[cfg(test)]
             last_enqueued_edit: None,
+            #[cfg(test)]
+            last_time_request: None,
             #[cfg(test)]
             last_trim_release_snap: None,
             #[cfg(test)]
