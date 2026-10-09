@@ -1,7 +1,9 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod clip_fragment;
 mod conversion;
 mod edit;
+pub use clip_fragment::preview_clip_fragment;
 pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };

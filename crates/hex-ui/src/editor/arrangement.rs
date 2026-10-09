@@ -180,6 +180,7 @@ impl EditorView {
                         items.push(this.track_row(
                             state,
                             track,
+                            index,
                             selected,
                             super::tracks::ClipViewTimeline {
                                 viewport: rows_viewport,

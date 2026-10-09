@@ -2239,3 +2239,26 @@ reselection inside the area. The requested upper-third hover handle now scopes
 moving, while its lower two thirds allow a new selection. Within a selected area,
 these zones take priority over individual clips. Native hover/pulse acceptance is
 pending; no input/paint timing has been measured.
+
+## cross-worktree Cargo cache identity — 9 October 2026
+
+During local CI on the merged baseline, a shared `CARGO_TARGET_DIR` rebuilt
+`hex-project` from the clean worktree. Returning to older dirty source in the
+primary checkout reused that newer library timestamp and reported the new public
+preview export missing. Rebuilding the primary library after refreshing its source
+timestamp resolved the error; no API or source-content change was required.
+
+Do not share a Cargo target between active checkouts for acceptance runs. Prefer
+each checkout's default target directory. Keep commit/content identity in the CI
+report and validate from the intended checkout; a warm cache alone is not proof
+of matching source. The new runner does not configure a shared target itself.
+
+## GPUI debug bounds retain removed selectors — 9 October 2026
+
+The time-move audio regression initially treated `debug_bounds(old_selector)`
+as proof that the original clip still rendered. The vendored GPUI
+`WindowFrame::clear` retains its debug-bounds map; the test API reads that map
+directly. Removed selectors therefore remain queryable across frame reuse.
+Do not use selector absence after a redraw as visibility evidence. Check current
+fragment/interval decisions and newly rendered geometry, and keep native source
+disappearance as user acceptance. No GPUI dependency change is included here.
