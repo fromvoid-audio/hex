@@ -1,6 +1,6 @@
 use super::drag::BrowserAudioDrag;
 use super::{EditorView, ViewState};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
     Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
@@ -101,7 +101,10 @@ impl EditorView {
                 start: 0,
                 length: 1,
             };
-            let upper = div().flex_1().min_h_0().bg(rgb(Palette::BACKGROUND));
+            let upper = div()
+                .flex_1()
+                .min_h_0()
+                .bg(rgb(theme::color(theme::PaletteRole::Background)));
             let main = self.main_track_row(viewport, &[], &[], cx);
             return self.arrangement_surface(upper, main, cx);
         };
@@ -132,7 +135,7 @@ impl EditorView {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .bg(rgb(Palette::BACKGROUND))
+                .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
                 .child(self.ruler(state, ruler_width, cx))
                 .children([self.arrangement_body(
@@ -151,7 +154,7 @@ impl EditorView {
                                 .items_center()
                                 .justify_center()
                                 .text_xs()
-                                .text_color(rgb(Palette::MUTED))
+                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                 .child(theme::text("no tracks · import audio or add a track")),
                         ),
                     cx,
@@ -211,7 +214,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .flex()
-            .bg(rgb(Palette::BACKGROUND))
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
             .children([timeline_grid_layer(&bands, &grid, viewport)])
             .child(rows);
         if let Some(position) = viewport.fraction(playhead) {
@@ -229,7 +232,7 @@ impl EditorView {
                             .bottom_0()
                             .left(relative(position.clamp(0.0, 1.0)))
                             .w(px(1.0))
-                            .bg(rgb(Palette::CYAN)),
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                     ),
             );
         }
@@ -483,7 +486,7 @@ impl EditorView {
                             .right_0()
                             .top(px(relative_y))
                             .h(px(2.0))
-                            .bg(rgb(Palette::CYAN)),
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                     );
                 }
             }
@@ -582,8 +585,8 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(lane)
             .child(
                 div()
@@ -597,8 +600,8 @@ impl EditorView {
                     .gap_1()
                     .px_1()
                     .border_l_1()
-                    .border_color(rgb(Palette::BORDER))
-                    .bg(rgb(Palette::RAISED))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                     .text_xs()
                     .child(theme::text("main"))
                     .child(div().flex_1())
@@ -628,16 +631,16 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(if tick.meter_marker || tick.fragmentary_bar {
-                                Palette::CORAL
+                                theme::color(theme::PaletteRole::Primary)
                             } else {
-                                Palette::GRID
+                                theme::color(theme::PaletteRole::Grid)
                             }))
                             .pl_1()
                             .text_xs()
                             .text_color(rgb(if tick.meter_marker {
-                                Palette::TEXT
+                                theme::color(theme::PaletteRole::Text)
                             } else {
-                                Palette::MUTED
+                                theme::color(theme::PaletteRole::Muted)
                             }))
                             .child(theme::text(tick.label))
                     }),
@@ -655,9 +658,9 @@ impl EditorView {
                     .left(relative(left as f32))
                     .w(relative(width as f32))
                     .bg(rgb(if region.enabled() {
-                        Palette::CORAL
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     }));
             }
         }
@@ -740,8 +743,8 @@ impl EditorView {
             .flex()
             .items_center()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(cells)
             .children([self.time_controls(cx)])
     }
@@ -763,11 +766,11 @@ pub(super) fn timeline_grid_elements(
             }
             let position = (offset as f64 / viewport.length as f64) as f32;
             let (color, opacity) = if line.meter_marker {
-                (Palette::CORAL, 0.48)
+                (theme::color(theme::PaletteRole::Primary), 0.48)
             } else if line.bar_start {
-                (Palette::GRID, 0.9)
+                (theme::color(theme::PaletteRole::Grid), 0.9)
             } else {
-                (Palette::GRID, 0.48)
+                (theme::color(theme::PaletteRole::Grid), 0.48)
             };
             Some(
                 div()
@@ -839,9 +842,9 @@ fn timeline_band_elements(
                     .left(relative(left as f32))
                     .w(relative(width as f32))
                     .bg(rgb(if band.alternate {
-                        Palette::SURFACE
+                        theme::color(theme::PaletteRole::Surface)
                     } else {
-                        Palette::RAISED
+                        theme::color(theme::PaletteRole::Raised)
                     }))
                     .opacity(if band.alternate { 0.16 } else { 0.08 }),
             )

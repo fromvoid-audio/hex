@@ -1,4 +1,4 @@
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
@@ -128,7 +128,10 @@ fn waveform_canvas(
             });
             if let Some(geometry) = geometry {
                 for channel in &geometry.channels {
-                    window.paint_path(channel.centerline.clone(), rgb(Palette::BORDER));
+                    window.paint_path(
+                        channel.centerline.clone(),
+                        rgb(theme::color(theme::PaletteRole::Border)),
+                    );
                     window.paint_path(channel.waveform.clone(), rgb(0x000000));
                 }
             }
@@ -392,8 +395,8 @@ pub(super) fn button(
         .justify_center()
         .cursor_pointer()
         .text_xs()
-        .bg(rgb(Palette::RAISED))
-        .text_color(rgb(Palette::MUTED))
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
                 name: tooltip.to_string(),
@@ -413,11 +416,11 @@ impl Render for ClipTooltip {
             .px_2()
             .py_1()
             .border_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::RAISED))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .font_family(theme::FONT_FAMILY)
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(&self.name))
     }
 }

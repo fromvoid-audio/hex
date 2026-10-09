@@ -35,3 +35,8 @@ events through the project's bounded command protocol.
 Does not depend on or construct Hex projects, audio engines, DSP devices, session
 workers, plug-in hosts, or application-specific theme state. It does not claim
 that provisional control laws reproduce Ableton Live without reference tests.
+
+Caller-owned styles can update existing numeric/toggle/selector controls without
+replacing active entities or numeric drafts. Numeric text selections derive their
+tint from the injected accent and surface. Application theme persistence remains
+outside this crate.

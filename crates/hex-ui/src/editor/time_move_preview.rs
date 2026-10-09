@@ -1,7 +1,7 @@
 //! Passive time-chunk fragment rendering using cached waveform and note summaries.
 use super::tracks::clip_grid_layer;
 use super::viewport::Viewport;
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Div, div, prelude::*, px, relative, rgb};
 use hex_project::Clip;
 
@@ -122,7 +122,7 @@ pub(super) fn passive_audio_fragment(
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(Palette::CLIP_FILL))
+        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .children([clip_grid_layer(grid, start, stop)]);
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
@@ -137,7 +137,7 @@ pub(super) fn passive_audio_fragment(
                 .items_center()
                 .px_1()
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text("missing media")),
         );
     }
@@ -173,7 +173,7 @@ pub(super) fn passive_midi_fragment(
         .min_w(px(4.0))
         .overflow_hidden()
         .opacity(0.68)
-        .bg(rgb(Palette::CLIP_FILL))
+        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .border_1()
         .border_color(rgb(0x000000))
         .children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -217,7 +217,7 @@ pub(super) fn passive_midi_fragment(
                 .top(relative(top))
                 .w(relative(note_width))
                 .h(px(2.0))
-                .bg(rgb(Palette::CYAN)),
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
         );
         shown += 1;
     }

@@ -34,7 +34,8 @@ source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30), with all
 audio/MIDI splitting and a 100-track single-Undo case. Native and merge acceptance remain separate
 gates. See [main track](main-track.md).
 
-Four-color theme settings 15 are now active in their own focused change;
+Four-color theme settings 15 are source-complete with focused checks passing;
+clean full CI follows integration. See [theme settings](theme-settings.md);
 stateful runtime 16 is still under lifecycle/allocation validation. The local CI
 headroom guard passed all 14 checks on `5033c02` in 294.905 s
 ([PR32](https://github.com/PORTALSURFER/hex/pull/32)). Original planned Operator

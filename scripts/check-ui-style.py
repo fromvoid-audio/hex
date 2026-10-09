@@ -15,7 +15,7 @@ widgets = (
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
-    'self.browser_view(', 'workspace_content.', 'self.browser_icon(',
+    'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
@@ -27,9 +27,10 @@ widgets = (
     'super::waveform::waveform_source_segment_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
-    'menu_message(', 'action_button(', 'entity.clone())',
+    'menu_message(', 'action_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
-    'self.title_bar()', 'self.title_bar(cx)', 'header::title_bar(', 'header::loading_toolbar(',
+    'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
+    'header::title_bar(', 'header::loading_toolbar(',
     'lights)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):

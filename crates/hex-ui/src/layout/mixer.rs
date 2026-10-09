@@ -1,5 +1,5 @@
 use crate::app::{Daw, INSPECTOR_HEIGHT, MIXER_HEIGHT, TRACK_COLORS};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_engine::live::{Command, NAMES, TRACKS};
 use std::sync::atomic::Ordering::Relaxed;
@@ -16,8 +16,8 @@ impl Daw {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(
                 div()
                     .h(px(22.0))
@@ -27,9 +27,9 @@ impl Daw {
                     .justify_between()
                     .px_2()
                     .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("mixer"))
                     .child(theme::text("track level · peak")),
             )
@@ -52,11 +52,11 @@ impl Daw {
             .gap_1()
             .px_2()
             .border_r_1()
-            .border_color(rgb(Palette::BORDER))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(if self.selected == track {
-                Palette::RAISED
+                theme::color(theme::PaletteRole::Raised)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
             .child(
                 div()
@@ -90,9 +90,9 @@ impl Daw {
                             .w(px(6.0))
                             .flex()
                             .flex_col_reverse()
-                            .bg(rgb(Palette::WAVE_BG))
+                            .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
                             .child(div().h(px(meter_height)).w_full().bg(rgb(if peak > 0.82 {
-                                Palette::CORAL
+                                theme::color(theme::PaletteRole::Primary)
                             } else {
                                 0x77a58e
                             }))),
@@ -101,7 +101,7 @@ impl Daw {
                         div()
                             .flex_1()
                             .text_xs()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .child(theme::text("0")),
                     ),
             )
@@ -175,8 +175,8 @@ impl Daw {
             .gap_3()
             .px_2()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(
                 div()
                     .w(px(3.0))
@@ -193,14 +193,14 @@ impl Daw {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(Palette::TEXT))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                             .truncate()
                             .child(theme::text(format!("{} · source inspector", name))),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .truncate()
                             .child(theme::text("generated stereo · 4 beats · source 120 bpm")),
                     ),
@@ -211,7 +211,7 @@ impl Daw {
                     .max_w(px(132.0))
                     .min_w_0()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .truncate()
                     .child(theme::text("tempo changes pitch")),
             )
@@ -237,13 +237,13 @@ impl Daw {
             .gap_2()
             .px_2()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs()
             .text_color(rgb(if fault {
-                Palette::CORAL
+                theme::color(theme::PaletteRole::Primary)
             } else {
-                Palette::MUTED
+                theme::color(theme::PaletteRole::Muted)
             }))
             .child(
                 div()

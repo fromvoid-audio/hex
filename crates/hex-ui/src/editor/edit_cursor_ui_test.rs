@@ -1362,7 +1362,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
                 track: source,
                 frame: 73_000,
                 generation: view.project_generation,
-                pulse_color: crate::theme::Palette::TEXT,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
                 pulse_started: std::time::Instant::now(),
             });
             view.time_selection = Some(super::time_selection::TimeSelection {
@@ -1449,7 +1449,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
                 track: source,
                 frame: 73_000,
                 generation: view.project_generation,
-                pulse_color: crate::theme::Palette::TEXT,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
                 pulse_started: std::time::Instant::now(),
             });
             view.last_transport_command = None;

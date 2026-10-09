@@ -1,4 +1,4 @@
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, FocusHandle, Window, actions, div, prelude::*, px, rgb};
 use hex_audio::AudioOutput;
 use hex_engine::live::{Command, Mode, TRACKS};
@@ -120,8 +120,8 @@ impl Render for Daw {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(Palette::BACKGROUND))
-            .text_color(rgb(Palette::TEXT))
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
             .key_context("daw")
@@ -156,10 +156,10 @@ impl Render for Daw {
                                     .justify_between()
                                     .px_2()
                                     .border_b_1()
-                                    .border_color(rgb(Palette::BORDER))
-                                    .bg(rgb(Palette::SURFACE))
+                                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                                    .bg(rgb(theme::color(theme::PaletteRole::Surface)))
                                     .text_xs()
-                                    .text_color(rgb(Palette::MUTED))
+                                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                     .child(theme::text(if self.mode == Mode::Arrangement {
                                         "arrangement · 4 tracks · 2 bars"
                                     } else {

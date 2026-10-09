@@ -1,6 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathPromptOptions, Window, canvas, div, prelude::*, px, relative, rgb, uniform_list,
@@ -263,7 +263,7 @@ fn browser_audio_drag_ghost(
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(Palette::CLIP_FILL))
+        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.9);
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children([super::tracks::clip_grid_layer(&lines, start, end)]);
@@ -282,7 +282,7 @@ fn browser_audio_drag_ghost(
                 .left(px(4.0))
                 .right(px(4.0))
                 .h(px(1.0))
-                .bg(rgb(Palette::CLIP_TEXT)),
+                .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
         );
     }
     ghost.child(
@@ -295,7 +295,7 @@ fn browser_audio_drag_ghost(
             .flex()
             .gap_1()
             .text_xs()
-            .text_color(rgb(Palette::CLIP_TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
             .line_clamp(1)
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
@@ -952,9 +952,9 @@ impl EditorView {
                 .items_center()
                 .pt_1()
                 .gap_1()
-                .bg(rgb(Palette::SURFACE))
+                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
                 .border_r_1()
-                .border_color(rgb(Palette::BORDER))
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(self.browser_icon(
                     "▤",
                     "open browser · cmd+alt+b",
@@ -1018,9 +1018,9 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(Palette::SURFACE))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_r_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         panel = panel.child(
             div()
                 .h(px(25.0))
@@ -1030,13 +1030,13 @@ impl EditorView {
                 .items_center()
                 .gap_1()
                 .border_b_1()
-                .border_color(rgb(Palette::BORDER))
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .text_xs()
-                        .text_color(rgb(Palette::TEXT))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                         .child(theme::text(match section {
                             BrowserSection::Samples => "browser · samples",
                             BrowserSection::Instruments => "browser · instruments",
@@ -1083,7 +1083,7 @@ impl EditorView {
                             .min_w_0()
                             .overflow_hidden()
                             .text_xs()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .child(theme::text(
                                 path.file_name()
                                     .and_then(|name| name.to_str())
@@ -1113,7 +1113,7 @@ impl EditorView {
                         .px_2()
                         .pt_2()
                         .text_xs()
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("scanning folder…")),
                 );
             }
@@ -1126,7 +1126,7 @@ impl EditorView {
                         .px_2()
                         .pt_2()
                         .text_xs()
-                        .text_color(rgb(Palette::CORAL))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                         .child(theme::text(error)),
                 );
             }
@@ -1148,7 +1148,7 @@ impl EditorView {
                         .px_2()
                         .pt_2()
                         .text_xs()
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text(empty)),
                 );
             }
@@ -1166,7 +1166,7 @@ impl EditorView {
                             .flex_shrink_0()
                             .px_1()
                             .text_xs()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .child(theme::text("listing capped · open a smaller folder")),
                     );
                 }
@@ -1181,8 +1181,8 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(Palette::BORDER))
-            .hover(|style| style.bg(rgb(Palette::CYAN)));
+            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
         resize = resize.child(
             canvas(
                 |_, _, _| (),
@@ -1318,11 +1318,11 @@ impl EditorView {
             .gap_1()
             .cursor_pointer()
             .bg(rgb(if selected {
-                Palette::HOVER
+                theme::color(theme::PaletteRole::Hover)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -1421,7 +1421,7 @@ impl EditorView {
             div()
                 .w(px(16.0))
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(icon)),
         )
         .child(
@@ -1432,7 +1432,7 @@ impl EditorView {
                 .line_clamp(1)
                 .text_ellipsis()
                 .text_xs()
-                .text_color(rgb(Palette::TEXT))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(theme::text(entry.name)),
         )
     }
@@ -1443,7 +1443,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         for (index, (section, label, icon)) in [
             (BrowserSection::Samples, "samples", "♫"),
             (BrowserSection::Instruments, "instruments", "⌘"),
@@ -1464,15 +1464,15 @@ impl EditorView {
                     .gap_1()
                     .cursor_pointer()
                     .bg(rgb(if active {
-                        Palette::HOVER
+                        theme::color(theme::PaletteRole::Hover)
                     } else {
-                        Palette::SURFACE
+                        theme::color(theme::PaletteRole::Surface)
                     }))
                     .text_xs()
                     .text_color(rgb(if active {
-                        Palette::CYAN
+                        theme::color(theme::PaletteRole::Secondary)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1497,7 +1497,7 @@ impl EditorView {
             .items_center()
             .gap_1()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let label = if *place == self.browser.music {
@@ -1517,9 +1517,9 @@ impl EditorView {
                     .px_1()
                     .text_xs()
                     .text_color(rgb(if selected {
-                        Palette::CYAN
+                        theme::color(theme::PaletteRole::Secondary)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     }))
                     .cursor_pointer()
                     .on_mouse_down(
@@ -1547,7 +1547,7 @@ impl EditorView {
                     .flex_shrink_0()
                     .px_1()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(status)),
             );
         }
@@ -1564,9 +1564,9 @@ impl EditorView {
             .flex()
             .items_center()
             .gap_1()
-            .bg(rgb(Palette::RAISED))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| {
@@ -1583,20 +1583,20 @@ impl EditorView {
             .child(
                 div()
                     .w(px(18.0))
-                    .text_color(rgb(Palette::CYAN))
+                    .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
                     .child(theme::text("⌘")),
             )
             .child(
                 div()
                     .flex_1()
                     .text_xs()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text("midi track · sine")),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("+")),
             )
     }
@@ -1619,8 +1619,8 @@ impl EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(Palette::MUTED))
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.clone(),
@@ -1649,7 +1649,7 @@ impl EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(Palette::MUTED))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.clone(),

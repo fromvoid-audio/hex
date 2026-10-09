@@ -1,7 +1,7 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, ElementId, Window, div, prelude::*, px, rgb, uniform_list};
 use hex_audio::prepared::{
     SessionRouteEntry, SessionRouteOwner, SessionRouteSnapshot, SessionRouteTarget,
@@ -23,7 +23,7 @@ fn session_scenes_header() -> Div {
         .items_center()
         .justify_end()
         .text_xs()
-        .text_color(rgb(Palette::MUTED))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text("scenes"));
     #[cfg(feature = "ui-test-support")]
     let header = header.debug_selector(|| "session-scenes-header".into());
@@ -388,7 +388,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
                 tracks
                     .get(column_start..column_end)
@@ -403,9 +403,9 @@ impl EditorView {
                             .flex()
                             .items_center()
                             .border_l_1()
-                            .border_color(rgb(Palette::BORDER))
+                            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                             .text_xs()
-                            .text_color(rgb(Palette::TEXT))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -486,8 +486,8 @@ impl EditorView {
             .gap_1()
             .px_1()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         row = row
             .child(
                 self.session_icon(
@@ -688,10 +688,10 @@ impl EditorView {
                 .items_center()
                 .justify_center()
                 .rounded_sm()
-                .bg(rgb(Palette::RAISED))
+                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                 .text_xs()
-                .text_color(rgb(Palette::TEXT))
-                .hover(|style| style.bg(rgb(Palette::BORDER)))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Border))))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
                         description: quantization_tooltip.into(),
@@ -751,7 +751,7 @@ impl EditorView {
                 div()
                     .px_1()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(format!(
                         "tracks {first}–{last} / {track_count}"
                     ))),
@@ -837,7 +837,7 @@ impl EditorView {
                 div()
                     .px_1()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(message)),
             );
         }
@@ -874,7 +874,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         for track in state
             .project
             .tracks()
@@ -897,11 +897,11 @@ impl EditorView {
                 .justify_between()
                 .px_2()
                 .border_l_1()
-                .border_color(rgb(Palette::BORDER))
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .bg(rgb(if selected_cell {
-                    Palette::RAISED
+                    theme::color(theme::PaletteRole::Raised)
                 } else {
-                    Palette::BACKGROUND
+                    theme::color(theme::PaletteRole::Background)
                 }))
                 .text_xs();
             match content {
@@ -911,7 +911,7 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .text_color(rgb(Palette::CYAN))
+                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
                         .child(
                             div()
                                 .min_w_0()
@@ -981,7 +981,7 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .text_color(rgb(Palette::CYAN))
+                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
                         .child(
                             div()
                                 .min_w_0()
@@ -1046,7 +1046,7 @@ impl EditorView {
                 }
                 Some(SessionCellContent::Stop) => {
                     cell = cell
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("stop"))
                         .child(theme::text("■"))
                         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1075,7 +1075,7 @@ impl EditorView {
                 }
                 None => {
                     cell = cell
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("·"))
                         .on_click(cx.listener(move |view, _, window, cx| {
                             if view.session_callback_current(revision, generation)
@@ -1103,12 +1103,12 @@ impl EditorView {
             .items_center()
             .justify_between()
             .bg(rgb(if selected {
-                Palette::RAISED
+                theme::color(theme::PaletteRole::Raised)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
@@ -1159,8 +1159,8 @@ impl EditorView {
             .justify_center()
             .rounded_sm()
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
-            .hover(|style| style.bg(rgb(Palette::RAISED)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: label.into(),
@@ -1228,7 +1228,7 @@ impl EditorView {
             .items_center()
             .justify_center()
             .text_xs()
-            .text_color(rgb(Palette::CYAN))
+            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: label.into(),

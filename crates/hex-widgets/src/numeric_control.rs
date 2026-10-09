@@ -215,6 +215,20 @@ impl NumericControl {
         self.value
     }
 
+    /// Update caller-owned styling without replacing this control or its draft.
+    pub fn set_external_style(
+        &mut self,
+        style: ControlStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), NumericError> {
+        let style = style.validate().map_err(|_| NumericError::InvalidStyle)?;
+        if self.style != style {
+            self.style = style;
+            cx.notify();
+        }
+        Ok(())
+    }
+
     pub fn is_interacting(&self) -> bool {
         self.press.is_some() || self.editing
     }
@@ -635,7 +649,6 @@ impl NumericControl {
     }
 
     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {
-        cx.stop_propagation();
         if self.press.is_some() {
             self.cancel(cx);
         } else if self.editing {

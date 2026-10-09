@@ -13,7 +13,7 @@ pub use frame::device_frame;
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
-    NumericControlKind, NumericEventPhase, bind_numeric_control_keys,
+    NumericControlKind, NumericEscape, NumericEventPhase, bind_numeric_control_keys,
 };
 pub use style::ControlStyle;
 

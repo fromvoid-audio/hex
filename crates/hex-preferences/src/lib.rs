@@ -35,6 +35,54 @@ pub fn recent_projects_path(home: &Path) -> PathBuf {
         .join("recent-projects.json")
 }
 
+/// Stable app-support location for the independent four-color theme.
+pub fn theme_preferences_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("hex")
+        .join("theme.json")
+}
+
+/// The four editable colors of the application palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemePreferences {
+    pub background: RgbColor,
+    pub text: RgbColor,
+    pub primary: RgbColor,
+    pub secondary: RgbColor,
+}
+
+impl Default for ThemePreferences {
+    fn default() -> Self {
+        Self {
+            background: RgbColor::new(0x2a, 0x28, 0x28),
+            text: RgbColor::new(0xc3, 0xc5, 0xc0),
+            primary: RgbColor::new(0xf0, 0x64, 0x49),
+            secondary: RgbColor::new(0x70, 0xe8, 0xe3),
+        }
+    }
+}
+
+/// One opaque eight-bit RGB value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RgbColor {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+impl RgbColor {
+    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+
+    pub const fn packed(self) -> u32 {
+        ((self.red as u32) << 16) | ((self.green as u32) << 8) | self.blue as u32
+    }
+}
+
 /// Additional browser folders, in user-visible order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BrowserPlaces {
@@ -246,6 +294,43 @@ pub fn load_recent_projects(path: &Path) -> Result<RecentProjects, PreferencesEr
     RecentProjects::new(paths)
 }
 
+/// Load theme colors. Missing settings use the shipped palette; malformed or
+/// future-version documents are returned as errors without modification.
+pub fn load_theme_preferences(path: &Path) -> Result<ThemePreferences, PreferencesError> {
+    let Some(bytes) = read_document(path)? else {
+        return Ok(ThemePreferences::default());
+    };
+    let document: ThemePreferencesDocument = serde_json::from_slice(&bytes)
+        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
+    if document.version != DOCUMENT_VERSION {
+        return Err(PreferencesError::InvalidDocument(format!(
+            "unsupported version {}",
+            document.version
+        )));
+    }
+    Ok(document.colors)
+}
+
+/// Atomically save theme colors without replacing malformed or future settings.
+pub fn save_theme_preferences(
+    path: &Path,
+    colors: &ThemePreferences,
+) -> Result<(), PreferencesError> {
+    let _ = load_theme_preferences(path)?;
+    let document = ThemePreferencesDocument {
+        version: DOCUMENT_VERSION,
+        colors: *colors,
+    };
+    let bytes = serde_json::to_vec(&document)
+        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(PreferencesError::DocumentTooLarge {
+            maximum: MAX_DOCUMENT_BYTES,
+        });
+    }
+    atomic_save(path, &bytes)
+}
+
 /// Atomically save the recent-project document without replacing malformed or
 /// future-version settings.
 pub fn save_recent_projects(path: &Path, recent: &RecentProjects) -> Result<(), PreferencesError> {
@@ -442,6 +527,13 @@ struct RecentProjectsDocument {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemePreferencesDocument {
+    version: u32,
+    colors: ThemePreferences,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "encoding", content = "value", rename_all = "snake_case")]
 enum StoredPath {
     Utf8(String),
@@ -634,6 +726,62 @@ mod tests {
             Err(PreferencesError::TooManyPlaces {
                 maximum: MAX_USER_PLACES
             })
+        ));
+    }
+
+    #[test]
+    fn theme_preferences_default_and_round_trip() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("theme.json");
+        let defaults = ThemePreferences::default();
+        assert_eq!(
+            load_theme_preferences(&path).expect("missing theme"),
+            defaults
+        );
+        let custom = ThemePreferences {
+            background: RgbColor::new(0x18, 0x20, 0x29),
+            text: RgbColor::new(0xd9, 0xdf, 0xe6),
+            primary: RgbColor::new(0xff, 0x74, 0x55),
+            secondary: RgbColor::new(0x61, 0xdf, 0xd5),
+        };
+        save_theme_preferences(&path, &custom).expect("save theme");
+        assert_eq!(load_theme_preferences(&path).expect("load theme"), custom);
+        assert_eq!(custom.primary.packed(), 0xff7455);
+    }
+
+    #[test]
+    fn malformed_and_future_theme_documents_are_preserved() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("theme.json");
+        for bytes in [
+            b"not json".as_slice(),
+            br#"{"version":99,"colors":{"background":{"red":1,"green":2,"blue":3},"text":{"red":4,"green":5,"blue":6},"primary":{"red":7,"green":8,"blue":9},"secondary":{"red":10,"green":11,"blue":12}}}"#.as_slice(),
+        ] {
+            fs::write(&path, bytes).expect("write invalid theme fixture");
+            assert!(matches!(
+                load_theme_preferences(&path),
+                Err(PreferencesError::InvalidDocument(_))
+            ));
+            assert!(matches!(
+                save_theme_preferences(&path, &ThemePreferences::default()),
+                Err(PreferencesError::InvalidDocument(_))
+            ));
+            assert_eq!(fs::read(&path).expect("read preserved theme"), bytes);
+        }
+    }
+
+    #[test]
+    fn theme_rgb_channels_are_bounded_by_the_serialized_type() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("theme.json");
+        fs::write(
+            &path,
+            br#"{"version":1,"colors":{"background":{"red":256,"green":0,"blue":0},"text":{"red":0,"green":0,"blue":0},"primary":{"red":0,"green":0,"blue":0},"secondary":{"red":0,"green":0,"blue":0}}}"#,
+        )
+        .expect("write invalid channel fixture");
+        assert!(matches!(
+            load_theme_preferences(&path),
+            Err(PreferencesError::InvalidDocument(_))
         ));
     }
 

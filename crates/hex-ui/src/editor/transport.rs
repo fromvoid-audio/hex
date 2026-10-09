@@ -2,7 +2,7 @@ use super::{
     AddMidiClip, AddTrack, EditorMode, EditorView, ImportAudio, Redo, RemoveTrack, SplitClip, Stop,
     ToggleBrowser, TogglePlay, Undo, header,
 };
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
@@ -42,9 +42,9 @@ impl EditorView {
                         .and_then(|state| state.project.loop_region())
                         .is_some_and(|region| region.enabled())
                     {
-                        Palette::CORAL
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     },
                 )),
             )
@@ -65,7 +65,13 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("−", "remove selected track", RemoveTrack, cx))
-            .child(div().w(px(1.0)).h(px(20.0)).mx_1().bg(rgb(Palette::BORDER)))
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(20.0))
+                    .mx_1()
+                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
+            )
             .child(self.control_icon(
                 "←",
                 "pan left · alt+left",
@@ -105,9 +111,9 @@ impl EditorView {
                     cx,
                 )
                 .text_color(rgb(if self.mode == EditorMode::Arrangement {
-                    Palette::CYAN
+                    theme::color(theme::PaletteRole::SecondaryText)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 })),
             )
             .child(
@@ -118,16 +124,16 @@ impl EditorView {
                     cx,
                 )
                 .text_color(rgb(if self.mode == EditorMode::Session {
-                    Palette::CYAN
+                    theme::color(theme::PaletteRole::SecondaryText)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 })),
             )
             .child(
                 div()
                     .w(px(82.0))
                     .text_xs()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(self.position_label())),
             )
             .child(div().flex_1())
@@ -135,6 +141,12 @@ impl EditorView {
                 "⟳",
                 "restart default audio output · stays stopped",
                 |view, _, _| view.recover_audio(),
+                cx,
+            ))
+            .child(self.control_icon(
+                "⚙",
+                "theme colors",
+                |view, window, cx| view.toggle_theme_settings(window, cx),
                 cx,
             ))
             .child(
@@ -149,7 +161,7 @@ impl EditorView {
                     .line_clamp(1)
                     .text_ellipsis()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .tooltip({
                         let description = theme::text(&output_label);
                         move |_, cx| {
@@ -166,7 +178,7 @@ impl EditorView {
                 div()
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("loading")),
             );
         }
@@ -234,9 +246,9 @@ impl EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .bg(rgb(Palette::RAISED))
-            .text_color(rgb(Palette::TEXT))
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: description.into(),
@@ -261,9 +273,9 @@ impl EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .bg(rgb(Palette::RAISED))
-            .text_color(rgb(Palette::TEXT))
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(|_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: "clip move snap · click to cycle off, quarter, eighth, sixteenth"
@@ -310,11 +322,11 @@ impl Render for MiniTooltip {
             .px_2()
             .py_1()
             .border_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::RAISED))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .font_family(theme::FONT_FAMILY)
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(&self.description))
     }
 }

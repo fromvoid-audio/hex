@@ -1,6 +1,6 @@
 //! Compact source-window controls for the selected Session audio one-shot.
 use super::EditorView;
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_project::{AssetId, ClipId, Command, SessionCellContent};
 use hex_session::CachedWaveform;
@@ -41,15 +41,15 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .px(px(6.0))
         .debug_selector(|| "session-audio-source-panel".into())
         .border_t_1()
-        .border_color(rgb(Palette::BORDER))
-        .bg(rgb(Palette::RAISED))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .text_xs();
     row = row.child(
         div()
             .w(px(100.0))
             .flex_shrink_0()
             .truncate()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(name)),
     );
     row = row
@@ -94,7 +94,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 .w(px(72.0))
                 .flex_shrink_0()
                 .truncate()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .debug_selector(|| "session-audio-source-readout".into())
                 .id(("session-audio-source-readout", id.value()))
                 .tooltip(move |_, cx| {
@@ -156,7 +156,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                     div()
                         .w_full()
                         .h(px((amplitude * 20.0).max(1.0)))
-                        .bg(rgb(Palette::WAVEFORM)),
+                        .bg(rgb(theme::color(theme::PaletteRole::Waveform))),
                 ),
             );
         }
@@ -222,11 +222,11 @@ fn source_adjust_button(
         .items_center()
         .justify_center()
         .text_color(rgb(if edit_pending {
-            Palette::MUTED
+            theme::color(theme::PaletteRole::Muted)
         } else {
-            Palette::CYAN
+            theme::color(theme::PaletteRole::Secondary)
         }))
-        .hover(|style| style.bg(rgb(Palette::BACKGROUND)))
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .tooltip(move |_, cx| {
             let description = tooltip.clone();
             cx.new(|_| super::transport::MiniTooltip {

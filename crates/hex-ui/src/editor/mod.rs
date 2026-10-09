@@ -54,6 +54,7 @@ mod session_navigation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_navigation_ui_test;
 mod session_route_view;
+mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
 mod time_selection;
@@ -128,6 +129,7 @@ actions!(
     [
         TogglePlay,
         ToggleBrowser,
+        ThemeSettingsEscape,
         BrowserPrevious,
         BrowserNext,
         BrowserActivate,
@@ -200,6 +202,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 fn bind_editor_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some("hex_editor")),
+        KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
         KeyBinding::new("s", ToggleSolo, Some("hex_editor")),
         KeyBinding::new("shift-s", AdditiveSolo, Some("hex_editor")),
         KeyBinding::new("up", PreviousTrack, Some("hex_editor")),
@@ -466,6 +469,7 @@ pub(super) struct EditorView {
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    theme_settings: theme_settings::ThemeSettingsState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -490,6 +494,7 @@ impl EditorView {
             output,
             browser::default_preferences_path(),
             recent_projects::default_preferences_path(),
+            theme_settings::default_preferences_path(),
         )
     }
 
@@ -509,6 +514,28 @@ impl EditorView {
             output,
             preferences_path,
             recent_projects_path,
+            theme_settings::default_preferences_path(),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_theme_preferences_path(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<PreparedOutput, String>,
+        preferences_path: std::path::PathBuf,
+        recent_projects_path: std::path::PathBuf,
+        theme_preferences_path: std::path::PathBuf,
+    ) -> Self {
+        Self::new_with_browser_preferences_path(
+            window,
+            cx,
+            service,
+            output,
+            preferences_path,
+            recent_projects_path,
+            theme_preferences_path,
         )
     }
 
@@ -519,6 +546,7 @@ impl EditorView {
         output: Result<PreparedOutput, String>,
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
+        theme_preferences_path: std::path::PathBuf,
     ) -> Self {
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
@@ -568,6 +596,8 @@ impl EditorView {
         focus.focus(window);
         let browser = browser::BrowserState::new(cx, preferences_path);
         let recent_projects = RecentProjectsState::new(recent_projects_path);
+        let theme_settings =
+            theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
             service,
             audio,
@@ -676,6 +706,7 @@ impl EditorView {
             snap_grid: musical_time::SnapGrid::default(),
             browser,
             recent_projects,
+            theme_settings,
             context_menu: None,
             edit_cursor: None,
             time_selection: None,
@@ -687,6 +718,7 @@ impl EditorView {
         };
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
+        view.start_theme_preferences_load(cx);
         view
     }
 

@@ -1,6 +1,6 @@
 //! Compact canonical mixer controls. All musical changes stay on the actor.
 use super::{EditorView, waveform::button};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request;
@@ -15,8 +15,8 @@ impl EditorView {
             .gap_1()
             .px_2()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs();
         let Some(state) = self.state.as_ref() else {
             return strip;
@@ -69,12 +69,18 @@ impl EditorView {
                 .child(
                     div()
                         .w(px(100.0))
-                        .text_color(rgb(Palette::CYAN))
+                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
                         .child(theme::text(balance_label(track.balance()))),
                 );
         }
         if let Some(fades) = self.selected_fade_controls(state, cx) {
-            strip = strip.children([div().w(px(1.0)).h(px(16.0)).bg(rgb(Palette::BORDER)), fades]);
+            strip = strip.children([
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
+                fades,
+            ]);
         }
         if show_main {
             strip = strip
@@ -121,7 +127,7 @@ impl EditorView {
             .child(
                 div()
                     .w(px(42.0))
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(format!(
                         "{:.0}%",
                         state.project.master_gain() * 100.0

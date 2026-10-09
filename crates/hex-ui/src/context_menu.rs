@@ -1,5 +1,5 @@
 //! Reusable compact popup presentation; owners dispatch typed commands.
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     BoxShadow, Context, Div, FocusHandle, MouseButton, Pixels, Point, Window, div, hsla, point,
     prelude::*, px, rgb,
@@ -66,8 +66,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
         .w(px(WIDTH))
         .py(px(2.0))
         .border_1()
-        .border_color(rgb(Palette::MUTED))
-        .bg(rgb(Palette::SURFACE))
+        .border_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_xs()
         .shadow(vec![BoxShadow {
             color: hsla(0.0, 0.0, 0.0, 0.5),
@@ -88,11 +88,11 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
             .items_center()
             .cursor_pointer()
             .bg(rgb(if menu.selected == index {
-                Palette::HOVER
+                theme::color(theme::PaletteRole::Hover)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
-            .hover(|style| style.bg(rgb(Palette::CORAL_DARK)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::PrimaryDark))))
             .child(theme::text(item.label))
             .on_click(
                 cx.listener(move |owner, _, window, cx| select(owner, action.clone(), window, cx)),

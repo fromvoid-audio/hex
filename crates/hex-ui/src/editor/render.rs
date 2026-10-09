@@ -7,7 +7,7 @@ use super::{
     SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
     TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
@@ -29,8 +29,8 @@ impl EditorView {
             .gap_2()
             .px_2()
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs();
         if let Some(error) = &self.error {
             bar = bar.child(
@@ -49,7 +49,7 @@ impl EditorView {
                             .into()
                         }
                     })
-                    .text_color(rgb(Palette::CORAL))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .child(theme::text(error)),
             );
         } else {
@@ -69,7 +69,7 @@ impl EditorView {
                             .into()
                         }
                     })
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(&self.status)),
             );
         }
@@ -105,7 +105,7 @@ impl EditorView {
                         .into()
                     }
                 })
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(revision_label)),
         );
         let recovery_pending = self.recovery.generation().is_some();
@@ -132,9 +132,9 @@ impl EditorView {
                 "editor-activity-status",
                 104.0,
                 if recovery_pending {
-                    Palette::CYAN
+                    theme::color(theme::PaletteRole::Secondary)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 },
                 activity_label,
                 activity.join(" · "),
@@ -142,7 +142,7 @@ impl EditorView {
             .child(status_slot(
                 "editor-unsaved-status",
                 54.0,
-                Palette::CORAL,
+                theme::color(theme::PaletteRole::Primary),
                 if unsaved { "unsaved *" } else { "" }.to_owned(),
                 if unsaved {
                     "unsaved changes".to_owned()
@@ -162,14 +162,24 @@ impl EditorView {
                     .child(
                         div()
                             .flex_1()
-                            .bg(rgb(Palette::RAISED))
-                            .child(div().h(px(7.0 * left)).w_full().bg(rgb(Palette::CORAL))),
+                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                            .child(
+                                div()
+                                    .h(px(7.0 * left))
+                                    .w_full()
+                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                            ),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .bg(rgb(Palette::RAISED))
-                            .child(div().h(px(7.0 * right)).w_full().bg(rgb(Palette::CORAL))),
+                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                            .child(
+                                div()
+                                    .h(px(7.0 * right))
+                                    .w_full()
+                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                            ),
                     ),
             );
             let applied_audio = status.applied_revision.load(Relaxed);
@@ -205,9 +215,9 @@ impl EditorView {
                         }
                     })
                     .text_color(rgb(if misses == 0 && !render_fault {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     } else {
-                        Palette::CORAL
+                        theme::color(theme::PaletteRole::Primary)
                     }))
                     .child(theme::text(diagnostic_label)),
             );
@@ -220,7 +230,7 @@ impl EditorView {
                     .flex_shrink_0()
                     .truncate()
                     .text_right()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("offline")),
             );
         }
@@ -292,11 +302,13 @@ impl Render for EditorView {
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(Palette::BACKGROUND))
-            .text_color(rgb(Palette::TEXT))
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
-            .key_context(if self.context_menu.is_some() {
+            .key_context(if self.theme_settings.open {
+                "hex_theme_settings"
+            } else if self.context_menu.is_some() {
                 "hex_context_menu"
             } else {
                 self.browser_key_context(window, cx)
@@ -368,6 +380,19 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
                 view.browser_escape(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, action: &super::ThemeSettingsEscape, window, cx| {
+                    super::theme_settings::handle_escape_action(view, action, window, cx);
+                }),
+            )
+            .capture_action(
+                cx.listener(|view, _: &hex_widgets::NumericEscape, window, cx| {
+                    if view.theme_settings.open {
+                        view.cancel_theme_settings(window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_action(cx.listener(|view, _: &TogglePlay, _, cx| {
                 view.toggle_play();
                 cx.notify();
@@ -787,5 +812,6 @@ impl Render for EditorView {
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
             .children(self.context_menu_overlay(window, cx))
+            .children(super::theme_settings::overlay(self, cx))
     }
 }

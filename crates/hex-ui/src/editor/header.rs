@@ -1,5 +1,5 @@
 //! Shared compact title and toolbar rows for editor startup and loaded projects.
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{App, ClickEvent, Div, Stateful, Window, div, prelude::*, px, rgb};
 use std::path::Path;
 
@@ -73,7 +73,7 @@ pub(super) fn title_bar(
                     div()
                         .size(px(10.0))
                         .rounded_full()
-                        .bg(rgb(Palette::MUTED))
+                        .bg(rgb(theme::color(theme::PaletteRole::Muted)))
                         .group_hover("window-control", move |style| style.bg(rgb(hover_color))),
                 )
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -96,8 +96,8 @@ pub(super) fn title_bar(
         // the first row beneath macOS traffic lights.
         .px(px(theme::TITLEBAR_LEADING_INSET))
         .border_b_1()
-        .border_color(rgb(Palette::BORDER))
-        .bg(rgb(Palette::SURFACE))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(lights)
         .child(
             div()
@@ -108,7 +108,7 @@ pub(super) fn title_bar(
                 .max_w(px(720.0))
                 .text_center()
                 .text_xs()
-                .text_color(rgb(Palette::TEXT))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .line_clamp(1)
                 .text_ellipsis()
                 .child(theme::text(title)),
@@ -127,15 +127,15 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
-        .border_color(rgb(Palette::BORDER))
-        .bg(rgb(Palette::SURFACE))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
 }
 
 pub(super) fn loading_toolbar(message: &str) -> Stateful<Div> {
     toolbar_row().justify_center().child(
         div()
             .text_xs()
-            .text_color(rgb(Palette::MUTED))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .child(theme::text(message)),
     )
 }

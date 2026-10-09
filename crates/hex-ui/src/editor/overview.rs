@@ -1,6 +1,6 @@
 //! Compact, revision-cached Arrangement overview raster and viewport navigation.
 use super::{EditorView, ViewState, viewport::Viewport};
-use crate::theme::Palette;
+use crate::theme;
 use gpui::{
     Bounds, Div, MouseButton, MouseDownEvent, Window, canvas, div, fill, point, prelude::*, px,
     rgb, size,
@@ -124,7 +124,7 @@ pub(super) fn widget(
         .relative()
         .h(px(OVERVIEW_HEIGHT))
         .flex_shrink_0()
-        .bg(rgb(Palette::RAISED))
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .child(
             div()
                 .debug_selector(|| "arrangement-overview-map".to_owned())
@@ -191,10 +191,10 @@ fn paint_overview(
                 column += 1;
             }
             let color = match kind {
-                AUDIO_CELL => Palette::CLIP,
-                MIDI_CELL => Palette::CYAN,
-                MIXED_CELL => Palette::CORAL,
-                _ => Palette::MUTED,
+                AUDIO_CELL => theme::color(theme::PaletteRole::Clip),
+                MIDI_CELL => theme::color(theme::PaletteRole::Secondary),
+                MIXED_CELL => theme::color(theme::PaletteRole::Primary),
+                _ => theme::color(theme::PaletteRole::Muted),
             };
             window.paint_quad(fill(
                 Bounds::new(
@@ -216,7 +216,7 @@ fn paint_overview(
     let right = (viewport_end as f64 / horizon as f64 * f64::from(width)) as f32;
     let left = left.clamp(0.0, width);
     let right = right.clamp(left, width);
-    let color = rgb(Palette::TEXT);
+    let color = rgb(theme::color(theme::PaletteRole::Text));
     let rects = [
         (left, 0.0, (right - left).max(1.0), 1.0),
         (left, height - 1.0, (right - left).max(1.0), 1.0),

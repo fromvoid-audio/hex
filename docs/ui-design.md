@@ -344,3 +344,10 @@ all recorded patched file hashes. Full local CI belongs to the focused PR.
 Native acceptance remains open: hidden standard buttons, custom hover/clicks,
 minimize, fullscreen/Option-zoom and transitions, title dragging/resizing and
 unsaved Close/Cmd-Q on the actual review app.
+
+## persistent four-color native theme
+
+The editor now exposes background, text, primary and secondary RGB roles with
+live preview, reset/cancel/save and independent preferences. All derived UI and
+cached device-control styles follow those roles. Ownership, contrast policy and
+source/native acceptance are in [theme settings](theme-settings.md).

@@ -381,9 +381,13 @@ impl gpui::Render for BrowserSearch {
             .h(px(24.0))
             .px_1()
             .items_center()
-            .bg(gpui::rgb(crate::theme::Palette::RAISED))
+            .bg(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Raised,
+            )))
             .border_1()
-            .border_color(gpui::rgb(crate::theme::Palette::BORDER))
+            .border_color(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Border,
+            )))
             .key_context("hex_browser_search")
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
@@ -455,12 +459,12 @@ impl Element for BrowserSearchElement {
         let (text, color) = if input.content.is_empty() {
             (
                 "search samples".to_owned(),
-                gpui::rgb(crate::theme::Palette::MUTED).into(),
+                gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Muted)).into(),
             )
         } else {
             (
                 input.content.clone(),
-                gpui::rgb(crate::theme::Palette::TEXT).into(),
+                gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Text)).into(),
             )
         };
         let run = TextRun {
@@ -517,7 +521,7 @@ impl Element for BrowserSearchElement {
                     point(origin_x + cursor_x, bounds.top()),
                     size(px(1.0), bounds.bottom() - bounds.top()),
                 ),
-                gpui::rgb(crate::theme::Palette::CYAN),
+                gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Secondary)),
             ))
         } else {
             None

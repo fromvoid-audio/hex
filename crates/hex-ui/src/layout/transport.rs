@@ -1,5 +1,5 @@
 use crate::app::{Daw, HEADER_HEIGHT, TRACK_COLORS};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_engine::live::{Command, Mode, NAMES, TRACKS};
 
@@ -15,16 +15,16 @@ impl Daw {
             .cursor_pointer()
             .text_sm()
             .bg(rgb(if active {
-                Palette::CORAL_DARK
+                theme::color(theme::PaletteRole::PrimaryDark)
             } else {
-                Palette::RAISED
+                theme::color(theme::PaletteRole::Raised)
             }))
             .text_color(rgb(if active {
-                Palette::TEXT
+                theme::color(theme::PaletteRole::Text)
             } else {
-                Palette::MUTED
+                theme::color(theme::PaletteRole::Muted)
             }))
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .child(theme::text(label))
     }
 
@@ -45,13 +45,13 @@ impl Daw {
             .pl(px(theme::TITLEBAR_LEADING_INSET))
             .pr_2()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(
                 div()
                     .px_2()
                     .text_sm()
-                    .text_color(rgb(Palette::CORAL))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .child(theme::text("hex")),
             )
             .child(
@@ -103,7 +103,7 @@ impl Daw {
                 div()
                     .w(px(64.0))
                     .text_xs()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(format!("{:.0} bpm", self.bpm))),
             )
             .child(
@@ -121,7 +121,7 @@ impl Daw {
                 div()
                     .w(px(72.0))
                     .text_xs()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(format!(
                         "{}.{}.{:02}",
                         (beat / 4.0) as usize + 1,
@@ -159,7 +159,7 @@ impl Daw {
                 div()
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("first light · demo")),
             )
     }
@@ -172,8 +172,8 @@ impl Daw {
             .flex()
             .flex_col()
             .border_r_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         if !self.browser_open {
             return browser.w(px(30.0)).child(
                 Self::with_tooltip(
@@ -196,12 +196,12 @@ impl Daw {
                     .justify_between()
                     .px_2()
                     .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .text_xs()
                     .child(theme::text("demo sources"))
                     .child(
                         div()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .child(theme::text("⌕")),
                     ),
             )
@@ -212,9 +212,9 @@ impl Daw {
                     .px_2()
                     .py_1()
                     .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("all"))
                     .child(theme::text("·"))
                     .child(theme::text("audio"))
@@ -233,16 +233,16 @@ impl Daw {
                     .px_2()
                     .cursor_pointer()
                     .bg(rgb(if selected {
-                        Palette::RAISED
+                        theme::color(theme::PaletteRole::Raised)
                     } else {
-                        Palette::SURFACE
+                        theme::color(theme::PaletteRole::Surface)
                     }))
-                    .hover(|style| style.bg(rgb(Palette::HOVER)))
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
                     .text_color(rgb(if selected {
-                        Palette::TEXT
+                        theme::color(theme::PaletteRole::Text)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     }))
                     .child(div().w(px(3.0)).h(px(14.0)).bg(rgb(TRACK_COLORS[track])))
                     .child(theme::text(NAMES[track]))
@@ -260,9 +260,9 @@ impl Daw {
                 .px_2()
                 .py_1()
                 .border_t_1()
-                .border_color(rgb(Palette::BORDER))
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text("generated · 4 stereo sources")),
         )
     }
@@ -278,11 +278,11 @@ impl Render for SmallTooltip {
             .px_2()
             .py_1()
             .border_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::RAISED))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .font_family(theme::FONT_FAMILY)
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(self.description))
     }
 }

@@ -3,7 +3,7 @@ use super::{
     EditorView, ViewState,
     waveform::{ClipTooltip, button},
 };
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::{ClipFade, Command};
 use hex_session::service::Request;
@@ -137,7 +137,7 @@ impl EditorView {
                     .min_w_0()
                     .flex_shrink_0()
                     .truncate()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
                             name: format!("fade in · {fade_in_ms} ms · {} frames", fade.fade_in()),
@@ -175,7 +175,7 @@ impl EditorView {
                     .min_w_0()
                     .flex_shrink_0()
                     .truncate()
-                    .text_color(rgb(Palette::TEXT))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
                             name: format!(
@@ -199,7 +199,7 @@ impl EditorView {
             controls = controls.child(
                 div()
                     .id(("fade-inherited", clip_id.value()))
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .tooltip(|_, cx| {
                         cx.new(|_| ClipTooltip {
                             name: "fades use the original split span; editing reanchors and clamps both fades to this clip".into(),

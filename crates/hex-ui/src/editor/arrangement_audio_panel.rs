@@ -1,6 +1,6 @@
 //! Arrangement audio Clip View with canonical source and timeline controls.
 use super::EditorView;
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
 use hex_project::{AssetId, ClipId, Command, TrackId};
 use std::path::Path;
@@ -67,9 +67,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .w_full()
         .flex_shrink_0()
         .flex()
-        .bg(rgb(Palette::SURFACE))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
-        .border_color(rgb(Palette::BORDER))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .debug_selector(|| "arrangement-audio-clip-view".into());
 
     let mut controls = div()
@@ -81,8 +81,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .gap(px(2.0))
         .p(px(4.0))
         .border_r_1()
-        .border_color(rgb(Palette::BORDER))
-        .bg(rgb(Palette::RAISED))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .debug_selector(|| "arrangement-audio-controls".into());
     controls = controls.child(
         div()
@@ -90,7 +90,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .flex_shrink_0()
             .truncate()
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
     controls = controls
@@ -158,9 +158,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .min_h_0()
         .w_full()
         .overflow_hidden()
-        .bg(rgb(Palette::SURFACE))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_1()
-        .border_color(rgb(Palette::BORDER))
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .debug_selector(|| "arrangement-audio-waveform".into());
     if let Some(waveform) = waveform {
         canvas_region = canvas_region.child(super::waveform::waveform_source_segment_view_cached(
@@ -179,7 +179,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 .items_center()
                 .justify_center()
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text("waveform unavailable")),
         );
     }
@@ -189,19 +189,19 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 window.source_start,
                 window.asset_frames,
                 "source-start-marker",
-                Palette::CORAL,
+                theme::color(theme::PaletteRole::Primary),
             ))
             .child(source_marker(
                 window.source_end,
                 window.asset_frames,
                 "source-end-marker",
-                Palette::CORAL,
+                theme::color(theme::PaletteRole::Primary),
             ))
             .child(source_marker(
                 window.source_start.saturating_add(window.source_phase),
                 window.asset_frames,
                 "play-start-marker",
-                Palette::CYAN,
+                theme::color(theme::PaletteRole::Secondary),
             ));
     }
     waveform_panel = waveform_panel.child(canvas_region).child(
@@ -209,7 +209,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .h(px(16.0))
             .flex_shrink_0()
             .text_xs()
-            .text_color(rgb(Palette::MUTED))
+            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .debug_selector(|| "arrangement-audio-source-range".into())
             .child(theme::text(format!(
                 "source {}–{} / {} frames · play at {}{}",
@@ -280,7 +280,7 @@ fn field_row(
                 .w(px(54.0))
                 .flex_shrink_0()
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(label)),
         )
         .child(step_button(
@@ -298,7 +298,7 @@ fn field_row(
                 .min_w_0()
                 .truncate()
                 .text_xs()
-                .text_color(rgb(Palette::TEXT))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .debug_selector(move || format!("audio-clip-{field:?}-value").to_lowercase())
                 .child(theme::text(value)),
         )
@@ -330,7 +330,7 @@ fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> 
                 .w(px(54.0))
                 .flex_shrink_0()
                 .text_xs()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text("loop")),
         )
         .child(control_button(
@@ -345,7 +345,7 @@ fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> 
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(Palette::TEXT))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(theme::text(if window.looping { "on" } else { "off" })),
         )
 }
@@ -383,8 +383,8 @@ fn control_button(
         .flex()
         .items_center()
         .justify_center()
-        .text_color(rgb(Palette::CYAN))
-        .hover(|style| style.bg(rgb(Palette::BACKGROUND)))
+        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .debug_selector(move || {
             let field = match field {
                 Field::Position => "position",
@@ -556,9 +556,9 @@ fn time_ruler(window: ClipWindow) -> Div {
         .flex_shrink_0()
         .w_full()
         .overflow_hidden()
-        .bg(rgb(Palette::RAISED))
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .text_xs()
-        .text_color(rgb(Palette::MUTED))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .debug_selector(|| "arrangement-audio-time-ruler".into());
     if window.asset_frames == 0 {
         return ruler;
