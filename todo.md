@@ -97,6 +97,17 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
 
 ## new requests — separate PRs
 
+- [ ] **native settings menu** — Pulse2115: remove the toolbar settings icon;
+  open the same theme panel from macOS hex > settings… and Command-comma.
+  Repeated activation focuses the current draft. Five existing theme tests and
+  strict UI Clippy/guards pass; clean local CI and native menu acceptance follow.
+  The user accepted theming itself on 9 October 2026 (ticket15).
+- [ ] **larger swatches and visual color picker** — future Pulse2116, separate PR:
+  larger clickable role swatches, XY saturation/brightness field, hue spectrum,
+  HSB/RGB controls and synchronized precise values. Preserve the four-role model,
+  contrast policy, preview/cancel/save and compact native layout. Not included in
+  the menu-access change.
+
 - [x] **captured time selection and edge scrolling** — focused source fix.
   Keep held selection/time-chunk gestures active over empty space, browser and
   outside the window until release. Clamp rows at existing first/last tracks;
