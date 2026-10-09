@@ -338,3 +338,17 @@ tests, the real low-space refusal and all 14 normal checks on clean `5033c02`
 `artifacts/local-ci/20261009T183220Z-a37843f7/`. Native app acceptance and PR
 integration remain distinct from these checks. The full open Pulse backlog
 remains the implementation scope; current checkpoints are not the final build.
+
+
+## instrument foundation checkpoint
+
+Pulse2114: schema15 optional instrument slot, generic registry and copied analytic
+note samplers are implemented in source; targeted tests/strict checks pass.
+Silent-slot MIDI extent/preview repair passes targeted tests; fullCI and focused PR
+follow integration.
+See [contract](docs/lattice-instruments.md). This is a prerequisite for Operator,
+not Operator implementation. Source/native/merge gates remain separate.
+
+Menu follow-up2115: user accepted and manually merged PR37 into the stacked
+integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and
+open-panel/focus-switching2117 remain queued in Pulse.

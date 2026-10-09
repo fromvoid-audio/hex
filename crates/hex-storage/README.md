@@ -17,6 +17,12 @@ and std for bounded file access and same-directory publication.
 PCM decoding/streaming, audio callbacks, editing/history, GPUI, Live-set import,
 device-specific codecs, plugin hosting or fields not introduced into the model.
 
+Schema15 adds a required nullable generic instrument slot per hybrid track.
+Schemas1–14 install the explicit sine default using fresh validated IDs; schema15
+null remains intentionally silent. Unknown instrument envelopes are preserved,
+and adding an instrument type needs no storage branch. See
+[instrument slots](../../docs/lattice-instruments.md).
+
 Schema 14 adds ordered per-track native device envelopes: stable instance ID,
 bypass, namespaced type ID, state version and bounded opaque bytes. Schemas 1–13
 migrate to empty chains. Storage preserves unknown types and future device-state

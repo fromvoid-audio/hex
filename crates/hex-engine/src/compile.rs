@@ -243,19 +243,18 @@ fn compile_project<'a>(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let muted = track.muted() || (any_soloed && !track.soloed());
-        let instrument = if track.midi_clips().is_empty()
-            || track.instrument().is_none_or(hex_project::Device::bypassed)
-        {
+        let instrument = if track.midi_clips().is_empty() {
             None
         } else {
+            let prepared_instrument = track
+                .instrument()
+                .filter(|device| !device.bypassed())
+                .and_then(|_| instrument_config.as_ref().map(Box::as_ref));
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,
                     track,
-                    instrument_config
-                        .as_ref()
-                        .map(Box::as_ref)
-                        .ok_or(Invalid("instrument configuration missing"))?,
+                    prepared_instrument,
                     previews.as_deref_mut(),
                 )?
                 .ok_or(Invalid("instrument content missing after compile"))?,

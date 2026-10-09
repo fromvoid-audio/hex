@@ -683,6 +683,71 @@ fn removed_instrument_is_explicit_silence_and_unknown_bypassed_instrument_refuse
 }
 
 #[test]
+fn absent_and_bypassed_instruments_keep_midi_extent_and_preview() {
+    for hybrid_track in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = match editor
+            .execute(if hybrid_track {
+                Command::AddTrack {
+                    name: "hybrid".into(),
+                }
+            } else {
+                Command::AddMidiTrack {
+                    name: "midi".into(),
+                }
+            })
+            .unwrap()
+        {
+            Created::Track(track) => track,
+            _ => panic!("track"),
+        };
+        let clip = add_clip(&mut editor, track, beat(1, 4), beat(3, 4));
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(1, 8),
+                duration: beat(1, 4),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+
+        let (audible, audible_preview) =
+            compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+        let expected_end = audible.audible_end_frame();
+        let expected_preview = audible_preview.get(clip).unwrap().clone();
+        if hybrid_track {
+            let device = editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+        } else {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+
+        let (silent, silent_preview) =
+            compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+        assert_eq!(silent.audible_end_frame(), expected_end);
+        assert_eq!(silent_preview.get(clip), Some(&expected_preview));
+        let mut renderer = Renderer::new(&silent);
+        renderer.play();
+        let mut output = [[1.0, -1.0]; 64];
+        renderer.render(&mut output).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    }
+}
+
+#[test]
 fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
