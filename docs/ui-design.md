@@ -261,3 +261,14 @@ channel waveforms, and aligned grid lines through the clip. macOS resize edges
 use original bracket cursors retained by the existing external GPUI boundary.
 Waveform cache/query fidelity and open native timing checks are recorded in
 [waveform-display.md](waveform-display.md).
+
+## shared clip detail view
+
+One compact chevron row controls the bottom audio/MIDI detail slot. Preserve
+selection on collapse and move keyboard focus out of the hidden note editor.
+Keep source parameters in a narrow left column, with the audio waveform or MIDI
+roll using the remaining width. Audio uses cached black stereo silhouettes on
+charcoal, a seconds ruler and source/play-start markers. Show only functional
+canonical parameters; pitch, gain and warp controls require their own playback
+implementation. See [clip-view.md](clip-view.md) for current controls, phase
+semantics, follow-ups and native acceptance.

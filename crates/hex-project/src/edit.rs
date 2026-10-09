@@ -182,6 +182,16 @@ pub enum Command {
         fade_in: u64,
         fade_out: u64,
     },
+    /// Enable or disable the audio clip's source loop; disabling resets its phase.
+    SetClipLooping {
+        clip: ClipId,
+        looping: bool,
+    },
+    /// Set a looping audio clip's source-relative play position.
+    SetClipSourcePhase {
+        clip: ClipId,
+        phase: u64,
+    },
     RemoveClip(ClipId),
     /// Relative commands are resolved against canonical state, so queued repeats
     /// do not overwrite one another using an outdated UI snapshot.
@@ -1496,6 +1506,27 @@ impl Project {
                     .duration;
                 let fade = ClipFade::new(duration, 0, fade_in, fade_out)?;
                 self.clip_mut(clip)?.fade = fade;
+                Ok(Created::None)
+            }
+            Command::SetClipLooping { clip, looping } => {
+                let target = self.clip_mut(clip)?;
+                if target.looping != looping {
+                    target.looping = looping;
+                    if !looping {
+                        target.source_phase = 0;
+                    }
+                }
+                Ok(Created::None)
+            }
+            Command::SetClipSourcePhase { clip, phase } => {
+                let target = self.clip_mut(clip)?;
+                if !target.looping {
+                    return Err(Invalid("source phase can only be set on a looping clip"));
+                }
+                if phase >= target.source_length {
+                    return Err(Invalid("source phase must be inside the source interval"));
+                }
+                target.source_phase = phase;
                 Ok(Created::None)
             }
             Command::RemoveClip(id) => {

@@ -2189,3 +2189,22 @@ project/session/storage lint, desktop build and source guards pass. Fresh review
 app: `artifacts/hex-edit-cursor-20261009.app`; identity and logs:
 `artifacts/edit-cursor-manifest.json`. Native click/pulse/markers, Command-E,
 Undo/Redo and continued clip drag/resize checks remain with the user.
+
+## next guided workflow: unified clip view — 9 October 2026
+
+User requested a shared toggleable audio/MIDI clip detail view based on the
+provided screenshots, with a compact left parameter section and a waveform or
+piano roll on the right. Track it as separate targeted PRs after the edit-cursor
+PR. First: visibility/selection retention, cached audio detail and existing
+MIDI/source edits, plus canonical audio loop control. Then real per-clip gain,
+pitch/playback-rate policy, warp/time-stretch modes and detail gestures/numeric
+entry. The complete request remains open; do not claim full Live clip-view
+parity or display unsupported controls as if functional. Plan and acceptance:
+`docs/clip-view.md`.
+
+Clip-view source verification passes. Native acceptance remains with the user;
+audio detail currently fits the full source and uses step controls (1 ms, Option
+one frame), not numeric entry or draggable markers. Source trims reset phase,
+and one-shot play-start changes source in. The initial panel deliberately exposes
+no inactive gain/pitch/warp controls; those remain requested model/DSP follow-ups.
+Review fixed source-end marker/final ruler-label clipping at the right edge.

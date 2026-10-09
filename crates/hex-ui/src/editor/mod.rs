@@ -1,9 +1,13 @@
 mod arrangement;
+mod arrangement_audio_panel;
 mod bootstrap;
 mod browser;
 mod browser_input;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_view;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_view_ui_test;
 mod close;
 mod context_menu;
 mod controller;
@@ -389,6 +393,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
     pub(in crate::editor) project_generation: u64,
+    clip_view_open: bool,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -565,6 +570,7 @@ impl EditorView {
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
             project_generation: 0,
+            clip_view_open: true,
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
