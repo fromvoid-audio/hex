@@ -437,6 +437,9 @@ pub struct Track {
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
     instrument: Option<InstrumentTrack>,
+    instrument_position: usize,
+    ordered_prefix: Option<hex_lattice::StereoMatrix>,
+    ordered_suffix: Option<hex_lattice::StereoMatrix>,
     device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
 }
 
@@ -521,33 +524,48 @@ impl Track {
             mix: PreparedTrackMix::new(gain, balance, muted)?,
             source_mix: PreparedTrackMix::new(gain, balance, muted)?,
             instrument: None,
+            instrument_position: 0,
+            ordered_prefix: None,
+            ordered_suffix: None,
             device_chain: std::sync::Arc::from([]),
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_audio_instrument_and_effects(
         clips: Vec<Clip>,
         gain: f32,
         muted: bool,
         balance: f32,
         instrument: Option<InstrumentTrack>,
+        instrument_position: usize,
         effects: Option<hex_lattice::StereoMatrix>,
+        ordered_prefix: Option<hex_lattice::StereoMatrix>,
+        ordered_suffix: Option<hex_lattice::StereoMatrix>,
         device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
     ) -> Result<Self, Invalid> {
-        let mix = PreparedTrackMix::with_effects(gain, balance, muted, effects)?;
         let stateful = device_chain
             .iter()
             .any(|device| device.definition.is_some());
+        let ordered = instrument_position != 0;
+        let segmented =
+            stateful || (ordered && (ordered_prefix.is_some() || ordered_suffix.is_some()));
+        let mix_effects = if segmented { None } else { effects };
+        let mix = PreparedTrackMix::with_effects(gain, balance, muted, mix_effects)?;
+        let source_mix = if segmented {
+            PreparedTrackMix::new(1.0, 0.0, false)?
+        } else {
+            mix
+        };
         Ok(Self {
             track_id: None,
             clips,
             mix,
-            source_mix: if stateful {
-                PreparedTrackMix::new(1.0, 0.0, false)?
-            } else {
-                mix
-            },
+            source_mix,
             instrument,
+            instrument_position,
+            ordered_prefix,
+            ordered_suffix,
             device_chain: std::sync::Arc::from(device_chain),
         })
     }
@@ -567,6 +585,53 @@ impl Track {
         self.device_chain
             .iter()
             .any(|device| device.definition.is_some())
+    }
+
+    pub(crate) fn instrument_position(&self) -> usize {
+        self.instrument_position
+    }
+
+    pub(crate) fn has_ordered_instrument(&self) -> bool {
+        self.instrument_position != 0
+    }
+
+    pub(crate) fn requires_ordered_processing(&self) -> bool {
+        self.has_stateful_devices()
+            || (self.has_ordered_instrument()
+                && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
+    }
+
+    pub(crate) fn apply_ordered_prefix(&self, frames: &mut [Frame]) {
+        if let Some(matrix) = self.ordered_prefix {
+            matrix.apply_block(frames);
+        }
+    }
+
+    pub(crate) fn apply_ordered_suffix(&self, frames: &mut [Frame]) {
+        if let Some(matrix) = self.ordered_suffix {
+            matrix.apply_block(frames);
+        }
+    }
+
+    pub(crate) fn instrument_suffix_matrix(&self) -> Option<hex_lattice::StereoMatrix> {
+        self.ordered_suffix
+    }
+
+    pub(crate) fn instrument_suffix_needs_tail(&self) -> bool {
+        if self.has_ordered_instrument() {
+            self.ordered_suffix.is_some()
+                || self
+                    .device_chain
+                    .get(self.instrument_position..)
+                    .is_some_and(|effects| {
+                        effects.iter().any(|effect| {
+                            effect.definition.is_some()
+                                || effect.matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]
+                        })
+                    })
+        } else {
+            self.has_stateful_devices()
+        }
     }
 
     pub fn mix(&self) -> PreparedTrackMix {
@@ -632,6 +697,46 @@ impl Track {
         Ok(())
     }
 
+    pub(crate) fn render_audio_additive(
+        &self,
+        start_frame: u64,
+        output: &mut [Frame],
+    ) -> Result<(), Invalid> {
+        let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
+        let end_frame = start_frame
+            .checked_add(length)
+            .ok_or(Invalid("render range overflow"))?;
+        self.render_audio_range(start_frame, end_frame, output);
+        Ok(())
+    }
+
+    pub(crate) fn render_audio_additive_with_pages(
+        &self,
+        start_frame: u64,
+        output: &mut [Frame],
+        pages: &mut (impl MediaPages + ?Sized),
+    ) -> Result<(), Invalid> {
+        let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
+        let end_frame = start_frame
+            .checked_add(length)
+            .ok_or(Invalid("render range overflow"))?;
+        self.render_audio_range_with_pages(start_frame, end_frame, output, pages);
+        Ok(())
+    }
+
+    pub(crate) fn render_instrument_additive(
+        &self,
+        start_frame: u64,
+        output: &mut [Frame],
+    ) -> Result<(), Invalid> {
+        let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
+        let end_frame = start_frame
+            .checked_add(length)
+            .ok_or(Invalid("render range overflow"))?;
+        self.render_instrument_range(start_frame, end_frame, output, None);
+        Ok(())
+    }
+
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
@@ -657,12 +762,16 @@ impl Track {
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
     ) {
+        self.render_audio_range(start_frame, end_frame, output);
+        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
+    }
+
+    fn render_audio_range(&self, start_frame: u64, end_frame: u64, output: &mut [Frame]) {
         for clip in &self.clips {
             if !clip.is_streamed() {
                 self.render_resident_clip(clip, start_frame, end_frame, output);
             }
         }
-        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
     }
 
     fn render_unmuted_range_with_pages(
@@ -671,6 +780,17 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
+        pages: &mut (impl MediaPages + ?Sized),
+    ) {
+        self.render_audio_range_with_pages(start_frame, end_frame, output, pages);
+        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
+    }
+
+    fn render_audio_range_with_pages(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
     ) {
         for clip in &self.clips {
@@ -740,7 +860,6 @@ impl Track {
                 position = position.saturating_add(rendered as u64);
             }
         }
-        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
     }
 
     fn render_resident_clip(
@@ -784,7 +903,7 @@ impl Track {
         }
     }
 
-    fn render_instrument_range(
+    pub(crate) fn render_instrument_range(
         &self,
         start_frame: u64,
         end_frame: u64,
@@ -1146,9 +1265,15 @@ impl RendererRuntime {
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_stateful_devices();
-            if stateful {
-                let Some(chain) = self.device_chains.get_mut(index) else {
-                    return Err(Invalid("native device runtime is unavailable"));
+            if stateful || track.requires_ordered_processing() {
+                let mut chain = if stateful {
+                    Some(
+                        self.device_chains
+                            .get_mut(index)
+                            .ok_or(Invalid("native device runtime is unavailable"))?,
+                    )
+                } else {
+                    None
                 };
                 let mut scratch = [[0.0; 2]; 256];
                 let mut offset = 0_usize;
@@ -1163,17 +1288,44 @@ impl RendererRuntime {
                     let target = &mut scratch[..count];
                     target.fill([0.0; 2]);
                     if let Some(page_provider) = pages.as_deref_mut() {
-                        track.render_unmuted_range_with_pages(
-                            start,
-                            end,
-                            target,
-                            None,
-                            page_provider,
-                        );
+                        if track.requires_ordered_processing() {
+                            track.render_audio_range_with_pages(start, end, target, page_provider);
+                        } else {
+                            track.render_unmuted_range_with_pages(
+                                start,
+                                end,
+                                target,
+                                None,
+                                page_provider,
+                            );
+                        }
                     } else {
-                        track.render_unmuted_range(start, end, target, None);
+                        if track.requires_ordered_processing() {
+                            track.render_audio_range(start, end, target);
+                        } else {
+                            track.render_unmuted_range(start, end, target, None);
+                        }
                     }
-                    chain.process_block(target);
+                    if track.requires_ordered_processing() {
+                        if let Some(chain) = chain.as_deref_mut() {
+                            chain
+                                .process_range(0..track.instrument_position(), target)
+                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                        } else {
+                            track.apply_ordered_prefix(target);
+                        }
+                        track.render_instrument_range(start, end, target, None);
+                        if let Some(chain) = chain.as_deref_mut() {
+                            let effect_count = chain.len();
+                            chain
+                                .process_range(track.instrument_position()..effect_count, target)
+                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                        } else {
+                            track.apply_ordered_suffix(target);
+                        }
+                    } else if let Some(chain) = chain.as_deref_mut() {
+                        chain.process_block(target);
+                    }
                     for (destination, source) in output[offset..offset + count]
                         .iter_mut()
                         .zip(target.iter().copied())

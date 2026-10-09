@@ -1,11 +1,12 @@
 use super::*;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
+use crate::playback::{Playback, PlaybackCommand};
 use crate::{BorrowedMediaPage, MediaPages, StreamSourceKey, StreamedSourceMetadata};
 use crate::{PreparedRevision, PreparedSessionInventory};
 use hex_project::{
-    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, LoopRegion, Meter, MeterPoint,
-    MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
+    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, Editor, LoopRegion, Meter,
+    MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
     SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
@@ -446,6 +447,141 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
 }
 
 #[test]
+fn removed_track_release_runs_only_the_captured_instrument_suffix() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, DeviceSnapshot, Editor};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let prefix = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            utility_parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let suffix = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            utility_parameter::CHANNEL,
+            ParameterValue::Choice(3), // swap
+        )
+        .unwrap();
+    snapshot.tracks[0].devices = vec![
+        DeviceSnapshot {
+            id: 9,
+            bypassed: false,
+            state: prefix,
+        },
+        DeviceSnapshot {
+            id: 10,
+            bypassed: false,
+            state: suffix,
+        },
+    ];
+    snapshot.tracks[0].instrument_position = Some(1);
+    snapshot.next_id = 11;
+    let old_project = legacy_project_from_snapshot(snapshot).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::LaunchClip {
+        clip,
+        quantization: LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    old.render(&mut before).unwrap();
+
+    let mut editor = Editor::new(old_project, 8).unwrap();
+    let track_id = editor.project().tracks()[0].id();
+    editor.execute(Command::RemoveTrack(track_id)).unwrap();
+    let mut next = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut tail = [[0.0; 2]; 64];
+    next.render(&mut tail).unwrap();
+    let audible: Vec<_> = tail
+        .iter()
+        .filter(|frame| frame[0].abs() > 1.0e-5 || frame[1].abs() > 1.0e-5)
+        .collect();
+    assert!(!audible.is_empty());
+    // The captured suffix swaps stereo. Applying the old prefix would invert
+    // only the left channel before that swap and make the channels differ.
+    assert!(audible.iter().all(|frame| frame[0] == frame[1]));
+}
+
+#[test]
+fn same_revision_session_release_enters_at_the_instrument_gap() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::DeviceSnapshot;
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let prefix = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            utility_parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let suffix = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            utility_parameter::CHANNEL,
+            ParameterValue::Choice(3),
+        )
+        .unwrap();
+    snapshot.tracks[0].devices = vec![
+        DeviceSnapshot {
+            id: 9,
+            bypassed: false,
+            state: prefix,
+        },
+        DeviceSnapshot {
+            id: 10,
+            bypassed: false,
+            state: suffix,
+        },
+    ];
+    snapshot.tracks[0].instrument_position = Some(1);
+    snapshot.next_id = 11;
+    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    let mut playback = SessionPlayback::new(revision(&project, table)).unwrap();
+    let clip = playback.revision.session().midi_clips()[0].id;
+    let track = playback.routes[0].id;
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    playback.render(&mut before).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut tail = [[0.0; 2]; 64];
+    playback.render(&mut tail).unwrap();
+    let audible: Vec<_> = tail
+        .iter()
+        .filter(|frame| frame[0].abs() > 1.0e-5 || frame[1].abs() > 1.0e-5)
+        .collect();
+    assert!(!audible.is_empty());
+    // A same-revision release joins after the invert-left prefix, then the
+    // current swap suffix runs once. Seeing equal channels catches prefix
+    // reprocessing or a second suffix pass.
+    assert!(audible.iter().all(|frame| frame[0] == frame[1]));
+}
+
+#[test]
 fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -453,21 +589,26 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let neutral = UTILITY_DEFINITION.default_state().unwrap();
     let state = UTILITY_DEFINITION
-        .patch_parameter(
-            &UTILITY_DEFINITION.default_state().unwrap(),
-            parameter::DC_REMOVE,
-            ParameterValue::Bool(true),
-        )
+        .patch_parameter(&neutral, parameter::DC_REMOVE, ParameterValue::Bool(true))
         .unwrap();
-    snapshot.tracks[0]
-        .devices
-        .push(hex_project::DeviceSnapshot {
+    snapshot.tracks[0].devices = vec![
+        hex_project::DeviceSnapshot {
             id: snapshot.next_id,
             bypassed: false,
+            state: neutral,
+        },
+        hex_project::DeviceSnapshot {
+            id: snapshot.next_id + 1,
+            bypassed: false,
             state,
-        });
-    snapshot.next_id += 1;
+        },
+    ];
+    snapshot.next_id += 2;
+    // Put DC removal in the suffix so the outgoing Session voice must keep and
+    // execute the captured old stateful processor after the instrument.
+    snapshot.tracks[0].instrument_position = Some(1);
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let old_revision = revision(&old_project, Arc::clone(&table));
     let clip = old_revision.session().midi_clips()[0].id;
@@ -492,11 +633,166 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
     };
 
     let stopped = without_session_cells(&old_project);
-    let current_dc = with_utility_filter_state(&stopped, true, false);
-    let current_bass = with_utility_filter_state(&stopped, false, true);
+    let current_dc = with_utility_filter_state_at(&stopped, 1, true, false);
+    let current_bass = with_utility_filter_state_at(&stopped, 1, false, true);
     // The candidate route is silent. Its new device configuration must not
     // change outgoing voices, which continue through the captured old chain.
-    assert_eq!(render_old_tail(&current_dc), render_old_tail(&current_bass));
+    let old_settings_tail = render_old_tail(&current_dc);
+    let new_settings_tail = render_old_tail(&current_bass);
+    assert!(
+        old_settings_tail
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1.0e-6)
+    );
+    assert_eq!(old_settings_tail, new_settings_tail);
+}
+
+#[test]
+fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::Command;
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    let instrument_state = hex_project::default_instrument_state().unwrap();
+    let instrument_id = snapshot.next_id;
+    snapshot.next_id += 1;
+    let device_id = snapshot.next_id;
+    snapshot.next_id += 1;
+    let dc_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        id: instrument_id,
+        bypassed: false,
+        state: instrument_state,
+    });
+    snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        id: device_id,
+        bypassed: false,
+        state: dc_state,
+    }];
+    snapshot.tracks[0].instrument_position = Some(1);
+    let old_project = legacy_project_from_snapshot(snapshot).unwrap();
+    let track_id = old_project.tracks()[0].id();
+    let instrument_id = old_project.tracks()[0].instrument().unwrap().id();
+    let device_id = old_project.tracks()[0].devices()[0].id();
+    let asset_id = old_project.assets().next().unwrap().id();
+    let media = BTreeMap::from([(
+        asset_id,
+        crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
+    )]);
+    let old_revision = Arc::new(
+        PreparedRevision::prepare(&old_project, &media, Arc::clone(&table), None).unwrap(),
+    );
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let clip = old_revision.session().audio_clips()[0].id;
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut warmup = [[0.0; 2]; 16];
+    let mut reference_warmup = [[0.0; 2]; 16];
+    let mut reference = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    reference
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.render(&mut reference_warmup).unwrap();
+    previous.render(&mut warmup).unwrap();
+    assert_eq!(warmup, reference_warmup);
+
+    let mut editor = Editor::new(old_project, 8).unwrap();
+    editor
+        .execute(Command::MoveTrackDevice {
+            device: instrument_id,
+            track: track_id,
+            before: Some(device_id),
+        })
+        .unwrap();
+    let candidate_revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            table,
+            Some(old_revision.session()),
+        )
+        .unwrap(),
+    );
+    let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+
+    let mut expected = [[0.0; 2]; 16];
+    let mut actual = [[0.0; 2]; 16];
+    reference.render(&mut expected).unwrap();
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+}
+
+#[test]
+fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    snapshot.tracks[0].devices = vec![
+        hex_project::DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed: false,
+            state: state.clone(),
+        },
+        hex_project::DeviceSnapshot {
+            id: snapshot.next_id + 1,
+            bypassed: false,
+            state,
+        },
+    ];
+    snapshot.next_id += 2;
+    snapshot.tracks[0].instrument_position = Some(1);
+    let prepared = revision(&legacy_project_from_snapshot(snapshot).unwrap(), table);
+    let clip = prepared.session().midi_clips()[0].id;
+    let mut finite = Playback::from_prepared(Arc::clone(&prepared));
+    let mut session = SessionPlayback::new(prepared).unwrap();
+    finite.apply(PlaybackCommand::Play);
+    session
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    session.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let mut expected = [[0.0; 2]; 12_000];
+    let mut actual = [[0.0; 2]; 12_000];
+    finite.render(&mut expected).unwrap();
+    let mut offset = 0;
+    for count in [1, 17, 127, 256, 31, 1024, 4096, 6448] {
+        session.render(&mut actual[offset..offset + count]).unwrap();
+        offset += count;
+    }
+    assert_eq!(offset, actual.len());
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -702,7 +998,30 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
 #[test]
 fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_clock() {
     let table = Arc::new(hex_devices::SineTable::new());
-    let project = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let mut devices = Vec::new();
+    for _ in 0..2 {
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        devices.push(hex_project::DeviceSnapshot {
+            id,
+            bypassed: false,
+            state: state.clone(),
+        });
+    }
+    snapshot.tracks[0].devices = devices;
+    snapshot.tracks[0].instrument_position = Some(1);
+    let project = legacy_project_from_snapshot(snapshot).unwrap();
     let prepared = revision(&project, table);
     let clip = prepared.session().midi_clips()[0].id;
     let mut failed = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -802,6 +1121,40 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
             });
         snapshot.next_id += 1;
     }
+    legacy_project_from_snapshot(snapshot).unwrap()
+}
+
+fn with_utility_filter_state_at(
+    project: &Project,
+    device_index: usize,
+    dc_remove: bool,
+    bass_mono: bool,
+) -> Project {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mut state = UTILITY_DEFINITION.default_state().unwrap();
+    state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(dc_remove),
+        )
+        .unwrap();
+    state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::BASS_MONO,
+            ParameterValue::Bool(bass_mono),
+        )
+        .unwrap();
+    let mut snapshot = project.snapshot();
+    let device = snapshot.tracks[0]
+        .devices
+        .get_mut(device_index)
+        .expect("fixture device index is valid");
+    device.state = state;
+    device.bypassed = false;
     legacy_project_from_snapshot(snapshot).unwrap()
 }
 
