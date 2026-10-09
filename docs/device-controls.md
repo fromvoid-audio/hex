@@ -24,12 +24,22 @@ begin/change/commit/cancel events; they neither write files nor create history.
 Device descriptors drive general controls; adding a device does not add storage
 branches or require a competing UI editing model.
 
+Device metadata may report a parameter unavailable for its current validated
+state; the generic default enables valid parameters. This availability controls
+the UI affordance only: canonical parameter patching and automation may still
+address the stored value, so authored values remain available while inactive.
+Utility disables width, mid-side and mid-side balance in left/right channel
+mode, then re-enables them in stereo/swap without resetting those values.
+Malformed states or availability errors are shown as unsupported device state
+rather than silently enabling a control.
+
 The device panel resolves a bounded registered-type catalog for its add menu
-and a complete descriptor/value snapshot per changed device state. These
-control-side engine APIs resolve and migrate once per snapshot, rather than
-looking up every knob separately. Optional device-owned display names are
-presentation metadata; stable type IDs and opaque persisted state are unchanged.
-Unknown or unsupported states report errors instead of displaying defaults.
+and a complete descriptor/value/availability snapshot per changed device state.
+The control-side engine API validates availability against current metadata;
+the UI caches this snapshot by device state rather than resolving it on each
+paint. Optional device-owned display names are presentation metadata; stable
+type IDs and opaque persisted state are unchanged. Unknown or unsupported
+states report errors instead of displaying defaults.
 
 ## Interaction contract
 
