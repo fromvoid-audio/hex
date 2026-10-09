@@ -1,6 +1,5 @@
 //! Canonical Session control preparation; no audio callback or UI is exercised.
 use hex_engine::{PreparedRevision, PreparedSessionInventory};
-use hex_lattice::PreparedAnalyticNote;
 use hex_project::{
     BeatTime, Command, Created, Editor, Meter, MeterPoint, MidiNoteSnapshot, MidiSourceSnapshot,
     Project, SceneSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
@@ -11,6 +10,7 @@ use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time:
 
 const TRACKS: usize = 100;
 const RUNS: usize = 100;
+const PREVIOUS_INLINE_SAMPLER_BYTES: usize = 40;
 
 fn fixture() -> Result<Project, Box<dyn Error>> {
     let scenes = (1..=3)
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("structural reachable envelope: {:?}", previous.work());
     let sampler_references = previous.midi_note_bank_reference_count();
     let old_sampler_bytes = sampler_references
-        .checked_mul(std::mem::size_of::<PreparedAnalyticNote>())
+        .checked_mul(PREVIOUS_INLINE_SAMPLER_BYTES)
         .ok_or("old sampler byte estimate overflow")?;
     let indexed_bytes = previous
         .midi_note_bank_storage_bytes()

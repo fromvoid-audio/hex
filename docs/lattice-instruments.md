@@ -44,12 +44,16 @@ other registry. This matters because effect and instrument registries validate
 their identities independently and may contain the same type ID.
 
 Control prepares an immutable sample-rate-specific configuration. Its prepared
-note is a Copy value containing three u64 payload words, release duration and a
-safe stereo sample function pointer: 40bytes on64-bit targets, eight bytes more
-than the prior PreparedVoice. Definitions validate their payload and numerical
-laws before admission. Sample functions must be deterministic, bounded and free
-of allocation, deallocation, waiting, I/O and mutable shared state. This trusted
-native definition contract is not a sandbox for arbitrary external code.
+note is a Copy value containing 41 u64 payload words, release duration and a safe
+stereo sample function pointer: 344 bytes on 64-bit targets. The first three
+words retain the sine phase step, amplitude and attack representation; the
+remaining words are zero. The 41-word capacity can also carry the validated
+standalone FM4 kernel without a heap owner or unsafe conversion. FM4 remains
+unregistered and cannot be selected by a project in this change. Definitions
+validate fields before packing. Sample functions must be deterministic, bounded
+and free of allocation, deallocation, waiting, I/O and mutable shared state.
+This trusted native definition contract is not a sandbox for arbitrary external
+code.
 
 Sampling receives authored age and original gate duration, preserving exact
 sine seek-mid-note/release behavior. Existing bounded occurrence/span/query and
@@ -73,24 +77,42 @@ track/device identity, device type and state, bypass state and sample rate.
 configuration/rate/pitch/velocity, as required by interning. No bank `Arc` is
 cloned or dropped by callback query or release processing.
 
-Admission derives from current model ceilings, not the proposed future FM4
-sampler size: 16,256 valid pitch/velocity pairs per track, 65,536 authored
-notes per project, 65,536 Arrangement occurrences, 131,072 maximum Session
-intro+repeat references and 65,536 Session cells. A full prepared revision
-therefore accounts at most 131,072 bank entries, 196,608 `u16` references,
-512 track-bank owner headers/handles and 65,536 Session template handles.
-With the current 40-byte sampler, `BankEntry` is 48 bytes on 64-bit targets;
-checked byte limits include entry keys, owner/handle overhead and all indices.
-The complete derived ceiling is 7,233,536 bytes (about 6.9 MiB) for note-bank
-storage and references. This is a current-runtime bound, not a budget claim for
-larger future sampler payloads.
+Admission derives from current model ceilings: 16,256 valid pitch/velocity pairs
+per track, 65,536 authored notes per project, 65,536 Arrangement occurrences,
+131,072 maximum Session intro+repeat references and 65,536 Session cells. A
+full prepared revision therefore accounts at most 131,072 bank entries,
+196,608 `u16` references, 512 track-bank owner headers/handles and 65,536
+Session template handles. With the 344-byte sampler, `BankEntry` is 352 bytes
+on 64-bit targets. Checked byte limits include entry keys, owner/handle overhead
+and all indices; `try_reserve_exact` refuses allocation failure before
+publication. The derived component ceiling is 47,079,424 bytes: 46,137,344
+bytes for entries, 24,576 for track-bank owners, 524,288 for Session template
+handles and 393,216 for indices. This keeps the existing count limits rather
+than adding a narrower byte cap. Active and candidate prepared revisions can
+overlap, so their corresponding bank/index component bound is 94,158,848 bytes.
+The checked test exercises one revision at the derived limit, refusal above it
+and the doubled active/candidate calculation. Queued, retired or otherwise
+retained owners are outside that pair accounting; this is not a whole-process
+memory maximum.
 
 The bank lookup is one indexed read when a source interval enters the fixed
-render-span buffer. Rendering still samples the copied 40-byte value directly;
-it does not binary-search or allocate per sample. The retained-memory benefit
-depends on repeated pitch/velocity pairs: unique-only Arrangement notes pay for
-the key/index and owner overhead, while repeated Session intro/repeat occurrences
-share one bank sampler.
+render-span buffer. Rendering samples the copied sampler by reference, so the
+344-byte payload is not copied per frame; it does not binary-search or allocate
+per sample. The retained-memory benefit depends on repeated pitch/velocity
+pairs: unique-only Arrangement notes pay for the key/index and owner overhead,
+while repeated Session intro/repeat occurrences share one bank sampler.
+
+Each `SessionPlayback` retains two preallocated release buffers of 16,384
+entries and a 192-slot MIDI span buffer. On 64-bit targets, the current layout
+accounts 15,990,784 bytes for both release buffers (`16,384 × 488 × 2`) and
+81,416 bytes for spans, 16,072,200 bytes total. Relative to the prior 40-byte
+sampler, growth is 10,019,840 bytes (9.56 MiB): 9,961,472 bytes across the
+paired release buffers plus 58,368 bytes in span slots. The test checks these
+layout sizes and the combined ceiling below 16 MiB. This is the changed fixed
+MIDI scratch only; it excludes the rest of `SessionPlayback` and does not bound
+all simultaneously queued/retired playback owners. Two overlapping playback
+instances account twice this scratch component, independently of the
+prepared-revision bank/index component above.
 
 The sine table initializes once on control during instrument preparation.
 Callback sampling uses the noninitializing OnceLock::get path. No lookup table
@@ -110,7 +132,8 @@ density/fault paths, native APIs, physical device deadlines or listening
 acceptance. Root runs clean full local CI after integration.
 
 Release timing methodology and provisional regression are recorded in
-[performance](performance.md). The preexisting mixed Session profile comparison
+[performance](performance.md). Indexed-bank and wide-payload before/after
+profiles are separate evidence there. The preexisting mixed Session profile comparison
 failure is separate Pulse2113. Native instrument UI/catalog editing is implemented in the follow-up below; mutable
 FM contracts and Operator remain open work, independent of this source foundation.
 

@@ -5,6 +5,55 @@ fn oscillator(ratio: f64, level: f64, phase: f64) -> Oscillator {
     Oscillator::new(ratio, level, phase).unwrap()
 }
 
+#[test]
+fn packed_analytic_note_matches_standalone_kernel_through_release() {
+    let table = SineTable::new();
+    let oscillators = [
+        oscillator(1.0, 0.7, 0.125),
+        oscillator(2.0, 0.45, 0.0),
+        oscillator(0.5, 0.3, 0.25),
+        oscillator(3.0, 0.2, 0.5),
+    ];
+    let mut modulation = [[0.0; 4]; 4];
+    modulation[3][1] = 0.17;
+    modulation[1][0] = -0.08;
+    modulation[0][2] = 0.04;
+    let routing = Routing::new(modulation, [0.8, 0.0, 0.25, 0.0]).unwrap();
+    let prepared = PreparedFm4::new(
+        48_000,
+        57,
+        93,
+        oscillators,
+        routing,
+        Envelope::new(0.003, 0.02, 0.63, 0.04).unwrap(),
+    )
+    .unwrap();
+    let analytic = prepared.into_analytic_note();
+    assert_eq!(analytic.release_frames(), prepared.release_frames());
+    assert_eq!(std::mem::size_of_val(&analytic), 344);
+    // Include zero/early gates during attack and decay, as well as sustain.
+    for gate in [0, 1, 72, 500, 2_400] {
+        for age in [
+            0,
+            1,
+            143,
+            144,
+            1_103,
+            gate,
+            gate + 1,
+            gate + prepared.release_frames() - 1,
+            gate + prepared.release_frames(),
+        ] {
+            let expected = prepared.sample(&table, age, gate);
+            assert_eq!(
+                analytic.sample(age, gate),
+                [expected, expected],
+                "age={age}, gate={gate}"
+            );
+        }
+    }
+}
+
 fn sustained() -> Envelope {
     Envelope::new(0.0, 0.0, 1.0, 0.01).unwrap()
 }
