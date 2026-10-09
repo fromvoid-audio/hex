@@ -35,6 +35,14 @@ inventory resolve the canonical slot through this registry. A second independent
 stereo definition is exercised through both paths without engine/storage type
 branches. No implicit engine sine fallback is allowed.
 
+Control-side native metadata/state access takes an explicit effect or instrument
+class and queries only that class's registry. The existing unqualified engine
+helpers remain effect-only compatibility entry points. Catalog listing, default
+state, descriptor/value views and parameter patching share the neutral metadata
+contract; a type ID is never used to guess processing class or fall back to the
+other registry. This matters because effect and instrument registries validate
+their identities independently and may contain the same type ID.
+
 Control prepares an immutable sample-rate-specific configuration. Its prepared
 note is a Copy value containing three u64 payload words, release duration and a
 safe stereo sample function pointer: 40bytes on64-bit targets, eight bytes more
