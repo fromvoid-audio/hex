@@ -4,7 +4,10 @@ Pulse ticket 44 owns the reusable GPUI toolkit, ticket 65 owns bounded live
 parameter gestures and grouped undo, and ticket 17 owns the real device panel.
 The first toolkit implementation is source-complete: 14 targeted widget tests,
 strict crate Clippy, architecture/style guards, formatting and desktop build
-pass. Clean-commit full local CI and native acceptance remain separate gates.
+pass. All 14 full local CI steps passed on clean `7f0bdea` in 163.297 s
+with unchanged source digest and `stale=false`
+([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Native acceptance
+remains open.
 
 ## Boundary
 
@@ -20,6 +23,13 @@ Control entities retain local draft values and focus across renders. They emit
 begin/change/commit/cancel events; they neither write files nor create history.
 Device descriptors drive general controls; adding a device does not add storage
 branches or require a competing UI editing model.
+
+The device panel resolves a bounded registered-type catalog for its add menu
+and a complete descriptor/value snapshot per changed device state. These
+control-side engine APIs resolve and migrate once per snapshot, rather than
+looking up every knob separately. Optional device-owned display names are
+presentation metadata; stable type IDs and opaque persisted state are unchanged.
+Unknown or unsupported states report errors instead of displaying defaults.
 
 ## Interaction contract
 
