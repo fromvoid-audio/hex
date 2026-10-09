@@ -195,9 +195,10 @@ pub(super) fn clip_grid_layer(
         .children(children)
 }
 
-struct ClipViewTimeline<'a> {
-    viewport: Viewport,
-    grid: &'a [super::musical_time::GridLine],
+pub(super) struct ClipViewTimeline<'a> {
+    pub(super) viewport: Viewport,
+    pub(super) grid: &'a [super::musical_time::GridLine],
+    pub(super) scale_factor: f32,
 }
 
 impl EditorView {
@@ -206,10 +207,14 @@ impl EditorView {
         state: &ViewState,
         track: &Track,
         selected: bool,
-        viewport: Viewport,
-        grid: &[super::musical_time::GridLine],
+        timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        let ClipViewTimeline {
+            viewport,
+            grid,
+            scale_factor,
+        } = timeline;
         let track_id = track.id();
         let Some(viewport_end) = viewport.end() else {
             return div().w_full().h(px(TRACK_ROW_HEIGHT));
@@ -250,7 +255,11 @@ impl EditorView {
                 track_id,
                 clip,
                 selected_clip,
-                ClipViewTimeline { viewport, grid },
+                ClipViewTimeline {
+                    viewport,
+                    grid,
+                    scale_factor,
+                },
                 cx,
             ));
         }
@@ -614,6 +623,22 @@ impl EditorView {
                 );
             }
         }
+        if self.selected_track == Some(track_id) && self.time_selection.is_some() {
+            clip_area = clip_area.child(
+                div()
+                    .debug_selector(|| format!("time-selection-focus-{}", track_id.value()))
+                    .absolute()
+                    .inset_0()
+                    .bg(rgb(Palette::CYAN))
+                    .opacity(0.035),
+            );
+        }
+        if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
+            clip_area = clip_area.children([selection]);
+        }
+        if let Some(preview) = self.time_range_move_preview_overlay(track_id, viewport) {
+            clip_area = clip_area.children([preview]);
+        }
         clip_area = clip_area.child(
             div()
                 .debug_selector(|| format!("lane-separator-{}", track_id.value()))
@@ -807,7 +832,7 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let ClipViewTimeline { viewport, grid } = timeline;
+        let ClipViewTimeline { viewport, grid, .. } = timeline;
         let clip_id = clip.id();
         let clip_duration = clip.duration();
         let trim_preview_clip = self

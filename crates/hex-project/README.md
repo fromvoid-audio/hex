@@ -30,6 +30,11 @@ preserve the clip's duration/source-length difference and shift source bounds
 with the timeline; loop left trims move phase while right trims only change
 duration. Actual trims reanchor fades, while boundary no-ops preserve them.
 
+Finite Arrangement time rectangles use `TimeRange` and opaque `RangeClipboard`
+metadata. Capture preserves audio source/fades and materializes selected MIDI
+playback in frames; paste/delete/move are validated candidate edits with one-step
+history. No PCM or OS clipboard is owned here. See [time selection](../../docs/time-selection.md).
+
 ## Dependencies
 
 std only. The engine consumes read-only snapshots to compile playback; storage

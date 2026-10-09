@@ -1923,3 +1923,19 @@ measurement is in `docs/performance.md`; full native responsiveness remains
 unverified. Review release app: `artifacts/hex-smooth-clip-20261009.app`, identity:
 `artifacts/smooth-clip-manifest.json`. User check details/status flicker, audio/
 MIDI snapping/free resize, preview/release agreement, cancel/Undo and replacement.
+
+## arrangement time selection — 9 October 2026
+
+- [x] Canonical bounded range capture/delete/paste/move commands and worker-owned clipboard.
+- [x] Prepared cut publishes clipboard only after compilation; project opening clears it.
+- [x] Steady area selection, slow track-scoped point blink and endpoint focus highlight.
+- [x] Contextual shortcuts and range move; source regression checks preserve clip hit priority.
+- [x] Source checks and fresh release review bundle; focused stacked PR follows.
+- [ ] User native selection/focus/shortcut/undo checks and boundary listening.
+
+Source acceptance: 729 workspace tests passed (2 ignored), followed by the final
+255 feature-enabled UI tests (2 ignored). Strict workspace Clippy and final
+feature-enabled UI Clippy, format, architecture/style guards and release desktop
+build pass. Fresh review app: `artifacts/hex-time-selection-20261009.app`;
+identity/logs: `artifacts/time-selection-manifest.json`. Native acceptance remains
+with the user; automated checks do not establish actual native paint/input timing.

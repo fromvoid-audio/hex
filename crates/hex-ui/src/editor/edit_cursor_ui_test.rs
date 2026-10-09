@@ -1,12 +1,12 @@
 use super::clip_drag_ui_test::{audio_project, editor_window, midi_project};
-use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::Command;
 use std::sync::Arc;
 
 #[gpui::test]
 fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
-    let (project, source, _, clip) = audio_project();
+    let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -20,12 +20,19 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
         lane.origin.y + px(22.0),
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.time_selection_gesture.is_none(),
+            "a clip hit remains available to clip selection and drag handling"
+        );
+    });
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let frame = editor.read_with(cx, |view, _| {
         let cursor = view.edit_cursor.expect("click places cursor");
         assert_eq!(cursor.track, source);
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
+        assert!(view.normalized_time_selection().is_none());
         assert_eq!(
             view.cursor_position(),
             0,
@@ -34,15 +41,22 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
         cursor.frame
     });
     let line = visual
-        .debug_bounds("edit-cursor-line")
+        .debug_bounds(Box::leak(
+            format!("edit-cursor-line-{}", source.value()).into_boxed_str(),
+        ))
         .expect("rendered line");
-    let layer = visual
-        .debug_bounds("edit-cursor-layer")
-        .expect("cursor extent");
-    assert_eq!(line.size.height, layer.size.height);
+    assert_eq!(line.origin.y, lane.origin.y);
+    assert_eq!(line.size.height, lane.size.height);
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("edit-cursor-line-{}", target.value()).into_boxed_str(),
+            ))
+            .is_none()
+    );
     assert!(f32::from(line.size.width) <= 1.0);
     assert!(
-        (f32::from(line.origin.x - layer.origin.x) / f32::from(layer.size.width)
+        (f32::from(line.origin.x - lane.origin.x) / f32::from(lane.size.width)
             - frame as f32 / 384_000.0)
             .abs()
             < 0.002
@@ -56,11 +70,15 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
     });
     visual.run_until_parked();
     let moved = visual
-        .debug_bounds("edit-cursor-line")
+        .debug_bounds(Box::leak(
+            format!("edit-cursor-line-{}", source.value()).into_boxed_str(),
+        ))
         .expect("line follows viewport");
     let extent = visual
-        .debug_bounds("edit-cursor-layer")
-        .expect("cursor extent");
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+        ))
+        .expect("track lane");
     let expected = (frame - 10_000) as f32 / 128_000.0;
     assert!(
         (f32::from(moved.origin.x - extent.origin.x) / f32::from(extent.size.width) - expected)
@@ -160,6 +178,198 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
             view.error
                 .as_ref()
                 .is_some_and(|error| error.contains("inside a clip"))
+        );
+    });
+}
+
+#[gpui::test]
+fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &mut TestAppContext) {
+    let mut model =
+        hex_project::Editor::new(hex_project::Project::new(48_000).expect("project"), 8)
+            .expect("editor");
+    let mut ids = Vec::new();
+    for index in 0..4 {
+        let hex_project::Created::Track(id) = model
+            .execute(Command::AddTrack {
+                name: format!("track {index}"),
+            })
+            .expect("add track")
+        else {
+            panic!("track result");
+        };
+        ids.push(id);
+    }
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = |visual: &mut VisualTestContext, id: hex_project::TrackId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", id.value()).into_boxed_str(),
+            ))
+            .expect("visible track lane")
+    };
+    let first_lane = lane(&mut visual, ids[0]);
+    let last_lane = lane(&mut visual, ids[3]);
+    let start = point(
+        first_lane.origin.x + first_lane.size.width * 0.2,
+        first_lane.origin.y + first_lane.size.height / 2.0,
+    );
+    let end = point(
+        start.x + first_lane.size.width * 0.35,
+        last_lane.origin.y + last_lane.size.height / 2.0,
+    );
+    cx.update_window(handle, |_, window, window_cx| {
+        editor.update(window_cx, |view, _| view.midi_focus.focus(window));
+    })
+    .expect("focus prior editor");
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.update_window(handle, |_, window, window_cx| {
+        editor.read_with(window_cx, |view, _| assert!(view.focus.is_focused(window)));
+    })
+    .expect("range drag restores arrangement focus");
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let selection = view.normalized_time_selection().expect("time selection");
+        assert_eq!(selection.tracks(), ids);
+        assert!(selection.end() > selection.start());
+        assert_eq!(view.selected_track, Some(ids[3]));
+        assert!(view.selected_clip.is_none());
+        assert_eq!(
+            view.time_selection_paste_target(),
+            Some((ids[0], selection.start())),
+            "paste origin is independent of endpoint focus"
+        );
+    });
+    let shading = visual
+        .debug_bounds(Box::leak(
+            format!("edit-time-selection-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .expect("selected track receives steady range fill");
+    let selected_lane = lane(&mut visual, ids[2]);
+    assert_eq!(shading.origin.y, selected_lane.origin.y);
+    assert_eq!(shading.size.height, selected_lane.size.height);
+    assert!(shading.size.width > px(1.0));
+
+    let reverse_start = point(
+        last_lane.origin.x + last_lane.size.width * 0.8,
+        last_lane.origin.y + last_lane.size.height / 2.0,
+    );
+    let reverse_end = point(
+        first_lane.origin.x + first_lane.size.width * 0.4,
+        first_lane.origin.y + first_lane.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(reverse_start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(reverse_end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(reverse_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let selection = view.normalized_time_selection().expect("reverse selection");
+        assert_eq!(selection.tracks(), ids);
+        assert!(selection.start() < selection.end());
+        assert_eq!(view.selected_track, Some(ids[0]));
+        assert_eq!(
+            view.time_selection_paste_target(),
+            Some((ids[0], selection.start()))
+        );
+    });
+}
+
+#[gpui::test]
+fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut TestAppContext) {
+    let mut model =
+        hex_project::Editor::new(hex_project::Project::new(48_000).expect("project"), 8)
+            .expect("editor");
+    let mut ids = Vec::new();
+    for index in 0..3 {
+        let hex_project::Created::Track(id) = model
+            .execute(Command::AddTrack {
+                name: format!("track {index}"),
+            })
+            .expect("add track")
+        else {
+            panic!("track result");
+        };
+        ids.push(id);
+    }
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = |visual: &mut VisualTestContext, id: hex_project::TrackId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", id.value()).into_boxed_str(),
+            ))
+            .expect("visible track lane")
+    };
+    let source = lane(&mut visual, ids[0]);
+    let target = lane(&mut visual, ids[1]);
+    let source_start = point(
+        source.origin.x + source.size.width * 0.2,
+        source.origin.y + source.size.height / 2.0,
+    );
+    let source_end = point(
+        source.origin.x + source.size.width * 0.4,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(source_start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(source_end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(source_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.normalized_time_selection()
+                .expect("selected range")
+                .tracks(),
+            &ids[0..1]
+        );
+    });
+
+    let grab = point(
+        source.origin.x + source.size.width * 0.3,
+        source.origin.y + source.size.height / 2.0,
+    );
+    let destination = point(
+        target.origin.x + target.size.width * 0.5,
+        target.origin.y + target.size.height / 2.0,
+    );
+    editor.update(cx, |view, _| {
+        assert!(view.begin_time_range_move_gesture(f32::from(grab.x), f32::from(grab.y)));
+        assert!(view.update_time_range_move_gesture(
+            f32::from(destination.x),
+            f32::from(destination.y),
+            false
+        ));
+        let generation = view.project_generation;
+        view.project_generation = generation.wrapping_add(1);
+        assert!(view.finish_time_range_move_gesture());
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "stale generation must not submit a move"
+        );
+        assert!(view.pending_time_range_move.is_none());
+        view.project_generation = generation;
+    });
+    visual.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let preview = visual
+        .debug_bounds(Box::leak(
+            format!("time-selection-move-preview-{}", ids[1].value()).into_boxed_str(),
+        ))
+        .expect("move preview on destination row");
+    assert_eq!(preview.origin.y, target.origin.y);
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(Command::MoveTimeRange { track, .. }) if track == ids[1]
+        ));
+        assert!(
+            view.normalized_time_selection().is_some(),
+            "release must not also collapse the area to a click"
         );
     });
 }

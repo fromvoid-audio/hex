@@ -8,6 +8,19 @@ use std::{collections::HashMap, path::PathBuf};
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    DeleteTimeRange {
+        range: crate::TimeRange,
+    },
+    PasteTimeRange {
+        clipboard: std::sync::Arc<crate::RangeClipboard>,
+        track: TrackId,
+        frame: u64,
+    },
+    MoveTimeRange {
+        range: crate::TimeRange,
+        track: TrackId,
+        frame: u64,
+    },
     AddTrack {
         name: String,
     },
@@ -652,7 +665,11 @@ pub(crate) fn preview_edge_trim(
     })
 }
 
-fn split_clip_at(original: &Clip, frame: u64, right_id: ClipId) -> Result<(Clip, Clip), Invalid> {
+pub(crate) fn split_clip_at(
+    original: &Clip,
+    frame: u64,
+    right_id: ClipId,
+) -> Result<(Clip, Clip), Invalid> {
     let end = original
         .start
         .checked_add(original.duration)
@@ -718,7 +735,7 @@ struct AudioOverwriteFragments {
     right: Option<Clip>,
 }
 
-fn overwrite_audio_interval(
+pub(crate) fn overwrite_audio_interval(
     project: &mut Project,
     track: TrackId,
     start: u64,
@@ -853,6 +870,17 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),
+            Command::PasteTimeRange {
+                clipboard,
+                track,
+                frame,
+            } => crate::time_range::paste(self, &clipboard, track, frame),
+            Command::MoveTimeRange {
+                range,
+                track,
+                frame,
+            } => crate::time_range::move_range(self, &range, track, frame),
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
             | Command::SetMidiClipSource { .. }

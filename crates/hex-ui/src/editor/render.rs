@@ -1,10 +1,10 @@
 use super::{
-    AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, DeleteClip, DuplicateClip,
-    EditorView, ExportProject, FitTimeline, ImportAudio, MidiOctaveDown, MidiOctaveUp, MoveLeft,
-    MoveRight, NextTrack, OpenProject, PanTimelineLeft, PanTimelineRight, PreviousTrack, Quit,
-    Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip,
-    Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo,
-    ZoomIn, ZoomOut,
+    AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
+    CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
+    ImportAudio, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack, OpenProject,
+    PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, Redo, RemoveTrack,
+    SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop,
+    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme::{self, Palette};
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -368,6 +368,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
                 let midi_canceled = view.cancel_midi_note_gesture();
+                let time_selection_canceled = view.cancel_time_selection_gesture();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
                     view.midi_selection.clear()
@@ -379,7 +380,12 @@ impl Render for EditorView {
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled && !selection_cleared && !drag_stopped && !pan_canceled {
+                if !midi_canceled
+                    && !selection_cleared
+                    && !time_selection_canceled
+                    && !drag_stopped
+                    && !pan_canceled
+                {
                     view.stop();
                 }
                 cx.notify();
@@ -523,7 +529,23 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {
+                view.copy_time_selection(false, window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &CutTimeSelection, window, cx| {
+                view.copy_time_selection(true, window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &PasteTimeSelection, window, cx| {
+                view.paste_time_selection(window);
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                if view.delete_time_selection(window) {
+                    cx.notify();
+                    return;
+                }
                 let target = super::session_grid::resolve_delete_target(
                     view.state.as_ref().map(|state| state.project.as_ref()),
                     view.mode,

@@ -1,0 +1,376 @@
+//! Control-side, finite Arrangement range fragments; no PCM or OS clipboard.
+use crate::{
+    Asset, AssetId, BeatTime, Clip, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MAX_TRACKS,
+    MidiClip, MidiNote, MidiSource, NoteId, Project, TrackId,
+};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeRange {
+    tracks: Vec<TrackId>,
+    start: u64,
+    end: u64,
+}
+impl TimeRange {
+    pub fn new(tracks: Vec<TrackId>, start: u64, end: u64) -> Result<Self, Invalid> {
+        if tracks.is_empty() || tracks.len() > MAX_TRACKS || start >= end {
+            return Err(Invalid(
+                "time selection needs tracks and a positive interval",
+            ));
+        }
+        for (index, track) in tracks.iter().enumerate() {
+            if tracks[..index].contains(track) {
+                return Err(Invalid("time selection contains duplicate tracks"));
+            }
+        }
+        Ok(Self { tracks, start, end })
+    }
+    pub fn tracks(&self) -> &[TrackId] {
+        &self.tracks
+    }
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+    pub fn duration(&self) -> u64 {
+        self.end - self.start
+    }
+    fn validate(&self, project: &Project) -> Result<usize, Invalid> {
+        let first = project
+            .tracks()
+            .iter()
+            .position(|track| Some(&track.id()) == self.tracks.first())
+            .ok_or(Invalid("time selection track no longer exists"))?;
+        let end = first
+            .checked_add(self.tracks.len())
+            .ok_or(Invalid("track range overflow"))?;
+        let rows = project
+            .tracks()
+            .get(first..end)
+            .ok_or(Invalid("time selection tracks no longer exist"))?;
+        if !rows
+            .iter()
+            .map(|track| track.id())
+            .eq(self.tracks.iter().copied())
+        {
+            return Err(Invalid("time selection track order changed"));
+        }
+        Ok(first)
+    }
+}
+
+/// Opaque, bounded selected playback metadata. Scope this to one open project.
+/// Partial MIDI is finite one-shot playback; gates crossing a cut retrigger.
+#[derive(Debug, Clone)]
+pub struct RangeClipboard {
+    sample_rate: u32,
+    duration: u64,
+    rows: usize,
+    assets: Vec<(AssetId, Asset)>,
+    audio: Vec<(usize, Clip)>,
+    midi: Vec<MidiFragment>,
+}
+impl RangeClipboard {
+    pub fn duration(&self) -> u64 {
+        self.duration
+    }
+    pub fn track_count(&self) -> usize {
+        self.rows
+    }
+}
+#[derive(Debug, Clone)]
+struct MidiFragment {
+    row: usize,
+    start: u64,
+    duration: u64,
+    notes: Vec<FrameNote>,
+}
+#[derive(Debug, Clone)]
+struct FrameNote {
+    start: u64,
+    duration: u64,
+    pitch: u8,
+    channel: u8,
+    velocity: u8,
+}
+
+fn reserve<T>(items: &mut Vec<T>, count: usize) -> Result<(), Invalid> {
+    items
+        .try_reserve(count)
+        .map_err(|_| Invalid("could not reserve time selection storage"))
+}
+
+impl Project {
+    /// Capture selected audible fragments on a control worker, not the UI/audio thread.
+    pub fn capture_time_range(&self, range: &TimeRange) -> Result<RangeClipboard, Invalid> {
+        let first = range.validate(self)?;
+        let mut result = RangeClipboard {
+            sample_rate: self.sample_rate(),
+            duration: range.duration(),
+            rows: range.tracks.len(),
+            assets: Vec::new(),
+            audio: Vec::new(),
+            midi: Vec::new(),
+        };
+        let mut expanded = 0_usize;
+        for (row, track) in self.tracks()[first..first + range.tracks.len()]
+            .iter()
+            .enumerate()
+        {
+            for clip in track.clips() {
+                let clip_end = clip
+                    .start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("clip end overflow"))?;
+                let start = range.start.max(clip.start());
+                let end = range.end.min(clip_end);
+                if start >= end {
+                    continue;
+                }
+                let mut fragment = clip.clone();
+                if start > fragment.start() {
+                    fragment = crate::edit::split_clip_at(&fragment, start, fragment.id())?.1;
+                }
+                if end < clip_end {
+                    fragment = crate::edit::split_clip_at(&fragment, end, fragment.id())?.0;
+                }
+                fragment.start = start - range.start;
+                if !result.assets.iter().any(|(id, _)| *id == clip.asset()) {
+                    let asset = self
+                        .asset(clip.asset())
+                        .ok_or(Invalid("selected media no longer exists"))?;
+                    reserve(&mut result.assets, 1)?;
+                    result.assets.push((clip.asset(), asset.clone()));
+                }
+                reserve(&mut result.audio, 1)?;
+                result.audio.push((row, fragment));
+            }
+            for clip in track.midi_clips() {
+                let clip_end = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .ok_or(Invalid("midi clip end overflow"))?;
+                let clip_start_frame = self.tempo_map().beat_to_frame(clip.start())?;
+                let clip_end_frame = self
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(clip_end))?;
+                let start = range.start.max(clip_start_frame);
+                let end = range.end.min(clip_end_frame);
+                if start >= end {
+                    continue;
+                }
+                let mut notes = Vec::new();
+                let playback = clip.source_playback()?;
+                for note in clip.notes() {
+                    let occurrences = playback.note_occurrences(note.start(), note.duration())?;
+                    let count = usize::try_from(occurrences.count())
+                        .map_err(|_| Invalid("midi range expansion overflow"))?;
+                    expanded = expanded
+                        .checked_add(count)
+                        .ok_or(Invalid("midi range expansion overflow"))?;
+                    if expanded > MAX_NOTES {
+                        return Err(Invalid("midi range expansion exceeds note limit"));
+                    }
+                    for occurrence in occurrences.iter() {
+                        let onset = clip
+                            .start()
+                            .raw()
+                            .checked_add(occurrence.timeline_start().raw())
+                            .ok_or(Invalid("note onset overflow"))?;
+                        let gate_end = onset
+                            .checked_add(occurrence.gate_duration().raw())
+                            .ok_or(Invalid("note gate overflow"))?
+                            .min(clip_end);
+                        let note_start = self
+                            .tempo_map()
+                            .beat_to_frame(BeatTime::from_raw(onset))?
+                            .max(start);
+                        let note_end = self
+                            .tempo_map()
+                            .beat_to_frame(BeatTime::from_raw(gate_end))?
+                            .min(end);
+                        if note_start < note_end {
+                            reserve(&mut notes, 1)?;
+                            notes.push(FrameNote {
+                                start: note_start - start,
+                                duration: note_end - note_start,
+                                pitch: note.pitch(),
+                                channel: note.channel(),
+                                velocity: note.velocity(),
+                            });
+                        }
+                    }
+                }
+                reserve(&mut result.midi, 1)?;
+                result.midi.push(MidiFragment {
+                    row,
+                    start: start - range.start,
+                    duration: end - start,
+                    notes,
+                });
+            }
+        }
+        if result.audio.len().saturating_add(result.midi.len()) > MAX_CLIPS {
+            return Err(Invalid("time selection exceeds clip limit"));
+        }
+        Ok(result)
+    }
+}
+
+pub(crate) fn clear(project: &mut Project, range: &TimeRange) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    for track in range.tracks.iter().copied() {
+        crate::edit::overwrite_audio_interval(project, track, range.start, range.end, ClipId(0))?;
+        crate::midi::overwrite_midi_in_frames(project, track, range.start, range.end, ClipId(0))?;
+    }
+    Ok(Created::None)
+}
+
+pub(crate) fn paste(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    if project.sample_rate() != clipboard.sample_rate {
+        return Err(Invalid("time clipboard belongs to another sample rate"));
+    }
+    for (id, expected) in &clipboard.assets {
+        if project.asset(*id) != Some(expected) {
+            return Err(Invalid("copied media no longer matches the project"));
+        }
+    }
+    let first = project
+        .tracks()
+        .iter()
+        .position(|item| item.id() == track)
+        .ok_or(Invalid("paste track no longer exists"))?;
+    let last = first
+        .checked_add(clipboard.rows)
+        .ok_or(Invalid("paste track range overflow"))?;
+    let rows: Vec<_> = project
+        .tracks()
+        .get(first..last)
+        .ok_or(Invalid("paste needs more existing tracks"))?
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    let end = frame
+        .checked_add(clipboard.duration)
+        .ok_or(Invalid("paste end overflow"))?;
+    // A time rectangle includes its empty cells: paste replaces that interval.
+    clear(project, &TimeRange::new(rows.clone(), frame, end)?)?;
+    let existing = project
+        .tracks()
+        .iter()
+        .map(|track| track.clips().len() + track.midi_clips().len())
+        .sum::<usize>();
+    if existing
+        .checked_add(clipboard.audio.len())
+        .and_then(|n| n.checked_add(clipboard.midi.len()))
+        .is_none_or(|n| n > MAX_CLIPS)
+    {
+        return Err(Invalid("clip limit reached"));
+    }
+    for (row, original) in &clipboard.audio {
+        let destination = *rows
+            .get(*row)
+            .ok_or(Invalid("copied track offset is invalid"))?;
+        let mut clip = original.clone();
+        clip.id = ClipId(project.allocate_id()?);
+        clip.start = frame
+            .checked_add(original.start())
+            .ok_or(Invalid("paste clip start overflow"))?;
+        let clips = project.audio_clips_mut(destination)?;
+        reserve(clips, 1)?;
+        clips.push(clip);
+    }
+    for fragment in &clipboard.midi {
+        let destination = *rows
+            .get(fragment.row)
+            .ok_or(Invalid("copied track offset is invalid"))?;
+        let start_frame = frame
+            .checked_add(fragment.start)
+            .ok_or(Invalid("paste midi start overflow"))?;
+        let end_frame = start_frame
+            .checked_add(fragment.duration)
+            .ok_or(Invalid("paste midi end overflow"))?;
+        let start = project.tempo_map().frame_to_beat(start_frame)?;
+        let end = project.tempo_map().frame_to_beat(end_frame)?;
+        let length = end
+            .raw()
+            .checked_sub(start.raw())
+            .filter(|n| *n > 0)
+            .map(BeatTime::from_raw)
+            .ok_or(Invalid("pasted midi interval collapsed"))?;
+        let mut notes = Vec::new();
+        reserve(&mut notes, fragment.notes.len())?;
+        for original in &fragment.notes {
+            let onset_frame = start_frame
+                .checked_add(original.start)
+                .ok_or(Invalid("paste note onset overflow"))?;
+            let gate_frame = onset_frame
+                .checked_add(original.duration)
+                .ok_or(Invalid("paste note gate overflow"))?;
+            let onset = project.tempo_map().frame_to_beat(onset_frame)?;
+            let gate = project.tempo_map().frame_to_beat(gate_frame)?;
+            let duration = gate
+                .raw()
+                .checked_sub(onset.raw())
+                .filter(|n| *n > 0)
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("pasted note gate collapsed"))?;
+            let note_start = onset
+                .raw()
+                .checked_sub(start.raw())
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("pasted note is before its clip"))?;
+            notes.push(MidiNote {
+                id: NoteId(project.allocate_id()?),
+                start: note_start,
+                duration,
+                pitch: original.pitch,
+                channel: original.channel,
+                velocity: original.velocity,
+            });
+        }
+        let source = MidiSource {
+            source_length: length,
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: length,
+            looping: false,
+            notes,
+        };
+        let clip = MidiClip {
+            id: ClipId(project.allocate_id()?),
+            start,
+            length,
+            source: Arc::new(source),
+        };
+        let clips = &mut project.track_mut(destination)?.content.midi_clips;
+        reserve(clips, 1)?;
+        clips.push(clip);
+    }
+    // Global note/ID/source validation includes the independent Session inventory.
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::None)
+}
+
+pub(crate) fn move_range(
+    project: &mut Project,
+    range: &TimeRange,
+    track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    if range.tracks.first() == Some(&track) && range.start == frame {
+        return Ok(Created::None);
+    }
+    let clipboard = project.capture_time_range(range)?;
+    clear(project, range)?;
+    paste(project, &clipboard, track, frame)
+}

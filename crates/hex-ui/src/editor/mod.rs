@@ -47,6 +47,7 @@ mod session_navigation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_navigation_ui_test;
 mod session_route_view;
+mod time_selection;
 mod tracks;
 mod transport;
 mod trim;
@@ -140,6 +141,9 @@ actions!(
         TrimLeft,
         TrimRight,
         DeleteClip,
+        CopyTimeSelection,
+        CutTimeSelection,
+        PasteTimeSelection,
         DuplicateClip,
         SplitClip,
         SetLoopFromClip,
@@ -262,6 +266,9 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
+        KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-v", PasteTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-d", DuplicateClip, Some("hex_editor")),
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
@@ -424,6 +431,11 @@ pub(super) struct EditorView {
     browser: browser::BrowserState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
+    time_selection: Option<time_selection::TimeSelection>,
+    time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
+    time_range_move_gesture: Option<time_selection::TimeRangeMoveGesture>,
+    pending_time_range_move: Option<time_selection::PendingTimeRangeMove>,
+    suppress_cursor_click: bool,
 }
 
 impl EditorView {
@@ -604,6 +616,11 @@ impl EditorView {
             browser,
             context_menu: None,
             edit_cursor: None,
+            time_selection: None,
+            time_selection_gesture: None,
+            time_range_move_gesture: None,
+            pending_time_range_move: None,
+            suppress_cursor_click: false,
         };
         view.browser_scan_initial(cx);
         view

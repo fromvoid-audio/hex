@@ -1,20 +1,20 @@
 //! View-only Arrangement insertion position, distinct from the audio playhead.
-use super::{EditorMode, EditorView};
+use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use crate::theme::Palette;
-use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, relative, rgb};
+use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
-const BLINK_INTERVAL: Duration = Duration::from_millis(500);
+const BLINK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
-    pub track: TrackId,
-    pub frame: u64,
-    generation: u64,
-    bright: bool,
-    last_blink: Instant,
+    pub(super) track: TrackId,
+    pub(super) frame: u64,
+    pub(super) generation: u64,
+    pub(super) bright: bool,
+    pub(super) last_blink: Instant,
 }
 
 impl EditCursor {
@@ -25,6 +25,14 @@ impl EditCursor {
         self.bright = !self.bright;
         self.last_blink = now;
         true
+    }
+
+    pub(super) fn color(&self) -> u32 {
+        if self.bright {
+            Palette::TEXT
+        } else {
+            Palette::CYAN
+        }
     }
 }
 
@@ -37,6 +45,10 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.suppress_cursor_click {
+            self.suppress_cursor_click = false;
+            return;
+        }
         if self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -73,14 +85,28 @@ impl EditorView {
             bright: true,
             last_blink: Instant::now(),
         });
+        self.time_selection = Some(TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: frame,
+            end_frame: frame,
+        });
         self.selected_track = Some(track);
         self.focus.focus(window);
         cx.notify();
     }
 
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
+        if self.context_menu.is_some()
+            || self.close_prompt_open
+            || self.mode != EditorMode::Arrangement
+            || self.save_dialog_open
+            || self.export_dialog_open
+        {
+            return self.cancel_time_selection_gesture();
+        }
         let Some(cursor) = &mut self.edit_cursor else {
-            return false;
+            return self.cancel_time_selection_gesture();
         };
         if cursor.generation != self.project_generation
             || self
@@ -89,29 +115,37 @@ impl EditorView {
                 .is_none_or(|state| state.project.track(cursor.track).is_none())
         {
             self.edit_cursor = None;
+            self.time_selection = None;
+            self.time_selection_gesture = None;
+            self.suppress_cursor_click = false;
             return true;
         }
-        if self.mode != EditorMode::Arrangement
-            || self.context_menu.is_some()
-            || self.close_prompt_open
+        if self.time_selection.is_some_and(|selection| {
+            self.state.as_ref().is_none_or(|state| {
+                state.project.track(selection.anchor_track).is_none()
+                    || state.project.track(selection.end_track).is_none()
+            })
+        }) {
+            self.time_selection = None;
+            self.time_selection_gesture = None;
+            self.suppress_cursor_click = false;
+            return true;
+        }
+        if self
+            .time_selection
+            .is_some_and(|selection| selection.anchor_frame != selection.end_frame)
         {
             return false;
         }
         cursor.pulse(now)
     }
 
-    pub(super) fn edit_cursor_layer(
-        &self,
-        viewport: super::viewport::Viewport,
-        window: &Window,
-    ) -> Option<Div> {
+    pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
         let cursor = self.edit_cursor?;
         if cursor.generation != self.project_generation {
             return None;
         }
         let fraction = viewport.fraction(cursor.frame)?;
-        let stroke = 1.0 / window.scale_factor();
-        let opacity = if cursor.bright { 1.0 } else { 0.25 };
         Some(
             div()
                 .absolute()
@@ -120,15 +154,6 @@ impl EditorView {
                 .left_0()
                 .right(px(super::tracks::TRACK_HEADER_WIDTH))
                 .debug_selector(|| "edit-cursor-layer".into())
-                .children([div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative(fraction))
-                    .w(px(stroke))
-                    .debug_selector(|| "edit-cursor-line".into())
-                    .bg(rgb(Palette::TEXT))
-                    .opacity(opacity)])
                 .children([canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| {
@@ -243,7 +268,7 @@ impl EditorView {
 mod tests {
     use super::*;
     #[test]
-    fn cursor_pulse_changes_only_at_half_second_intervals() {
+    fn cursor_pulse_changes_white_and_cyan_only_at_one_second_intervals() {
         let now = Instant::now();
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).expect("project"), 4)
@@ -263,12 +288,15 @@ mod tests {
             bright: true,
             last_blink: now,
         };
-        assert!(!cursor.pulse(now + Duration::from_millis(499)));
-        assert!(cursor.bright);
-        assert!(cursor.pulse(now + Duration::from_millis(500)));
-        assert!(!cursor.bright);
         assert!(!cursor.pulse(now + Duration::from_millis(999)));
-        assert!(cursor.pulse(now + Duration::from_millis(1000)));
         assert!(cursor.bright);
+        assert_eq!(cursor.color(), Palette::TEXT);
+        assert!(cursor.pulse(now + Duration::from_secs(1)));
+        assert!(!cursor.bright);
+        assert_eq!(cursor.color(), Palette::CYAN);
+        assert!(!cursor.pulse(now + Duration::from_millis(1999)));
+        assert!(cursor.pulse(now + Duration::from_secs(2)));
+        assert!(cursor.bright);
+        assert_eq!(cursor.color(), Palette::TEXT);
     }
 }

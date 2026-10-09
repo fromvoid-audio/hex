@@ -2224,3 +2224,12 @@ text/status flicker specifically; pending control color pulses and shifting stat
 slots are addressed. Waveform preparation reuse is measured separately from
 paint/GPU/input latency. Native verdict remains open; no faster-DAW or complete
 100-track responsiveness claim is established by the component benchmark.
+
+## arrangement time selection — 9 October 2026
+
+Range paste replaces silent cells as well as clips across the full selected
+rectangle and requires existing destination tracks. MIDI source loops are
+materialized as finite one-shot gates; boundary carry notes retrigger. This follows
+the existing split/overwrite policy, not a verified Live equivalence. Expansion
+is bounded conservatively over intersecting source clips. Native selection/focus/
+shortcut checks and sustained-note listening remain open; see time-selection.md.

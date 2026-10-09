@@ -3537,3 +3537,17 @@ optimization in `docs/clip-edit-performance.md` before expanding clip-view DSP
 features. Measure reuse/preparation cost, preserve validated edits and hand the
 native smoothness/flicker checks to the user. Broader architecture optimizations
 require measured bottlenecks and their own targeted PRs.
+
+## current work unit: arrangement time selection — 9 October 2026
+
+Extend the point cursor into a steady translucent rectangular time selection,
+with endpoint track focus, track-scoped slow white/cyan point blinking and row
+dividers above it. Support atomic range cut/copy/paste/delete/move through the
+canonical project and Session worker, preserving outside tails and one-step Undo.
+See [time-selection.md](time-selection.md) for frame, clipboard, silence replacement
+and finite MIDI source contracts. Existing clip drag/resize and editor focus must
+remain usable. No persistence fields or audio callback work are added.
+
+Acceptance: affected-crate tests and source guards, desktop build and focused PR;
+then user native checks. Exact Live time-edit parity, system clipboard, gap-shifting
+edits and multi-track Cmd-E splits are deferred. Native timing remains unmeasured.

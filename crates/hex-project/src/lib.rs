@@ -6,6 +6,8 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod time_range;
+pub use time_range::{RangeClipboard, TimeRange};
 mod midi;
 mod midi_batch;
 mod midi_playback;
