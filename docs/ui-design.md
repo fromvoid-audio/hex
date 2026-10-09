@@ -20,6 +20,11 @@ or depend on system-installed fonts. Native title text is hidden; `hex` is drawn
 in the app header. macOS-owned menu chrome, permission dialogs, and system file
 pickers are rendered by the OS, outside the app's typography control.
 
+Reusable lattice controls live in `hex-widgets`, with caller-supplied style/text
+and inherited typography. Their interaction and controller boundary is specified
+in [device controls](device-controls.md); the toolkit does not own canonical
+device state or audio processing.
+
 Run `python3 scripts/check-ui-style.py` after changing app text or styling.
 This source guard checks text-child routing, font selectors, and bundle names;
 it is not a substitute for inspecting rendered glyphs or future custom renderers.
