@@ -359,6 +359,8 @@ impl EditorView {
         }
         self.drag_lanes
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.drag_lane_epochs
+            .retain(|track, _| event.state.project.track(*track).is_some());
         self.state = Some(event.state);
         if event.project_replaced {
             self.cancel_midi_note_gesture();
@@ -375,6 +377,8 @@ impl EditorView {
             self.pending_playback = None;
             self.clear_route_telemetry();
             self.drag_lanes.clear();
+            self.drag_lane_epochs.clear();
+            self.active_clip_drag = None;
             self.pointer_down = None;
             self.stop();
             self.viewport = None;
@@ -650,6 +654,14 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        #[cfg(test)]
+        if let Request::Edit(command) = &request {
+            self.last_enqueued_edit = Some(command.clone());
+        }
+        #[cfg(test)]
+        if let Request::ImportToTrack { path, track, start } = &request {
+            self.last_enqueued_import_to_track = Some((path.clone(), *track, *start));
+        }
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }

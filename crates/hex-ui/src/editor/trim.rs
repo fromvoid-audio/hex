@@ -411,6 +411,8 @@ mod tests {
         let lane = LaneBounds {
             left: 10.0,
             width: 100.0,
+            top: 0.0,
+            height: 44.0,
         };
         let viewport = Viewport {
             start: 100,
@@ -501,6 +503,8 @@ mod tests {
         let changed_lane = LaneBounds {
             left: payload.source_lane.left,
             width: payload.source_lane.width + 1.0,
+            top: payload.source_lane.top,
+            height: payload.source_lane.height,
         };
         assert!(!payload_is_current(
             &payload,
@@ -638,6 +642,8 @@ mod tests {
             source_lane: LaneBounds {
                 left: 10.0,
                 width: 100.0,
+                top: 0.0,
+                height: 44.0,
             },
             viewport_start: 0,
             viewport_length: 500,

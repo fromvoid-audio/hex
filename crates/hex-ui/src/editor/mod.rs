@@ -2,6 +2,8 @@ mod arrangement;
 mod bootstrap;
 mod browser;
 mod browser_input;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_drag_ui_test;
 mod close;
 mod controller;
 mod dialogs;
@@ -383,7 +385,17 @@ pub(super) struct EditorView {
     redraw_gate: RedrawGate,
     pub(in crate::editor) project_generation: u64,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
+    drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
+    drag_layout_generation: u64,
+    active_clip_drag: Option<drag::ClipDrag>,
+    active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     pointer_down: Option<drag::PointerDown>,
+    #[cfg(test)]
+    drag_move_event_count: usize,
+    #[cfg(test)]
+    last_enqueued_edit: Option<Command>,
+    #[cfg(test)]
+    last_enqueued_import_to_track: Option<(std::path::PathBuf, TrackId, u64)>,
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
 }
@@ -394,6 +406,33 @@ impl EditorView {
         cx: &mut Context<Self>,
         service: Service,
         output: Result<PreparedOutput, String>,
+    ) -> Self {
+        Self::new_with_browser_preferences_path(
+            window,
+            cx,
+            service,
+            output,
+            browser::default_preferences_path(),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<PreparedOutput, String>,
+        preferences_path: std::path::PathBuf,
+    ) -> Self {
+        Self::new_with_browser_preferences_path(window, cx, service, output, preferences_path)
+    }
+
+    fn new_with_browser_preferences_path(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        output: Result<PreparedOutput, String>,
+        preferences_path: std::path::PathBuf,
     ) -> Self {
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
@@ -441,7 +480,7 @@ impl EditorView {
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx);
+        let browser = browser::BrowserState::new(cx, preferences_path);
         let mut view = Self {
             service,
             audio,
@@ -509,7 +548,17 @@ impl EditorView {
             redraw_gate: RedrawGate::default(),
             project_generation: 0,
             drag_lanes: std::collections::HashMap::new(),
+            drag_lane_epochs: std::collections::HashMap::new(),
+            drag_layout_generation: 0,
+            active_clip_drag: None,
+            active_browser_audio_drag: None,
             pointer_down: None,
+            #[cfg(test)]
+            drag_move_event_count: 0,
+            #[cfg(test)]
+            last_enqueued_edit: None,
+            #[cfg(test)]
+            last_enqueued_import_to_track: None,
             snap_grid: musical_time::SnapGrid::default(),
             browser,
         };

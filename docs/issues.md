@@ -1765,3 +1765,94 @@ device deadlines, native mixed-source interaction and listening remain open.
 The separate `artifacts/hex-hybrid-tracks-20261009.app` includes the browser
 resize fix; user owns native checks. Running apps/unsaved work are preserved.
 No plugin/device-chain or broader roadmap work is included.
+
+
+## Arrangement drag preview and MIDI movement — 9 October 2026
+
+Replaced the mouse-following ghost with one clipped target-track landing
+rectangle; audio and MIDI now share typed preview/drop resolution and commands.
+MIDI grab/start/length remain beats, with destination frame bounds mapped through
+the tempo map. Review caught row-Y-only hit testing: X+Y bounds now reject
+headers/browser/outside lanes, and visible-row caches are pruned after scroll.
+A refactor initially routed snap-off audio frames through tempo conversion;
+restored the exact frame bypass with a high-frame regression.
+
+UI suite 192 passed/one existing ignored; final musical-time and drag suites
+8/8 and 11/11, strict UI Clippy, desktop build, fmt and both guards pass. Native
+release/Escape/outside-lane/cropped-source checks belong to the user and remain
+open. Separate review bundle `artifacts/hex-clip-drag-20261009.app` preserves
+the running app/unsaved work. No new autoscroll or overlap-policy change.
+
+
+### Clip pickup regression and browser folder loss — user reports, 9 October
+
+User reports that the landing-preview build cannot pick up clips: click+drag
+produces no movement. Geometry/unit checks were insufficient to establish native
+GPUI pointer pickup. Investigate actual hit testing/dispatch and cover rendered
+audio/MIDI drag initiation before further UI work. Both running hybrid/clip-drag
+review apps are preserved. Native acceptance is failed pending repair.
+
+Browser places are currently view-only Vec<PathBuf>; adding a folder is lost on
+restart. User requests persistence in the next build. Application settings must
+remain independent of project metadata and control/audio state; preserve paths,
+bound I/O and surface storage errors.
+
+User clarification: MIDI initially drags on its own track; crossing to another
+track hides the drag preview, but release successfully places it there. The
+moved MIDI clip then cannot be picked up again. Acceptance must cover cross-row
+preview continuity and a second drag after the applied edit/revision refresh,
+in addition to audio initial pickup.
+
+Drag diagnosis: the UniformList processor receives partial rendering batches;
+per-batch lane-cache retention and preview clearing treated those batches as
+the entire visible set and erased valid cross-track previews. Removing that
+destructive pruning repairs actual rendered pointer preview/drop tests. The
+second-pickup test initially left worker_requests_pending=1 after simulated
+publication; completing that simulated response restores the correct pickup
+surface. Both rendered audio/MIDI tests pass; this does not independently
+explain every native pickup symptom, so user retest remains required.
+
+Final follow-up source acceptance: current-painted-generation eligibility
+replaces per-batch pruning; rendered wheel scrolling rejects stale overlapping
+row bounds. Browser settings now live in hex-preferences, with native paths,
+bounds, synced atomic publication, existing-file revalidation and ordered/coalesced
+background UI saves. Temp settings tests avoid touching real preferences.
+8 preferences/197 UI tests pass (one ignored), strict affected lints/build/guards/
+fmt/diff checks pass. Combined review bundle is
+`artifacts/hex-browser-places-20261009.app`; user restart/drag retest remains open.
+Compilation initially failed due to disk exhaustion; only approved hex UI/desktop
+incremental caches were removed, then final checks reran with incremental off.
+Source, running apps and artifacts were preserved.
+
+
+### User acceptance and next browser drag workflow — 9 October
+
+User confirms both previous acceptance items work: browser folder survives
+restart and audio/MIDI clip dragging works. This closes that native follow-up.
+Next request adds browser WAV drag-to-track with conditional floating/locked
+preview and asks about outbound drag to external apps. Record pinned GPUI
+capability before any native boundary decision; do not equate internal dragging
+with an OS file drag.
+
+Pinned GPUI 0.2.2 outbound boundary finding: `.on_drag` creates an internal GPUI
+view painted cursor-relative in the same window (`elements/div.rs` and
+`window.rs`). macOS window code handles inbound pasteboard file drops only;
+there is no public outbound native file-drag API or NSDraggingSource/session
+implementation. Internal free/locked preview is supported. Cross-application
+file dragging is deferred to a separate documented native integration; no
+unsafe exception or new platform framework is introduced by this unit.
+
+Browser drag source acceptance: bounded session preview preparation returns
+project-rate duration and 48 waveform bins, with no PCM retained in UI. One
+preparation in flight/latest pending and capped metadata cache run independently
+of project edits. Conditional internal ghosts and track landing previews share
+release geometry; browser import uses existing ImportToTrack. A paint-only GPUI
+on_mouse_event registration attempt was removed after the rendered test caught
+it; normal row handlers now cover cancellation/drop. Stale snap/viewport/rate/
+project/listing states are rejected.
+
+200 UI tests pass/one ignored, preferences/session tests, strict affected lints,
+desktop build and guards/fmt/diff checks pass. Review bundle:
+`artifacts/hex-browser-drag-20261009.app`. Native user checks remain open. External
+file drag is unsupported by pinned GPUI; a file externally modified while held
+can differ from preview, and import reopens/validates it. No held-source lease.

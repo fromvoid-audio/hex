@@ -2599,6 +2599,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-preferences"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hex-project"
 version = "0.1.0"
 
@@ -2641,6 +2649,7 @@ dependencies = [
  "hex-audio",
  "hex-engine",
  "hex-library",
+ "hex-preferences",
  "hex-project",
  "hex-session",
 ]

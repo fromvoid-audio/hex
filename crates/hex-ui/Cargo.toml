@@ -14,6 +14,7 @@ hex-project = { path = "../hex-project" }
 hex-engine = { path = "../hex-engine" }
 hex-audio = { path = "../hex-audio" }
 hex-library = { path = "../hex-library" }
+hex-preferences = { path = "../hex-preferences" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [lints]

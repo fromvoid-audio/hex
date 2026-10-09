@@ -21,6 +21,7 @@ const REQUEST_CAPACITY: usize = 32;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
+const BROWSER_PREVIEW_BINS: usize = 48;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 /// Read-only model and cached summaries for a single committed project revision.
@@ -63,6 +64,44 @@ pub struct ExportEvent {
     pub revision: u64,
     pub path: PathBuf,
     pub result: Result<ExportReport, String>,
+}
+
+/// Bounded audio metadata prepared away from the UI for browser drag feedback.
+#[derive(Clone, Debug)]
+pub struct AudioPreview {
+    pub playback_frames: u64,
+    pub sample_rate: u32,
+    pub waveform: Arc<Waveform>,
+}
+
+/// Decode and convert an audio source using the same limits and conversion path
+/// as import, then retain only its bounded waveform summary and playback length.
+pub fn prepare_audio_preview(
+    path: impl AsRef<Path>,
+    project_sample_rate: u32,
+) -> Result<AudioPreview, String> {
+    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = hex_media::resample(
+        decoded.audio(),
+        project_sample_rate,
+        ResampleLimits {
+            max_source_frames: IMPORT_FRAME_LIMIT,
+            max_output_frames: IMPORT_FRAME_LIMIT,
+        },
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
+    let playback_frames = u64::try_from(audio.frames().len())
+        .map_err(|_| "converted frame count exceeds project range".to_owned())?;
+    let waveform = Arc::new(
+        hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
+            .map_err(|error| error.to_string().to_lowercase())?,
+    );
+    Ok(AudioPreview {
+        playback_frames,
+        sample_rate: project_sample_rate,
+        waveform,
+    })
 }
 
 /// Bounded requests accepted by the control worker.
@@ -1004,6 +1043,21 @@ mod service_tests {
         bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&data);
         bytes
+    }
+
+    #[test]
+    fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
+        let directory = TestDir::new();
+        let path = directory.0.join("tone.WAV");
+        fs::write(&path, wav_mono(&[4_000; 96])).expect("write wav fixture");
+
+        let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
+
+        assert_eq!(preview.playback_frames, 48);
+        assert_eq!(preview.sample_rate, 24_000);
+        assert_eq!(preview.waveform.source_frames, 48);
+        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+        assert!(!preview.waveform.bins.is_empty());
     }
 
     fn next_event(service: &Service) -> Event {

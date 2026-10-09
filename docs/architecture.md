@@ -510,3 +510,13 @@ without losing either owner. Pages destruction still frees storage and must occu
 off realtime after callback quiescence. The worker owns actual descriptors:
 control must outlive all graphs using any key in its immutable catalog. This is
 not a dynamic catalog lease or native endpoint-retirement implementation.
+
+
+## Application browser preferences — 9 October 2026
+
+hex-preferences is the narrow application-preferences boundary: versioned bounded
+browser-place data, platform path encoding and recoverable filesystem publication.
+It has no workspace dependency and owns no project edits, GPUI, enumeration or
+audio. UI coordinates background load/save with bounded serialized/coalesced
+work. hex-storage remains project-only and hex-library remains listings-only.
+See browser-places.md for persistence/error and restart acceptance.

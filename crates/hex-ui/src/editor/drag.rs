@@ -1,8 +1,8 @@
 use super::musical_time::SnapGrid;
 use gpui::{Context, Window};
 use hex_project::Command;
-use hex_project::{ClipId, Project, TrackId, TrimEdge};
-use hex_session::service::Request;
+use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
+use hex_session::service::{AudioPreview, Request};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -13,19 +13,75 @@ pub(super) struct ClipDrag {
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
     pub(super) clip: ClipId,
-    pub(super) clip_start: u64,
-    pub(super) clip_duration: u64,
+    pub(super) position: ClipPosition,
     pub(super) grab_offset: Rc<Cell<Option<u64>>>,
+    pub(super) origin_pointer_x: Rc<Cell<Option<f32>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
-    pub(super) preview_start: Rc<Cell<Option<u64>>>,
+    pub(super) preview: Rc<Cell<Option<DropPreview>>>,
+    pub(super) ghost_label: String,
+    pub(super) ghost_waveform: Option<std::sync::Arc<hex_session::CachedWaveform>>,
+    pub(super) lane_hovered: Rc<Cell<bool>>,
+}
+
+/// In-window drag payload for a WAV file from the library browser.
+#[derive(Clone)]
+pub(super) struct BrowserAudioDrag {
+    pub(super) project_generation: u64,
+    pub(super) revision: u64,
+    pub(super) browser_generation: u64,
+    pub(super) sample_rate: u32,
+    pub(super) path: std::path::PathBuf,
+    pub(super) label: String,
+    pub(super) viewport_start: u64,
+    pub(super) viewport_length: u64,
+    pub(super) snap_grid: SnapGrid,
+    pub(super) metadata: Rc<std::cell::RefCell<Option<Rc<AudioPreview>>>>,
+    pub(super) metadata_error: Rc<std::cell::RefCell<Option<String>>>,
+    pub(super) preview: Rc<Cell<Option<DropPreview>>>,
+    pub(super) pending_start: Rc<Cell<Option<(TrackId, u64)>>>,
+    pub(super) lane_hovered: Rc<Cell<bool>>,
+    pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClipPosition {
+    Audio { start: u64, duration: u64 },
+    Midi { start: BeatTime, length: BeatTime },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DropPreview {
+    pub(super) target_track: TrackId,
+    pub(super) start_frame: u64,
+    pub(super) end_frame: u64,
+    pub(super) position: ClipPosition,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LaneBounds {
     pub(super) left: f32,
     pub(super) width: f32,
+    pub(super) top: f32,
+    pub(super) height: f32,
+}
+
+fn lane_contains_pointer(pointer_x: f32, pointer_y: f32, lane: LaneBounds) -> bool {
+    let bottom = lane.top + lane.height;
+    let right = lane.left + lane.width;
+    pointer_x.is_finite()
+        && pointer_y.is_finite()
+        && lane.top.is_finite()
+        && lane.left.is_finite()
+        && lane.height.is_finite()
+        && lane.width.is_finite()
+        && lane.height > 0.0
+        && lane.width > 0.0
+        && pointer_x >= lane.left
+        && pointer_x < right
+        && pointer_y >= lane.top
+        && pointer_y < bottom
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,20 +176,120 @@ pub(super) fn drop_start(
     Some(pointer_frame.saturating_sub(grab_offset))
 }
 
-fn candidate_start(
+fn candidate_position(
     project: &Project,
     drag: &ClipDrag,
+    target_track: TrackId,
+    pointer_x: f32,
+    lane: LaneBounds,
+) -> Option<ClipPosition> {
+    match drag.position {
+        ClipPosition::Audio { duration, .. } => {
+            let pointer_frame = drop_start(
+                pointer_x,
+                lane,
+                drag.viewport_start,
+                drag.viewport_length,
+                drag.grab_offset.get()?,
+            )?;
+            let start = drag.snap_grid.snap_frame(project, pointer_frame)?;
+            start.checked_add(duration)?;
+            Some(ClipPosition::Audio { start, duration })
+        }
+        ClipPosition::Midi { length, .. } => {
+            if target_track == drag.source_track
+                && drag
+                    .origin_pointer_x
+                    .get()
+                    .is_some_and(|origin| (pointer_x - origin).abs() < 0.5)
+            {
+                return Some(drag.position);
+            }
+            let pointer_frame = drop_start(
+                pointer_x,
+                lane,
+                drag.viewport_start,
+                drag.viewport_length,
+                0,
+            )?;
+            let pointer_beat = project.tempo_map().frame_to_beat(pointer_frame).ok()?;
+            let offset = drag.grab_offset.get()?;
+            let start = BeatTime::from_raw(pointer_beat.raw().saturating_sub(offset));
+            let start = drag.snap_grid.snap_beat(project, start)?;
+            let end = start.raw().checked_add(length.raw())?;
+            project.tempo_map().beat_to_frame(start).ok()?;
+            project
+                .tempo_map()
+                .beat_to_frame(BeatTime::from_raw(end))
+                .ok()?;
+            Some(ClipPosition::Midi { start, length })
+        }
+    }
+}
+
+pub(super) struct BrowserDropCandidate<'a> {
+    pub project: &'a Project,
+    pub viewport_start: u64,
+    pub viewport_length: u64,
+    pub snap_grid: SnapGrid,
+    pub pointer_x: f32,
+    pub lane: LaneBounds,
+    pub duration: u64,
+    pub target_track: TrackId,
+}
+
+pub(super) fn browser_candidate(candidate: BrowserDropCandidate<'_>) -> Option<DropPreview> {
+    let start = browser_start(
+        candidate.project,
+        candidate.viewport_start,
+        candidate.viewport_length,
+        candidate.snap_grid,
+        candidate.pointer_x,
+        candidate.lane,
+    )?;
+    preview_for(
+        candidate.project,
+        candidate.target_track,
+        ClipPosition::Audio {
+            start,
+            duration: candidate.duration,
+        },
+    )
+}
+
+pub(super) fn browser_start(
+    project: &Project,
+    viewport_start: u64,
+    viewport_length: u64,
+    snap_grid: SnapGrid,
     pointer_x: f32,
     lane: LaneBounds,
 ) -> Option<u64> {
-    let pointer_frame = drop_start(
-        pointer_x,
-        lane,
-        drag.viewport_start,
-        drag.viewport_length,
-        drag.grab_offset.get()?,
-    )?;
-    drag.snap_grid.snap_frame(project, pointer_frame)
+    let pointer_frame = drop_start(pointer_x, lane, viewport_start, viewport_length, 0)?;
+    snap_grid.snap_frame(project, pointer_frame)
+}
+
+pub(super) fn preview_for(
+    project: &Project,
+    target_track: TrackId,
+    position: ClipPosition,
+) -> Option<DropPreview> {
+    let (start_frame, end_frame) = match position {
+        ClipPosition::Audio { start, duration } => (start, start.checked_add(duration)?),
+        ClipPosition::Midi { start, length } => {
+            let end = BeatTime::from_raw(start.raw().checked_add(length.raw())?);
+            (
+                project.tempo_map().beat_to_frame(start).ok()?,
+                project.tempo_map().beat_to_frame(end).ok()?,
+            )
+        }
+    };
+    (start_frame < end_frame).then_some(DropPreview {
+        target_track,
+        start_frame,
+        end_frame,
+        position,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -142,7 +298,7 @@ pub(super) struct DropState<'a> {
     pub(super) revision: u64,
     pub(super) project: &'a Project,
     pub(super) target_track: TrackId,
-    pub(super) start: u64,
+    pub(super) position: ClipPosition,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
@@ -160,17 +316,42 @@ pub(super) fn is_current(drag: &ClipDrag, state: DropState<'_>) -> bool {
     if state.project.track(state.target_track).is_none() {
         return false;
     }
-    state
-        .project
-        .track(drag.source_track)
-        .and_then(|track| track.clips().iter().find(|clip| clip.id() == drag.clip))
-        .is_some_and(|clip| {
-            clip.start() == drag.clip_start && clip.duration() == drag.clip_duration
-        })
+    match drag.position {
+        ClipPosition::Audio { start, duration } => state
+            .project
+            .track(drag.source_track)
+            .and_then(|track| track.clips().iter().find(|clip| clip.id() == drag.clip))
+            .is_some_and(|clip| clip.start() == start && clip.duration() == duration),
+        ClipPosition::Midi { start, length } => state
+            .project
+            .track(drag.source_track)
+            .and_then(|track| {
+                track
+                    .midi_clips()
+                    .iter()
+                    .find(|clip| clip.id() == drag.clip)
+            })
+            .is_some_and(|clip| clip.start() == start && clip.length() == length),
+    }
 }
 
 pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
-    drag.source_track == state.target_track && drag.clip_start == state.start
+    drag.source_track == state.target_track && drag.position == state.position
+}
+
+fn move_command(clip: ClipId, target_track: TrackId, position: ClipPosition) -> Command {
+    match position {
+        ClipPosition::Audio { start, .. } => Command::MoveClip {
+            clip,
+            track: target_track,
+            start,
+        },
+        ClipPosition::Midi { start, .. } => Command::MoveMidiClip {
+            clip,
+            track: target_track,
+            start,
+        },
+    }
 }
 
 impl super::EditorView {
@@ -230,7 +411,7 @@ impl super::EditorView {
                 revision: state.revision,
                 project: &state.project,
                 target_track: drag.source_track,
-                start: drag.clip_start,
+                position: drag.position,
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
                 snap_grid: self.snap_grid,
@@ -238,17 +419,196 @@ impl super::EditorView {
         )
     }
 
-    pub(super) fn drag_candidate_start(
+    pub(super) fn drag_candidate(
         &self,
         drag: &ClipDrag,
+        target_track: TrackId,
         pointer_x: f32,
         lane: LaneBounds,
-    ) -> Option<u64> {
+    ) -> Option<DropPreview> {
         if !self.drag_start_is_current(drag) {
             return None;
         }
         let state = self.state.as_ref()?;
-        candidate_start(&state.project, drag, pointer_x, lane)
+        let position = candidate_position(&state.project, drag, target_track, pointer_x, lane)?;
+        preview_for(&state.project, target_track, position)
+    }
+
+    pub(super) fn hovered_drag_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(TrackId, LaneBounds)> {
+        self.drag_lanes
+            .iter()
+            .filter(|(track, _)| {
+                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+            })
+            .find_map(|(track, lane)| {
+                lane_contains_pointer(pointer_x, pointer_y, *lane).then_some((*track, *lane))
+            })
+    }
+
+    pub(super) fn clear_clip_drag(&mut self, generation: u64, clip: ClipId) {
+        if self
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|drag| drag.project_generation == generation && drag.clip == clip)
+        {
+            self.active_clip_drag = None;
+        }
+    }
+
+    pub(super) fn begin_clip_drag(&mut self, drag: &ClipDrag) {
+        self.active_clip_drag = Some(drag.clone());
+        self.active_browser_audio_drag = None;
+    }
+
+    pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
+        self.active_clip_drag = None;
+        self.active_browser_audio_drag = Some(drag.clone());
+    }
+
+    pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
+        if self.opening_project
+            || self.close_prompt_open
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+            || self.browser.scan_generation() != drag.browser_generation
+        {
+            return false;
+        }
+        self.state.as_ref().is_some_and(|state| {
+            let viewport = self.visible_viewport(state.timeline_frames);
+            self.project_generation == drag.project_generation
+                && state.revision == drag.revision
+                && state.project.sample_rate() == drag.sample_rate
+                && viewport.start == drag.viewport_start
+                && viewport.length == drag.viewport_length
+                && self.snap_grid == drag.snap_grid
+        })
+    }
+
+    pub(super) fn browser_audio_drop_position(
+        &self,
+        drag: &BrowserAudioDrag,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> (Option<DropPreview>, bool) {
+        if !self.browser_audio_drag_is_current(drag) {
+            drag.pending_start.set(None);
+            return (None, false);
+        }
+        let Some((target, lane)) = self.hovered_drag_target(pointer_x, pointer_y) else {
+            drag.pending_start.set(None);
+            return (None, false);
+        };
+        let Some(state) = self.state.as_ref() else {
+            drag.pending_start.set(None);
+            return (None, true);
+        };
+        let Some(start) = browser_start(
+            &state.project,
+            drag.viewport_start,
+            drag.viewport_length,
+            drag.snap_grid,
+            pointer_x,
+            lane,
+        ) else {
+            drag.pending_start.set(None);
+            return (None, true);
+        };
+        drag.pending_start.set(Some((target, start)));
+        let preview = drag
+            .metadata
+            .borrow()
+            .clone()
+            .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+            .and_then(|metadata| {
+                browser_candidate(BrowserDropCandidate {
+                    project: &state.project,
+                    viewport_start: drag.viewport_start,
+                    viewport_length: drag.viewport_length,
+                    snap_grid: drag.snap_grid,
+                    pointer_x,
+                    lane,
+                    duration: metadata.playback_frames,
+                    target_track: target,
+                })
+            });
+        (preview, true)
+    }
+
+    pub(super) fn refresh_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
+        if !self.browser_audio_drag_is_current(drag) {
+            drag.preview.set(None);
+            drag.pending_start.set(None);
+            drag.lane_hovered.set(false);
+            return;
+        }
+        let Some((pointer_x, pointer_y)) = drag.last_pointer.get() else {
+            return;
+        };
+        let (preview, lane_hovered) = self.browser_audio_drop_position(drag, pointer_x, pointer_y);
+        drag.preview.set(preview);
+        drag.lane_hovered.set(lane_hovered);
+    }
+
+    pub(super) fn clear_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
+        if self
+            .active_browser_audio_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == drag.project_generation
+                    && active.browser_generation == drag.browser_generation
+                    && active.path == drag.path
+            })
+        {
+            self.active_browser_audio_drag = None;
+        }
+        drag.preview.set(None);
+        drag.pending_start.set(None);
+        drag.lane_hovered.set(false);
+    }
+
+    pub(super) fn drop_browser_audio(
+        &mut self,
+        drag: &BrowserAudioDrag,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.browser_audio_drag_is_current(drag);
+        let (preview, lane_hovered) = self.browser_audio_drop_position(
+            drag,
+            f32::from(window.mouse_position().x),
+            f32::from(window.mouse_position().y),
+        );
+        drag.preview.set(preview);
+        drag.lane_hovered.set(lane_hovered);
+        if !current || !lane_hovered {
+            self.active_browser_audio_drag = None;
+            cx.notify();
+            return;
+        }
+        if drag.metadata.borrow().is_some() && preview.is_none() {
+            self.active_browser_audio_drag = None;
+            self.error = Some("audio drop canceled · preview duration is invalid".into());
+            cx.notify();
+            return;
+        }
+        let Some((track, start)) = drag.pending_start.get() else {
+            self.active_browser_audio_drag = None;
+            cx.notify();
+            return;
+        };
+        self.enqueue(Request::ImportToTrack {
+            path: drag.path.clone(),
+            track,
+            start,
+        });
+        self.status = "importing sample to arrangement".into();
+        self.active_browser_audio_drag = None;
+        cx.notify();
     }
 
     pub(super) fn drop_clip(
@@ -258,63 +618,68 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let clear = |view: &mut Self| view.clear_clip_drag(drag.project_generation, drag.clip);
         if self.opening_project || self.close_prompt_open {
+            clear(self);
             return;
         }
         if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
             self.error = Some("clip move canceled · project work pending".into());
+            clear(self);
             cx.notify();
             return;
         }
         let Some(state) = self.state.as_ref() else {
+            clear(self);
             return;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
         if drag.grab_offset.get().is_none() {
             self.error = Some("clip move canceled · pointer position unavailable".into());
+            clear(self);
             cx.notify();
             return;
         }
         let Some(lane) = self.drag_lanes.get(&target_track).copied() else {
             self.error = Some("clip move canceled · target track unavailable".into());
+            clear(self);
             cx.notify();
             return;
         };
-        let Some(start) =
-            self.drag_candidate_start(drag, f32::from(window.mouse_position().x), lane)
-        else {
+        let Some(preview) = self.drag_candidate(
+            drag,
+            target_track,
+            f32::from(window.mouse_position().x),
+            lane,
+        ) else {
             self.error = Some("clip move canceled · invalid timeline position".into());
+            clear(self);
             cx.notify();
             return;
         };
-        if start.checked_add(drag.clip_duration).is_none() {
-            self.error = Some("clip move canceled · timeline position overflows".into());
-            cx.notify();
-            return;
-        }
         let drop_state = DropState {
             project_generation: self.project_generation,
             revision: state.revision,
             project: &state.project,
             target_track,
-            start,
+            position: preview.position,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             snap_grid: self.snap_grid,
         };
         if !is_current(drag, drop_state) {
             self.error = Some("clip move canceled · project changed".into());
+            clear(self);
             cx.notify();
             return;
         }
         if is_noop(drag, &drop_state) {
+            clear(self);
             return;
         }
-        self.enqueue(Request::Edit(Command::MoveClip {
-            clip: drag.clip,
-            track: target_track,
-            start,
-        }));
+        let command = move_command(drag.clip, target_track, preview.position);
+        clear(self);
+        self.enqueue(Request::Edit(command));
         cx.notify();
     }
 }
@@ -322,10 +687,11 @@ impl super::EditorView {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClipDrag, DropState, LaneBounds, PointerDown, SnapGrid, candidate_start, drop_start,
-        grab_offset, grab_offset_from_pointer, is_current, is_noop, take_pointer_down,
+        ClipDrag, ClipPosition, DropState, LaneBounds, PointerDown, SnapGrid, candidate_position,
+        drop_start, grab_offset, grab_offset_from_pointer, is_current, is_noop,
+        lane_contains_pointer, move_command, preview_for, take_pointer_down,
     };
-    use hex_project::{Command, Created, Editor, Project, TrackId, TrimEdge};
+    use hex_project::{BeatTime, Command, Created, Editor, Project, Tempo, TrackId, TrimEdge};
     use std::{cell::Cell, rc::Rc};
 
     fn fixture() -> (Editor, TrackId, TrackId, hex_project::ClipId) {
@@ -373,29 +739,98 @@ mod tests {
         (editor, source, target, clip)
     }
 
+    fn midi_fixture() -> (Editor, TrackId, TrackId, hex_project::ClipId) {
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
+        let Created::Track(source) = editor
+            .execute(Command::AddTrack {
+                name: "source".into(),
+            })
+            .expect("source track")
+        else {
+            panic!("source track id");
+        };
+        let Created::Track(target) = editor
+            .execute(Command::AddTrack {
+                name: "target".into(),
+            })
+            .expect("target track")
+        else {
+            panic!("target track id");
+        };
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(4).expect("tempo beat"),
+                tempo: Tempo::new(60_000_000).expect("tempo"),
+            })
+            .expect("tempo point");
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: source,
+                start: BeatTime::from_quarters(4).expect("clip beat"),
+                length: BeatTime::from_quarters(4).expect("clip length"),
+            })
+            .expect("midi clip")
+        else {
+            panic!("midi clip id");
+        };
+        (editor, source, target, clip)
+    }
+
     fn drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
         ClipDrag {
             project_generation: 3,
             revision: 9,
             source_track: source,
             clip,
-            clip_start: 40,
-            clip_duration: 100,
+            position: ClipPosition::Audio {
+                start: 40,
+                duration: 100,
+            },
             grab_offset: Rc::new(Cell::new(Some(50))),
+            origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 1_000,
             snap_grid: SnapGrid::Off,
-            preview_start: Rc::new(Cell::new(None)),
+            preview: Rc::new(Cell::new(None)),
+            ghost_label: "audio clip".into(),
+            ghost_waveform: None,
+            lane_hovered: Rc::new(Cell::new(false)),
         }
     }
 
-    fn drop_state<'a>(project: &'a Project, target_track: TrackId, start: u64) -> DropState<'a> {
+    fn midi_drag(source: TrackId, clip: hex_project::ClipId) -> ClipDrag {
+        ClipDrag {
+            project_generation: 3,
+            revision: 9,
+            source_track: source,
+            clip,
+            position: ClipPosition::Midi {
+                start: BeatTime::from_quarters(4).expect("clip beat"),
+                length: BeatTime::from_quarters(4).expect("clip length"),
+            },
+            grab_offset: Rc::new(Cell::new(Some(BeatTime::ONE.raw()))),
+            origin_pointer_x: Rc::new(Cell::new(None)),
+            viewport_start: 0,
+            viewport_length: 288_000,
+            snap_grid: SnapGrid::Quarter,
+            preview: Rc::new(Cell::new(None)),
+            ghost_label: "midi clip".into(),
+            ghost_waveform: None,
+            lane_hovered: Rc::new(Cell::new(false)),
+        }
+    }
+
+    fn drop_state<'a>(
+        project: &'a Project,
+        target_track: TrackId,
+        position: ClipPosition,
+    ) -> DropState<'a> {
         DropState {
             project_generation: 3,
             revision: 9,
             project,
             target_track,
-            start,
+            position,
             viewport_start: 0,
             viewport_length: 1_000,
             snap_grid: SnapGrid::Off,
@@ -410,6 +845,8 @@ mod tests {
         let lane = LaneBounds {
             left: 10.0,
             width: 100.0,
+            top: 0.0,
+            height: 44.0,
         };
         assert_eq!(drop_start(10.0, lane, 0, 200, 15), Some(0));
         assert_eq!(drop_start(60.0, lane, 0, 200, 15), Some(85));
@@ -418,7 +855,9 @@ mod tests {
                 f32::MAX,
                 LaneBounds {
                     left: -f32::MAX,
-                    width: 1.0
+                    width: 1.0,
+                    top: 0.0,
+                    height: 44.0,
                 },
                 0,
                 200,
@@ -455,6 +894,8 @@ mod tests {
                 LaneBounds {
                     left: 600.0,
                     width: 100.0,
+                    top: 0.0,
+                    height: 44.0,
                 },
                 0,
                 200,
@@ -496,6 +937,8 @@ mod tests {
                 LaneBounds {
                     left: 0.0,
                     width: 1.0,
+                    top: 0.0,
+                    height: 44.0,
                 },
                 u64::MAX,
                 2,
@@ -515,51 +958,181 @@ mod tests {
         let lane = LaneBounds {
             left: 0.0,
             width: 480.0,
+            top: 0.0,
+            height: 44.0,
         };
         // 150 px maps to frame 15,000 (0.625 quarter at 120 bpm); the
         // canonical quarter grid maps that candidate to 24,000.
-        let preview = candidate_start(editor.project(), &payload, 150.0, lane);
-        let release = candidate_start(editor.project(), &payload, 150.0, lane);
-        assert_eq!(preview, Some(24_000));
+        let preview = candidate_position(editor.project(), &payload, source, 150.0, lane);
+        let release = candidate_position(editor.project(), &payload, source, 150.0, lane);
+        assert_eq!(
+            preview,
+            Some(ClipPosition::Audio {
+                start: 24_000,
+                duration: 100
+            })
+        );
         assert_eq!(release, preview);
         assert_eq!(
-            preview.and_then(|start| start.checked_add(payload.clip_duration)),
-            Some(24_100)
+            preview.and_then(|position| preview_for(editor.project(), source, position)),
+            Some(super::DropPreview {
+                target_track: source,
+                start_frame: 24_000,
+                end_frame: 24_100,
+                position: ClipPosition::Audio {
+                    start: 24_000,
+                    duration: 100
+                },
+            })
         );
 
         payload.snap_grid = SnapGrid::Off;
         assert_eq!(
-            candidate_start(editor.project(), &payload, 150.0, lane),
-            Some(15_000)
+            candidate_position(editor.project(), &payload, source, 150.0, lane),
+            Some(ClipPosition::Audio {
+                start: 15_000,
+                duration: 100
+            })
         );
         payload.snap_grid = SnapGrid::Quarter;
         payload.viewport_start = u64::MAX;
         assert_eq!(
-            candidate_start(editor.project(), &payload, 480.0, lane),
+            candidate_position(editor.project(), &payload, source, 480.0, lane),
             None
         );
+    }
+
+    #[test]
+    fn midi_preview_and_drop_keep_beat_anchor_and_resolve_tempo_mapped_width() {
+        let (editor, source, target, clip) = midi_fixture();
+        let mut payload = midi_drag(source, clip);
+        let lane = LaneBounds {
+            left: 0.0,
+            width: 480.0,
+            top: 100.0,
+            height: 44.0,
+        };
+        // The center is beat five in the slower second tempo section. Keeping
+        // the one-beat original grab offset places the clip at beat four.
+        let preview_position = candidate_position(editor.project(), &payload, target, 240.0, lane);
+        let release_position = candidate_position(editor.project(), &payload, target, 240.0, lane);
+        let expected = ClipPosition::Midi {
+            start: BeatTime::from_quarters(4).expect("start"),
+            length: BeatTime::from_quarters(4).expect("length"),
+        };
+        assert_eq!(preview_position, Some(expected));
+        assert_eq!(release_position, preview_position);
+        assert_eq!(
+            preview_for(editor.project(), target, expected),
+            Some(super::DropPreview {
+                target_track: target,
+                start_frame: 96_000,
+                end_frame: 288_000,
+                position: expected,
+            })
+        );
+        assert!(matches!(
+            move_command(clip, target, expected),
+            Command::MoveMidiClip {
+                clip: moved_clip,
+                track,
+                start
+            } if moved_clip == clip && track == target && start == BeatTime::from_quarters(4).expect("start")
+        ));
+        assert!(is_current(
+            &payload,
+            DropState {
+                viewport_length: 288_000,
+                snap_grid: SnapGrid::Quarter,
+                ..drop_state(editor.project(), target, expected)
+            }
+        ));
+        payload.snap_grid = SnapGrid::Off;
+        payload.origin_pointer_x.set(Some(120.0));
+        assert_eq!(
+            candidate_position(editor.project(), &payload, source, 120.25, lane),
+            Some(expected),
+            "returning to the original grab point preserves the exact beat anchor"
+        );
+    }
+
+    #[test]
+    fn hovered_track_geometry_rejects_gaps_and_non_finite_rows() {
+        let first = LaneBounds {
+            left: 0.0,
+            width: 500.0,
+            top: 100.0,
+            height: 44.0,
+        };
+        let second = LaneBounds {
+            top: 148.0,
+            ..first
+        };
+        assert!(lane_contains_pointer(250.0, 100.0, first));
+        assert!(lane_contains_pointer(250.0, 143.999, first));
+        assert!(!lane_contains_pointer(250.0, 144.0, first));
+        assert!(lane_contains_pointer(250.0, 148.0, second));
+        assert!(!lane_contains_pointer(-1.0, 120.0, first));
+        assert!(!lane_contains_pointer(501.0, 120.0, first));
+        assert!(!lane_contains_pointer(f32::NAN, 120.0, first));
+        assert!(!lane_contains_pointer(250.0, f32::NAN, first));
     }
 
     #[test]
     fn stale_project_revision_viewport_and_missing_ids_reject_a_drop() {
         let (mut editor, source, target, clip) = fixture();
         let payload = drag(source, clip);
-        let valid = drop_state(editor.project(), target, 200);
+        let valid = drop_state(
+            editor.project(),
+            target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         assert!(is_current(&payload, valid));
 
-        let mut stale_generation = drop_state(editor.project(), target, 200);
+        let mut stale_generation = drop_state(
+            editor.project(),
+            target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         stale_generation.project_generation += 1;
         assert!(!is_current(&payload, stale_generation));
 
-        let mut stale_revision = drop_state(editor.project(), target, 200);
+        let mut stale_revision = drop_state(
+            editor.project(),
+            target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         stale_revision.revision += 1;
         assert!(!is_current(&payload, stale_revision));
 
-        let mut stale_snap = drop_state(editor.project(), target, 200);
+        let mut stale_snap = drop_state(
+            editor.project(),
+            target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         stale_snap.snap_grid = SnapGrid::Quarter;
         assert!(!is_current(&payload, stale_snap));
 
-        let mut stale_viewport = drop_state(editor.project(), target, 200);
+        let mut stale_viewport = drop_state(
+            editor.project(),
+            target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         stale_viewport.viewport_start += 1;
         assert!(!is_current(&payload, stale_viewport));
 
@@ -568,7 +1141,14 @@ mod tests {
             .expect("remove source");
         assert!(!is_current(
             &payload,
-            drop_state(editor.project(), target, 200)
+            drop_state(
+                editor.project(),
+                target,
+                ClipPosition::Audio {
+                    start: 200,
+                    duration: 100
+                }
+            )
         ));
 
         let (mut editor, source, target, clip) = fixture();
@@ -578,7 +1158,14 @@ mod tests {
             .expect("remove source clip");
         assert!(!is_current(
             &payload,
-            drop_state(editor.project(), target, 200)
+            drop_state(
+                editor.project(),
+                target,
+                ClipPosition::Audio {
+                    start: 200,
+                    duration: 100
+                }
+            )
         ));
 
         let (mut editor, source, target, clip) = fixture();
@@ -588,7 +1175,14 @@ mod tests {
             .expect("remove destination");
         assert!(!is_current(
             &payload,
-            drop_state(editor.project(), target, 200)
+            drop_state(
+                editor.project(),
+                target,
+                ClipPosition::Audio {
+                    start: 200,
+                    duration: 100
+                }
+            )
         ));
     }
 
@@ -601,7 +1195,14 @@ mod tests {
         assert_eq!(first_clip, second_clip);
 
         let payload = drag(first_source, first_clip);
-        let mut replaced_project = drop_state(second.project(), second_target, 200);
+        let mut replaced_project = drop_state(
+            second.project(),
+            second_target,
+            ClipPosition::Audio {
+                start: 200,
+                duration: 100,
+            },
+        );
         replaced_project.project_generation += 1;
         assert!(!is_current(&payload, replaced_project));
     }
@@ -610,7 +1211,7 @@ mod tests {
     fn unchanged_drop_is_classified_as_noop_without_becoming_stale() {
         let (editor, source, _, clip) = fixture();
         let payload = drag(source, clip);
-        let state = drop_state(editor.project(), source, payload.clip_start);
+        let state = drop_state(editor.project(), source, payload.position);
         assert!(is_current(&payload, state));
         assert!(is_noop(&payload, &state));
     }

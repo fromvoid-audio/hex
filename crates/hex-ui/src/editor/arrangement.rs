@@ -1,3 +1,4 @@
+use super::drag::BrowserAudioDrag;
 use super::{EditorView, ViewState};
 use crate::theme::{self, Palette};
 use gpui::{
@@ -62,6 +63,7 @@ impl EditorView {
         .track_scroll(self.track_scroll.clone())
         .flex_1()
         .min_h_0();
+        let drag_entity = cx.entity();
         let mut content = div()
             .relative()
             .flex_1()
@@ -69,6 +71,20 @@ impl EditorView {
             .flex()
             .bg(rgb(Palette::BACKGROUND))
             .child(rows);
+        content = content.on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
+            let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
+                return;
+            };
+            let pointer = event.event.position;
+            let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
+            payload.last_pointer.set(Some(pointer_xy));
+            let (preview, lane_hovered) = drag_entity.update(cx, |view, _| {
+                view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
+            });
+            payload.preview.set(preview);
+            payload.lane_hovered.set(lane_hovered);
+            drag_entity.update(cx, |_, cx| cx.notify());
+        });
         if let Some(position) = viewport.fraction(playhead) {
             content = content.child(
                 div()

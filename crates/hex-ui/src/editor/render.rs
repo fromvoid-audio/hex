@@ -7,7 +7,7 @@ use super::{
     ZoomIn, ZoomOut,
 };
 use crate::theme::{self, Palette};
-use gpui::{Context, Window, div, prelude::*, px, rgb};
+use gpui::{Context, MouseButton, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
@@ -143,6 +143,7 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let midi_editor = self.midi_editor(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
@@ -179,6 +180,14 @@ impl Render for EditorView {
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
             .key_context(self.browser_key_context(window, cx))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    if view.active_clip_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
@@ -200,6 +209,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
+                view.active_clip_drag = None;
                 view.stop();
                 cx.notify();
             }))
@@ -211,7 +221,11 @@ impl Render for EditorView {
                 } else {
                     false
                 };
-                if !midi_canceled && !selection_cleared && !cx.stop_active_drag(window) {
+                let drag_stopped = cx.stop_active_drag(window);
+                if drag_stopped {
+                    view.active_clip_drag = None;
+                }
+                if !midi_canceled && !selection_cleared && !drag_stopped {
                     view.stop();
                 }
                 cx.notify();

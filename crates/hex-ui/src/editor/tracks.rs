@@ -1,4 +1,4 @@
-use super::drag::{self, ClipDrag, LaneBounds};
+use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{ClipTooltip, button, fade_envelope_samples, waveform_view};
@@ -7,7 +7,7 @@ use crate::theme::{self, Palette};
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
 };
-use hex_project::{Clip, Track};
+use hex_project::{BeatTime, Clip, MidiClip, Track};
 
 const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
@@ -26,6 +26,8 @@ impl EditorView {
             return div().w_full().h(px(TRACK_ROW_HEIGHT));
         };
         let mut clip_area = div()
+            .id(("track-lane", track_id.value()))
+            .debug_selector(|| format!("arrangement-lane-{}", track_id.value()))
             .relative()
             .flex_1()
             .min_w_0()
@@ -67,6 +69,8 @@ impl EditorView {
             let midi_clip_id = clip.id();
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
+            let midi_drag_payload =
+                self.midi_drag_payload(state, track_id, clip, start, end, viewport);
             let note_shapes = preview
                 .samples
                 .iter()
@@ -145,7 +149,77 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
+            if let Some((payload, lane)) = midi_drag_payload {
+                midi = midi.children([self.clip_drag_surface(
+                    payload,
+                    lane,
+                    visible_start,
+                    visible_end,
+                    start,
+                    Some(clip.start()),
+                    viewport,
+                    clip.id(),
+                    cx,
+                )]);
+            }
             clip_area = clip_area.children([midi]);
+        }
+        let clip_preview = self
+            .active_clip_drag
+            .as_ref()
+            .filter(|drag| self.drag_start_is_current(drag))
+            .and_then(|drag| drag.preview.get())
+            .filter(|preview| preview.target_track == track_id);
+        let browser_preview = self
+            .active_browser_audio_drag
+            .as_ref()
+            .filter(|drag| self.browser_audio_drag_is_current(drag))
+            .and_then(|drag| drag.preview.get())
+            .filter(|preview| preview.target_track == track_id);
+        if let Some(preview) = clip_preview.or(browser_preview) {
+            let visible_start = preview.start_frame.max(viewport.start);
+            let visible_end = preview.end_frame.min(viewport_end);
+            if visible_start < visible_end {
+                let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
+                let width = (visible_end - visible_start) as f64 / viewport.length as f64;
+                clip_area = clip_area.child(
+                    div()
+                        .id(("clip-drop-preview", track_id.value()))
+                        .debug_selector(|| "clip-drop-preview".to_owned())
+                        .absolute()
+                        .top(px(3.0))
+                        .bottom(px(3.0))
+                        .left(relative(left as f32))
+                        .w(relative(width as f32))
+                        .min_w(px(3.0))
+                        .border_1()
+                        .border_color(rgb(Palette::CYAN))
+                        .bg(rgb(Palette::CYAN))
+                        .opacity(0.28),
+                );
+            }
+        } else if let Some((pending_track, start)) = self
+            .active_browser_audio_drag
+            .as_ref()
+            .filter(|drag| drag.lane_hovered.get())
+            .and_then(|drag| drag.pending_start.get())
+            .filter(|(pending_track, _)| *pending_track == track_id)
+        {
+            let _ = pending_track;
+            if start >= viewport.start && start < viewport_end {
+                let left = (start - viewport.start) as f64 / viewport.length as f64;
+                clip_area = clip_area.child(
+                    div()
+                        .id(("browser-drop-pending", track_id.value()))
+                        .debug_selector(|| "browser-drop-pending".to_owned())
+                        .absolute()
+                        .top(px(3.0))
+                        .bottom(px(3.0))
+                        .left(relative(left as f32))
+                        .w(px(2.0))
+                        .bg(rgb(Palette::CYAN)),
+                );
+            }
         }
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
@@ -154,12 +228,16 @@ impl EditorView {
                 let lane = LaneBounds {
                     left: f32::from(bounds.origin.x),
                     width: f32::from(bounds.size.width),
+                    top: f32::from(bounds.origin.y),
+                    height: f32::from(bounds.size.height),
                 };
                 lane_entity.update(cx, |view, view_cx| {
                     let changed = view
                         .drag_lanes
                         .insert(track_id, lane)
                         .is_none_or(|old| old.left != lane.left || old.width != lane.width);
+                    view.drag_lane_epochs
+                        .insert(track_id, view.drag_layout_generation);
                     if changed {
                         view_cx.notify();
                     }
@@ -169,12 +247,14 @@ impl EditorView {
         .absolute()
         .inset_0()]);
         clip_area = clip_area
-            .drag_over::<ClipDrag>(|style, _, _, _| {
-                style.border_1().border_color(rgb(Palette::CYAN))
-            })
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 view.drop_clip(drag, track_id, window, cx);
             }))
+            .on_drop(
+                cx.listener(move |view, drag: &drag::BrowserAudioDrag, window, cx| {
+                    view.drop_browser_audio(drag, window, cx);
+                }),
+            )
             .drag_over::<TrimDrag>(move |style, drag, _, _| {
                 if drag.source_track == track_id {
                     style.border_1().border_color(rgb(Palette::CORAL))
@@ -330,32 +410,34 @@ impl EditorView {
         let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
         let width = visible_frames as f64 / viewport.length as f64;
         let clipped_left = visible_start > clip.start();
-        let drag_available = !self.opening_project
-            && !self.close_prompt_open
-            && self.worker_requests_pending == 0
-            && self.pending_requests.is_empty();
-        let drag_payload = if drag_available {
-            self.drag_lanes.get(&track).map(|lane| {
+        let drag_payload = self
+            .drag_available()
+            .then(|| self.drag_lanes.get(&track).copied())
+            .flatten()
+            .map(|lane| {
                 (
                     ClipDrag {
                         project_generation: self.project_generation,
                         revision: state.revision,
                         source_track: track,
                         clip: clip_id,
-                        clip_start: clip.start(),
-                        clip_duration: clip.duration(),
+                        position: ClipPosition::Audio {
+                            start: clip.start(),
+                            duration: clip.duration(),
+                        },
                         grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
                         snap_grid: self.snap_grid,
-                        preview_start: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        preview: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        ghost_label: format!("audio clip {}", clip_id.value()),
+                        ghost_waveform: state.waveforms.get(&clip.asset()).cloned(),
+                        lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
                     },
-                    *lane,
+                    lane,
                 )
-            })
-        } else {
-            None
-        };
+            });
         let waveform = state.waveforms.get(&clip.asset());
         let mut content = div()
             .absolute()
@@ -461,145 +543,293 @@ impl EditorView {
                 cx.notify();
             }));
         if let Some((payload, lane)) = drag_payload {
-            let visible_start_for_drag = visible_start;
-            let visible_end_for_drag = visible_end;
-            let clip_start_for_drag = clip.start();
-            let element_width = (f64::from(lane.width) * width).max(3.0) as f32;
-            let element_left = lane.left + (f64::from(lane.width) * left) as f32;
             let has_left_handle = clip_pixel_width >= 20.0 && visible_start == clip.start();
             let has_right_handle = clip_pixel_width >= 20.0
                 && clip.start().checked_add(clip.duration()) == Some(visible_end);
             let left_inset = if has_left_handle { 8.0 } else { 0.0 };
             let right_inset = if has_right_handle { 8.0 } else { 0.0 };
-            let drag_entity = cx.entity();
-            let move_entity = drag_entity.clone();
-            let move_drag_entity = drag_entity.clone();
-            let mouse_down_entity = drag_entity.clone();
-            let mouse_down_payload = payload.clone();
-            let clear_payload = payload.clone();
-            let clear_entity = drag_entity.clone();
-            let move_surface = div()
-                .id(("clip-move", clip_id.value()))
-                .absolute()
-                .top_0()
-                .bottom_0()
+            let move_surface = self
+                .clip_drag_surface(
+                    payload,
+                    lane,
+                    visible_start,
+                    visible_end,
+                    clip.start(),
+                    None,
+                    viewport,
+                    clip_id,
+                    cx,
+                )
                 .left(px(left_inset))
-                .right(px(right_inset))
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-                    mouse_down_entity.update(cx, |view, _| {
-                        if view.drag_start_is_current(&mouse_down_payload) {
-                            view.remember_pointer_down(
-                                mouse_down_payload.project_generation,
-                                mouse_down_payload.clip,
-                                None,
-                                f32::from(event.position.x),
-                            );
-                        } else {
-                            view.clear_pointer_down(
-                                mouse_down_payload.project_generation,
-                                mouse_down_payload.clip,
-                                None,
-                            );
-                        }
-                    });
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    clear_entity.update(cx, |view, _| {
-                        view.clear_pointer_down(
-                            clear_payload.project_generation,
-                            clear_payload.clip,
-                            None,
-                        );
-                    });
-                })
-                .on_drag(payload, move |payload, _threshold_offset, window, cx| {
-                    let original_down_x = drag_entity.update(cx, |view, _| {
-                        if view.drag_start_is_current(payload) {
-                            view.take_pointer_down(payload.project_generation, payload.clip, None)
-                        } else {
-                            view.clear_pointer_down(payload.project_generation, payload.clip, None);
-                            None
-                        }
-                    });
-                    let offset = original_down_x.and_then(|x| {
-                        drag::grab_offset_from_pointer(
-                            x,
-                            element_left,
-                            element_width,
-                            visible_start_for_drag,
-                            visible_end_for_drag,
-                            clip_start_for_drag,
-                        )
-                    });
-                    payload.grab_offset.set(offset);
-                    let preview_start = drag_entity.update(cx, |view, _| {
-                        view.drag_candidate_start(
-                            payload,
-                            f32::from(window.mouse_position().x),
-                            lane,
-                        )
-                    });
-                    payload.preview_start.set(preview_start);
-                    cx.new(|_| DragPreview {
-                        width: element_width,
-                        valid: offset.is_some(),
-                        start: payload.preview_start.clone(),
-                        duration: payload.clip_duration,
-                    })
-                })
-                .on_drag_move::<ClipDrag>(move |event, _, cx| {
-                    let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
-                        return;
-                    };
-                    let pointer_x = f32::from(event.event.position.x);
-                    let start = move_entity.update(cx, |view, _| {
-                        view.drag_candidate_start(payload, pointer_x, lane)
-                    });
-                    payload.preview_start.set(start);
-                    move_drag_entity.update(cx, |_, cx| cx.notify());
-                });
+                .right(px(right_inset));
             content = content.children([move_surface]).children(trim_handles);
         }
         content
     }
+
+    fn drag_available(&self) -> bool {
+        !self.opening_project
+            && !self.close_prompt_open
+            && self.worker_requests_pending == 0
+            && self.pending_requests.is_empty()
+    }
+
+    fn midi_drag_payload(
+        &self,
+        state: &ViewState,
+        track: hex_project::TrackId,
+        clip: &MidiClip,
+        start_frame: u64,
+        end_frame: u64,
+        viewport: Viewport,
+    ) -> Option<(ClipDrag, LaneBounds)> {
+        if !self.drag_available() || viewport.length == 0 {
+            return None;
+        }
+        let lane = *self.drag_lanes.get(&track)?;
+        let start = clip.start();
+        let length = clip.length();
+        let _ = start.raw().checked_add(length.raw())?;
+        (start_frame < end_frame).then_some((
+            ClipDrag {
+                project_generation: self.project_generation,
+                revision: state.revision,
+                source_track: track,
+                clip: clip.id(),
+                position: ClipPosition::Midi { start, length },
+                grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
+                origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
+                viewport_start: viewport.start,
+                viewport_length: viewport.length,
+                snap_grid: self.snap_grid,
+                preview: std::rc::Rc::new(std::cell::Cell::new(None)),
+                ghost_label: format!("midi clip {}", clip.id().value()),
+                ghost_waveform: None,
+                lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
+            },
+            lane,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn clip_drag_surface(
+        &self,
+        payload: ClipDrag,
+        lane: LaneBounds,
+        visible_start: u64,
+        visible_end: u64,
+        source_start_frame: u64,
+        source_start_beat: Option<BeatTime>,
+        viewport: Viewport,
+        clip_id: hex_project::ClipId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let visible_frames = visible_end.saturating_sub(visible_start);
+        let left =
+            visible_start.saturating_sub(viewport.start) as f64 / viewport.length.max(1) as f64;
+        let width = visible_frames as f64 / viewport.length.max(1) as f64;
+        let element_width = (f64::from(lane.width) * width).max(3.0) as f32;
+        let element_left = lane.left + (f64::from(lane.width) * left) as f32;
+        let drag_entity = cx.entity();
+        let mouse_down_entity = drag_entity.clone();
+        let mouse_up_entity = drag_entity.clone();
+        let move_entity = drag_entity.clone();
+        let mouse_down_payload = payload.clone();
+        let mouse_up_payload = payload.clone();
+        div()
+            .id(("clip-move", clip_id.value()))
+            .debug_selector(|| format!("clip-drag-surface-{}", clip_id.value()))
+            .absolute()
+            .inset_0()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                mouse_down_entity.update(cx, |view, _| {
+                    if view.drag_start_is_current(&mouse_down_payload) {
+                        view.remember_pointer_down(
+                            mouse_down_payload.project_generation,
+                            mouse_down_payload.clip,
+                            None,
+                            f32::from(event.position.x),
+                        );
+                    } else {
+                        view.clear_pointer_down(
+                            mouse_down_payload.project_generation,
+                            mouse_down_payload.clip,
+                            None,
+                        );
+                    }
+                });
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                mouse_up_entity.update(cx, |view, _| {
+                    view.clear_pointer_down(
+                        mouse_up_payload.project_generation,
+                        mouse_up_payload.clip,
+                        None,
+                    );
+                    view.clear_clip_drag(
+                        mouse_up_payload.project_generation,
+                        mouse_up_payload.clip,
+                    );
+                });
+            })
+            .on_drag(payload, move |payload, _, window, cx| {
+                let original_down_x = drag_entity.update(cx, |view, _| {
+                    if view.drag_start_is_current(payload) {
+                        view.take_pointer_down(payload.project_generation, payload.clip, None)
+                    } else {
+                        view.clear_pointer_down(payload.project_generation, payload.clip, None);
+                        None
+                    }
+                });
+                let frame_offset = original_down_x.and_then(|x| {
+                    drag::grab_offset_from_pointer(
+                        x,
+                        element_left,
+                        element_width,
+                        visible_start,
+                        visible_end,
+                        source_start_frame,
+                    )
+                });
+                payload.origin_pointer_x.set(original_down_x);
+                let offset = match (payload.position, frame_offset, source_start_beat) {
+                    (ClipPosition::Audio { .. }, Some(offset), _) => Some(offset),
+                    (ClipPosition::Midi { .. }, Some(offset), Some(start_beat)) => {
+                        source_start_frame
+                            .checked_add(offset)
+                            .and_then(|grabbed_frame| {
+                                drag_entity.update(cx, |view, _| {
+                                    view.state
+                                        .as_ref()?
+                                        .project
+                                        .tempo_map()
+                                        .frame_to_beat(grabbed_frame)
+                                        .ok()
+                                })
+                            })
+                            .map(|beat| beat.raw().saturating_sub(start_beat.raw()))
+                    }
+                    _ => None,
+                };
+                payload.grab_offset.set(offset);
+                let (preview, lane_hovered) = drag_entity.update(cx, |view, _| {
+                    view.begin_clip_drag(payload);
+                    let target = view.hovered_drag_target(
+                        f32::from(window.mouse_position().x),
+                        f32::from(window.mouse_position().y),
+                    );
+                    let preview = target.and_then(|(target, lane)| {
+                        view.drag_candidate(
+                            payload,
+                            target,
+                            f32::from(window.mouse_position().x),
+                            lane,
+                        )
+                    });
+                    (preview, target.is_some())
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                drag_entity.update(cx, |_, cx| cx.notify());
+                let ghost_payload = payload.clone();
+                cx.new(|_| ClipDragGhost {
+                    payload: ghost_payload,
+                })
+            })
+            .on_drag_move::<ClipDrag>(move |event, _, cx| {
+                let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
+                    return;
+                };
+                #[cfg(test)]
+                move_entity.update(cx, |view, _| {
+                    view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
+                });
+                let pointer = event.event.position;
+                let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
+                    let target =
+                        view.hovered_drag_target(f32::from(pointer.x), f32::from(pointer.y));
+                    let preview = target.and_then(|(target, lane)| {
+                        view.drag_candidate(payload, target, f32::from(pointer.x), lane)
+                    });
+                    (preview, target.is_some())
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                move_entity.update(cx, |_, cx| cx.notify());
+            })
+    }
 }
 
-struct DragPreview {
-    width: f32,
-    valid: bool,
-    start: std::rc::Rc<std::cell::Cell<Option<u64>>>,
-    duration: u64,
+struct ClipDragGhost {
+    payload: ClipDrag,
 }
 
-impl gpui::Render for DragPreview {
+impl gpui::Render for ClipDragGhost {
     fn render(
         &mut self,
         _: &mut gpui::Window,
         _: &mut Context<'_, Self>,
     ) -> impl gpui::IntoElement {
-        let bounds = self.start.get().and_then(|start| {
-            start
-                .checked_add(self.duration)
-                .map(|end| format!("{start}–{end}f"))
-        });
+        if self.payload.lane_hovered.get() {
+            return div().w(px(0.0)).h(px(0.0));
+        }
+        let accent = match self.payload.position {
+            ClipPosition::Audio { .. } => Palette::CYAN,
+            ClipPosition::Midi { .. } => Palette::CORAL,
+        };
+        let mut bars = div()
+            .absolute()
+            .left(px(4.0))
+            .right(px(4.0))
+            .top(px(9.0))
+            .bottom(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(1.0));
+        if let Some(waveform) = &self.payload.ghost_waveform {
+            let count = waveform.bins.len().min(36);
+            for index in 0..count {
+                let bin_index = index * waveform.bins.len() / count.max(1);
+                let amplitude = waveform.bins[bin_index]
+                    .iter()
+                    .map(|peak| peak.min.abs().max(peak.max.abs()))
+                    .fold(0.0_f32, f32::max)
+                    .clamp(0.08, 1.0);
+                bars = bars.child(
+                    div().flex_1().h_full().flex().items_center().child(
+                        div()
+                            .w_full()
+                            .h(px(amplitude * 18.0))
+                            .bg(rgb(Palette::WAVEFORM)),
+                    ),
+                );
+            }
+        } else {
+            bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(accent)));
+        }
         div()
-            .w(px(self.width))
-            .h(px(TRACK_ROW_HEIGHT - 8.0))
+            .debug_selector(|| "clip-drag-ghost".to_owned())
+            .w(px(164.0))
+            .h(px(32.0))
+            .relative()
+            .overflow_hidden()
             .border_1()
-            .border_color(rgb(if self.valid {
-                Palette::CYAN
-            } else {
-                Palette::MUTED
-            }))
-            .bg(rgb(if self.valid {
-                Palette::CLIP
-            } else {
-                Palette::SURFACE
-            }))
-            .text_xs()
-            .text_color(rgb(Palette::TEXT))
-            .child(crate::theme::text(
-                bounds.unwrap_or_else(|| "move unavailable".into()),
-            ))
+            .border_color(rgb(accent))
+            .bg(rgb(Palette::RAISED))
+            .opacity(0.88)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(4.0))
+                    .top_0()
+                    .right(px(3.0))
+                    .h(px(10.0))
+                    .text_xs()
+                    .text_color(rgb(Palette::TEXT))
+                    .line_clamp(1)
+                    .child(theme::text(self.payload.ghost_label.clone())),
+            )
+            .child(bars)
     }
 }

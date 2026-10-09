@@ -41,7 +41,7 @@ only the visible columns and scene rows produce cell views, with arrows to reach
 every track. The grid reads the project's stable track, scene and cell IDs. Empty
 cells, explicit stop cells and MIDI cells have separate display and selection
 behavior. Session MIDI clips share the piano-roll interactions and source editor;
-source edits dispatch `SetSessionMidiClipSource`, while Arrangement-only placement,
+source edits dispatch `SetSessionMidiClipSource`, while Arrangement placement,
 movement and duplication remain scoped to Arrangement clips. Paging is the first
 bounded horizontal navigation model; continuous horizontal scrolling remains open.
 With editor focus in Session mode, left/right moves across tracks and then through
@@ -107,7 +107,23 @@ hex-audio's bounded lifecycle service. Recovery remains stopped and the UI waits
 for the current graph and captured cursor seek before enabling Play/seek/split
 again. It does not select devices; physical failure/restart acceptance remains open.
 
-Arrangement audio clips move within or across tracks through one canonical `MoveClip` edit on drop. Pointer motion shows a compact native drag preview; no project edits occur until a valid drop. Opt-in pointer-move snap grids use the canonical map; automatic timeline/track scrolling remains deferred.
+Arrangement audio and MIDI clips move within or across hybrid tracks through
+canonical `MoveClip` or `MoveMidiClip` edits on drop. Outside Arrangement lanes,
+the pointer carries a compact clip ghost; over a valid lane it disappears and
+only the exact, viewport-clipped landing preview remains. Project edits wait
+until a valid drop. MIDI remains beat-anchored and its preview bounds use the
+canonical tempo map. See ../../docs/clip-drag.md for the drag contract and
+remaining native acceptance.
+
+WAV rows can be dragged from the browser into a hybrid Arrangement track.
+Background preparation supplies the project-rate duration and a bounded waveform
+summary; outside lanes the cursor ghost shows loading or prepared metadata, while
+inside a valid lane only the exact snapped landing preview appears. A lane drop
+uses the normal import worker and one undoable project edit. Invalid or canceled
+drops do not import. See ../../docs/browser-drag.md for the contract and native
+acceptance notes.
+Opt-in pointer-move snap grids use the canonical map; automatic timeline/track
+scrolling remains deferred.
 
 Visible, uncropped clip edges expose compact horizontal trim handles. GPUI drag previews use canonical metadata-only edge-trim previews and dispatch one `TrimClipEdge` command on a valid same-track drop; canceled, stale, no-op and off-track gestures create no edit. Loop waveform summaries include the canonical source phase, so left trims keep displayed peaks aligned with playback.
 

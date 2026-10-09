@@ -77,6 +77,18 @@ Each source is capped at 64 MiB / 8,000,000 frames; resident converted PCM has a
 separate 8,000,000-frame desktop ceiling, including assets retained for undo.
 Opening a saved project still requires its rate to match the active device.
 
+`service::prepare_audio_preview` is a read-only browser-drag preparation helper.
+It uses the same bounded WAV decode and project-rate resampler, then returns only
+the converted frame count, rate and a 48-bin waveform summary; decoded PCM is
+dropped before returning. The UI calls it through GPUI's background executor,
+keeps at most one preparation active and coalesces pending requests. It does not
+submit a project edit or reserve project history. A valid lane drop still goes
+through the ordinary `Request::ImportToTrack` worker path, which reopens and
+validates the source before committing one undoable import. Browser summaries
+refresh on each drag start, but the source is not pinned while the pointer is
+held; a file modified during that interval can differ from the displayed
+preview. Import still reopens and validates the current source.
+
 The canonical project supports hybrid audio/MIDI tracks, MIDI source offsets,
 retained loop markers, finite arrangement lengths, note editing and schema-13
 persistence. Session audio

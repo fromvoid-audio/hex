@@ -78,6 +78,7 @@ crates/
   hex-project/               canonical control-side IDs, edits, history and snapshots
   hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
   hex-library/               bounded control-side folder and supported-file listings
+  hex-preferences/           versioned bounded application browser-place settings
   hex-stream/                verified source worker, bounded page cache and ownership queues
   hex-storage/               versioned metadata and recoverable create-new files
   hex-export/                fixed-block linear PCM16 WAV rendering and create-new publication
@@ -125,7 +126,11 @@ and owns serialization. Session coordinates project/media/storage/export work
 through bounded control workers; UI uses read-only project views and controller
 commands, not its own editing model. Library owns bounded nonrecursive filesystem listings, preserving original paths;
 UI owns browser navigation, filtering and focus. Library does not decode audio,
-index recursively, edit projects or perform callback work.
+index recursively, edit projects or perform callback work. hex-preferences owns
+versioned bounded application browser-place serialization and recoverable file
+publication, independent of project storage/history. UI loads/saves it through
+bounded background work. Read docs/browser-places.md; preserve original paths
+and malformed settings, surface errors, and keep filesystem I/O off UI/callback.
 Desktop must remain small. UI must not own
 device construction or callback DSP. Audio must not own GPUI or project editing.
 

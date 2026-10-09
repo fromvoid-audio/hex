@@ -200,3 +200,13 @@ input; its focus must isolate typing/editing from transport and project commands
 Folder navigation and current-folder filtering are the initial usable scope;
 recursive indexing, preview playback, browser-to-timeline drag and persisted
 places require separate implementation and acceptance.
+
+
+## Arrangement landing preview — 9 October 2026
+
+Audio and MIDI dragging uses a compact cyan in-track landing rectangle, clipped
+to the viewport and resolved to the actual snapped destination. The next
+user-selected browser-drag update restores a floating cursor preview outside
+lanes; inside lanes, only the locked landing preview is shown. Keep
+source kinds in their canonical frame/beat units. See clip-drag.md for the
+interaction contract and remaining native user checks.

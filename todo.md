@@ -1497,3 +1497,53 @@ User authorized Git initialization and pushing the existing project to a private
 `PORTALSURFER/hex` GitHub repository on `main`. Source, tests, docs, original
 design studies and attributed fonts are included; build artifacts and private
 reference analysis remain excluded. No distribution license selected.
+
+## Arrangement landing preview and MIDI dragging — implemented; native acceptance pending
+
+- [x] Replace floating drag ghost with exact snapped/clipped target-track preview.
+- [x] Enable same/cross-track MIDI clip moves using canonical beat timing/history.
+- [x] Verify preview/drop agreement, original grab offset and cancellation/stale guards.
+- [x] Targeted UI tests/lints, desktop build, source guards and separate review app.
+- [ ] User native audio/MIDI drag, undo and cancellation acceptance.
+
+UI suite: 192 passed, one existing ignored. Final snap-off repair: musical-time
+8/8 and drag 11/11; strict UI Clippy, desktop build, fmt, architecture/style
+guards pass. Review: `artifacts/hex-clip-drag-20261009.app`; native checklist in
+docs/clip-drag.md. Existing running hybrid review app preserved. No commit/push
+for this change; broader roadmap remains paused.
+
+## Next-build repairs and browser persistence — source accepted; user retest pending
+
+- [x] Repair reported audio/MIDI clip pickup regression; exercise rendered GPUI dispatch.
+- [x] Persist added browser folder paths outside project metadata, with bounded background I/O.
+- [x] Restore saved places on startup and preserve unavailable folders/casing/order.
+- [x] Verify persistence and malformed/unwritable failure preservation; targeted checks/build.
+- [x] Separate next build; user confirms browser persistence and audio/MIDI dragging work (9 October).
+
+Previous clip-drag source checks did not establish native pickup: user reports
+no drag begins. Its native acceptance remains failed/pending repair.
+
+8 preferences tests and 197 UI tests pass (one existing ignored), including
+rendered cross-row preview/drop dispatch, simulated worker-completion re-pickup,
+painted-generation scroll eligibility and background place restore/save. Strict
+affected lints/build/guards/fmt/diff checks pass. Combined review bundle:
+`artifacts/hex-browser-places-20261009.app`. User restart and drag acceptance
+remain open. Broader roadmap paused; no commit/push for this change.
+
+## Browser WAV dragging and conditional clip ghost — source accepted; native check pending
+
+- [x] Browser WAV becomes a cursor-attached floating clip outside track lanes.
+- [x] Valid track hover replaces floating ghost with exact snapped landing preview.
+- [x] Valid release imports onto hovered hybrid track/start through canonical worker.
+- [x] Existing audio/MIDI clip drags show floating preview outside lanes and locked landing inside.
+- [x] Background bounded waveform/duration preparation, cancellation/stale guards and rendered regressions.
+- [x] Establish outbound boundary: pinned GPUI has no native outbound file drag; separate integration deferred.
+- [ ] Checks/build, separate review app and user native acceptance.
+
+200 UI tests pass (one ignored), preferences/session suites and strict affected
+lints/build/fmt/guards/diff checks pass. Separate review build:
+`artifacts/hex-browser-drag-20261009.app`. User checklist in docs/browser-drag.md.
+In-window dragging only; no native cross-app file drag or held-source pinning.
+Earlier accepted browser persistence and clip drag remain covered. No commit/push.
+
+User acceptance — 9 October: browser WAV free/locked dragging works. User authorized committing and pushing this completed milestone before track-insertion work.

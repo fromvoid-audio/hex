@@ -1,21 +1,68 @@
 //! Compact, bounded left-side media and project browser.
-use super::{EditorMode, EditorView, browser_input::BrowserSearch};
+use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme::{self, Palette};
 use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathPromptOptions, Window, canvas, div, prelude::*, px, rgb, uniform_list,
 };
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
+use hex_preferences::BrowserPlaces;
 use hex_project::Command;
+use hex_session::service::AudioPreview;
 use hex_session::service::Request;
-use std::path::PathBuf;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+};
 
 const DEFAULT_WIDTH: f32 = 280.0;
 const MIN_WIDTH: f32 = 220.0;
 const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
+const DEFAULT_PLACE_COUNT: usize = 2;
 const ROW_HEIGHT: f32 = 22.0;
+const PREVIEW_CACHE_CAPACITY: usize = 16;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PreviewKey {
+    path: PathBuf,
+    sample_rate: u32,
+}
+
+#[derive(Clone)]
+struct PreviewRequest {
+    key: PreviewKey,
+    slot: PreviewSlot,
+}
+
+#[derive(Clone)]
+struct PreviewSlot {
+    metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
+    error: Rc<RefCell<Option<String>>>,
+}
+
+pub(super) fn default_preferences_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "hex-ui-test-places-{}-{}.json",
+            std::process::id(),
+            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+    #[cfg(not(test))]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        hex_preferences::browser_places_path(&home)
+    }
+}
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
     requested.clamp(
@@ -32,7 +79,7 @@ struct ScanRequest {
 
 #[derive(Default)]
 struct ScanCoordinator {
-    generation: u64,
+    pub(super) generation: u64,
     in_flight: bool,
     pending: Option<ScanRequest>,
 }
@@ -79,7 +126,14 @@ pub(super) struct BrowserState {
     pub directory: PathBuf,
     home: PathBuf,
     music: PathBuf,
-    places: Vec<PathBuf>,
+    pub(super) places: Vec<PathBuf>,
+    preferences_path: PathBuf,
+    preferences_loading: bool,
+    pub(super) preferences_writable: bool,
+    preferences_dirty: bool,
+    places_save_in_flight: bool,
+    pending_places_save: Option<BrowserPlaces>,
+    pub(super) places_status: Option<String>,
     listing: Option<DirectoryListing>,
     loading: bool,
     scans: ScanCoordinator,
@@ -90,10 +144,13 @@ pub(super) struct BrowserState {
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
     _search_observer: gpui::Subscription,
+    preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    preview_in_flight: Option<PreviewRequest>,
+    preview_pending: Option<PreviewRequest>,
 }
 
 impl BrowserState {
-    pub fn new(cx: &mut Context<EditorView>) -> Self {
+    pub fn new(cx: &mut Context<EditorView>, preferences_path: PathBuf) -> Self {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
@@ -117,6 +174,13 @@ impl BrowserState {
             home,
             music,
             places,
+            preferences_path,
+            preferences_loading: true,
+            preferences_writable: true,
+            preferences_dirty: false,
+            places_save_in_flight: false,
+            pending_places_save: None,
+            places_status: None,
             listing: None,
             loading: false,
             scans: ScanCoordinator::default(),
@@ -127,13 +191,235 @@ impl BrowserState {
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
             _search_observer: observer,
+            preview_cache: HashMap::new(),
+            preview_in_flight: None,
+            preview_pending: None,
         }
+    }
+
+    pub(super) fn scan_generation(&self) -> u64 {
+        self.scans.generation
+    }
+}
+
+struct BrowserAudioDragGhost {
+    payload: drag::BrowserAudioDrag,
+}
+
+impl gpui::Render for BrowserAudioDragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl gpui::IntoElement {
+        if self.payload.lane_hovered.get() {
+            return div().w(px(0.0)).h(px(0.0));
+        }
+        let mut bars = div()
+            .absolute()
+            .left(px(4.0))
+            .right(px(4.0))
+            .top(px(12.0))
+            .bottom(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(1.0));
+        let metadata = self.payload.metadata.borrow().clone();
+        if let Some(metadata) = metadata.as_ref() {
+            for [left, right] in &metadata.waveform.bins {
+                let amplitude = left
+                    .min
+                    .abs()
+                    .max(left.max.abs())
+                    .max(right.min.abs())
+                    .max(right.max.abs())
+                    .clamp(0.08, 1.0);
+                bars = bars.child(
+                    div().flex_1().h_full().flex().items_center().child(
+                        div()
+                            .w_full()
+                            .h(px(amplitude * 17.0))
+                            .bg(rgb(Palette::WAVEFORM)),
+                    ),
+                );
+            }
+        } else {
+            bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(Palette::CYAN)));
+        }
+        let status = metadata.as_ref().map_or_else(
+            || {
+                self.payload.metadata_error.borrow().clone().map_or_else(
+                    || "preparing waveform…".to_owned(),
+                    |_| "preview unavailable".to_owned(),
+                )
+            },
+            |metadata| {
+                let seconds = metadata.playback_frames as f64 / f64::from(metadata.sample_rate);
+                format!("{seconds:.2} s · {} frames", metadata.playback_frames)
+            },
+        );
+        div()
+            .debug_selector(|| "browser-audio-drag-ghost".to_owned())
+            .w(px(184.0))
+            .h(px(36.0))
+            .relative()
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(Palette::CYAN))
+            .bg(rgb(Palette::RAISED))
+            .opacity(0.9)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(4.0))
+                    .top_0()
+                    .right(px(3.0))
+                    .h(px(12.0))
+                    .flex()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(rgb(Palette::TEXT))
+                    .line_clamp(1)
+                    .child(theme::text(self.payload.label.clone()))
+                    .child(theme::text(status)),
+            )
+            .child(bars)
     }
 }
 
 impl EditorView {
     pub(super) fn browser_scan_initial(&mut self, cx: &mut Context<Self>) {
+        self.start_browser_places_load(cx);
         self.request_browser_scan(self.browser.directory.clone(), cx);
+    }
+
+    pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
+        let path = self.browser.preferences_path.clone();
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { hex_preferences::load(&path) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.browser_places_loaded(result, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn browser_places_loaded(
+        &mut self,
+        loaded: Result<BrowserPlaces, hex_preferences::PreferencesError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.browser.preferences_loading = false;
+        match loaded {
+            Err(error) => {
+                self.browser.preferences_writable = false;
+                self.browser.places_status = Some(format!(
+                    "could not load browser places · {}",
+                    error.to_string().to_lowercase()
+                ));
+            }
+            Ok(loaded) => {
+                let mut combined = loaded.additional().to_vec();
+                let local_places = self
+                    .browser
+                    .places
+                    .iter()
+                    .filter(|path| **path != self.browser.home && **path != self.browser.music)
+                    .cloned();
+                for path in local_places {
+                    if !combined.contains(&path) {
+                        combined.push(path);
+                    }
+                }
+                if combined.len() > PLACE_CAPACITY.saturating_sub(DEFAULT_PLACE_COUNT) {
+                    self.browser.preferences_writable = false;
+                    self.browser.places_status = Some(format!(
+                        "browser places exceed the {} folder limit",
+                        PLACE_CAPACITY
+                    ));
+                } else {
+                    let additions = combined
+                        .into_iter()
+                        .filter(|path| !self.browser.places.contains(path))
+                        .collect::<Vec<_>>();
+                    self.browser.places.extend(additions);
+                    if self.browser.preferences_dirty {
+                        self.browser.preferences_dirty = false;
+                        self.queue_browser_places_save(cx);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn queue_browser_places_save(&mut self, cx: &mut Context<Self>) {
+        if self.browser.preferences_loading {
+            self.browser.preferences_dirty = true;
+            self.browser.places_status = Some("saving browser places…".into());
+            return;
+        }
+        if !self.browser.preferences_writable {
+            return;
+        }
+        let additional = self
+            .browser
+            .places
+            .iter()
+            .filter(|path| **path != self.browser.home && **path != self.browser.music)
+            .cloned();
+        match BrowserPlaces::new(additional) {
+            Ok(places) => {
+                self.browser.pending_places_save = Some(places);
+                self.browser.places_status = Some("saving browser places…".into());
+                self.start_browser_places_save(cx);
+            }
+            Err(error) => {
+                self.browser.places_status = Some(error.to_string().to_lowercase());
+            }
+        }
+    }
+
+    fn start_browser_places_save(&mut self, cx: &mut Context<Self>) {
+        if self.browser.places_save_in_flight || self.browser.preferences_loading {
+            return;
+        }
+        let Some(places) = self.browser.pending_places_save.take() else {
+            return;
+        };
+        self.browser.places_save_in_flight = true;
+        let path = self.browser.preferences_path.clone();
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { hex_preferences::save(&path, &places) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.browser_places_saved(result, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn browser_places_saved(
+        &mut self,
+        result: Result<(), hex_preferences::PreferencesError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.browser.places_save_in_flight = false;
+        if self.browser.pending_places_save.is_some() {
+            self.start_browser_places_save(cx);
+        } else {
+            self.browser.places_status = Some(match result {
+                Ok(()) => "browser places saved".into(),
+                Err(error) => format!(
+                    "could not save browser places · {}",
+                    error.to_string().to_lowercase()
+                ),
+            });
+        }
     }
 
     fn request_browser_scan(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
@@ -143,6 +429,183 @@ impl EditorView {
         self.browser.loading = true;
         if let Some(request) = start {
             self.start_browser_scan(request, cx);
+        }
+    }
+
+    fn browser_preview_cell(&mut self, path: PathBuf, sample_rate: u32) -> PreviewSlot {
+        let key = PreviewKey { path, sample_rate };
+        if let Some(metadata) = self.browser.preview_cache.get(&key) {
+            return metadata.clone();
+        }
+        if self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY {
+            let protected = self
+                .browser
+                .preview_in_flight
+                .iter()
+                .chain(self.browser.preview_pending.iter())
+                .map(|request| &request.key);
+            if let Some(evicted) = self
+                .browser
+                .preview_cache
+                .keys()
+                .find(|candidate| !protected.clone().any(|key| key == *candidate))
+                .cloned()
+            {
+                self.browser.preview_cache.remove(&evicted);
+            }
+        }
+        let slot = PreviewSlot {
+            metadata: Rc::new(RefCell::new(None)),
+            error: Rc::new(RefCell::new(None)),
+        };
+        self.browser.preview_cache.insert(key, slot.clone());
+        slot
+    }
+
+    fn request_browser_audio_preview(
+        &mut self,
+        path: PathBuf,
+        sample_rate: u32,
+        cx: &mut Context<Self>,
+    ) -> Rc<RefCell<Option<Rc<AudioPreview>>>> {
+        let slot = self.browser_preview_cell(path.clone(), sample_rate);
+        if slot.metadata.borrow().is_some() {
+            return slot.metadata;
+        }
+        self.queue_browser_audio_preview(PreviewKey { path, sample_rate }, slot.clone(), cx);
+        slot.metadata
+    }
+
+    fn request_browser_audio_preview_for_drag(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        cx: &mut Context<Self>,
+    ) {
+        let key = PreviewKey {
+            path: drag.path.clone(),
+            sample_rate: drag.sample_rate,
+        };
+        let slot = PreviewSlot {
+            metadata: drag.metadata.clone(),
+            error: drag.metadata_error.clone(),
+        };
+        if !self.browser.preview_cache.contains_key(&key)
+            && self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
+        {
+            let protected = self
+                .browser
+                .preview_in_flight
+                .iter()
+                .chain(self.browser.preview_pending.iter())
+                .map(|request| &request.key);
+            if let Some(evicted) = self
+                .browser
+                .preview_cache
+                .keys()
+                .find(|candidate| !protected.clone().any(|item| item == *candidate))
+                .cloned()
+            {
+                self.browser.preview_cache.remove(&evicted);
+            }
+        }
+        self.browser.preview_cache.insert(key.clone(), slot.clone());
+        *slot.metadata.borrow_mut() = None;
+        *slot.error.borrow_mut() = None;
+        self.queue_browser_audio_preview(key, slot, cx);
+    }
+
+    fn queue_browser_audio_preview(
+        &mut self,
+        key: PreviewKey,
+        slot: PreviewSlot,
+        cx: &mut Context<Self>,
+    ) {
+        if slot.metadata.borrow().is_some() {
+            return;
+        }
+        *slot.error.borrow_mut() = None;
+        let request = PreviewRequest {
+            key,
+            slot: slot.clone(),
+        };
+        if let Some(in_flight) = self
+            .browser
+            .preview_in_flight
+            .as_ref()
+            .filter(|in_flight| in_flight.key == request.key)
+        {
+            if Rc::ptr_eq(&in_flight.slot.metadata, &request.slot.metadata) {
+                self.browser.preview_pending = None;
+            } else {
+                self.browser.preview_pending = Some(request);
+            }
+            return;
+        }
+        if self
+            .browser
+            .preview_pending
+            .as_ref()
+            .is_some_and(|pending| pending.key == request.key)
+        {
+            return;
+        }
+        if self.browser.preview_in_flight.is_some() {
+            self.browser.preview_pending = Some(request);
+        } else {
+            self.start_browser_audio_preview(request, cx);
+        }
+    }
+
+    fn start_browser_audio_preview(&mut self, request: PreviewRequest, cx: &mut Context<Self>) {
+        self.browser.preview_in_flight = Some(request.clone());
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let path = request.key.path.clone();
+            let sample_rate = request.key.sample_rate;
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { hex_session::service::prepare_audio_preview(path, sample_rate) },
+                )
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.browser_audio_preview_finished(request, result, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn browser_audio_preview_finished(
+        &mut self,
+        request: PreviewRequest,
+        result: Result<AudioPreview, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .browser
+            .preview_in_flight
+            .as_ref()
+            .is_some_and(|in_flight| in_flight.key == request.key)
+        {
+            self.browser.preview_in_flight = None;
+        }
+        match result {
+            Ok(preview) => *request.slot.metadata.borrow_mut() = Some(Rc::new(preview)),
+            Err(_) => {
+                *request.slot.error.borrow_mut() =
+                    Some("audio preview could not be prepared".into());
+            }
+        }
+        if let Some(active) = self
+            .active_browser_audio_drag
+            .clone()
+            .filter(|drag| drag.path == request.key.path)
+        {
+            self.refresh_browser_audio_drag(&active);
+        }
+        if let Some(pending) = self.browser.preview_pending.take() {
+            self.start_browser_audio_preview(pending, cx);
         }
     }
 
@@ -623,7 +1086,7 @@ impl EditorView {
     }
 
     fn browser_row(
-        &self,
+        &mut self,
         index: usize,
         entry: LibraryEntry,
         cx: &mut Context<Self>,
@@ -634,9 +1097,57 @@ impl EditorView {
             EntryKind::Project => "▤",
         };
         let path = entry.path.clone();
+        let name = entry.name.clone();
+        let drag_context = self.state.as_ref().map(|state| {
+            (
+                state.project.sample_rate(),
+                state.revision,
+                state.timeline_frames,
+                self.project_generation,
+                self.browser.scans.generation,
+                self.snap_grid,
+            )
+        });
+        let drag_payload = if entry.kind == EntryKind::WaveAudio {
+            drag_context.map(
+                |(
+                    sample_rate,
+                    revision,
+                    timeline_frames,
+                    project_generation,
+                    browser_generation,
+                    snap_grid,
+                )| {
+                    let slot = self.browser_preview_cell(path.clone(), sample_rate);
+                    let viewport = self.visible_viewport(timeline_frames);
+                    drag::BrowserAudioDrag {
+                        project_generation,
+                        revision,
+                        browser_generation,
+                        sample_rate,
+                        path: path.clone(),
+                        label: name.clone(),
+                        viewport_start: viewport.start,
+                        viewport_length: viewport.length,
+                        snap_grid,
+                        metadata: slot.metadata,
+                        metadata_error: slot.error,
+                        preview: Rc::new(Cell::new(None)),
+                        pending_start: Rc::new(Cell::new(None)),
+                        lane_hovered: Rc::new(Cell::new(false)),
+                        last_pointer: Rc::new(Cell::new(None)),
+                    }
+                },
+            )
+        } else {
+            None
+        };
         let selected = self.browser.results_focused && self.browser.selected_index == index;
-        div()
+        let click_path = path.clone();
+        let click_kind = entry.kind;
+        let mut row = div()
             .id(("library-entry", index))
+            .debug_selector(|| format!("browser-entry-{index}"))
             .h(px(ROW_HEIGHT))
             .px_1()
             .flex()
@@ -659,35 +1170,101 @@ impl EditorView {
                         .update(cx, |input, _| input.focus(window));
                     cx.notify();
                     if event.click_count >= 2 {
-                        match entry.kind {
-                            EntryKind::Directory => view.request_browser_scan(path.clone(), cx),
-                            EntryKind::WaveAudio => view.import_browser_audio(path.clone()),
-                            EntryKind::Project => view.open_browser_project(path.clone(), cx),
+                        match click_kind {
+                            EntryKind::Directory => {
+                                view.request_browser_scan(click_path.clone(), cx)
+                            }
+                            EntryKind::WaveAudio => view.import_browser_audio(click_path.clone()),
+                            EntryKind::Project => view.open_browser_project(click_path.clone(), cx),
                         }
                     }
                 }),
-            )
-            .child(
-                div()
-                    .w(px(16.0))
-                    .text_xs()
-                    .text_color(rgb(Palette::MUTED))
-                    .child(theme::text(icon)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(Palette::TEXT))
-                    .child(theme::text(entry.name)),
-            )
+            );
+        if let Some(payload) = drag_payload {
+            let hover_path = path.clone();
+            let sample_rate = self
+                .state
+                .as_ref()
+                .map_or(48_000, |state| state.project.sample_rate());
+            let hover_entity = cx.entity();
+            row = row.on_hover(move |hovered, _, cx| {
+                if *hovered {
+                    hover_entity.update(cx, |view, cx| {
+                        view.request_browser_audio_preview(hover_path.clone(), sample_rate, cx);
+                    });
+                }
+            });
+            let drag_entity = cx.entity();
+            row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
+                let position = window.mouse_position();
+                payload
+                    .last_pointer
+                    .set(Some((f32::from(position.x), f32::from(position.y))));
+                let (preview, lane_hovered) = drag_entity.update(cx, |view, cx| {
+                    view.begin_browser_audio_drag(payload);
+                    view.request_browser_audio_preview_for_drag(payload, cx);
+                    view.browser_audio_drop_position(
+                        payload,
+                        f32::from(position.x),
+                        f32::from(position.y),
+                    )
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                drag_entity.update(cx, |_, cx| cx.notify());
+                let ghost_payload = payload.clone();
+                cx.new(|_| BrowserAudioDragGhost {
+                    payload: ghost_payload,
+                })
+            });
+            let move_entity = cx.entity();
+            row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, _, cx| {
+                let Some(payload) = event
+                    .dragged_item()
+                    .downcast_ref::<drag::BrowserAudioDrag>()
+                else {
+                    return;
+                };
+                let pointer = event.event.position;
+                let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
+                payload.last_pointer.set(Some(pointer_xy));
+                let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
+                    view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                move_entity.update(cx, |_, cx| cx.notify());
+            });
+            let release_entity = cx.entity();
+            let release_payload = payload.clone();
+            row = row.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                release_entity.update(cx, |view, cx| {
+                    view.clear_browser_audio_drag(&release_payload);
+                    cx.notify();
+                });
+            });
+        }
+        row.child(
+            div()
+                .w(px(16.0))
+                .text_xs()
+                .text_color(rgb(Palette::MUTED))
+                .child(theme::text(icon)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .line_clamp(1)
+                .text_ellipsis()
+                .text_xs()
+                .text_color(rgb(Palette::TEXT))
+                .child(theme::text(entry.name)),
+        )
     }
 
-    fn browser_sections(&self, cx: &mut Context<Self>) -> Div {
+    fn browser_sections(&mut self, cx: &mut Context<Self>) -> Div {
         let mut row = div()
             .h(px(25.0))
             .flex_shrink_0()
@@ -789,7 +1366,19 @@ impl EditorView {
                 cx,
             ));
         }
-        row
+        let mut content = div().flex().flex_col().flex_shrink_0().child(row);
+        if let Some(status) = self.browser.places_status.as_ref() {
+            content = content.child(
+                div()
+                    .h(px(16.0))
+                    .flex_shrink_0()
+                    .px_1()
+                    .text_xs()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text(status)),
+            );
+        }
+        content
     }
 
     fn browser_instrument_row(&self, cx: &mut Context<Self>) -> Div {
@@ -914,10 +1503,14 @@ impl EditorView {
                 match picked {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
-                            if !view.browser.places.contains(&path)
-                                && view.browser.places.len() < PLACE_CAPACITY
-                            {
-                                view.browser.places.push(path.clone());
+                            if !view.browser.places.contains(&path) {
+                                if view.browser.places.len() < PLACE_CAPACITY {
+                                    view.browser.places.push(path.clone());
+                                    view.queue_browser_places_save(cx);
+                                } else {
+                                    view.browser.places_status =
+                                        Some("browser folder limit reached".into());
+                                }
                             }
                             view.request_browser_scan(path, cx);
                         }

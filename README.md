@@ -262,3 +262,18 @@ the MIDI instrument; device chains/plugin hosting are separate future work.
 Private development repository: https://github.com/PORTALSURFER/hex.
 Build artifacts, private reference analysis and local caches remain ignored.
 Distribution licensing and public release remain undecided.
+
+
+Browser-added folders persist in `~/Library/Application Support/hex/browser.json`
+through bounded background preferences load/save. Wait for saved feedback before
+restarting; unavailable folders remain listed and settings failures are visible.
+See [browser places](docs/browser-places.md). The latest source repair also
+restores cross-track landing previews and tests repeated MIDI pickup; native
+retest is pending.
+
+Browser WAV drag now shows a cursor-attached clip outside Arrangement lanes and
+an exact locked landing preview over a valid track, importing there on release.
+Ordinary audio/MIDI clip drags use the same free/locked visual modes. Preparation
+is bounded and background-only. This supports in-window dragging; outbound
+file drag to other apps requires a separate native integration. See
+[browser dragging](docs/browser-drag.md) for pending native checks and limits.

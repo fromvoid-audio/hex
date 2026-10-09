@@ -304,14 +304,19 @@ impl SnapGrid {
     }
 
     pub(super) fn snap_frame(self, project: &Project, candidate_frame: u64) -> Option<u64> {
-        let Some(raw) = self.step_raw() else {
+        if self.step_raw().is_none() {
             return Some(candidate_frame);
+        }
+        let beat = project.tempo_map().frame_to_beat(candidate_frame).ok()?;
+        let snapped = self.snap_beat(project, beat)?;
+        project.tempo_map().beat_to_frame(snapped).ok()
+    }
+
+    pub(super) fn snap_beat(self, _project: &Project, beat: BeatTime) -> Option<BeatTime> {
+        let Some(raw) = self.step_raw() else {
+            return Some(beat);
         };
-        let grid = BeatTime::from_raw(raw);
-        let tempo = project.tempo_map();
-        let beat = tempo.frame_to_beat(candidate_frame).ok()?;
-        let snapped = beat.snap_to(grid).ok()?;
-        tempo.beat_to_frame(snapped).ok()
+        beat.snap_to(BeatTime::from_raw(raw)).ok()
     }
 }
 
@@ -533,6 +538,7 @@ mod tests {
             SnapGrid::Off.snap_frame(&project, tie_frame),
             Some(tie_frame)
         );
+        assert_eq!(SnapGrid::Off.snap_frame(&project, u64::MAX), Some(u64::MAX));
         assert_eq!(
             SnapGrid::Quarter.snap_frame(&project, tie_frame),
             Some(24_000)

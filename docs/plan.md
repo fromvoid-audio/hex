@@ -3085,3 +3085,79 @@ PCM/persistence acceptance pass. Mixed-source headless callback allocation
 regressions pass in both profiles. Review bundle and user-native checklist are
 in docs/hybrid-tracks.md; listening/device deadlines and user interaction remain
 open. Broader work remains paused.
+
+## Arrangement drag landing preview and MIDI moves — 9 October 2026
+
+User-selected usability scope: replace the floating cursor ghost with an exact
+in-track landing preview for Arrangement clips, and enable MIDI clip dragging.
+One coherent UI executor owns implementation. Keep canonical audio frame/MIDI
+beat anchors, hybrid same/cross-track destinations, original pointer grab offset,
+existing snapping and validated commands/history. No project edit before release.
+
+Acceptance: preview bounds/track must match the committed destination; viewport
+cropping must preserve the true start; only the landing preview follows the drag;
+invalid/off-lane/stale/busy/Escape paths must leave no edit or stale preview.
+Audio/MIDI moves commit one undoable command. Preserve trim and piano-roll note
+gestures. Run targeted UI regression tests/lints, desktop build and source guards.
+User owns native interaction/listening acceptance; preserve running unsaved apps.
+Deferred: new autoscroll, overlap policies, browser drag, multi-clip gestures and
+other roadmap work.
+
+Source acceptance: shared typed audio/MIDI drag and row-local landing preview
+implemented. UI suite 192 passed/one ignored; final snap-off exact-frame repair
+passes focused musical-time 8/8 and drag 11/11. Strict UI lints, desktop build,
+fmt and both guards pass. Review bundle and user-native checks are recorded in
+docs/clip-drag.md and todo.md. No native gesture acceptance claimed.
+
+## Drag-start repair and persistent browser places — 9 October 2026
+
+User reports that clips cannot be picked up in the landing-preview build. Fix
+this regression before building on the gesture code. Acceptance requires actual
+rendered GPUI pointer dispatch for audio and MIDI pickup/preview/drop, alongside
+geometry tests; native user confirmation remains separate. Preserve running
+review apps and their unsaved projects.
+
+Next requested workflow: added browser folders survive app restart. Store bounded,
+versioned application preferences separately from projects and library listings;
+restore original paths/order without modifying casing, duplicating defaults or
+forgetting unavailable drives. Disk work belongs on a background/control path.
+Missing config means defaults; malformed/unwritable config needs a visible error
+and preservation of the existing file. Save success must be observable before
+claiming persistence. Test roundtrip, duplicates/capacity, restart loading and
+failure preservation using isolated fixtures. Keep writes ordered/coalesced and
+bounded. Deferred: preview audio, recursive indexing, folder removal/reordering,
+other preferences, and broader roadmap.
+
+Next-build acceptance checkpoint: drag preview clearing repaired and current-paint
+lane eligibility verified; rendered pickup/drop and MIDI second-pickup after
+simulated worker completion pass. Browser added places persist through the
+hex-preferences boundary with background coalesced writes and explicit failures.
+8 preferences/197 UI tests pass, one ignored; affected strict lints/build/guards/
+fmt/diff checks pass. Combined review app and user checklist are in
+docs/browser-places.md. Native acceptance remains open.
+
+## Browser WAV drag and free/locked clip preview — 9 October 2026
+
+User accepts both previous restart/drag workflows. Next: dragging a browser WAV
+shows a cursor-attached clip outside track lanes, switches to the same exact
+in-track snapped landing preview on valid hover, and imports onto that target
+track/start on release. Ordinary clip drags should likewise become floating
+outside lanes and lock inside. Keep one visual preview at a time.
+
+Preserve audio frame/MIDI beat anchors, source paths, validated import/move
+commands, undo/history and current limits. Bounded waveform/duration preparation
+runs in background; no decoding on UI/callback. Pending data must be truthful.
+Preview/drop target agree; cancel/off-lane/stale/busy drops produce no edits.
+Rendered tests exercise cursor ghost, transition, cross-track drop and cancellation,
+then user native acceptance. Outbound file dragging into another app is a
+capability investigation in pinned GPUI; do not add unsafe native code or promise
+OS drag behavior from an internal GPUI payload. No external app operation/testing
+is authorized beyond preparing the drag affordance; user owns manual testing.
+Broader roadmap remains paused.
+
+Browser drag acceptance checkpoint: in-window browser WAV drag, conditional
+ordinary clip ghosts, background bounded duration/waveform preparation and
+canonical existing-track import dispatch are implemented. 200 UI tests pass
+(one ignored), preferences/session suites and strict affected checks/build pass.
+Review and native checklist in docs/browser-drag.md. Outbound OS file drag and
+held-source pinning are explicitly deferred; broader roadmap paused.
