@@ -16,6 +16,34 @@ pub(super) struct TrimPreviewState {
     pub(super) clip: Clip,
 }
 
+fn replace_audio_trim_preview(
+    preview: &RefCell<Option<TrimPreviewState>>,
+    next: Option<TrimPreviewState>,
+) -> bool {
+    let Ok(mut current) = preview.try_borrow_mut() else {
+        return false;
+    };
+    if current.as_ref().map(|preview| &preview.clip) == next.as_ref().map(|preview| &preview.clip) {
+        return false;
+    }
+    *current = next;
+    true
+}
+
+fn replace_midi_trim_preview(
+    preview: &RefCell<Option<MidiClipTrim>>,
+    next: Option<MidiClipTrim>,
+) -> bool {
+    let Ok(mut current) = preview.try_borrow_mut() else {
+        return false;
+    };
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
+}
+
 /// Bounded metadata-only payload; the model helper builds previews without project or PCM copies.
 #[derive(Clone, Debug)]
 pub(super) struct TrimDrag {
@@ -392,7 +420,6 @@ impl EditorView {
     ) -> Stateful<Div> {
         let clip_id = payload.clip.id();
         let clip_generation = payload.project_generation;
-        let preview_entity = cx.entity();
         let drag_entity = cx.entity();
         let preview_owner_entity = drag_entity.clone();
         let mouse_down_entity = drag_entity.clone();
@@ -480,11 +507,10 @@ impl EditorView {
                 };
                 let current = drag_entity.update(cx, |view, _| view.midi_trim_drag_current(drag));
                 if !current {
-                    drag.preview.borrow_mut().take();
+                    replace_midi_trim_preview(&drag.preview, None);
                     drag_entity.update(cx, |view, cx| {
                         view.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
                     });
-                    preview_entity.update(cx, |_, cx| cx.notify());
                     return;
                 }
                 let pointer_x = f32::from(event.event.position.x);
@@ -493,7 +519,6 @@ impl EditorView {
                 drag_entity.update(cx, |view, cx| {
                     view.update_midi_trim_preview(drag, pointer_x, cx)
                 });
-                preview_entity.update(cx, |_, cx| cx.notify());
             })
     }
 
@@ -527,7 +552,6 @@ impl EditorView {
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
         };
-        let preview_entity = cx.entity();
         let drag_entity = cx.entity();
         let preview_owner_entity = drag_entity.clone();
         let mouse_down_entity = drag_entity.clone();
@@ -622,18 +646,16 @@ impl EditorView {
                 };
                 let current = drag_entity.update(cx, |view, _| view.trim_drag_current(drag));
                 if !current {
-                    *drag.preview.borrow_mut() = None;
+                    replace_audio_trim_preview(&drag.preview, None);
                     drag_entity.update(cx, |view, cx| {
                         view.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
                     });
-                    preview_entity.update(cx, |_, cx| cx.notify());
                     return;
                 }
                 let pointer_x = f32::from(event.event.position.x);
                 drag.last_pointer_x.set(Some(pointer_x));
                 drag.snap_modifier.set(event.event.modifiers.platform);
                 drag_entity.update(cx, |view, cx| view.update_trim_preview(drag, pointer_x, cx));
-                preview_entity.update(cx, |_, cx| cx.notify());
             })
     }
 
@@ -660,22 +682,27 @@ impl EditorView {
         drag: &TrimDrag,
         pointer_x: f32,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(state) = self.state.as_ref() else {
-            return;
+            return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
-            return;
+            return false;
         };
         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
-            return;
+            return false;
         }
-        *drag.preview.borrow_mut() =
-            preview_for_pointer(drag, &state.project, pointer_x, lane, viewport);
+        let changed = replace_audio_trim_preview(
+            &drag.preview,
+            preview_for_pointer(drag, &state.project, pointer_x, lane, viewport),
+        );
         self.active_trim_drag = Some(drag.clone());
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 
     pub(super) fn refresh_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
@@ -710,22 +737,27 @@ impl EditorView {
         drag: &MidiTrimDrag,
         pointer_x: f32,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(state) = self.state.as_ref() else {
-            return;
+            return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
-            return;
+            return false;
         };
         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
-            return;
+            return false;
         }
-        *drag.preview.borrow_mut() =
-            midi_preview_for_pointer(drag, &state.project, pointer_x, lane, viewport);
+        let changed = replace_midi_trim_preview(
+            &drag.preview,
+            midi_preview_for_pointer(drag, &state.project, pointer_x, lane, viewport),
+        );
         self.active_midi_trim_drag = Some(drag.clone());
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 
     pub(super) fn refresh_midi_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
@@ -890,7 +922,8 @@ impl gpui::Render for TrimPreview {
 mod tests {
     use super::{
         TrimDrag, corrected_edge_frame, edge_frame, frame_at_x, handle_width, payload_is_current,
-        preview_is_noop, rendered_clip_width, trim_drag_admitted,
+        preview_is_noop, rendered_clip_width, replace_audio_trim_preview,
+        replace_midi_trim_preview, trim_drag_admitted,
     };
     use crate::editor::{drag::LaneBounds, viewport::Viewport};
     use hex_project::{Clip, Command, Created, Editor, Project, TrackId, TrimEdge};
@@ -931,6 +964,44 @@ mod tests {
             .preview_edge_trim(TrimEdge::Right, 200, 300)
             .expect("unchanged preview");
         assert!(preview_is_noop(&clip, &unchanged));
+    }
+
+    #[test]
+    fn identical_audio_and_midi_trim_candidates_do_not_request_redraws() {
+        let clip = test_clip();
+        let audio = RefCell::new(None);
+        let candidate = super::TrimPreviewState { clip: clip.clone() };
+        assert!(replace_audio_trim_preview(&audio, Some(candidate.clone())));
+        assert!(!replace_audio_trim_preview(&audio, Some(candidate)));
+        assert!(replace_audio_trim_preview(&audio, None));
+        assert!(!replace_audio_trim_preview(&audio, None));
+
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 4).expect("editor");
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "midi".into(),
+            })
+            .expect("track")
+        else {
+            panic!("track result")
+        };
+        let Created::Clip(clip_id) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            })
+            .expect("midi clip")
+        else {
+            panic!("clip result")
+        };
+        let midi_clip = editor.project().midi_clip(clip_id).expect("midi clip");
+        let midi_candidate = midi_clip
+            .preview_edge_trim(TrimEdge::Right, hex_project::BeatTime::ONE)
+            .expect("midi trim candidate");
+        let midi = RefCell::new(None);
+        assert!(replace_midi_trim_preview(&midi, Some(midi_candidate)));
+        assert!(!replace_midi_trim_preview(&midi, Some(midi_candidate)));
     }
 
     #[test]

@@ -3531,3 +3531,9 @@ First unified panel is source-implemented and checked; review app and native
 checklist are in `docs/clip-view.md`. Complete native acceptance before marking
 this panel accepted. Next targeted units remain canonical clip gain, explicit
 pitch semantics, real warp/time stretch, then detail gestures/numeric entry.
+
+User-guided priority is now clip edit responsiveness: finish the bounded UI
+optimization in `docs/clip-edit-performance.md` before expanding clip-view DSP
+features. Measure reuse/preparation cost, preserve validated edits and hand the
+native smoothness/flicker checks to the user. Broader architecture optimizations
+require measured bottlenecks and their own targeted PRs.

@@ -34,12 +34,40 @@ impl EditorView {
         if let Some(error) = &self.error {
             bar = bar.child(
                 div()
+                    .id("editor-status-message")
+                    .debug_selector(|| "editor-status-message".into())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .tooltip({
+                        let message = error.clone();
+                        move |_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                description: message.clone().into(),
+                            })
+                            .into()
+                        }
+                    })
                     .text_color(rgb(Palette::CORAL))
                     .child(theme::text(error)),
             );
         } else {
             bar = bar.child(
                 div()
+                    .id("editor-status-message")
+                    .debug_selector(|| "editor-status-message".into())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .tooltip({
+                        let message = self.status.clone();
+                        move |_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                description: message.clone().into(),
+                            })
+                            .into()
+                        }
+                    })
                     .text_color(rgb(Palette::MUTED))
                     .child(theme::text(&self.status)),
             );
@@ -59,39 +87,68 @@ impl EditorView {
         } else {
             format!("{revision_label} · ctl {pending_commands} pending")
         };
-        bar = bar.child(div().flex_1()).child(
+        bar = bar.child(
             div()
+                .id("editor-revision-status")
+                .debug_selector(|| "editor-revision-status".into())
+                .w(px(176.0))
+                .flex_shrink_0()
+                .truncate()
+                .text_right()
+                .tooltip({
+                    let description = revision_label.clone();
+                    move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            description: description.clone().into(),
+                        })
+                        .into()
+                    }
+                })
                 .text_color(rgb(Palette::MUTED))
                 .child(theme::text(revision_label)),
         );
-        if self.recovery.generation().is_some() {
-            bar = bar.child(
-                div()
-                    .text_color(rgb(Palette::CYAN))
-                    .child(theme::text("audio recovery pending")),
-            );
-        }
-        if self.export_pending {
-            bar = bar.child(
-                div()
-                    .text_color(rgb(Palette::MUTED))
-                    .child(theme::text("export pending")),
-            );
-        }
-        if self.saving_project {
-            bar = bar.child(
-                div()
-                    .text_color(rgb(Palette::MUTED))
-                    .child(theme::text("save pending")),
-            );
-        }
-        if unsaved {
-            bar = bar.child(
-                div()
-                    .text_color(rgb(Palette::CORAL))
-                    .child(theme::text("unsaved *")),
-            );
-        }
+        let recovery_pending = self.recovery.generation().is_some();
+        let activity = [
+            recovery_pending.then_some("audio recovery pending"),
+            self.export_pending.then_some("export pending"),
+            self.saving_project.then_some("save pending"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let activity_label = activity
+            .iter()
+            .map(|label| match *label {
+                "audio recovery pending" => "recovery",
+                "export pending" => "export",
+                "save pending" => "save",
+                _ => "",
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        bar = bar
+            .child(status_slot(
+                "editor-activity-status",
+                104.0,
+                if recovery_pending {
+                    Palette::CYAN
+                } else {
+                    Palette::MUTED
+                },
+                activity_label,
+                activity.join(" · "),
+            ))
+            .child(status_slot(
+                "editor-unsaved-status",
+                54.0,
+                Palette::CORAL,
+                if unsaved { "unsaved *" } else { "" }.to_owned(),
+                if unsaved {
+                    "unsaved changes".to_owned()
+                } else {
+                    String::new()
+                },
+            ));
         if let Some(status) = self.audio_status() {
             let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
             let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
@@ -118,27 +175,85 @@ impl EditorView {
             let misses = status.deadline_misses.load(Relaxed);
             let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
             let render_fault = status.render_fault.load(Relaxed);
+            let diagnostic = format!(
+                "out {applied_audio} · cb {callback_us}µs · miss {misses}{}",
+                if render_fault { " · render fault" } else { "" }
+            );
+            let diagnostic_label = if render_fault {
+                format!("render fault · miss {misses}")
+            } else if misses > 0 {
+                format!("miss {misses} · out {applied_audio}")
+            } else {
+                format!("out {applied_audio} · {callback_us}µs")
+            };
             bar = bar.child(
                 div()
+                    .id("editor-audio-diagnostics")
+                    .debug_selector(|| "editor-audio-diagnostics".into())
+                    .w(px(168.0))
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_right()
+                    .tooltip({
+                        let description = diagnostic.clone();
+                        move |_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                description: description.clone().into(),
+                            })
+                            .into()
+                        }
+                    })
                     .text_color(rgb(if misses == 0 && !render_fault {
                         Palette::MUTED
                     } else {
                         Palette::CORAL
                     }))
-                    .child(theme::text(format!(
-                        "out {applied_audio} · cb {callback_us}µs · miss {misses}{}",
-                        if render_fault { " · render fault" } else { "" }
-                    ))),
+                    .child(theme::text(diagnostic_label)),
             );
         } else {
             bar = bar.child(
                 div()
+                    .id("editor-audio-diagnostics")
+                    .debug_selector(|| "editor-audio-diagnostics".into())
+                    .w(px(168.0))
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_right()
                     .text_color(rgb(Palette::MUTED))
                     .child(theme::text("offline")),
             );
         }
         bar
     }
+}
+
+fn status_slot(
+    id: &'static str,
+    width: f32,
+    color: u32,
+    label: String,
+    full_status: String,
+) -> gpui::Stateful<gpui::Div> {
+    let mut slot = div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .w(px(width))
+        .h_full()
+        .flex_shrink_0()
+        .truncate()
+        .text_right();
+    if !label.is_empty() {
+        slot = slot
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: full_status.clone().into(),
+                })
+                .into()
+            })
+            .text_color(rgb(color))
+            .child(theme::text(label));
+    }
+    slot
 }
 
 impl Render for EditorView {

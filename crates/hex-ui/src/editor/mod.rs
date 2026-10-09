@@ -52,6 +52,7 @@ mod transport;
 mod trim;
 mod viewport;
 mod waveform;
+mod waveform_geometry;
 
 use crate::theme;
 use duplicate::DuplicateIntent;
@@ -402,6 +403,8 @@ pub(super) struct EditorView {
     arrangement_pan: Option<ArrangementPan>,
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
+    pub(in crate::editor) waveform_geometry_cache:
+        Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
@@ -579,6 +582,9 @@ impl EditorView {
             arrangement_pan: None,
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
+            waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
+                waveform_geometry::WaveformGeometryCache::default(),
+            )),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_trim_drag: None,

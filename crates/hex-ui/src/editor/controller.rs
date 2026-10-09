@@ -367,6 +367,9 @@ impl EditorView {
             self.cancel_midi_note_gesture();
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();
+            if let Ok(mut cache) = self.waveform_geometry_cache.try_borrow_mut() {
+                cache.clear();
+            }
             self.piano_beat_start = hex_project::BeatTime::ZERO;
             self.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());

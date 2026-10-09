@@ -169,6 +169,53 @@ fn selected_arrangement_audio_shows_left_controls_ruler_and_stereo_waveform(
 }
 
 #[gpui::test]
+fn status_slots_keep_layout_stable_while_edits_and_work_switch_pending(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = |visual: &mut VisualTestContext, selector| {
+        visual.debug_bounds(selector).expect("status slot bounds")
+    };
+    let before = [
+        bounds(&mut visual, "editor-status-message"),
+        bounds(&mut visual, "editor-revision-status"),
+        bounds(&mut visual, "editor-activity-status"),
+        bounds(&mut visual, "editor-unsaved-status"),
+        bounds(&mut visual, "editor-audio-diagnostics"),
+    ];
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 1;
+        view.export_pending = true;
+        view.saving_project = true;
+        view.error = Some("audio device is unavailable".into());
+        view.applied_project_revision = Some(0);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let after = [
+        bounds(&mut visual, "editor-status-message"),
+        bounds(&mut visual, "editor-revision-status"),
+        bounds(&mut visual, "editor-activity-status"),
+        bounds(&mut visual, "editor-unsaved-status"),
+        bounds(&mut visual, "editor-audio-diagnostics"),
+    ];
+    for (before, after) in before.iter().zip(after.iter()) {
+        assert_eq!(
+            before.size, after.size,
+            "status updates keep slot widths fixed"
+        );
+        assert_eq!(
+            before.origin, after.origin,
+            "status updates do not shift neighbors"
+        );
+    }
+    assert!(
+        f32::from(after[0].size.width) >= 100.0,
+        "device errors retain visible space at the compact window width"
+    );
+}
+
+#[gpui::test]
 fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     cx: &mut TestAppContext,
 ) {

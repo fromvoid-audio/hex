@@ -2,7 +2,11 @@ use super::{EditorView, install_close_guard};
 use gpui::{AppContext, Empty, TestAppContext, VisualTestContext, point, px};
 use gpui::{CursorStyle, Modifiers, MouseButton};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
-use hex_session::service::{Service, ViewState};
+use hex_session::{
+    CachedPeak, CachedWaveform,
+    service::{Service, ViewState},
+};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const TIMELINE_FRAMES: u64 = 384_000;
@@ -494,7 +498,46 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     cx: &mut TestAppContext,
 ) {
     let (project, source, _, clip) = audio_project();
+    let asset = project.clip(clip).expect("audio clip").asset();
     let (handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        let old = view.state.as_ref().expect("project state");
+        let mut waveforms = BTreeMap::new();
+        waveforms.insert(
+            asset,
+            Arc::new(
+                CachedWaveform::from_peaks(
+                    96_000,
+                    vec![
+                        [
+                            CachedPeak {
+                                min: -0.7,
+                                max: 0.5,
+                            },
+                            CachedPeak {
+                                min: -0.4,
+                                max: 0.8,
+                            },
+                        ];
+                        64
+                    ],
+                )
+                .expect("waveform fixture"),
+            ),
+        );
+        view.state = Some(Arc::new(ViewState {
+            project: Arc::clone(&old.project),
+            waveforms,
+            midi_preview: Arc::clone(&old.midi_preview),
+            timeline_frames: old.timeline_frames,
+            can_undo: old.can_undo,
+            can_redo: old.can_redo,
+            revision: old.revision,
+            unsaved: old.unsaved,
+            document_path: old.document_path.clone(),
+        }));
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let trim_selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
@@ -588,6 +631,23 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let snapped_bounds = visual
         .debug_bounds("trim-live-preview")
         .expect("snapped clip preview overlay");
+    editor.update(cx, |view, cx| {
+        if let Ok(mut cache) = view.waveform_geometry_cache.try_borrow_mut() {
+            cache.clear();
+        }
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.waveform_geometry_cache
+                .try_borrow()
+                .expect("waveform cache available")
+                .entry_count(),
+            1,
+            "trim preview paints only its visible waveform geometry"
+        );
+    });
     assert!(f32::from(snapped_bounds.size.width) < f32::from(original_bounds.size.width));
     assert_eq!(
         visual

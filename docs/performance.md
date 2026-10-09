@@ -1322,3 +1322,42 @@ levels, while shared PCM is counted with the existing media bank. This increases
 peak memory/import work for detailed rendering; no new render/input timing
 benchmark is claimed. Measure dense visible clips and 100-track native edits
 before accepting responsiveness. See waveform-display.md.
+
+## retained waveform geometry — 9 October 2026
+
+The clip-edit UI now retains waveform paths across unchanged Arrangement/detail
+redraws, skips invisible original paint children during trims, and suppresses
+identical snapped preview notifications. This is a UI/control change; canonical
+history/precommit compilation and audio callback behavior are unchanged.
+
+Release component comparison on Apple M5 Pro, macOS 26.6.2:
+
+```sh
+cargo test --release -p hex-ui --lib waveform_geometry_preparation_profile -- --ignored --nocapture
+```
+
+Original generated fixture: 96,000 frames represented by 4,096 stereo leaf bins,
+1,200×180 logical pixels, scale 2, 2,400 device columns. Instant/black_box measure
+20 uncached path preparations after two warm-ups and 20 lookups of one already
+prepared waveform. Three short samples; no device or playback, no controlled
+power/background load. Totals, not percentile distributions:
+
+| Run | Uncached preparation, 20 calls | Warm cache lookup, 20 calls |
+| --- | --- | --- |
+| 1 | 38.260375 ms | 709 ns |
+| 2 | 40.545167 ms | 750 ns |
+| 3 | 39.767791 ms | 750 ns |
+
+Uncached preparation averages roughly 1.91–2.03 ms per waveform in this fixture.
+A cache hit avoids the extrema/path preparation; GPUI vertex cloning/scaling,
+scene submission, full layout, paint and GPU work are outside these timings.
+The single-entry warm lookup is a small isolated operation, not a frame/input
+latency measurement or a claimed overall application speedup. Fixture extrema
+remain [-1, 0.8] and [-0.7, 1]; sampled-bin digest `57ca5ed4e345e279` is unchanged.
+Source regressions cover a 13-waveform working set, source/mapping/bounds
+invalidation and both cache bounds. Native 100-track editing/frame latency,
+continuous free resize and flicker acceptance remain open.
+
+Logs: `artifacts/smooth-clip-waveform-profile{,-2,-3}.log`; release build:
+`artifacts/smooth-clip-release-build.log`; review identity:
+`artifacts/smooth-clip-manifest.json`. Contract: [clip-edit-performance.md](clip-edit-performance.md).
