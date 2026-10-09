@@ -133,6 +133,62 @@ fn paste_uses_fresh_ids_and_replaces_silence_in_the_whole_rectangle() {
 }
 
 #[test]
+fn copy_time_range_to_copies_fragments_in_one_step_and_replaces_only_the_destination() {
+    let (mut editor, audio_track, midi_track) = fixture();
+    let source = editor.project().track(audio_track).unwrap().clips()[0].clone();
+    let range = TimeRange::new(vec![audio_track], 24_000, 72_000).expect("range");
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: range.clone(),
+            track: audio_track,
+            frame: 48_000,
+        })
+        .expect("copy time range");
+    let clips = editor.project().track(audio_track).unwrap().clips();
+    assert_eq!(clips.len(), 2);
+    assert!(clips.iter().any(|clip| {
+        clip.id() == source.id() && clip.start() == 0 && clip.duration() == 48_000
+    }));
+    assert!(clips.iter().any(|clip| {
+        clip.id() != source.id()
+            && clip.start() == 48_000
+            && clip.duration() == 48_000
+            && clip.source_offset() == source.source_offset() + 24_000
+    }));
+    assert_eq!(
+        editor.project().track(midi_track).unwrap().midi_clips()[0].start(),
+        beat(0),
+        "unselected rows remain unchanged"
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().track(audio_track).unwrap().clips()[0],
+        source
+    );
+}
+
+#[test]
+fn copy_time_range_at_its_origin_is_a_noop_that_keeps_redo() {
+    let (mut editor, audio_track, _) = fixture();
+    let range = TimeRange::new(vec![audio_track], 24_000, 72_000).expect("range");
+    editor
+        .execute(Command::AddTrack {
+            name: "temporary".into(),
+        })
+        .expect("track");
+    assert!(editor.undo());
+    assert!(editor.can_redo());
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range,
+            track: audio_track,
+            frame: 24_000,
+        })
+        .expect("no-op copy");
+    assert!(editor.can_redo());
+}
+
+#[test]
 fn overlapping_move_captures_before_erasing_and_is_atomic() {
     let (mut editor, a, b) = fixture();
     let mut before = editor.project().snapshot();

@@ -21,6 +21,7 @@ pub(super) struct ClipDrag {
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
+    pub(super) copy_modifier: Rc<Cell<bool>>,
     pub(super) preview: Rc<Cell<Option<DropPreview>>>,
     pub(super) destination: Rc<Cell<Option<ClipDropDestination>>>,
     pub(super) insertion_line_y: Rc<Cell<Option<f32>>>,
@@ -43,6 +44,7 @@ pub(super) struct BrowserAudioDrag {
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
+    pub(super) copy_modifier: Rc<Cell<bool>>,
     pub(super) metadata: Rc<std::cell::RefCell<Option<Rc<AudioPreview>>>>,
     pub(super) metadata_error: Rc<std::cell::RefCell<Option<String>>>,
     pub(super) preview: Rc<Cell<Option<DropPreview>>>,
@@ -415,6 +417,21 @@ fn move_command(clip: ClipId, target_track: TrackId, position: ClipPosition) -> 
     }
 }
 
+fn copy_command(clip: ClipId, target_track: TrackId, position: ClipPosition) -> Command {
+    match position {
+        ClipPosition::Audio { start, .. } => Command::CopyClipTo {
+            clip,
+            track: target_track,
+            start,
+        },
+        ClipPosition::Midi { start, .. } => Command::CopyMidiClipTo {
+            clip,
+            track: target_track,
+            start,
+        },
+    }
+}
+
 fn move_to_new_track_command(
     clip: ClipId,
     name: String,
@@ -429,6 +446,28 @@ fn move_to_new_track_command(
             start,
         },
         ClipPosition::Midi { start, .. } => Command::MoveMidiClipToNewTrack {
+            clip,
+            name,
+            before_track,
+            start,
+        },
+    }
+}
+
+fn copy_to_new_track_command(
+    clip: ClipId,
+    name: String,
+    before_track: Option<TrackId>,
+    position: ClipPosition,
+) -> Command {
+    match position {
+        ClipPosition::Audio { start, .. } => Command::CopyClipToNewTrack {
+            clip,
+            name,
+            before_track,
+            start,
+        },
+        ClipPosition::Midi { start, .. } => Command::CopyMidiClipToNewTrack {
             clip,
             name,
             before_track,
@@ -604,6 +643,7 @@ impl super::EditorView {
         cx: &mut Context<Self>,
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
+        drag.copy_modifier.set(window.modifiers().alt);
         let owns_gesture = self.active_clip_drag.as_ref().is_some_and(|active| {
             active.project_generation == drag.project_generation
                 && active.clip == drag.clip
@@ -646,12 +686,12 @@ impl super::EditorView {
             .state
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
-        let command = move_to_new_track_command(
-            drag.clip,
-            format!("track {}", count + 1),
-            before_track,
-            position,
-        );
+        let name = format!("track {}", count + 1);
+        let command = if drag.copy_modifier.get() {
+            copy_to_new_track_command(drag.clip, name, before_track, position)
+        } else {
+            move_to_new_track_command(drag.clip, name, before_track, position)
+        };
         self.clear_clip_drag(drag.project_generation, drag.clip);
         self.enqueue(Request::Edit(command));
         cx.notify();
@@ -858,6 +898,7 @@ impl super::EditorView {
         cx: &mut Context<Self>,
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
+        drag.copy_modifier.set(window.modifiers().alt);
         let current = self.browser_audio_drag_is_current(drag);
         let (preview, lane_hovered) = self.browser_audio_drop_position(
             drag,
@@ -930,6 +971,7 @@ impl super::EditorView {
         cx: &mut Context<Self>,
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
+        drag.copy_modifier.set(window.modifiers().alt);
         let clear = |view: &mut Self| view.clear_clip_drag(drag.project_generation, drag.clip);
         if self.opening_project || self.close_prompt_open {
             clear(self);
@@ -998,7 +1040,11 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        let command = move_command(drag.clip, target_track, preview.position);
+        let command = if drag.copy_modifier.get() {
+            copy_command(drag.clip, target_track, preview.position)
+        } else {
+            move_command(drag.clip, target_track, preview.position)
+        };
         clear(self);
         self.enqueue(Request::Edit(command));
         cx.notify();
@@ -1006,25 +1052,47 @@ impl super::EditorView {
 }
 
 impl super::EditorView {
-    pub(super) fn refresh_drag_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
-        if let Some(drag) = self.active_clip_drag.clone()
-            && drag.snap_modifier.replace(held) != held
-            && let Some((x, y)) = drag.last_pointer.get()
-        {
-            let (preview, lane_hovered) = self.clip_drag_drop_position(&drag, x, y);
-            drag.preview.set(preview);
-            drag.lane_hovered.set(lane_hovered);
-            cx.notify();
+    pub(super) fn refresh_drag_modifiers(
+        &mut self,
+        held: bool,
+        copy: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(drag) = self.active_clip_drag.clone() {
+            let snap_changed = drag.snap_modifier.replace(held) != held;
+            let copy_changed = drag.copy_modifier.replace(copy) != copy;
+            cx.set_active_drag_cursor_style(copy_cursor(copy), window);
+            if (snap_changed || copy_changed)
+                && let Some((x, y)) = drag.last_pointer.get()
+            {
+                let (preview, lane_hovered) = self.clip_drag_drop_position(&drag, x, y);
+                drag.preview.set(preview);
+                drag.lane_hovered.set(lane_hovered);
+                cx.notify();
+            }
         }
-        if let Some(drag) = self.active_browser_audio_drag.clone()
-            && drag.snap_modifier.replace(held) != held
-            && let Some((x, y)) = drag.last_pointer.get()
-        {
-            let (preview, lane_hovered) = self.browser_audio_drop_position(&drag, x, y);
-            drag.preview.set(preview);
-            drag.lane_hovered.set(lane_hovered);
-            cx.notify();
+        if let Some(drag) = self.active_browser_audio_drag.clone() {
+            let snap_changed = drag.snap_modifier.replace(held) != held;
+            let copy_changed = drag.copy_modifier.replace(copy) != copy;
+            cx.set_active_drag_cursor_style(copy_cursor(copy), window);
+            if (snap_changed || copy_changed)
+                && let Some((x, y)) = drag.last_pointer.get()
+            {
+                let (preview, lane_hovered) = self.browser_audio_drop_position(&drag, x, y);
+                drag.preview.set(preview);
+                drag.lane_hovered.set(lane_hovered);
+                cx.notify();
+            }
         }
+    }
+}
+
+pub(super) fn copy_cursor(copy: bool) -> gpui::CursorStyle {
+    if copy {
+        gpui::CursorStyle::DragCopy
+    } else {
+        gpui::CursorStyle::Arrow
     }
 }
 
@@ -1136,6 +1204,7 @@ mod tests {
             viewport_length: 1_000,
             snap_grid: SnapGrid::Off,
             snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
             preview: Rc::new(Cell::new(None)),
             destination: Rc::new(Cell::new(None)),
             insertion_line_y: Rc::new(Cell::new(None)),
@@ -1162,6 +1231,7 @@ mod tests {
             viewport_length: 288_000,
             snap_grid: SnapGrid::Quarter,
             snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
             preview: Rc::new(Cell::new(None)),
             destination: Rc::new(Cell::new(None)),
             insertion_line_y: Rc::new(Cell::new(None)),

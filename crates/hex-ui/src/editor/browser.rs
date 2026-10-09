@@ -1291,6 +1291,7 @@ impl EditorView {
                         viewport_length: viewport.length,
                         snap_grid,
                         snap_modifier: Rc::new(Cell::new(false)),
+                        copy_modifier: Rc::new(Cell::new(false)),
                         metadata: slot.metadata,
                         metadata_error: slot.error,
                         preview: Rc::new(Cell::new(None)),
@@ -1360,6 +1361,11 @@ impl EditorView {
             row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
                 let position = window.mouse_position();
                 payload.snap_modifier.set(window.modifiers().platform);
+                payload.copy_modifier.set(window.modifiers().alt);
+                cx.set_active_drag_cursor_style(
+                    drag::copy_cursor(payload.copy_modifier.get()),
+                    window,
+                );
                 payload
                     .last_pointer
                     .set(Some((f32::from(position.x), f32::from(position.y))));
@@ -1378,7 +1384,7 @@ impl EditorView {
                 cx.new(|_| BrowserAudioDragGhost)
             });
             let move_entity = cx.entity();
-            row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, _, cx| {
+            row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, window, cx| {
                 let Some(payload) = event
                     .dragged_item()
                     .downcast_ref::<drag::BrowserAudioDrag>()
@@ -1389,6 +1395,11 @@ impl EditorView {
                 let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer_xy));
                 payload.snap_modifier.set(event.event.modifiers.platform);
+                payload.copy_modifier.set(event.event.modifiers.alt);
+                cx.set_active_drag_cursor_style(
+                    drag::copy_cursor(payload.copy_modifier.get()),
+                    window,
+                );
                 let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
                     view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
                 });
@@ -1398,7 +1409,8 @@ impl EditorView {
             });
             let release_entity = cx.entity();
             let release_payload = payload.clone();
-            row = row.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            row = row.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                 release_entity.update(cx, |view, cx| {
                     view.clear_browser_audio_drag(&release_payload);
                     cx.notify();

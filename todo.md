@@ -19,7 +19,7 @@ Completed chronology and superseded work orders are preserved in the
 
 ## merged PR history and remaining acceptance
 
-PRs #1–#9 were verified closed as merged on 9 October 2026. Merging records
+PRs #1–#11 were verified closed as merged on 9 October 2026. Merging records
 repository integration, not completion of the native checks below.
 
 | PR | focused change | remaining gate |
@@ -33,6 +33,8 @@ repository integration, not completion of the native checks below.
 | [#7](https://github.com/PORTALSURFER/hex/pull/7) | todo cleanup and focused request queue | no additional gate; open feature requests remain below |
 | [#8](https://github.com/PORTALSURFER/hex/pull/8) | local validation pipeline | full 14-step clean-commit run passed; merged |
 | [#9](https://github.com/PORTALSURFER/hex/pull/9) | time-chunk landing preview | user reports review build works as expected; merged; physical timing/listening not established |
+| [#10](https://github.com/PORTALSURFER/hex/pull/10) | project-wide time-selection request queue | planning only; implementation remains queued |
+| [#11](https://github.com/PORTALSURFER/hex/pull/11) | selected-track ripple insertion | user accepted ripple behavior; merged; keyboard source-track anchoring queued separately |
 
 The selection handle is normally invisible, highlights on hover, and uses a
 hand cursor. Dragging below it paints a fresh selection. Point cursors pulse;
@@ -63,11 +65,11 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Cmd-Shift-V inserts the complete time rectangle, pushing later material right
   only on touched destination tracks. Ordinary Cmd-C/V replaces; cutting leaves
   a gap. Preserve crossings, source phase, history and atomic failure behavior.
-  Backend and shortcut wiring are source implemented; native acceptance and
-  review/merge remain open. Full source checks are recorded in the PR.
+  Full 14-step local CI passed clean commit `c7ae2d5`; the user accepted ripple
+  behavior on 9 October. Merged. Keyboard source-track anchoring is queued below.
   MIDI loop materialization/refusal policy is documented
   in [time selection](docs/time-selection.md).
-- [ ] **Option-drag duplication** — separate feature PR for supported draggable
+- [x] **Option-drag duplication** — focused feature PR for supported draggable
   project items, including audio/MIDI clips and time chunks. Option selects copy
   instead of move; show a small plus/copy cursor indicator while active. Preserve
   source material and show the exact snapped destination copy, with Command's
@@ -75,6 +77,18 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   uses the current mode. Drop creates fresh IDs in one atomic Undo operation;
   cancellation/failure leaves the original intact. Browser imports retain their
   existing copy semantics. Define Session/other draggable-item coverage explicitly.
+  Source implemented for Arrangement audio/MIDI clips, new-track drops and time
+  rectangles. Project tests, 267 UI tests (2 ignored), targeted strict Clippy,
+  formatting and source guards passed. Final local CI/PR evidence is recorded in
+  the feature PR; native plus-cursor and drag acceptance remain open.
+- [ ] **multi-track keyboard paste stays on copied tracks** — separate focused PR after
+  Option-drag. Normal and ripple keyboard paste of multiple tracks use the copied
+  source track IDs; only the current horizontal time position determines placement,
+  regardless of cursor/selection vertical position. A single-track clipboard uses
+  the current destination track, allowing cross-track paste. Preserve gaps and order, refuse
+  missing source tracks atomically, and keep visual time-chunk drags free to move
+  or copy across tracks. Cover worker clipboard lifecycle, Undo and both shortcut
+  variants; provide native acceptance checks.
 - [ ] **compact header composition** — separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes.

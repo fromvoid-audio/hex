@@ -13,10 +13,7 @@ pub(super) fn move_exclusions(
     let Some(display) = display else {
         return [None, None];
     };
-    let source = display
-        .source
-        .tracks()
-        .contains(&track)
+    let source = (!display.copy_modifier && display.source.tracks().contains(&track))
         .then_some((display.source.start(), display.source.end()));
     let destination = (track_index >= display.destination_first_index
         && track_index <= display.destination_last_index)

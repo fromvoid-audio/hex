@@ -376,3 +376,17 @@ pub(crate) fn move_range(
     clear(project, range)?;
     paste(project, &clipboard, track, frame)
 }
+
+pub(crate) fn copy_range(
+    project: &mut Project,
+    range: &TimeRange,
+    track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    if range.tracks.first() == Some(&track) && range.start == frame {
+        return Ok(Created::None);
+    }
+    let clipboard = project.capture_time_range(range)?;
+    paste(project, &clipboard, track, frame)
+}

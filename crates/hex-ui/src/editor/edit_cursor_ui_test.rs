@@ -420,6 +420,95 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
 }
 
 #[gpui::test]
+fn option_drag_copies_time_range_and_keeps_source_preview_visible(cx: &mut TestAppContext) {
+    let (project, source, target_track, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: source,
+            end_track: source,
+            anchor_frame: 0,
+            end_frame: 48_000,
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source_lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+        ))
+        .expect("source lane");
+    let target_lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target_track.value()).into_boxed_str(),
+        ))
+        .expect("destination lane");
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    let down = point(
+        source_lane.origin.x + source_lane.size.width * 0.04,
+        source_lane.origin.y + source_lane.size.height * 0.2,
+    );
+    let destination = point(
+        source_lane.origin.x + source_lane.size.width * 0.55,
+        target_lane.origin.y + target_lane.size.height * 0.2,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, option);
+    visual.simulate_mouse_move(destination, MouseButton::Left, option);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let display = view.time_range_move_display().expect("copy preview");
+        assert!(display.copy_modifier);
+        assert!(view.time_range_move_gesture.is_some());
+    });
+    visual
+        .debug_bounds(Box::leak(
+            format!(
+                "time-move-audio-fragment-{}-{}",
+                target_track.value(),
+                clip.value()
+            )
+            .into_boxed_str(),
+        ))
+        .expect("destination copy preview");
+    visual
+        .debug_bounds(Box::leak(
+            format!("clip-visual-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("source remains visible while copying");
+
+    visual.simulate_modifiers_change(Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view
+                .time_range_move_display()
+                .expect("still active preview")
+                .copy_modifier
+        );
+    });
+    visual.simulate_modifiers_change(option);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let display = view.time_range_move_display().expect("copy preview");
+        assert!(display.copy_modifier);
+        assert_eq!(display.source.tracks(), &[source]);
+    });
+    visual.simulate_mouse_up(destination, MouseButton::Left, option);
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit.as_ref(),
+            Some(Command::CopyTimeRangeTo { range, track, .. })
+                if range.tracks() == [source] && *track == target_track
+        ));
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
 fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut TestAppContext) {
     let (project, source, _, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
