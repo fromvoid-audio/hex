@@ -9,6 +9,10 @@ Completed chronology and superseded work orders are preserved in the
 
 ## delivery rules
 
+- Use Pulse for project and issue planning. Discover IDs, check existing tickets
+  and read the current revision before selective updates. Keep pending acceptance
+  open; record unrelated discoveries as follow-up tickets. See
+  [the planning workflow](AGENTS.md#7-where-things-are-tracked).
 - Each new request gets its own focused PR; do not combine unrelated UI, DSP,
   hosting, or persistence changes. Large requests use several focused PRs.
 - Record the PR and actual checks here when a work unit lands. Source-complete,

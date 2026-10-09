@@ -86,10 +86,12 @@ WAV export clamps to the 16-bit range. Listening acceptance remains pending.
 - `crates/hex-desktop`: startup and composition only.
 - `crates/hex-export`: shared fixed-block linear PCM16 WAV export and create-new publication.
 - `crates/hex-cli`: generated audio and headless WAV export through hex-export.
-- [Plan](docs/plan.md): stages and acceptance gates.
+- [Pulse](http://localhost:7437/): active project and issue planning for Hex.
+- [Plan](docs/plan.md): milestone contracts and acceptance gates.
 - [Architecture](docs/architecture.md): implemented contracts and future boundaries.
 - [Research workflow](docs/research/workflow.md): evidence and decompilation process.
-- [todo.md](todo.md): ordered implementation and research backlog.
+- [todo.md](todo.md): request order and repository implementation evidence;
+  Pulse owns the active queue and ticket states.
 
 “Pure Rust” means Hex's application logic, scheduling, and DSP are Rust.
 GPUI 0.2.2 uses the native macOS UI/GPU boundary and CPAL 0.17.3 uses CoreAudio;

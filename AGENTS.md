@@ -380,9 +380,42 @@ create mandatory pipelines, swarms, duplicate investigations, or overlapping edi
 
 ## 7. Where things are tracked
 
-- `docs/plan.md`: milestones and acceptance gates.
-- `docs/issues.md`: encountered constraints, decisions and next evidence.
-- `todo.md`: dated implementation status and current work queue.
+**Pulse owns all project and issue planning**, as requested on 9 October 2026.
+Use the installed Pulse Codex plugin/MCP tools first. The local Streamable HTTP
+endpoint is `http://127.0.0.1:7437/mcp`; the human interface is
+http://localhost:7437/. These interfaces share the existing SQLite data; do not
+create a separate planner database. This supersedes earlier Pages-first or
+Linear-first planning, unless the user explicitly selects another tracker for
+the task.
+
+Before planning, call `list_projects`, `list_versions` and `list_tags` to discover
+IDs. Read existing work with `list_tickets` and check duplicates before creating
+projects, versions or tickets. Page with `limit`/`offset` as needed (maximum 500
+per page). Reuse matching records. Tickets describe actionable outcomes,
+acceptance criteria, dependencies and source/PR links; use discovered feature,
+bug, improvement, documentation, maintenance or testing tags.
+
+Keep ticket states accurate: `todo`, `in_progress`, `blocked`, `done` or
+`cancelled`. Move active work to `in_progress` and explain blockers in the
+description. Before every update, call `get_ticket` and pass its current revision
+as `expected_revision`; on conflict, re-read and reconsider. Update fields
+selectively, preserving descriptions, tags and source context. Mark `done` only
+when acceptance criteria are met; source-complete work with pending native/user
+validation remains open. Record unrelated discoveries during an active PR as
+follow-up tickets instead of expanding that PR.
+
+Preserve existing external tracker records and links. This policy does not
+authorize bulk migration, deletion, archival, synchronization or writes to other
+trackers. If Pulse tools or the local service are unavailable, report the
+limitation and keep a clearly labeled temporary plan in chat; do not silently
+switch trackers or claim unsaved tickets were created.
+
+Repository documents retain technical contracts, request order and evidence:
+
+- `docs/plan.md`: milestone contracts and acceptance gates, with Pulse pointers.
+- `docs/issues.md`: technical constraints, decisions and supporting evidence.
+- `todo.md`: dated implementation evidence and request-order reference; Pulse
+  owns the active queue and ticket states.
 - `docs/features.md`: fundamental workflows and honest capability assessment.
 - `docs/ui-design.md`: mandatory lowercase text and Ioskeley Mono.
 - `docs/reference-project.md`: PhotoCraft adaptation and pinned sources.
@@ -392,9 +425,9 @@ create mandatory pipelines, swarms, duplicate investigations, or overlapping edi
 - `docs/research/` and `research/observations/`: reference identity and behavior evidence.
 - `artifacts/` and `research/private/`: ignored local outputs and analysis material.
 
-No hosted/release pipeline, project board, generated scorecard, or devlog is
-currently configured. The local validation runner is not hosted CI. Use existing
-tracking rather than inventing a second authority.
+No hosted/release pipeline, generated scorecard or devlog is currently configured.
+The local validation runner is not hosted CI. Use Pulse for planning rather than
+inventing a second authority.
 Do not commit, push, publish, choose a distribution license, or change permissions
 unless the user authorizes that action. Inspect checkout topology and status before editing. The workspace now uses Git
 on `main` with the private `PORTALSURFER/hex` remote, created at user request on
