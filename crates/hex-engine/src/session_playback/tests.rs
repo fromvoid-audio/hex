@@ -11,6 +11,49 @@ use hex_project::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+#[test]
+fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
+    let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
+    assert_eq!(sampler_bytes, 344);
+    let added_sampler_bytes = sampler_bytes - 40;
+    let release_capacity = super::SESSION_RELEASE_CAPACITY;
+    let release_entries_bytes = release_capacity
+        .checked_mul(std::mem::size_of::<super::ReleaseEntry>())
+        .expect("release entry byte count is bounded")
+        .checked_mul(2)
+        .expect("paired release entry byte count is bounded");
+    let span_buffer_bytes = std::mem::size_of::<MidiSpanBuffer>();
+    let current_bytes = release_entries_bytes
+        .checked_add(span_buffer_bytes)
+        .expect("fixed MIDI storage byte count is bounded");
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
+        assert_eq!(span_buffer_bytes, 81_416);
+        assert_eq!(current_bytes, 16_072_200);
+    }
+    let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
+        .checked_sub(added_sampler_bytes)
+        .expect("previous sampler fits the entry");
+    let previous_span_buffer_size = span_buffer_bytes
+        .checked_sub(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+        .expect("previous sampler fits the span buffer");
+    let previous_bytes = release_capacity
+        .checked_mul(previous_release_entry_size)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(previous_span_buffer_size))
+        .expect("previous fixed MIDI storage byte count is bounded");
+    let expected_growth = release_capacity
+        .checked_mul(added_sampler_bytes)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| {
+            bytes.checked_add(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+        })
+        .expect("fixed MIDI storage growth is bounded");
+    assert_eq!(current_bytes - previous_bytes, expected_growth);
+    assert!(current_bytes < 16 * 1024 * 1024);
+}
+
 /// These hand-authored fixtures predate schema 15 and model the schema 1–14
 /// migration that installs a default sine slot on every track carrying MIDI.
 fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_project::Invalid> {

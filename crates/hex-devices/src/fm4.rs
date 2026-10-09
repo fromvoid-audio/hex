@@ -4,6 +4,7 @@
 //! Preparation validates everything; sampling uses fixed arrays and a borrowed
 //! control-created sine table. Graph coefficients are modulation depth in turns.
 use crate::{Invalid, PHASE_SCALE, SineTable};
+use hex_lattice::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, StereoFrame};
 
 pub const OPERATORS: usize = 4;
 
@@ -213,8 +214,44 @@ impl PreparedFm4 {
         })
     }
 
-    pub const fn release_frames(self) -> u64 {
+    pub const fn release_frames(&self) -> u64 {
         self.envelope.release
+    }
+
+    /// Pack this validated standalone note into the bounded immutable analytic
+    /// sampler ABI. FM4 remains unregistered; callers must not infer admission
+    /// from this adapter. The shared table is initialized on this control-side
+    /// call so the returned sampler never initializes it while rendering.
+    /// Words are: 4 steps, 4 phases, 4 levels, 16 row-major modulation values,
+    /// 4 carrier values, 4 topological-order indices, attack, decay, sustain,
+    /// release and velocity. Integers stay integers; floating-point fields use
+    /// their exact IEEE-754 bit patterns.
+    pub fn into_analytic_note(self) -> PreparedAnalyticNote {
+        let _ = crate::shared_sine_table();
+        let mut payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0..4].copy_from_slice(&self.steps);
+        payload[4..8].copy_from_slice(&self.phases);
+        for (target, level) in payload[8..12].iter_mut().zip(self.levels) {
+            *target = level.to_bits();
+        }
+        for source in 0..OPERATORS {
+            for target in 0..OPERATORS {
+                payload[12 + source * OPERATORS + target] =
+                    self.routing.modulation[source][target].to_bits();
+            }
+        }
+        for (target, carrier) in payload[28..32].iter_mut().zip(self.routing.carriers) {
+            *target = carrier.to_bits();
+        }
+        for (target, order) in payload[32..36].iter_mut().zip(self.routing.order) {
+            *target = order as u64;
+        }
+        payload[36] = self.envelope.attack;
+        payload[37] = self.envelope.decay;
+        payload[38] = self.envelope.sustain.to_bits();
+        payload[39] = self.envelope.release;
+        payload[40] = self.velocity.to_bits();
+        PreparedAnalyticNote::new(payload, self.envelope.release, sample_fm4_note)
     }
 
     /// No limiter, feedback or antialiasing: peak is bounded by the sum of
@@ -244,6 +281,56 @@ impl PreparedFm4 {
             .sum();
         (output * amplitude) as f32
     }
+}
+
+fn sample_fm4_note(
+    payload: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age_frames: u64,
+    gate_frames: u64,
+    _release_frames: u64,
+) -> StereoFrame {
+    let Some(table) = crate::shared_sine_table_if_prepared() else {
+        return [0.0; 2];
+    };
+    let envelope = PreparedEnvelope {
+        attack: payload[36],
+        decay: payload[37],
+        sustain: f64::from_bits(payload[38]),
+        release: payload[39],
+    };
+    let amplitude = envelope.level(age_frames, gate_frames) * f64::from_bits(payload[40]);
+    if amplitude == 0.0 {
+        return [0.0; 2];
+    }
+    let mut signals = [0.0; OPERATORS];
+    for slot in 0..OPERATORS {
+        let Ok(target) = usize::try_from(payload[32 + slot]) else {
+            return [0.0; 2];
+        };
+        if target >= OPERATORS {
+            return [0.0; 2];
+        }
+        let modulation: f64 = signals
+            .iter()
+            .enumerate()
+            .map(|(source, signal)| {
+                signal * f64::from_bits(payload[12 + source * OPERATORS + target])
+            })
+            .sum();
+        let phase = payload[target]
+            .wrapping_mul(age_frames)
+            .wrapping_add(payload[4 + target])
+            .wrapping_add(phase_from_turns(modulation));
+        signals[target] =
+            f64::from(table.sample_phase(phase)) * f64::from_bits(payload[8 + target]);
+    }
+    let output: f64 = signals
+        .iter()
+        .enumerate()
+        .map(|(index, signal)| signal * f64::from_bits(payload[28 + index]))
+        .sum();
+    let sample = (output * amplitude) as f32;
+    [sample, sample]
 }
 
 fn phase_from_turns(turns: f64) -> u64 {

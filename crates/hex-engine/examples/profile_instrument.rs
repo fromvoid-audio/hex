@@ -4,7 +4,6 @@ use hex_engine::{
     compile,
     playback::{Playback, PlaybackCommand},
 };
-use hex_lattice::PreparedAnalyticNote;
 use hex_project::{
     BeatTime, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project, Snapshot, Tempo,
     TempoPoint, TrackContentSnapshot, TrackSnapshot,
@@ -14,6 +13,7 @@ use std::{error::Error, hint::black_box, time::Instant};
 const RATE: u32 = 48_000;
 const TRACKS: usize = 100;
 const NOTES_PER_TRACK: usize = 16;
+const PREVIOUS_INLINE_SAMPLER_BYTES: usize = 40;
 const WARMUP_BLOCKS: usize = 100;
 const MEASURED_BLOCKS: usize = 3_000;
 
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let project = compile::project(&editable, &Default::default())?;
     let sampler_references = project.midi_note_sampler_reference_count()?;
     let old_sampler_bytes = sampler_references
-        .checked_mul(std::mem::size_of::<PreparedAnalyticNote>())
+        .checked_mul(PREVIOUS_INLINE_SAMPLER_BYTES)
         .ok_or("old sampler byte estimate overflow")?;
     let indexed_bytes = project
         .midi_note_bank_storage_bytes()?

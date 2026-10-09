@@ -117,12 +117,12 @@ impl PreparedNativeInstrument for PreparedSineInstrument {
         let voice = shared_sine_table()
             .prepare_voice(self.sample_rate, pitch, velocity)
             .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0] = voice.phase_step;
+        payload[1] = u64::from(voice.amplitude.to_bits());
+        payload[2] = voice.attack_frames;
         Ok(PreparedAnalyticNote::new(
-            [
-                voice.phase_step,
-                u64::from(voice.amplitude.to_bits()),
-                voice.attack_frames,
-            ],
+            payload,
             voice.release_frames,
             sample_sine_note,
         ))
@@ -307,5 +307,32 @@ mod tests {
         assert!(table.prepare_voice(48_000, 128, 100).is_err());
         assert!(table.prepare_voice(1_000, 60, 100).is_err());
         assert!(table.prepare_voice(48_000, 60, 0).is_err());
+    }
+
+    #[test]
+    fn widened_analytic_payload_preserves_legacy_sine_samples_exactly() {
+        let table = SineTable::new();
+        let legacy = table.prepare_voice(48_000, 69, 100).unwrap();
+        let registry = native_instrument_registry().unwrap();
+        let state = registry.default_state(SINE_INSTRUMENT_TYPE_ID).unwrap();
+        let prepared = registry.prepare_instrument(&state, 48_000).unwrap();
+        let note = prepared.prepare_note(69, 100).unwrap();
+        assert_eq!(std::mem::size_of_val(&note), 344);
+        for gate in [1, 24_000, 48_000] {
+            for age in [
+                0,
+                1,
+                239,
+                240,
+                gate - 1,
+                gate,
+                gate + 1,
+                gate + 2_399,
+                gate + 2_400,
+            ] {
+                let expected = table.sample(legacy, age, gate);
+                assert_eq!(note.sample(age, gate), [expected, expected]);
+            }
+        }
     }
 }
