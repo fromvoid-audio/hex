@@ -51,6 +51,8 @@ python3 scripts/check-architecture.py
 python3 scripts/check-ui-style.py
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/local-ci.py --quick  # guards and formatting only; not full CI
+python3 scripts/local-ci.py        # complete local validation pipeline
 mkdir -p artifacts
 cargo run -p hex-cli -- demo artifacts/hex-demo.wav
 cargo run -p hex-cli -- edit-demo artifacts/hex-edited-demo.wav
@@ -136,6 +138,10 @@ physical device failure/restart and listening acceptance remain open.
 See [feature roadmap](docs/features.md), [runtime design](docs/runtime.md), and
 [performance baseline](docs/performance.md). The app is a local development build,
 with no signing, installer, or distribution release.
+
+The local validation runner retains per-step logs and a structured summary under
+`artifacts/local-ci/`; full-run evidence is valid only for the recorded unchanged
+commit and working tree. See [local CI](docs/local-ci.md) for its scope and limits.
 
 Native export was accepted on a fresh development bundle: revision 1 exported
 507,150 frames at 44.1 kHz, stereo PCM16. Its WAV matched an independent linear
