@@ -69,3 +69,18 @@ ruler, with cached compact drawing, viewport outline and click navigation.
 See [arrangement-overview.md](arrangement-overview.md). Command preserves grid visibility; alternating
 four-unit bands and the native input repair are in this review milestone.
 Native visual and physical-input acceptance remain pending.
+
+## project growth preserves zoom — 9 October 2026
+
+Ordinary edits that extend the project keep the previous Arrangement viewport.
+If the view was fitted, freeze that visible frame span when the extent grows;
+an explicitly zoomed/panned viewport remains unchanged. The overview still covers
+the complete project. Initial loading and project replacement may fit, and the
+explicit fit action fits the current extent. Shrinking extents retain existing
+viewport bounds/clamping.
+
+A headless UI regression drives canonical worker edits through the controller,
+covering growth, same-horizon updates, explicit fit, later zoom/pan and project
+replacement. Focused tests, strict UI Clippy, formatting and source guards pass.
+Native acceptance: paste or move beyond the project end and confirm the grid
+scale stays stable, then use fit to see the full expanded project.

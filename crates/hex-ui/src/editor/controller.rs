@@ -351,6 +351,17 @@ impl EditorView {
         };
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
+        if !event.project_replaced
+            && self.viewport.is_none()
+            && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
+            && previous_horizon > 0
+            && event_state.timeline_frames > previous_horizon
+        {
+            // Auto-fit is a one-time view choice. Once content extends the
+            // project, keep the previously visible frame span so edits do not
+            // make the Arrangement appear to zoom out unexpectedly.
+            self.viewport = Some(Viewport::fit(previous_horizon));
+        }
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;

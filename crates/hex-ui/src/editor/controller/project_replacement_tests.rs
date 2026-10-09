@@ -3,8 +3,9 @@ use super::*;
 use gpui::TestAppContext;
 use hex_engine::{PreparedRevision, SineTable};
 use hex_project::{Command, Editor, Project};
-use hex_session::service::{Service, ViewState};
+use hex_session::service::{Request, Service, ViewState};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
     let prepared = Arc::new(
@@ -33,6 +34,22 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         created: None,
         duplicate_complete: false,
         restore_complete: None,
+    }
+}
+
+fn receive_worker_event(view: &mut EditorView) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match view.service.try_event() {
+            Ok(event) => {
+                view.receive(event);
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("worker event unavailable: {error}"),
+        }
     }
 }
 
@@ -132,4 +149,113 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             assert_eq!(pending.project_generation, view.project_generation);
         })
         .expect("test window");
+}
+
+#[gpui::test]
+fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizon(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.add_window(|window, cx| {
+        let service =
+            Service::new(48_000, 16, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    window
+        .update(cx, |view, _, _| {
+            receive_worker_event(view);
+            assert_eq!(view.viewport, None, "the initial project remains auto-fit");
+            let initial_horizon = view.state.as_ref().expect("initial state").timeline_frames;
+
+            view.service
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "source".into(),
+                }))
+                .expect("add track");
+            receive_worker_event(view);
+            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+            view.service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::from_quarters(4).expect("length"),
+                }))
+                .expect("place source clip");
+            receive_worker_event(view);
+            assert_eq!(
+                view.state.as_ref().unwrap().timeline_frames,
+                initial_horizon
+            );
+            assert_eq!(view.viewport, None, "same-horizon edits preserve auto-fit");
+            let clip = view.state.as_ref().unwrap().project.tracks()[0].midi_clips()[0].id();
+
+            view.service
+                .submit(Request::Edit(Command::MoveMidiClip {
+                    clip,
+                    track,
+                    start: hex_project::BeatTime::from_quarters(32).expect("destination"),
+                }))
+                .expect("move beyond current extent");
+            receive_worker_event(view);
+            let grown_horizon = view.state.as_ref().unwrap().timeline_frames;
+            assert!(grown_horizon > initial_horizon);
+            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
+            assert_eq!(
+                view.visible_viewport(grown_horizon),
+                Viewport::fit(initial_horizon)
+            );
+
+            view.service
+                .submit(Request::Edit(Command::Gain { track, gain: 0.5 }))
+                .expect("same-horizon edit");
+            receive_worker_event(view);
+            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
+
+            view.fit_timeline();
+            assert_eq!(view.viewport, None);
+            assert_eq!(
+                view.visible_viewport(grown_horizon),
+                Viewport::fit(grown_horizon)
+            );
+            view.zoom_timeline(true);
+            let explicit_zoom = view.viewport.expect("explicit zoom");
+            view.service
+                .submit(Request::Edit(Command::MoveMidiClip {
+                    clip,
+                    track,
+                    start: hex_project::BeatTime::from_quarters(64).expect("far destination"),
+                }))
+                .expect("grow after explicit zoom");
+            receive_worker_event(view);
+            assert!(view.state.as_ref().unwrap().timeline_frames > grown_horizon);
+            assert_eq!(view.viewport, Some(explicit_zoom));
+
+            view.pan_timeline(true);
+            let explicit_pan = view.viewport.expect("explicit pan");
+            view.service
+                .submit(Request::Edit(Command::MoveMidiClip {
+                    clip,
+                    track,
+                    start: hex_project::BeatTime::from_quarters(96).expect("farther destination"),
+                }))
+                .expect("grow after explicit pan");
+            receive_worker_event(view);
+            assert_eq!(view.viewport, Some(explicit_pan));
+
+            let replacement = event(
+                Arc::new(Project::new(48_000).expect("replacement project")),
+                view.state.as_ref().unwrap().revision + 1,
+                true,
+            );
+            view.receive(replacement);
+            assert_eq!(
+                view.viewport, None,
+                "project replacement returns to auto-fit"
+            );
+            let replacement_horizon = view.state.as_ref().unwrap().timeline_frames;
+            assert_eq!(
+                view.visible_viewport(replacement_horizon),
+                Viewport::fit(replacement_horizon)
+            );
+        })
+        .expect("run viewport growth assertions");
 }
