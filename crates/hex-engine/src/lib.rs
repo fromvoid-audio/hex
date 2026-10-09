@@ -124,6 +124,11 @@ pub fn patch_native_device_parameter(
                 Error::InvalidParameterValue => "device parameter value is invalid",
                 Error::InvalidDescriptor => "native device parameter descriptor is invalid",
                 Error::DuplicateDeviceType => "native device registry contains a duplicate type",
+                Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
+                Error::RuntimeAllocation => "native device runtime allocation failed",
+                Error::UnsupportedProcessingClass => {
+                    "native device processing class is not admitted"
+                }
             })
         })
 }
@@ -430,7 +435,9 @@ pub struct Track {
     track_id: Option<hex_project::TrackId>,
     clips: Vec<Clip>,
     mix: PreparedTrackMix,
+    source_mix: PreparedTrackMix,
     instrument: Option<InstrumentTrack>,
+    device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -441,6 +448,13 @@ pub struct PreparedTrackMix {
     muted: bool,
 }
 impl PreparedTrackMix {
+    pub(crate) const fn identity() -> Self {
+        Self {
+            channel_gain: [1.0, 1.0],
+            effects: None,
+            muted: false,
+        }
+    }
     pub fn new(gain: f32, balance: f32, muted: bool) -> Result<Self, Invalid> {
         Self::with_effects(gain, balance, muted, None)
     }
@@ -505,7 +519,9 @@ impl Track {
             track_id: None,
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
+            source_mix: PreparedTrackMix::new(gain, balance, muted)?,
             instrument: None,
+            device_chain: std::sync::Arc::from([]),
         })
     }
 
@@ -516,17 +532,49 @@ impl Track {
         balance: f32,
         instrument: Option<InstrumentTrack>,
         effects: Option<hex_lattice::StereoMatrix>,
+        device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
     ) -> Result<Self, Invalid> {
+        let mix = PreparedTrackMix::with_effects(gain, balance, muted, effects)?;
+        let stateful = device_chain
+            .iter()
+            .any(|device| device.definition.is_some());
         Ok(Self {
             track_id: None,
             clips,
-            mix: PreparedTrackMix::with_effects(gain, balance, muted, effects)?,
+            mix,
+            source_mix: if stateful {
+                PreparedTrackMix::new(1.0, 0.0, false)?
+            } else {
+                mix
+            },
             instrument,
+            device_chain: std::sync::Arc::from(device_chain),
         })
+    }
+
+    pub(crate) fn new_device_runtime(
+        &self,
+    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let mut instances = Vec::new();
+        instances
+            .try_reserve_exact(self.device_chain.len())
+            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
+        instances.extend(self.device_chain.iter().cloned());
+        hex_lattice::NativeRuntimeChain::new(instances)
+    }
+
+    pub(crate) fn has_stateful_devices(&self) -> bool {
+        self.device_chain
+            .iter()
+            .any(|device| device.definition.is_some())
     }
 
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
+    }
+
+    pub(crate) fn source_mix(&self) -> PreparedTrackMix {
+        self.source_mix
     }
 
     pub(crate) fn has_instrument_source(&self) -> bool {
@@ -562,7 +610,7 @@ impl Track {
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
-        if !self.mix.muted {
+        if !self.source_mix.muted {
             self.render_unmuted_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
         }
         Ok(())
@@ -578,7 +626,7 @@ impl Track {
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
-        if !self.mix.muted {
+        if !self.source_mix.muted {
             self.render_unmuted_range_with_pages(start_frame, end_frame, output, None, pages);
         }
         Ok(())
@@ -670,7 +718,7 @@ impl Track {
                 let count = remaining.min(until_wrap);
                 let output_offset = (position - start_frame) as usize;
                 let rendered = render_streamed_page_span(
-                    self.mix,
+                    self.source_mix,
                     source,
                     StreamedPageSpan {
                         source_frame,
@@ -717,16 +765,16 @@ impl Track {
                 let gain = fade.gain_at(position - clip.start);
                 sample[0] *= gain;
                 sample[1] *= gain;
-                self.mix.add_unmuted(frame, sample);
+                self.source_mix.add_unmuted(frame, sample);
             }
         } else if source_phase == 0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.mix
+                self.source_mix
                     .add_unmuted(frame, clip.at(span_start + offset as u64, 0));
             }
         } else {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.mix
+                self.source_mix
                     .add_unmuted(frame, clip.at(span_start + offset as u64, source_phase));
             }
         }
@@ -759,7 +807,7 @@ impl Track {
                                 relative,
                                 span.gate_end - span.start,
                             );
-                            self.mix.add_unmuted(
+                            self.source_mix.add_unmuted(
                                 &mut target[(frame_position - chunk_start) as usize],
                                 [sample; 2],
                             );
@@ -930,10 +978,212 @@ impl PreparedMasterGain {
     }
 }
 
+pub(crate) struct RendererRuntime {
+    device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    runtime_error: Option<&'static str>,
+}
+impl RendererRuntime {
+    pub(crate) fn new(project: &Project) -> Self {
+        let mut device_chains = Vec::new();
+        let mut runtime_error = None;
+        if device_chains
+            .try_reserve_exact(project.tracks.len())
+            .is_err()
+        {
+            runtime_error = Some("native device runtime allocation failed");
+        } else {
+            for track in &project.tracks {
+                match track.new_device_runtime() {
+                    Ok(chain) => device_chains.push(chain),
+                    Err(_) => {
+                        runtime_error = Some("native device runtime preparation failed");
+                        device_chains.clear();
+                        break;
+                    }
+                }
+            }
+        }
+        Self {
+            device_chains,
+            runtime_error,
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        for chain in &mut self.device_chains {
+            chain.reset();
+        }
+    }
+
+    pub(crate) fn has_stateful_processors(&self) -> bool {
+        self.device_chains
+            .iter()
+            .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+    }
+
+    pub(crate) fn can_inherit_from(
+        &self,
+        project: &Project,
+        previous: &Self,
+        previous_project: &Project,
+    ) -> bool {
+        project.tracks().iter().enumerate().all(|(index, track)| {
+            let Some(track_id) = track.canonical_track_id() else {
+                return true;
+            };
+            let Some(previous_index) = previous_project
+                .tracks()
+                .iter()
+                .position(|old_track| old_track.canonical_track_id() == Some(track_id))
+            else {
+                return true;
+            };
+            match (
+                self.device_chains.get(index),
+                previous.device_chains.get(previous_index),
+            ) {
+                (Some(candidate), Some(old)) => candidate.can_inherit_from(old),
+                _ => false,
+            }
+        })
+    }
+
+    pub(crate) fn inherit_from(
+        &mut self,
+        project: &Project,
+        previous: &Self,
+        previous_project: &Project,
+    ) {
+        for (index, track) in project.tracks().iter().enumerate() {
+            let Some(track_id) = track.canonical_track_id() else {
+                continue;
+            };
+            let Some(previous_index) = previous_project
+                .tracks()
+                .iter()
+                .position(|old_track| old_track.canonical_track_id() == Some(track_id))
+            else {
+                continue;
+            };
+            if let (Some(candidate), Some(old)) = (
+                self.device_chains.get_mut(index),
+                previous.device_chains.get(previous_index),
+            ) {
+                candidate.inherit_from(old);
+            }
+        }
+    }
+
+    pub(crate) fn render_without_pages(
+        &mut self,
+        project: &Project,
+        position: &mut u64,
+        playing: bool,
+        output: &mut [Frame],
+    ) -> Result<(), Invalid> {
+        self.render_with_pages::<dyn MediaPages>(project, position, playing, output, None)
+    }
+
+    pub(crate) fn render_with_pages<P: MediaPages + ?Sized>(
+        &mut self,
+        project: &Project,
+        position: &mut u64,
+        playing: bool,
+        output: &mut [Frame],
+        mut pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        if let Some(message) = self.runtime_error {
+            return Err(Invalid(message));
+        }
+        let next = if playing {
+            position
+                .checked_add(output.len() as u64)
+                .ok_or(Invalid("transport overflow"))?
+        } else {
+            *position
+        };
+        if playing && !output.is_empty() && pages.is_none() && project.contains_streamed_sources() {
+            return Err(Invalid("streamed project requires a media page provider"));
+        }
+        output.fill([0.0; 2]);
+        if !playing {
+            return Ok(());
+        }
+        if output.is_empty() {
+            return Ok(());
+        }
+        let block_start = *position;
+        for chain in &mut self.device_chains {
+            chain.begin_block();
+        }
+        for (index, track) in project.tracks.iter().enumerate() {
+            let stateful = track.has_stateful_devices();
+            if stateful {
+                let Some(chain) = self.device_chains.get_mut(index) else {
+                    return Err(Invalid("native device runtime is unavailable"));
+                };
+                let mut scratch = [[0.0; 2]; 256];
+                let mut offset = 0_usize;
+                while offset < output.len() {
+                    let count = (output.len() - offset).min(scratch.len());
+                    let start = block_start
+                        .checked_add(offset as u64)
+                        .ok_or(Invalid("render range overflow"))?;
+                    let end = start
+                        .checked_add(count as u64)
+                        .ok_or(Invalid("render range overflow"))?;
+                    let target = &mut scratch[..count];
+                    target.fill([0.0; 2]);
+                    if let Some(page_provider) = pages.as_deref_mut() {
+                        track.render_unmuted_range_with_pages(
+                            start,
+                            end,
+                            target,
+                            None,
+                            page_provider,
+                        );
+                    } else {
+                        track.render_unmuted_range(start, end, target, None);
+                    }
+                    chain.process_block(target);
+                    for (destination, source) in output[offset..offset + count]
+                        .iter_mut()
+                        .zip(target.iter().copied())
+                    {
+                        track.mix.add_frame(destination, source);
+                    }
+                    offset += count;
+                }
+            } else if !track.mix.muted {
+                if let Some(page_provider) = pages.as_deref_mut() {
+                    track.render_unmuted_range_with_pages(
+                        block_start,
+                        next,
+                        output,
+                        None,
+                        page_provider,
+                    );
+                } else {
+                    track.render_unmuted_range(block_start, next, output, None);
+                }
+            }
+        }
+        for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        // Neutral projects retain their original hot path. Non-neutral master
+        // gain is deliberately post-sum rather than folded into track gains.
+        project.master_gain.apply(output);
+        *position = next;
+        Ok(())
+    }
+}
+
 pub struct Renderer<'a> {
     project: &'a Project,
     position: u64,
     playing: bool,
+    runtime: RendererRuntime,
 }
 impl<'a> Renderer<'a> {
     pub fn new(project: &'a Project) -> Self {
@@ -941,52 +1191,35 @@ impl<'a> Renderer<'a> {
             project,
             position: 0,
             playing: false,
+            runtime: RendererRuntime::new(project),
         }
     }
+
     pub fn play(&mut self) {
         self.playing = true;
     }
+
     pub fn pause(&mut self) {
         self.playing = false;
     }
+
     pub fn seek(&mut self, position: u64) {
+        if self.position != position {
+            self.runtime.reset();
+        }
         self.position = position;
     }
+
     pub fn position(&self) -> u64 {
         self.position
     }
+
     /// Overwrites the output. Pausing emits silence without advancing.
-    /// No allocation occurs here; real-time deadline safety is not yet established.
+    /// Runtime storage is prepared by `new`; rendering does not allocate.
     /// On position overflow returns an error without changing output or transport.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        let next = if self.playing {
-            self.position
-                .checked_add(output.len() as u64)
-                .ok_or(Invalid("transport overflow"))?
-        } else {
-            self.position
-        };
-        if self.playing && !output.is_empty() && self.project.contains_streamed_sources() {
-            return Err(Invalid("streamed project requires a media page provider"));
-        }
-        output.fill([0.0; 2]);
-        if !self.playing {
-            return Ok(());
-        }
-        if output.is_empty() {
-            return Ok(());
-        }
-        let block_start = self.position;
-        for track in &self.project.tracks {
-            if !track.mix.muted {
-                track.render_unmuted_range(block_start, next, output, None);
-            }
-        }
-        // Neutral projects retain their original hot path. Non-neutral master
-        // gain is deliberately post-sum rather than folded into track gains.
-        self.project.master_gain.apply(output);
-        self.position = next;
-        Ok(())
+        self.runtime
+            .render_without_pages(self.project, &mut self.position, self.playing, output)
     }
 
     /// Render with a borrowed page view. Missing streamed pages contribute
@@ -996,26 +1229,13 @@ impl<'a> Renderer<'a> {
         output: &mut [Frame],
         pages: &mut P,
     ) -> Result<(), Invalid> {
-        let next = if self.playing {
-            self.position
-                .checked_add(output.len() as u64)
-                .ok_or(Invalid("transport overflow"))?
-        } else {
-            self.position
-        };
-        output.fill([0.0; 2]);
-        if !self.playing || output.is_empty() {
-            return Ok(());
-        }
-        let block_start = self.position;
-        for track in &self.project.tracks {
-            if !track.mix.muted {
-                track.render_unmuted_range_with_pages(block_start, next, output, None, pages);
-            }
-        }
-        self.project.master_gain.apply(output);
-        self.position = next;
-        Ok(())
+        self.runtime.render_with_pages(
+            self.project,
+            &mut self.position,
+            self.playing,
+            output,
+            Some(pages),
+        )
     }
 }
 

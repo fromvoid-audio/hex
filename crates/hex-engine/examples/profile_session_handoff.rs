@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let cut = playback.performance_frame();
         let arrangement_cut = playback.arrangement_frame();
         let start = Instant::now();
-        let report = candidate.try_inherit_state_from(black_box(&playback))?;
+        let report = candidate.try_inherit_state_from(black_box(&mut playback))?;
         timings.push(start.elapsed().as_nanos());
         black_box(report);
         if playback.performance_frame() != cut || playback.arrangement_frame() != arrangement_cut {

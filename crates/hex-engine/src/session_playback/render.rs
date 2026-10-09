@@ -49,6 +49,12 @@ impl SessionPlayback {
         self.performance_frame
             .checked_add(width)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        for chain in &mut self.device_chains {
+            chain.begin_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.begin_block();
+        }
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
@@ -80,8 +86,9 @@ impl SessionPlayback {
                 self.apply_due_routes(performance_frame, arrangement_frame)?;
             route_changed |= applied_route;
             if captured_release {
-                self.release_scratch
-                    .sort_unstable_by_key(|entry| (entry.track_index, entry.order));
+                self.release_scratch.sort_unstable_by_key(|entry| {
+                    (entry.track_index, entry.tail_group, entry.order)
+                });
             }
             let mut chunk_frames = (output.len() - output_offset).min(256);
             if let Some(next) = next_pending_frame(&self.route_scratch) {
@@ -133,6 +140,12 @@ impl SessionPlayback {
         }
 
         self.revision.arrangement().master_mix().apply(output);
+        for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.commit_block();
+        }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
@@ -201,6 +214,10 @@ impl SessionPlayback {
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let mix = track.mix();
+            let stateful = self
+                .device_chains
+                .get(index)
+                .is_some_and(|chain| !chain.is_empty());
             while self
                 .release_scratch
                 .get(release_cursor)
@@ -216,143 +233,261 @@ impl SessionPlayback {
             {
                 release_cursor += 1;
             }
-            for release in &self.release_scratch[first_release..release_cursor] {
-                render_release(release, table, performance_frame, output)?;
-            }
-            match self.route_scratch[index].owner {
-                RouteOwner::Arrangement => {
-                    if let Some(page_provider) = pages.as_deref_mut() {
-                        track.render_additive_with_pages(arrangement_frame, output, page_provider)
-                    } else {
-                        track.render_additive(arrangement_frame, output)
-                    }
-                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                }
-                RouteOwner::Silence => {}
-                RouteOwner::Session { clip, launch } => {
-                    let prepared = self
-                        .revision
-                        .session()
-                        .midi_clip(clip)
-                        .ok_or(SessionPlaybackError::UnknownClip)?;
-                    if prepared.track != self.route_scratch[index].id {
-                        return Err(SessionPlaybackError::ClipTrackMismatch);
-                    }
-                    let context = crate::MidiInstrumentRenderContext::new(launch, &timing, table);
-                    let context = self
-                        .historical_floor
-                        .map_or(context, |floor| context.after_onset(floor));
-                    let context = context.with_suppressions(&self.suppression_scratch);
-                    prepared
-                        .instrument_template()
-                        .render_additive(context, mix, performance_frame, output, &mut self.spans)
-                        .map_err(SessionPlaybackError::Midi)?;
-                }
-                RouteOwner::SessionAudio { clip, launch_frame } => {
-                    let prepared = self
-                        .revision
-                        .session()
-                        .audio_clip(clip)
-                        .ok_or(SessionPlaybackError::UnknownClip)?;
-                    if prepared.track != self.route_scratch[index].id {
-                        return Err(SessionPlaybackError::ClipTrackMismatch);
-                    }
-                    match prepared.source() {
-                        PreparedAudioSource::Resident(audio) => {
-                            let frames = audio.frames();
-                            for (offset, frame) in output.iter_mut().enumerate() {
-                                let offset = u64::try_from(offset)
-                                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                                let absolute = performance_frame
-                                    .checked_add(offset)
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                                let Some(elapsed) = absolute.checked_sub(launch_frame) else {
-                                    continue;
-                                };
-                                let Some(source_frame) = prepared.source_start.checked_add(elapsed)
-                                else {
-                                    continue;
-                                };
-                                if source_frame >= prepared.source_end {
-                                    continue;
-                                }
-                                let source_index = usize::try_from(source_frame)
-                                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                                let sample = *frames
-                                    .get(source_index)
-                                    .ok_or(SessionPlaybackError::UnknownClip)?;
-                                mix.add_frame(frame, sample);
-                            }
-                        }
-                        PreparedAudioSource::Streamed(source) => {
-                            let page_provider = pages
-                                .as_deref_mut()
-                                .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
-                            let Some(mut elapsed) = performance_frame.checked_sub(launch_frame)
-                            else {
-                                continue;
-                            };
-                            let Some(mut source_frame) = prepared.source_start.checked_add(elapsed)
-                            else {
-                                continue;
-                            };
-                            let mut output_offset = 0_usize;
-                            while output_offset < output.len() && source_frame < prepared.source_end
-                            {
-                                let remaining = usize::try_from(
-                                    prepared.source_end.saturating_sub(source_frame),
-                                )
-                                .unwrap_or(usize::MAX);
-                                let count = (output.len() - output_offset).min(remaining);
-                                let offset = u64::try_from(output_offset)
-                                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                                let timeline_frame = performance_frame
-                                    .checked_add(offset)
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                                let rendered = render_streamed_page_span(
-                                    mix,
-                                    source,
-                                    StreamedPageSpan {
-                                        source_frame,
-                                        timeline_frame,
-                                        output_offset,
-                                        count,
-                                        fade: None,
-                                    },
-                                    output,
-                                    page_provider,
-                                );
-                                if rendered == 0 {
-                                    break;
-                                }
-                                let rendered = u64::try_from(rendered)
-                                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                                elapsed = elapsed
-                                    .checked_add(rendered)
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                                source_frame = prepared
-                                    .source_start
-                                    .checked_add(elapsed)
-                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                                output_offset =
-                                    output_offset
-                                        .checked_add(usize::try_from(rendered).map_err(|_| {
-                                            SessionPlaybackError::ArithmeticOverflow
-                                        })?)
-                                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                            }
-                        }
+            let has_current_release = self.release_scratch[first_release..release_cursor]
+                .iter()
+                .any(|entry| entry.tail_group.is_none());
+            let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence);
+            if stateful && (has_current_route || has_current_release) {
+                let mut track_buffer = [[0.0; 2]; 256];
+                let render_output = &mut track_buffer[..output.len()];
+                for release in &self.release_scratch[first_release..release_cursor] {
+                    if release.tail_group.is_none() {
+                        render_release_raw(release, table, performance_frame, render_output)?;
                     }
                 }
+                render_route_source_chunk(
+                    RouteSourceContext {
+                        revision: &self.revision,
+                        route: self.route_scratch[index],
+                        historical_floor: self.historical_floor,
+                        suppressions: &self.suppression_scratch,
+                        index,
+                        timing: &timing,
+                        table,
+                    },
+                    &mut self.spans,
+                    performance_frame,
+                    arrangement_frame,
+                    render_output,
+                    pages.as_deref_mut(),
+                )?;
+                let chain = self
+                    .device_chains
+                    .get_mut(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                chain.process_block(render_output);
+                for (destination, source) in output.iter_mut().zip(render_output.iter().copied()) {
+                    mix.add_frame(destination, source);
+                }
+            } else {
+                for release in &self.release_scratch[first_release..release_cursor] {
+                    if release.tail_group.is_none() {
+                        render_release(release, table, performance_frame, output)?;
+                    }
+                }
+                render_route_source_chunk(
+                    RouteSourceContext {
+                        revision: &self.revision,
+                        route: self.route_scratch[index],
+                        historical_floor: self.historical_floor,
+                        suppressions: &self.suppression_scratch,
+                        index,
+                        timing: &timing,
+                        table,
+                    },
+                    &mut self.spans,
+                    performance_frame,
+                    arrangement_frame,
+                    output,
+                    pages.as_deref_mut(),
+                )?;
             }
         }
-        // Removed tracks have no current route slot. Their active release tails
-        // retain the old copied mix and are accumulated in stable transfer order.
-        for release in &self.release_scratch[release_cursor..] {
-            render_release(release, table, performance_frame, output)?;
+        // Removed stateless tracks retain their copied linear mix. Stateful
+        // tails are grouped by their captured old runtime chain and old mix.
+        let mut tail_cursor = release_cursor;
+        while tail_cursor < self.release_scratch.len() {
+            let release = self
+                .release_scratch
+                .get(tail_cursor)
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            let Some(group) = release.tail_group else {
+                render_release(release, table, performance_frame, output)?;
+                tail_cursor += 1;
+                continue;
+            };
+            let group_start = tail_cursor;
+            while self
+                .release_scratch
+                .get(tail_cursor)
+                .is_some_and(|entry| entry.tail_group == Some(group))
+            {
+                tail_cursor += 1;
+            }
+            let group_index = usize::from(group);
+            let chain = self
+                .tail_groups
+                .get_mut(group_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let mut tail_buffer = [[0.0; 2]; 256];
+            let tail_output = &mut tail_buffer[..output.len()];
+            for release in &self.release_scratch[group_start..tail_cursor] {
+                render_release_raw(release, table, performance_frame, tail_output)?;
+            }
+            chain.process_block(tail_output);
+            let mix = self
+                .tail_mixes
+                .get(group_index)
+                .copied()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
+                mix.add_frame(destination, source);
+            }
         }
         Ok(())
     }
+}
+
+struct RouteSourceContext<'a, T> {
+    revision: &'a PreparedRevision,
+    route: super::TrackRoute,
+    historical_floor: Option<BeatTime>,
+    suppressions: &'a [MidiOccurrenceSuppression],
+    index: usize,
+    timing: &'a T,
+    table: &'a hex_devices::SineTable,
+}
+
+fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
+    context: RouteSourceContext<'_, T>,
+    spans: &mut MidiSpanBuffer,
+    performance_frame: u64,
+    arrangement_frame: u64,
+    output: &mut [Frame],
+    mut pages: Option<&mut P>,
+) -> Result<(), SessionPlaybackError> {
+    let RouteSourceContext {
+        revision,
+        route,
+        historical_floor,
+        suppressions,
+        index,
+        timing,
+        table,
+    } = context;
+    let track = revision
+        .arrangement()
+        .tracks()
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let source_mix = track.source_mix();
+    match route.owner {
+        RouteOwner::Arrangement => {
+            if let Some(page_provider) = pages.as_deref_mut() {
+                track.render_additive_with_pages(arrangement_frame, output, page_provider)
+            } else {
+                track.render_additive(arrangement_frame, output)
+            }
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        }
+        RouteOwner::Silence => {}
+        RouteOwner::Session { clip, launch } => {
+            let prepared = revision
+                .session()
+                .midi_clip(clip)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
+            if prepared.track != route.id {
+                return Err(SessionPlaybackError::ClipTrackMismatch);
+            }
+            let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
+            let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
+            let context = context.with_suppressions(suppressions);
+            prepared
+                .instrument_template()
+                .render_additive(context, source_mix, performance_frame, output, spans)
+                .map_err(SessionPlaybackError::Midi)?;
+        }
+        RouteOwner::SessionAudio { clip, launch_frame } => {
+            let prepared = revision
+                .session()
+                .audio_clip(clip)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
+            if prepared.track != route.id {
+                return Err(SessionPlaybackError::ClipTrackMismatch);
+            }
+            match prepared.source() {
+                PreparedAudioSource::Resident(audio) => {
+                    let frames = audio.frames();
+                    for (offset, frame) in output.iter_mut().enumerate() {
+                        let offset = u64::try_from(offset)
+                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+                        let absolute = performance_frame
+                            .checked_add(offset)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        let Some(elapsed) = absolute.checked_sub(launch_frame) else {
+                            continue;
+                        };
+                        let Some(source_frame) = prepared.source_start.checked_add(elapsed) else {
+                            continue;
+                        };
+                        if source_frame >= prepared.source_end {
+                            continue;
+                        }
+                        let source_index = usize::try_from(source_frame)
+                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+                        let sample = *frames
+                            .get(source_index)
+                            .ok_or(SessionPlaybackError::UnknownClip)?;
+                        source_mix.add_frame(frame, sample);
+                    }
+                }
+                PreparedAudioSource::Streamed(source) => {
+                    let page_provider = pages.ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
+                    let Some(mut elapsed) = performance_frame.checked_sub(launch_frame) else {
+                        return Ok(());
+                    };
+                    let Some(mut source_frame) = prepared.source_start.checked_add(elapsed) else {
+                        return Ok(());
+                    };
+                    let mut output_offset = 0_usize;
+                    while output_offset < output.len() && source_frame < prepared.source_end {
+                        let remaining =
+                            usize::try_from(prepared.source_end.saturating_sub(source_frame))
+                                .unwrap_or(usize::MAX);
+                        let count = (output.len() - output_offset).min(remaining);
+                        let offset = u64::try_from(output_offset)
+                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+                        let timeline_frame = performance_frame
+                            .checked_add(offset)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        let rendered = render_streamed_page_span(
+                            source_mix,
+                            source,
+                            StreamedPageSpan {
+                                source_frame,
+                                timeline_frame,
+                                output_offset,
+                                count,
+                                fade: None,
+                            },
+                            output,
+                            page_provider,
+                        );
+                        if rendered == 0 {
+                            break;
+                        }
+                        let rendered = u64::try_from(rendered)
+                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+                        elapsed = elapsed
+                            .checked_add(rendered)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        source_frame = prepared
+                            .source_start
+                            .checked_add(elapsed)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        output_offset = output_offset
+                            .checked_add(
+                                usize::try_from(rendered)
+                                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?,
+                            )
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn render_release(
@@ -369,6 +504,26 @@ fn render_release(
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(sample) = release.voice.sample_at(table, absolute) {
             release.mix.add_frame(frame, [sample; 2]);
+        }
+    }
+    Ok(())
+}
+
+fn render_release_raw(
+    release: &super::ReleaseEntry,
+    table: &hex_devices::SineTable,
+    performance_frame: u64,
+    output: &mut [Frame],
+) -> Result<(), SessionPlaybackError> {
+    for (offset, frame) in output.iter_mut().enumerate() {
+        let relative =
+            u64::try_from(offset).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+        let absolute = performance_frame
+            .checked_add(relative)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        if let Some(sample) = release.voice.sample_at(table, absolute) {
+            frame[0] += sample;
+            frame[1] += sample;
         }
     }
     Ok(())

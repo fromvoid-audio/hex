@@ -72,3 +72,10 @@ The input/oracle checks pass; retained log is
 `artifacts/utility-filter-profile-20261009.log`. Other development work was active,
 so these single-run timings are provisional and not a comparative regression
 claim. Stateful graph mixing/tails and device deadlines require separate evidence.
+
+## runtime admission
+
+The filters now enter shared playback through registered Utility version 2 state
+and the [stateful lattice contract](stateful-lattice.md). Native listening and
+measured reference response remain open; original standalone DSP checks do not
+establish Ableton parity.

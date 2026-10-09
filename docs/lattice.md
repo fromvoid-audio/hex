@@ -116,3 +116,11 @@ semantics, shared offline processing and allocation/handoff/tail tests precede
 admission. Standalone original filters are specified in
 [Utility filters](utility-filters.md); their source tests do not establish native
 processing or exact Live response.
+
+## stateful effect runtime implementation
+
+Generic paired stateful processors, history transfer, transactional rendering and
+control retirement are now implemented. Original Utility filters use the same
+registered codec and native/offline path. Scope, bounds, probes and open performance
+gates are recorded in [stateful lattice](stateful-lattice.md); instruments still
+require their own event/voice contract.

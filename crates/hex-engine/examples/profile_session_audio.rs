@@ -499,7 +499,7 @@ fn verify_source_and_tempo_handoff(
     let mut source_candidate =
         Playback::try_from_prepared_with_session(Arc::clone(&source_revision))?;
     source_candidate
-        .try_inherit_runtime_from(&previous)
+        .try_inherit_runtime_from(&mut previous)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
 
     let tempo_revision = prepare_edit(
@@ -515,7 +515,7 @@ fn verify_source_and_tempo_handoff(
     let mut tempo_candidate =
         Playback::try_from_prepared_with_session(Arc::clone(&tempo_revision))?;
     tempo_candidate
-        .try_inherit_runtime_from(&source_candidate)
+        .try_inherit_runtime_from(&mut source_candidate)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
     if tempo_candidate.performance_frame() != cut {
         return Err("tempo/source handoff changed the performance-frame cut".into());

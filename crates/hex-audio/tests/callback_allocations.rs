@@ -800,3 +800,267 @@ fn sounding_midi_scene_switches_use_the_prepared_release_bank_without_allocation
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "keys".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected instrument track".into()),
+    };
+    let scene = match editor.execute(Command::AddScene { name: "a".into() })? {
+        Created::Scene(scene) => scene,
+        _ => return Err("expected Session scene".into()),
+    };
+    let clip = match editor.execute(Command::CreateSessionMidiClip {
+        track,
+        scene,
+        name: "source".into(),
+        source_length: BeatTime::from_quarters(4)?,
+    })? {
+        Created::SessionClip(clip) => clip,
+        _ => return Err("expected Session MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(1)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 120,
+    })?;
+    let utility_type = DeviceTypeId::new("hex.utility")?;
+    let utility = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(utility_type)?,
+        ParameterId::new(11)?,
+        ParameterValue::Bool(true),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: utility,
+    })?;
+    let first_project = editor.project().clone();
+    editor.execute(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(60_000_000)?,
+    })?;
+    let second_project = editor.project().clone();
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let first_revision = Arc::new(PreparedRevision::prepare(
+        &first_project,
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let second_revision = Arc::new(PreparedRevision::prepare(
+        &second_project,
+        &media,
+        table,
+        Some(first_revision.session()),
+    )?);
+
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial playback publication failed")?;
+    control
+        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
+            scene,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .map_err(|_| "Session launch admission failed")?;
+    let mut output = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "stateful revision publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+    for _ in 0..256 {
+        measured_block(&mut callback, &mut output);
+    }
+    assert!(control.status.rejected_revision().is_none());
+
+    // The prior graph retains completed stateful tail owners until a later
+    // graph publication retires it. Callback transfer stays allocation-free;
+    // control reclamation performs only the expected deallocation.
+    let final_playback = Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
+    control
+        .publish(final_playback)
+        .map_err(|_| "final stateful publication failed")?;
+    measured_block(&mut callback, &mut output);
+    let mut reclaimed = 0;
+    let retired = measure(|| reclaimed = control.reclaim());
+    assert_eq!(reclaimed, 2);
+    assert_eq!(retired.count_total, 0);
+    assert!(retired.count_current < 0);
+    assert!(retired.bytes_current < 0);
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let asset = match editor.execute(Command::AddAsset {
+        path: "memory/fallback-stateful.wav".into(),
+        sample_rate: RATE,
+        frames: 256,
+    })? {
+        Created::Asset(asset) => asset,
+        _ => return Err("expected audio asset".into()),
+    };
+    let track = match editor.execute(Command::AddTrack {
+        name: "audio".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected audio track".into()),
+    };
+    editor.execute(Command::PlaceClip {
+        track,
+        asset,
+        start: 0,
+        duration: 1_000_000,
+        source_offset: 0,
+        source_length: 256,
+        looping: true,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: 0,
+        end: 256,
+        enabled: true,
+    })?;
+    let utility = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(DeviceTypeId::new("hex.utility")?)?,
+        ParameterId::new(11)?,
+        ParameterValue::Bool(true),
+    )?;
+    let device = match editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: utility,
+    })? {
+        Created::Device(device) => device,
+        _ => return Err("expected Utility device".into()),
+    };
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..256)
+                .map(|index| {
+                    let phase = index as f32 * 0.137;
+                    [0.3 + phase.sin() * 0.2, -0.25 + (phase * 0.73).cos() * 0.31]
+                })
+                .collect(),
+        )?,
+    )]);
+    let compiled = Arc::new(hex_engine::compile::project(editor.project(), &media)?);
+
+    let mut oracle = Playback::from_shared(Arc::clone(&compiled));
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; 512];
+    oracle.render(&mut expected)?;
+
+    let mut partitioned = Playback::from_shared(Arc::clone(&compiled));
+    partitioned.apply(PlaybackCommand::Play);
+    let mut partitioned_output = [[0.0; 2]; 512];
+    for chunk in partitioned_output.chunks_exact_mut(128) {
+        partitioned.render(chunk)?;
+    }
+    assert_eq!(partitioned_output, expected);
+
+    let callback_playback = Playback::from_shared(Arc::clone(&compiled));
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(callback_playback)
+        .map_err(|_| "legacy fallback publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "legacy fallback Play admission failed")?;
+    let mut output = [[0.0; 2]; 128];
+    for block in expected.chunks_exact(128) {
+        measured_block(&mut callback, &mut output);
+        assert_eq!(output, block);
+    }
+
+    let changed_state = hex_engine::patch_native_device_parameter(
+        editor.project().track(track).unwrap().devices()[0].state(),
+        ParameterId::new(12)?,
+        ParameterValue::Bool(true),
+    )?;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: changed_state,
+    })?;
+    let changed_project = Arc::new(hex_engine::compile::project(editor.project(), &media)?);
+    let mut inherited = Playback::from_shared(Arc::clone(&changed_project));
+    inherited
+        .try_inherit_runtime_from(&mut oracle)
+        .map_err(|_| "legacy fallback compatible handoff was refused")?;
+    let mut expected_handoff = [[0.0; 2]; 128];
+    inherited.render(&mut expected_handoff)?;
+    control
+        .publish(Playback::from_shared(Arc::clone(&changed_project)))
+        .map_err(|_| "legacy fallback compatible replacement failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, expected_handoff);
+
+    oracle = inherited;
+    oracle.apply(PlaybackCommand::Seek(0));
+    let mut expected_seek = [[0.0; 2]; 128];
+    oracle.render(&mut expected_seek)?;
+    control
+        .command(PlaybackCommand::Seek(0))
+        .map_err(|_| "legacy fallback seek admission failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, expected_seek);
+
+    oracle.apply(PlaybackCommand::Stop);
+    let mut expected_stop = [[1.0; 2]; 128];
+    oracle.render(&mut expected_stop)?;
+    control
+        .command(PlaybackCommand::Stop)
+        .map_err(|_| "legacy fallback Stop admission failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, expected_stop);
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected_restart = [[0.0; 2]; 128];
+    oracle.render(&mut expected_restart)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "legacy fallback resumed Play admission failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, expected_restart);
+
+    let empty = Arc::new(hex_engine::compile::project(
+        &Project::new(RATE)?,
+        &BTreeMap::new(),
+    )?);
+    control
+        .publish(Playback::from_shared(empty))
+        .map_err(|_| "legacy fallback retirement publication failed")?;
+    measured_block(&mut callback, &mut output);
+    let mut reclaimed = 0;
+    let retired = measure(|| reclaimed = control.reclaim());
+    assert_eq!(reclaimed, 2);
+    assert_eq!(retired.count_total, 0);
+    assert!(retired.count_current < 0);
+    assert!(retired.bytes_current < 0);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}

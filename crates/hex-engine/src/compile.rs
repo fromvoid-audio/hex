@@ -171,6 +171,8 @@ fn compile_project<'a>(
     tracks
         .try_reserve_exact(snapshot.tracks().len())
         .map_err(|_| Invalid("could not reserve compiled tracks"))?;
+    let mut stateful_count = 0_usize;
+    let mut stateful_bytes = 0_usize;
     for track in snapshot.tracks() {
         let clips = track
             .clips()
@@ -221,7 +223,27 @@ fn compile_project<'a>(
                 .ok_or(Invalid("instrument content missing after compile"))?,
             )
         };
-        let effects = compile_device_matrix(track, registry)?;
+        let (effects, device_chain) =
+            compile_device_effects(track, registry, snapshot.sample_rate())?;
+        for device in &device_chain {
+            if let Some(definition) = &device.definition {
+                stateful_count = stateful_count
+                    .checked_add(1)
+                    .ok_or(Invalid("stateful device count overflow"))?;
+                stateful_bytes = stateful_bytes
+                    .checked_add(definition.declared_runtime_bytes())
+                    .ok_or(Invalid("stateful device runtime budget overflow"))?;
+                if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                    || stateful_bytes
+                        > hex_lattice::MAX_STATEFUL_PROCESSORS
+                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                {
+                    return Err(Invalid(
+                        "stateful device runtime exceeds its bounded budget",
+                    ));
+                }
+            }
+        }
         tracks.push(
             Track::with_audio_instrument_and_effects(
                 clips,
@@ -230,6 +252,7 @@ fn compile_project<'a>(
                 track.balance(),
                 instrument,
                 effects,
+                device_chain,
             )?
             .with_track_id(track.id()),
         );
@@ -243,24 +266,56 @@ fn compile_project<'a>(
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }
 
-fn compile_device_matrix(
+fn compile_device_effects(
     track: &hex_project::Track,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
-) -> Result<Option<hex_lattice::StereoMatrix>, Invalid> {
+    sample_rate: u32,
+) -> Result<
+    (
+        Option<hex_lattice::StereoMatrix>,
+        Vec<hex_lattice::PreparedProcessorInstance>,
+    ),
+    Invalid,
+> {
     let mut matrix = hex_lattice::StereoMatrix::identity();
+    let mut devices = Vec::new();
+    devices
+        .try_reserve_exact(track.devices().len())
+        .map_err(|_| Invalid("could not reserve prepared device chain"))?;
+    let mut stateful = false;
     for device in track.devices() {
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
-        if device.bypassed() {
-            continue;
-        }
-        let prepared = registry
-            .prepare_matrix(&migrated)
+        let prepared_device = registry
+            .prepare_device(&migrated, sample_rate)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
+        let processor = prepared_device.processor.map(std::sync::Arc::from);
+        stateful |= processor.is_some();
+        let prepared = if device.bypassed() {
+            hex_lattice::StereoMatrix::identity()
+        } else {
+            prepared_device.matrix
+        };
         matrix = matrix.then(prepared).map_err(|error| Invalid(error.0))?;
+        devices.push(hex_lattice::PreparedProcessorInstance {
+            track_id: track.id().value(),
+            device_id: device.id().value(),
+            device_type: migrated.type_id(),
+            matrix: prepared,
+            bypassed: device.bypassed(),
+            sample_rate,
+            definition: processor,
+        });
     }
-    Ok((matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix))
+    if stateful {
+        Ok((None, devices))
+    } else {
+        Ok((
+            (matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix),
+            Vec::new(),
+        ))
+    }
 }
 
 pub(crate) enum PreparedAudioSourceRef<'a> {

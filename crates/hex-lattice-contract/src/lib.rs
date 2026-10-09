@@ -224,6 +224,9 @@ pub enum DeviceContractError {
     InvalidParameterValue,
     InvalidDescriptor,
     DuplicateDeviceType,
+    RuntimeBudgetExceeded,
+    RuntimeAllocation,
+    UnsupportedProcessingClass,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -241,6 +244,11 @@ impl fmt::Display for DeviceContractError {
                 Self::InvalidParameterValue => "device parameter value is invalid",
                 Self::InvalidDescriptor => "native device parameter descriptor is invalid",
                 Self::DuplicateDeviceType => "native device registry contains a duplicate type",
+                Self::RuntimeBudgetExceeded =>
+                    "native processor runtime exceeds its declared budget",
+                Self::RuntimeAllocation => "native processor runtime allocation failed",
+                Self::UnsupportedProcessingClass =>
+                    "native device processing class is not admitted",
             }
         )
     }

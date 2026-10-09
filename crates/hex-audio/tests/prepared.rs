@@ -886,7 +886,7 @@ fn callback_revision_transfer_matches_kernel_after_tempo_and_source_edits() {
         editor.execute(edit).unwrap();
         let revision = prepare_session(editor.project());
         let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-        candidate.try_inherit_state_from(&expected).unwrap();
+        candidate.try_inherit_state_from(&mut expected).unwrap();
         expected = candidate;
         let revision_number = publish(
             &mut control,

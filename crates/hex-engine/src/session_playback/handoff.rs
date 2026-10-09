@@ -4,12 +4,31 @@ use crate::MidiTiming;
 impl SessionPlayback {
     pub(super) fn inherit_state(
         &mut self,
-        previous: &Self,
+        previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
+        }
+        for (new_index, new_route) in self.routes.iter().enumerate() {
+            if let Some(old_index) = previous
+                .routes
+                .iter()
+                .position(|old_route| old_route.id == new_route.id)
+            {
+                let candidate = self
+                    .device_chains
+                    .get(new_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let old = previous
+                    .device_chains
+                    .get(old_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if !candidate.can_inherit_from(old) {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+            }
         }
 
         let old_base = previous.revision.session().timing();
@@ -95,6 +114,7 @@ impl SessionPlayback {
                                             track_id: old_route.id,
                                             order: 0,
                                             mix: old_track.mix(),
+                                            tail_group: None,
                                             continuation: None,
                                             voice,
                                         },
@@ -372,6 +392,7 @@ impl SessionPlayback {
                             track_id: old_route.id,
                             order: 0,
                             mix,
+                            tail_group: None,
                             continuation,
                             voice,
                         },
@@ -400,9 +421,124 @@ impl SessionPlayback {
             );
         }
         self.release_scratch
-            .sort_unstable_by_key(|entry| (entry.track_index, entry.order));
+            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
         self.suppression_scratch
             .sort_unstable_by_key(|entry| (entry.track, entry.clip, entry.note, entry.iteration));
+
+        // Only tail groups still referenced by live copied releases cross a
+        // publication boundary. Completed groups stay on `previous` so their
+        // processor allocations are reclaimed when that graph retires on the
+        // control side. This mask also makes completed slot numbers reusable in
+        // the candidate without touching the old graph during preflight.
+        let mut active_tail_groups = [false; SESSION_TAIL_GROUP_CAPACITY];
+        for release in &self.release_scratch {
+            let Some(group) = release.tail_group else {
+                continue;
+            };
+            let group_index = usize::from(group);
+            let Some(active) = active_tail_groups.get_mut(group_index) else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            if previous
+                .tail_groups
+                .get(group_index)
+                .is_none_or(Option::is_none)
+            {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            *active = true;
+        }
+        if active_tail_groups
+            .iter()
+            .enumerate()
+            .any(|(slot, active)| *active && self.tail_groups.get(slot).is_none_or(Option::is_some))
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+
+        let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut tail_processor_count = 0_usize;
+        let mut tail_runtime_bytes = 0_usize;
+        for (slot, active) in active_tail_groups.iter().copied().enumerate() {
+            if !active {
+                continue;
+            }
+            let chain = previous
+                .tail_groups
+                .get(slot)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            tail_processor_count = tail_processor_count
+                .checked_add(chain.stateful_count())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            tail_runtime_bytes = tail_runtime_bytes
+                .checked_add(chain.declared_runtime_bytes())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        }
+        for release in &mut self.release_scratch {
+            if release.tail_group.is_some() {
+                continue;
+            }
+            let Some(old_index) = previous
+                .routes
+                .iter()
+                .position(|route| route.id == release.track_id)
+            else {
+                continue;
+            };
+            let Some(old_chain) = previous.device_chains.get(old_index) else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            if !old_chain.has_stateful_processors() {
+                continue;
+            }
+            let already_assigned = old_track_tail_slots
+                .get(old_index)
+                .copied()
+                .flatten()
+                .is_some();
+            let Some(slot) = old_track_tail_slots
+                .get(old_index)
+                .copied()
+                .flatten()
+                .or_else(|| {
+                    (0..self.tail_groups.len()).find(|slot| {
+                        self.tail_groups.get(*slot).is_some_and(Option::is_none)
+                            && !active_tail_groups.get(*slot).copied().unwrap_or(true)
+                            && !old_track_tail_slots.contains(&Some(*slot))
+                    })
+                })
+            else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            };
+            if let Some(old_slot) = old_track_tail_slots.get_mut(old_index) {
+                *old_slot = Some(slot);
+            } else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            if !already_assigned {
+                tail_processor_count = tail_processor_count
+                    .checked_add(old_chain.stateful_count())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                tail_runtime_bytes = tail_runtime_bytes
+                    .checked_add(old_chain.declared_runtime_bytes())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                    || tail_runtime_bytes
+                        > hex_lattice::MAX_STATEFUL_PROCESSORS
+                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                {
+                    return Err(SessionPlaybackError::ReleaseBankFull);
+                }
+            }
+            release.tail_group = u16::try_from(slot).ok();
+            if release.tail_group.is_none() {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            release.track_index = usize::MAX;
+        }
+        self.release_scratch
+            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
 
         let inherited_floor = if source_changed {
             Some(old_beat)
@@ -412,6 +548,57 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        for (old_index, old_route) in previous.routes.iter().enumerate() {
+            if let Some(new_index) = self
+                .routes
+                .iter()
+                .position(|new_route| new_route.id == old_route.id)
+            {
+                if let (Some(candidate), Some(old)) = (
+                    self.device_chains.get_mut(new_index),
+                    previous.device_chains.get(old_index),
+                ) {
+                    candidate.inherit_from(old);
+                }
+            }
+        }
+        for slot in 0..previous.tail_groups.len() {
+            if active_tail_groups.get(slot).copied().unwrap_or(false)
+                && previous.tail_groups[slot].is_some()
+                && let (Some(candidate), Some(previous_group)) = (
+                    self.tail_groups.get_mut(slot),
+                    previous.tail_groups.get_mut(slot),
+                )
+            {
+                std::mem::swap(candidate, previous_group);
+                if let (Some(candidate_mix), Some(previous_mix)) = (
+                    self.tail_mixes.get_mut(slot),
+                    previous.tail_mixes.get(slot).copied(),
+                ) {
+                    *candidate_mix = previous_mix;
+                }
+            }
+        }
+        for (old_index, slot) in old_track_tail_slots.iter().copied().enumerate() {
+            if let Some(slot) = slot
+                && let (Some(candidate), Some(old_chain)) = (
+                    self.tail_groups.get_mut(slot),
+                    previous.device_chains.get_mut(old_index),
+                )
+                && candidate.is_none()
+            {
+                *candidate = Some(std::mem::replace(
+                    old_chain,
+                    hex_lattice::NativeRuntimeChain::empty(),
+                ));
+                if let (Some(tail_mix), Some(old_track)) = (
+                    self.tail_mixes.get_mut(slot),
+                    previous.revision.arrangement().tracks().get(old_index),
+                ) {
+                    *tail_mix = old_track.mix();
+                }
+            }
+        }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         self.release_order = next_order;

@@ -4,7 +4,7 @@
 
 Implement original native device DSP, including a linear stereo Utility processor,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
-fixed-state DC/bass-mono filter DSP before runtime admission.
+fixed-state DC/bass-mono filters registered through the stateful lattice contract.
 
 ## Dependencies
 
@@ -13,8 +13,9 @@ This crate depends on the standard library, `hex-lattice`, and
 device codec/metadata contract. The caller supplies the project sample rate and
 absolute note-relative frame positions; Utility processes caller-owned samples
 without allocation. Standalone stateful filters have validated control-prepared
-coefficients and fixed audio-owned histories; they are not yet registered for
-desktop use. See [the filter contract](../../docs/utility-filters.md).
+coefficients and fixed audio-owned histories. Utility version 2 exposes these
+through generic descriptors and runtime preparation; version 1 receives neutral
+filter defaults. See [the filter contract](../../docs/utility-filters.md).
 
 ## Does not own
 

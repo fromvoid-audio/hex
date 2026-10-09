@@ -780,9 +780,10 @@ impl Callback {
             } else if next.policy == PublicationPolicy::InstallFreshRuntime {
                 None
             } else {
-                self.active
-                    .as_ref()
-                    .map(|previous| next.playback.try_inherit_runtime_from(&previous.playback))
+                self.active.as_mut().map(|previous| {
+                    next.playback
+                        .try_inherit_runtime_from(&mut previous.playback)
+                })
             };
             match handoff {
                 Some(Err(error)) if error.is_transient() => {

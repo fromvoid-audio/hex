@@ -1008,7 +1008,7 @@ fn late_chunk_midi_domain_refusal_zeros_output_and_rolls_back_runtime_state() {
     previous.apply(SessionPlaybackCommand::Play).expect("play");
     let mut first_chunk = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("kernel");
     first_chunk
-        .try_inherit_state_from(&previous)
+        .try_inherit_state_from(&mut previous)
         .expect("prepare inherited state");
     let mut successful_chunk = [[0.0; 2]; 256];
     first_chunk
@@ -1018,7 +1018,7 @@ fn late_chunk_midi_domain_refusal_zeros_output_and_rolls_back_runtime_state() {
 
     let mut playback = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("kernel");
     playback
-        .try_inherit_state_from(&previous)
+        .try_inherit_state_from(&mut previous)
         .expect("prepare inherited state");
     let mut output = [[9.0; 2]; 512];
     assert_eq!(
@@ -1439,7 +1439,7 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
     let mut candidate =
         Playback::try_from_prepared_with_session(fixture.revision).expect("Session runtime");
     assert_eq!(
-        candidate.try_inherit_runtime_from(&legacy),
+        candidate.try_inherit_runtime_from(&mut legacy),
         Err(PlaybackHandoffError::Session(
             SessionPlaybackError::TempoConversion
         ))
@@ -1450,7 +1450,7 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
     legacy.apply(PlaybackCommand::Seek(24_000));
     legacy.apply(PlaybackCommand::Play);
     candidate
-        .try_inherit_runtime_from(&legacy)
+        .try_inherit_runtime_from(&mut legacy)
         .expect("valid promotion");
     assert_eq!(candidate.position(), 24_000);
     assert_eq!(candidate.performance_frame(), 24_000);
@@ -1472,7 +1472,7 @@ fn exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion() 
     let mut candidate = Playback::try_from_prepared_with_session(fixture.revision)
         .expect("session capability prepared off-thread");
     assert_eq!(
-        candidate.try_inherit_runtime_from(&legacy),
+        candidate.try_inherit_runtime_from(&mut legacy),
         Err(PlaybackHandoffError::PerformanceClockExhausted)
     );
     legacy

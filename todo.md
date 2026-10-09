@@ -254,6 +254,10 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   persistence, one MIDI instrument slot and serial audio effects, with shared
   native/offline behavior. Define mutable DSP lifecycle, prepared graph ownership,
   bounded events, latency and callback retirement before stateful devices.
+  Paired stateful effects and Utility v2 now pass affected source/probe checks;
+  integrated full CI and native acceptance remain open. Contract:
+  [stateful lattice](docs/stateful-lattice.md). Large-chain timing/admission is
+  tracked separately as Pulse 2108; instruments remain a separate prerequisite.
 - [ ] **bottom device panel** — compact horizontal device chain for the focused
   track, real parameters/bypass/reordering and clip/device view toggles. Build on
   the canonical device model; preserve editor selection and useful track space.
