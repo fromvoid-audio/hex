@@ -103,3 +103,16 @@ Stage an explicit single instrument slot before Operator, preserving the current
 sine instrument as the migration default. Do not pretend a matrix represents a
 filter, nonlinear effect or instrument, and do not expose decorative unsupported
 DC/bass-mono/Operator controls while these dependencies remain open.
+
+
+Stateful processing runs once on each track's summed signal, before track mix.
+Current linear fusion remains valid. Captured outgoing releases retain their
+source-revision chain in a fixed audio-owned tail bank, separate from current
+track audio. Preflight handoff capacity before any mutation; saturation retains
+the old graph and defers publication. Move/swap runtime owners and park completed
+tail resources for later control-side retirement, never final-drop in callback.
+Count and byte budgets, compatible stable-ID history transfer, reset/pause/loop
+semantics, shared offline processing and allocation/handoff/tail tests precede
+admission. Standalone original filters are specified in
+[Utility filters](utility-filters.md); their source tests do not establish native
+processing or exact Live response.
