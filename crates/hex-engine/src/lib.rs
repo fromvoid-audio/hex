@@ -635,13 +635,17 @@ impl Track {
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, hex_lattice::PreparedAnalyticNote),
     ) -> Result<(), Invalid> {
         let end = frame
             .checked_add(1)
             .ok_or(Invalid("midi span frame overflow"))?;
         if let Some(instrument) = &self.instrument {
-            instrument.for_each_intersecting(frame, end, None, |span| visit(span));
+            instrument.for_each_intersecting(frame, end, None, |span| {
+                if let Some(sampler) = instrument.bank.sampler(span.sampler_index) {
+                    visit(span, sampler);
+                }
+            });
         }
         Ok(())
     }
@@ -800,9 +804,12 @@ impl Track {
                     |span| {
                         let start = span.start.max(chunk_start);
                         let end = span.end.min(chunk_end);
+                        let Some(voice) = instrument.bank.sampler(span.sampler_index) else {
+                            return;
+                        };
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            let sample = span.voice.sample(relative, span.gate_end - span.start);
+                            let sample = voice.sample(relative, span.gate_end - span.start);
                             self.source_mix.add_unmuted(
                                 &mut target[(frame_position - chunk_start) as usize],
                                 sample,
@@ -829,6 +836,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) nodes: Vec<midi_compile::SpanNode>,
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
+    pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
 }
 
 #[derive(Debug, Clone)]
@@ -841,6 +849,31 @@ pub struct Project {
     has_streamed_sources: bool,
 }
 impl Project {
+    /// Accounted Arrangement note-bank bytes, including each bank's entry
+    /// allocation and fixed bank/Arc owner overhead.
+    pub fn midi_note_bank_storage_bytes(&self) -> Result<usize, Invalid> {
+        self.tracks
+            .iter()
+            .filter_map(|track| track.instrument.as_ref())
+            .try_fold(0_usize, |total, instrument| {
+                total
+                    .checked_add(instrument.bank.storage_bytes()?)
+                    .ok_or(Invalid("midi note bank byte count overflow"))
+            })
+    }
+
+    /// Number of compact sampler indices retained by Arrangement note spans.
+    pub fn midi_note_sampler_reference_count(&self) -> Result<usize, Invalid> {
+        self.tracks
+            .iter()
+            .filter_map(|track| track.instrument.as_ref())
+            .try_fold(0_usize, |total, instrument| {
+                total
+                    .checked_add(instrument.spans.len())
+                    .ok_or(Invalid("midi note bank reference count overflow"))
+            })
+    }
+
     pub fn new(sample_rate: u32, tracks: Vec<Track>) -> Result<Self, Invalid> {
         Self::with_loop_region(sample_rate, tracks, None)
     }
@@ -1411,6 +1444,7 @@ mod tests {
 
 pub mod live;
 pub mod midi_compile;
+mod midi_note_bank;
 mod midi_preview;
 pub mod midi_template;
 mod prepared_revision;

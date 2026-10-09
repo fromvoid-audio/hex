@@ -1,6 +1,6 @@
 //! Bounded control-side compilation of MIDI edges and stateless note spans.
 use crate::Invalid;
-use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
+use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
@@ -178,7 +178,7 @@ pub(crate) struct CompiledNoteSpan {
     pub(crate) start: u64,
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
-    pub(crate) voice: PreparedAnalyticNote,
+    pub(crate) sampler_index: u16,
     pub(crate) clip: ClipId,
     pub(crate) note: hex_project::NoteId,
     pub(crate) iteration: u64,
@@ -204,6 +204,7 @@ pub(crate) fn compile_instrument_track(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
+    let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
     let mut clip_counts = Vec::new();
     clip_counts
         .try_reserve_exact(track.midi_clips().len())
@@ -219,6 +220,13 @@ pub(crate) fn compile_instrument_track(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
+            if count != 0 && instrument.is_some() {
+                crate::midi_note_bank::PreparedMidiNoteBank::add_key(
+                    &mut keys,
+                    note.pitch(),
+                    note.velocity(),
+                )?;
+            }
             clip_count = clip_count
                 .checked_add(count)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
@@ -228,6 +236,11 @@ pub(crate) fn compile_instrument_track(
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
+    let bank = instrument
+        .map(|instrument| {
+            crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None)
+        })
+        .transpose()?;
     let mut spans = Vec::new();
     spans
         .try_reserve_exact(if instrument.is_some() { span_count } else { 0 })
@@ -273,10 +286,16 @@ pub(crate) fn compile_instrument_track(
             emitted = emitted
                 .checked_add(1)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-            if let Some(instrument) = instrument {
-                let voice = instrument
-                    .prepare_note(note.pitch(), note.velocity())
-                    .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?;
+            if instrument.is_some() {
+                let bank = bank
+                    .as_ref()
+                    .ok_or(Invalid("midi note bank is missing after preparation"))?;
+                let sampler_index = bank
+                    .index(note.pitch(), note.velocity())
+                    .ok_or(Invalid("midi note sampler key is missing from its bank"))?;
+                let voice = bank
+                    .sampler(sampler_index)
+                    .ok_or(Invalid("midi note sampler index is invalid"))?;
                 let end = gate_end
                     .checked_add(voice.release_frames())
                     .ok_or(Invalid("midi release end frame overflow"))?;
@@ -284,7 +303,7 @@ pub(crate) fn compile_instrument_track(
                     start,
                     gate_end,
                     end,
-                    voice,
+                    sampler_index,
                     clip: clip.id(),
                     note: note.id(),
                     iteration,
@@ -324,6 +343,7 @@ pub(crate) fn compile_instrument_track(
         nodes,
         root,
         timeline_end,
+        bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
     }))
 }
 

@@ -111,6 +111,26 @@ pub(super) struct SourceSpan {
     pub(super) velocity: u8,
 }
 
+pub(crate) fn session_source_note_has_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
+    source_note_has_intro_occurrence(source, note)
+        || source_note_has_repeat_occurrence(source, note)
+}
+
+fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
+    let intro_end = if source.looping() {
+        source.loop_end().raw()
+    } else {
+        source.source_length().raw()
+    };
+    note.start().raw() >= source.source_start().raw() && note.start().raw() < intro_end
+}
+
+fn source_note_has_repeat_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
+    source.looping()
+        && note.start().raw() >= source.loop_start().raw()
+        && note.start().raw() < source.loop_end().raw()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceOccurrence {
     pub(crate) onset: BeatTime,
@@ -249,17 +269,17 @@ impl PreparedMidiSourceTemplate {
         repeat_spans
             .try_reserve_exact(source_data.notes().len())
             .map_err(|_| MidiTemplateError::Allocation)?;
-
         let intro_end = source
             .loop_range()
             .map_or(source.source_length().raw(), |(_, loop_end)| loop_end.raw());
+
         for note in source_data.notes() {
             let note_start = note.start().raw();
             let note_end = note_start
                 .checked_add(note.duration().raw())
                 .ok_or(MidiTemplateError::InvalidSource("midi note end overflow"))?;
 
-            if note_start >= source_start && note_start < intro_end {
+            if source_note_has_intro_occurrence(source_data, note) {
                 let gate_end = note_end.min(intro_end);
                 let gate = gate_end
                     .checked_sub(note_start)
@@ -273,8 +293,8 @@ impl PreparedMidiSourceTemplate {
                 intro.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
             }
 
-            if let Some((loop_start, loop_end)) = source.loop_range() {
-                if note_start >= loop_start.raw() && note_start < loop_end.raw() {
+            if source_note_has_repeat_occurrence(source_data, note) {
+                if let Some((loop_start, loop_end)) = source.loop_range() {
                     let gate_end = note_end.min(loop_end.raw());
                     let gate = gate_end
                         .checked_sub(note_start)

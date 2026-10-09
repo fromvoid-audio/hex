@@ -19,6 +19,40 @@ regression; control initialization plus noninitializing callback lookup repaired
 that path. No established speedup/no-regression claim, sustained stress or
 instrument preparation-time budget follows from these short render measurements.
 
+## Indexed analytic note banks — 9 October 2026
+
+Before/after measurements use `profile_instrument` and
+`profile_session_inventory` on the same Apple M5 Pro arm64 machine and isolated
+release target. The render fixture is the 100-track, 16-note workload above;
+Session control fixture is 100 tracks, 200 MIDI cells and 2,000 authored notes.
+Render runs use 100 warmup blocks plus 3,000 measured blocks at 48 kHz and
+128/512 frames. Session reports p50 across 100 preparations/edits after one
+excluded cold warmup. Neither profile exercises a device callback or native UI;
+background load and power scheduling are uncontrolled.
+
+The pre-bank instrument render run measured 0.064/0.192 s total for 128/512
+frames. Three final indexed-bank runs measured 0.097/0.293 s, 0.073/0.256 s and
+0.062/0.219 s. This variance is too large for a reliable before/after timing
+claim. A fourth earlier indexed run measured 0.062/0.198 s. Individual maximum
+block times also varied substantially; none of these short offline runs proves
+physical-device deadline behavior.
+
+The Session profile's prior p50 values were cold inventory 363,042 ns, gain
+edit plus reused inventory 41,708 ns, note insert/remove plus inventory 45,542
+ns, and gain edit plus full prepared revision 51,708 ns. The final indexed run
+measured 281,583 ns, 44,250 ns, 51,083 ns and 51,500 ns respectively. These are
+single before/after summaries and do not establish a speedup or stable
+regression.
+
+The profiles print only the note-sampler/bank/index component, not total graph
+memory. Arrangement's 1,600 references account for 84,800 indexed bytes versus
+64,000 bytes for 40-byte inline samplers: the pitch/velocity keys, indices and
+owner overhead add 20,800 bytes for this unique-heavy workload. Session's 4,000
+intro/repeat references account for 76,800 indexed bytes versus 160,000 inline
+sampler bytes, because repeated pitch/velocity pairs share entries. These are
+fixture-specific accounted bytes; maximum admitted graph storage is separately
+derived in `lattice-instruments.md` and is not a measurement of the full graph.
+
 The existing profile_session_playback aborts its independent mixed Session/finite
 PCM oracle comparison on the unchanged baseline, before timing in both direct
 and wrapper modes. Pulse2113 tracks diagnosis separately; do not weaken the

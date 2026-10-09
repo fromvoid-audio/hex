@@ -209,7 +209,11 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
     )
     .unwrap();
     let mut session_mix = [0.0_f32; 2];
-    for (clip, expected) in session_clips.into_iter().zip([[0.25, 0.5], [-0.25, 0.75]]) {
+    for (clip, expected) in session_clips
+        .iter()
+        .copied()
+        .zip([[0.25, 0.5], [-0.25, 0.75]])
+    {
         let prepared = inventory.midi_clip(clip).unwrap();
         let mut output = [[0.0; 2]; 1];
         prepared
@@ -228,4 +232,88 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
         session_mix[1] += output[0][1];
     }
     assert_eq!(session_mix, [0.0, 1.25]);
+
+    let first_track = tracks[0];
+    let first_clip = session_clips[0];
+    let first_device = editor
+        .project()
+        .track(first_track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: first_device,
+            state: registry.default_state(right.type_id()).unwrap(),
+        })
+        .unwrap();
+    let changed_type = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        Some(&inventory),
+        &registry,
+    )
+    .unwrap();
+    let mut changed_type_output = [[0.0_f32; 2]; 1];
+    changed_type
+        .midi_clip(first_clip)
+        .unwrap()
+        .instrument_template()
+        .render(
+            BeatTime::ZERO,
+            changed_type.timing(),
+            changed_type.sine_table(),
+            0,
+            &mut changed_type_output,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert_eq!(changed_type_output, [[-0.25, 0.75]]);
+    let mut untouched_track_output = [[0.0_f32; 2]; 1];
+    changed_type
+        .midi_clip(session_clips[1])
+        .unwrap()
+        .instrument_template()
+        .render(
+            BeatTime::ZERO,
+            changed_type.timing(),
+            changed_type.sine_table(),
+            0,
+            &mut untouched_track_output,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert_eq!(untouched_track_output, [[-0.25, 0.75]]);
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: first_device,
+            bypassed: true,
+        })
+        .unwrap();
+    let bypassed = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        Some(&changed_type),
+        &registry,
+    )
+    .unwrap();
+    let mut bypassed_output = [[0.0_f32; 2]; 1];
+    bypassed
+        .midi_clip(first_clip)
+        .unwrap()
+        .instrument_template()
+        .render(
+            BeatTime::ZERO,
+            bypassed.timing(),
+            bypassed.sine_table(),
+            0,
+            &mut bypassed_output,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert_eq!(bypassed_output, [[0.0; 2]]);
 }

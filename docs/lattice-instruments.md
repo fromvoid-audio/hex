@@ -49,6 +49,41 @@ copied-release banks remain in use. Copied samplers retain their original law an
 payload across revision handoff without Arc churn or final heap drops. Existing
 revision/source owners still retire on control after callback quiescence.
 
+Prepared Arrangement tracks and Session instrument configurations intern each
+distinct pitch/velocity pair into a track- and configuration-scoped immutable
+note bank. Arrangement spans and Session intro/repeat source spans retain a
+checked `u16` index; span queries resolve the sampler into the existing fixed
+render/release value, so copied releases have no bank lifetime dependency.
+Only notes with an emitted Arrangement occurrence or Session source-span
+occurrence enter a bank; authored notes hidden outside their current source
+window do not trigger instrument-specific admission failures.
+An unchanged Session source/configuration reuses its prior bank directly;
+changed note sets rebuild only that track's bank, and exact key sets can reuse a
+compatible prior bank only when the compiler has already matched the stable
+track/device identity, device type and state, bypass state and sample rate.
+`PreparedNativeInstrument::prepare_note` is deterministic for fixed prepared
+configuration/rate/pitch/velocity, as required by interning. No bank `Arc` is
+cloned or dropped by callback query or release processing.
+
+Admission derives from current model ceilings, not the proposed future FM4
+sampler size: 16,256 valid pitch/velocity pairs per track, 65,536 authored
+notes per project, 65,536 Arrangement occurrences, 131,072 maximum Session
+intro+repeat references and 65,536 Session cells. A full prepared revision
+therefore accounts at most 131,072 bank entries, 196,608 `u16` references,
+512 track-bank owner headers/handles and 65,536 Session template handles.
+With the current 40-byte sampler, `BankEntry` is 48 bytes on 64-bit targets;
+checked byte limits include entry keys, owner/handle overhead and all indices.
+The complete derived ceiling is 7,233,536 bytes (about 6.9 MiB) for note-bank
+storage and references. This is a current-runtime bound, not a budget claim for
+larger future sampler payloads.
+
+The bank lookup is one indexed read when a source interval enters the fixed
+render-span buffer. Rendering still samples the copied 40-byte value directly;
+it does not binary-search or allocate per sample. The retained-memory benefit
+depends on repeated pitch/velocity pairs: unique-only Arrangement notes pay for
+the key/index and owner overhead, while repeated Session intro/repeat occurrences
+share one bank sampler.
+
 The sine table initializes once on control during instrument preparation.
 Callback sampling uses the noninitializing OnceLock::get path. No lookup table
 is rebuilt per track or sample. Existing SineTable APIs remain compatibility and
@@ -58,14 +93,13 @@ contract; this analytic stage does not provide it or implement Operator.
 
 ## Evidence and remaining gates
 
-Targeted project/storage/lattice/devices/engine/session/export tests, strict
-affected Clippy, formatting and architecture checks passed before integration.
-Nine existing callback allocation probes passed, asserting zero total and
-signed-net allocation/deallocation for their fixtures. Independent exact legacy
-sine PCM covers note gate/release, partitions, seek, pause/stop and replacement.
-These headless fixtures do not prove all density/fault paths, native APIs,
-physical device deadlines or listening acceptance. Full clean local CI follows
-the verified silent-slot extent/preview repair and documentation integration.
+Indexed-bank engine, Session, export and audio allocation-probe checks pass;
+strict engine Clippy, formatting and architecture/style guards pass. The
+retained release sampler test drops the bank owner before sampling the copied
+voice. Existing exact legacy sine PCM covers note gate/release, partitions,
+seek, pause/stop and replacement. These headless fixtures do not prove all
+density/fault paths, native APIs, physical device deadlines or listening
+acceptance. Root runs clean full local CI after integration.
 
 Release timing methodology and provisional regression are recorded in
 [performance](performance.md). The preexisting mixed Session profile comparison
