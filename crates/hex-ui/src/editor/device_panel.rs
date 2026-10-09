@@ -6,7 +6,9 @@ use gpui::{
     Window, div, prelude::*, px, rgb,
 };
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
-use hex_lattice_contract::{NativeDeviceState, ParameterDescriptor, ParameterKind, ParameterValue};
+use hex_lattice_contract::{
+    NativeDeviceState, ParameterDescriptor, ParameterKind, ParameterPresentation, ParameterValue,
+};
 use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
@@ -1670,10 +1672,12 @@ fn create_parameter_control(
                 ParameterValue::Float(default) => f64::from(default),
                 _ => return None,
             };
-            let scale = if min < 0.0 && max > 0.0 {
-                NumericScale::Bipolar
-            } else {
-                NumericScale::Linear
+            let scale = match descriptor.presentation {
+                ParameterPresentation::LinearAmplitudeDecibels => {
+                    NumericScale::LinearAmplitudeDecibels
+                }
+                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear => NumericScale::Linear,
             };
             let spec = NumericSpec::new(
                 f64::from(min),

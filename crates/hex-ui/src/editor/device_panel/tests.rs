@@ -566,7 +566,12 @@ fn utility_fixture() -> (
         project_editor.project().clone(),
         track,
         device,
-        entry.parameters[0].id,
+        entry
+            .parameters
+            .iter()
+            .find(|parameter| parameter.label == "width")
+            .expect("linear Utility float parameter")
+            .id,
     )
 }
 
@@ -594,6 +599,107 @@ fn enter_typed_value(
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input(text);
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn utility_gain_is_presented_in_db_and_typed_values_remain_linear_canonical(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let gain = hex_engine::native_device_view(
+        state.project.track(track).expect("track").devices()[0].state(),
+    )
+    .expect("device view")
+    .parameters
+    .into_iter()
+    .find(|parameter| parameter.descriptor.label == "gain")
+    .expect("Utility gain")
+    .descriptor
+    .id;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let control = editor.read_with(cx, |view, _| {
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device,
+                parameter: gain,
+            })
+        else {
+            panic!("Utility gain control should be mounted")
+        };
+        entity.clone()
+    });
+    control.read_with(cx, |control, _| assert_eq!(control.value(), 1.0));
+
+    enter_typed_value(&mut visual, device, gain, "6 db");
+    editor.update(cx, |view, cx| assert!(super::finalize_controls(view, cx)));
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            matches!(
+                parameter_value(state, track, device, gain),
+                ParameterValue::Float(value) if (value - 10.0_f32.powf(6.0 / 20.0)).abs() < 0.000_01
+            )
+        })
+    });
+    editor.read_with(cx, |view, _| {
+        let value = parameter_value(view.state.as_ref().expect("state"), track, device, gain);
+        let ParameterValue::Float(value) = value else {
+            panic!("gain remains a linear float")
+        };
+        assert!(
+            (value - 10.0_f32.powf(6.0 / 20.0)).abs() < 0.000_01,
+            "the project stores linear amplitude, not the displayed dB value"
+        );
+    });
+
+    let slider = Box::leak(
+        format!(
+            "device-{}-parameter-{}-slider",
+            device.value(),
+            gain.value()
+        )
+        .into_boxed_str(),
+    );
+    let slider_bounds = visual.debug_bounds(slider).expect("gain slider");
+    visual.simulate_click(
+        point(slider_bounds.center().x, slider_bounds.center().y),
+        Modifiers::default(),
+    );
+    visual.simulate_keystrokes("up");
+    let seven_db = 10.0_f32.powf(7.0 / 20.0);
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            matches!(
+                parameter_value(state, track, device, gain),
+                ParameterValue::Float(value) if (value - seven_db).abs() < 0.000_01
+            )
+        })
+    });
+    visual.simulate_keystrokes("shift-up");
+    let seven_point_one_db = 10.0_f32.powf(7.1 / 20.0);
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            matches!(
+                parameter_value(state, track, device, gain),
+                ParameterValue::Float(value) if (value - seven_point_one_db).abs() < 0.000_01
+            )
+        })
+    });
+
+    enter_typed_value(&mut visual, device, gain, "9 db");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let ParameterValue::Float(value) =
+            parameter_value(view.state.as_ref().expect("state"), track, device, gain)
+        else {
+            panic!("gain remains a linear float")
+        };
+        assert!((value - seven_point_one_db).abs() < 0.000_01);
+    });
 }
 
 #[gpui::test]
@@ -648,7 +754,7 @@ fn typed_numeric_owner_finalization_saves_actor_state_and_undo_restores_it(
     .expect("device view")
     .parameters
     .into_iter()
-    .find(|item| matches!(item.descriptor.kind, ParameterKind::Float { .. }))
+    .find(|item| item.descriptor.label == "width")
     .expect("utility numeric parameter")
     .descriptor
     .id;

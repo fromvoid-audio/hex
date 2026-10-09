@@ -53,6 +53,32 @@ transfer laws, modifier behavior and numerical increments are unverified until
 reference experiments establish them. The visual target is the user-supplied
 Live device screenshot; rendering and assets are independent implementations.
 
+### linear-amplitude gain presentation
+
+Parameter descriptors may declare `LinearAmplitudeDecibels` when their
+canonical Float is a finite, nonnegative linear amplitude. The stored Utility
+gain, DSP preparation, history, and project state remain linear amplitude;
+generic controls display and parse dB from that metadata. Exact zero displays
+as `-inf db`, unity as `0.00 db`, and the Utility maximum as `+35.00 db`. Typed
+`-inf db` is the exact-zero sentinel; malformed/non-finite input, nonzero dB
+values that underflow the canonical f32, and values beyond the descriptor range
+are refused. The descriptor presentation contract does not add a project schema
+field or a Utility-specific codec.
+
+The Float descriptor's bounds, default, edit events and unit still describe
+canonical values (`linear` for Utility GAIN). `ParameterPresentation` selects
+the generic display/input conversion; it does not rewrite those domains.
+
+For a control whose range crosses -18 dB, the current original pointer curve
+allocates the lower 25% of normalized travel to a linear-amplitude ramp from
+the minimum to -18 dB, then maps the upper 75% linearly in dB to the maximum.
+Ranges wholly below -18 dB remain linear amplitude; ranges wholly above it use
+linear dB travel. Keyboard arrows step 1 dB at and above the split, Shift-arrows step
+0.1 dB, and the lower range uses the existing normalized step sizes. These are
+explicit provisional interaction choices, not measurements of Ableton Live's
+control law. The Live 12 manual documents Utility gain's range and 1 dB arrow
+steps above -18 dB, but not this pointer curve or fine increment.
+
 ## Controller dependency
 
 The parameter actor admits one active gesture per project. Transient changes
@@ -93,8 +119,8 @@ Controls are cached by stable device/parameter identity with subscriptions held
 once; complete validated parameter snapshots are cached by immutable device state.
 Only implemented registered devices appear in the add menu. Unknown/malformed
 state reports an error instead of default-resetting it. Generic float controls
-are the first panel; Utility-specific dB law/layout and stateful controls follow
-in ticket 18.
+are the first panel; Utility-specific layout and stateful controls follow in
+ticket 18. Linear-amplitude dB presentation is separately tracked in Pulse2151.
 
 Validate widget construction specifications before GPUI's entity factory, then
 consume a private validated configuration infallibly. Invalid data must be reported
@@ -149,9 +175,10 @@ changes while playing an original asymmetric stereo source.
 - Check the 880×540 minimum window, browser resizing and horizontal device-chain
   scrolling. Keep the track region useful and fields readable.
 
-Full Utility dB controls, DC/bass mono and Operator remain separate source and
-reference acceptance gates. Record each actual result in Pulse instead of
-inferring native correctness from source test counts.
+Utility DC/bass mono and Operator remain separate source and reference
+acceptance gates. The new gain presentation has source coverage only; record
+native numeric entry, drag law and audible results in Pulse instead of inferring
+native correctness from source test counts.
 
 ### Browser insertion and ordered-chain drag
 
