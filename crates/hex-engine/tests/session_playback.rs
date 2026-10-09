@@ -1431,6 +1431,125 @@ fn prepared_session_capability_matches_finite_arrangement_pcm_across_loops_and_p
 }
 
 #[test]
+fn legacy_promotion_refuses_uncaptured_arrangement_voices_and_can_retry_after_stop() {
+    let fixture = fixture(None, None);
+    let project = Arc::clone(fixture.revision.arrangement());
+    let mut legacy = Playback::from_shared(Arc::clone(&project));
+    legacy.apply(PlaybackCommand::Seek(24_000));
+    legacy.apply(PlaybackCommand::Play);
+    let mut candidate = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision))
+        .expect("Session runtime");
+    assert_eq!(
+        candidate.try_inherit_runtime_from(&mut legacy),
+        Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured)
+    );
+    assert_eq!(candidate.position(), 0);
+    assert_eq!(candidate.performance_frame(), 0);
+    assert!(!candidate.playing());
+    assert_eq!(legacy.position(), 24_000);
+    assert!(legacy.playing());
+
+    let mut output_after_refusal = [[0.0; 2]; 64];
+    legacy
+        .render(&mut output_after_refusal)
+        .expect("legacy graph remains usable after refusal");
+    assert!(audible(&output_after_refusal));
+    legacy.apply(PlaybackCommand::Stop);
+    legacy.apply(PlaybackCommand::Seek(120_000));
+    candidate
+        .try_inherit_runtime_from(&mut legacy)
+        .expect("safe promotion can be retried after the voice ends");
+    assert_eq!(candidate.position(), 120_000);
+    assert_eq!(candidate.performance_frame(), 120_000);
+    assert!(!candidate.playing());
+}
+
+#[test]
+fn legacy_promotion_does_not_fence_an_already_disabled_instrument() {
+    let fixture = fixture(None, None);
+    let mut snapshot = fixture.project.snapshot();
+    snapshot.tracks[0]
+        .instrument
+        .as_mut()
+        .expect("MIDI track has an instrument slot")
+        .bypassed = true;
+    let muted_project = Project::from_snapshot(snapshot).expect("valid disabled instrument");
+    let muted_revision = Arc::new(
+        PreparedRevision::prepare(
+            &muted_project,
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("disabled Arrangement revision"),
+    );
+    let mut legacy = Playback::from_shared(Arc::clone(muted_revision.arrangement()));
+    legacy.apply(PlaybackCommand::Seek(24_000));
+    legacy.apply(PlaybackCommand::Play);
+    let mut candidate =
+        Playback::try_from_prepared_with_session(muted_revision).expect("Session runtime");
+    candidate
+        .try_inherit_runtime_from(&mut legacy)
+        .expect("disabled instrument has no held voice to capture");
+    let mut output = [[0.0; 2]; 64];
+    candidate
+        .render(&mut output)
+        .expect("render disabled route");
+    assert_eq!(output, [[0.0; 2]; 64]);
+}
+
+#[test]
+fn session_demotion_refuses_arrangement_voices_and_carried_releases() {
+    let fixture = fixture(None, None);
+    let mut previous = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision))
+        .expect("Session runtime");
+    previous.apply(PlaybackCommand::Play);
+    let mut sounding = [[0.0; 2]; 64];
+    previous.render(&mut sounding).expect("Arrangement render");
+    assert!(audible(&sounding));
+
+    let mut candidate = Playback::from_shared(Arc::clone(fixture.revision.arrangement()));
+    assert_eq!(
+        candidate.try_inherit_runtime_from(&mut previous),
+        Err(PlaybackHandoffError::ActiveArrangementStateCannotBeDropped)
+    );
+    assert_eq!(previous.position(), 64);
+    assert_eq!(candidate.position(), 0);
+
+    previous.apply(PlaybackCommand::Seek(120_000));
+    candidate
+        .try_inherit_runtime_from(&mut previous)
+        .expect("demotion succeeds after Arrangement voice expires");
+    assert_eq!(candidate.position(), 120_000);
+
+    let mut releasing = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision))
+        .expect("Session runtime");
+    releasing
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip: fixture.session_clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .expect("launch Session note");
+    releasing.apply(PlaybackCommand::Play);
+    let mut prefix = [[0.0; 2]; 64];
+    releasing.render(&mut prefix).expect("Session render");
+    releasing
+        .try_apply_action(PlaybackAction::Session(SessionPlaybackCommand::StopTrack {
+            track: fixture.track,
+            quantization: LaunchQuantization::Immediate,
+        }))
+        .expect("release Session note");
+    let mut no_drop = Playback::from_shared(Arc::clone(fixture.revision.arrangement()));
+    assert_eq!(
+        no_drop.try_inherit_runtime_from(&mut releasing),
+        Err(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)
+    );
+    assert_eq!(releasing.position(), 64);
+}
+
+#[test]
 fn legacy_promotion_validates_session_time_before_render_or_launch() {
     let fixture = fixture(Some((0, 48_000)), None);
     let mut legacy = Playback::from_shared(Arc::clone(fixture.revision.arrangement()));
@@ -1447,13 +1566,13 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
     assert_eq!(candidate.position(), 0);
     assert_eq!(candidate.performance_frame(), 0);
     assert!(!candidate.playing());
-    legacy.apply(PlaybackCommand::Seek(24_000));
+    legacy.apply(PlaybackCommand::Seek(120_000));
     legacy.apply(PlaybackCommand::Play);
     candidate
         .try_inherit_runtime_from(&mut legacy)
-        .expect("valid promotion");
-    assert_eq!(candidate.position(), 24_000);
-    assert_eq!(candidate.performance_frame(), 24_000);
+        .expect("valid promotion after Arrangement voices ended");
+    assert_eq!(candidate.position(), 120_000);
+    assert_eq!(candidate.performance_frame(), 120_000);
     assert!(candidate.playing());
 }
 
@@ -1482,7 +1601,7 @@ fn exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion() 
 }
 
 #[test]
-fn unavailable_session_capability_keeps_arrangement_and_refuses_session_actions() {
+fn unavailable_session_capability_refuses_instrument_render_and_session_actions() {
     let fixture = fixture(Some((u64::MAX - 1, u64::MAX)), None);
     let prepared = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision));
     assert!(matches!(
@@ -1497,11 +1616,11 @@ fn unavailable_session_capability_keeps_arrangement_and_refuses_session_actions(
         SessionCapability::Unavailable(error)
     );
     fallback.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 64];
-    fallback
-        .render(&mut output)
-        .expect("finite fallback render");
-    assert!(audible(&output));
+    let mut output = [[0.125; 2]; 64];
+    assert!(fallback.render(&mut output).is_err());
+    assert_eq!(output, [[0.125; 2]; 64]);
+    assert_eq!(fallback.position(), 0);
+    assert_eq!(fallback.performance_frame(), 0);
     assert!(matches!(
         fallback.try_apply_action(PlaybackAction::Session(
             SessionPlaybackCommand::LaunchClip {
@@ -1511,6 +1630,34 @@ fn unavailable_session_capability_keeps_arrangement_and_refuses_session_actions(
         )),
         Err(PlaybackActionError::SessionUnavailable(reason)) if reason == error
     ));
+}
+
+#[test]
+fn unavailable_instrument_candidate_cannot_retire_a_renderable_session_graph() {
+    let previous_fixture = fixture(None, None);
+    let unavailable_fixture = fixture(Some((u64::MAX - 1, u64::MAX)), None);
+    let error =
+        match Playback::try_from_prepared_with_session(Arc::clone(&unavailable_fixture.revision)) {
+            Err(error @ SessionPlaybackError::SessionTempoUnavailable(_)) => error,
+            _ => panic!("expected unavailable Session timing"),
+        };
+    let mut previous = Playback::try_from_prepared_with_session(previous_fixture.revision)
+        .expect("renderable old graph");
+    previous.apply(PlaybackCommand::Seek(120_000));
+    previous.apply(PlaybackCommand::Play);
+    let mut candidate =
+        Playback::from_prepared_with_session_unavailable(unavailable_fixture.revision, error);
+    assert_eq!(
+        candidate.try_inherit_runtime_from(&mut previous),
+        Err(PlaybackHandoffError::Session(error))
+    );
+    assert_eq!(previous.position(), 120_000);
+    assert!(previous.playing());
+    assert_eq!(candidate.position(), 0);
+    assert_eq!(
+        candidate.session_capability(),
+        SessionCapability::Unavailable(error)
+    );
 }
 
 #[test]

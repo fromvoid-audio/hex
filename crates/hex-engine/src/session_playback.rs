@@ -459,6 +459,17 @@ impl SessionPlayback {
         performance_frame: u64,
         playing: bool,
     ) -> Result<(), SessionPlaybackError> {
+        self.validate_legacy_transport(performance_frame)?;
+        self.arrangement_frame = arrangement_frame;
+        self.performance_frame = performance_frame;
+        self.playing = playing;
+        Ok(())
+    }
+
+    pub(crate) fn validate_legacy_transport(
+        &self,
+        performance_frame: u64,
+    ) -> Result<(), SessionPlaybackError> {
         use crate::MidiTiming;
         // Legacy finite playback accepts frame positions beyond the Session
         // beat domain. Refuse promotion before modifying the candidate rather
@@ -466,20 +477,55 @@ impl SessionPlayback {
         base_timing_for(self.revision.session(), self.periodic_tempo)
             .frame_to_beat(performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        self.arrangement_frame = arrangement_frame;
-        self.performance_frame = performance_frame;
-        self.playing = playing;
         Ok(())
     }
 
     /// A Session runtime can fall back to the legacy finite renderer only when
     /// doing so cannot discard a selected route or any carried control state.
     pub(crate) fn can_demote_to_arrangement(&self) -> bool {
-        self.routes
-            .iter()
-            .all(|route| route.owner == RouteOwner::Arrangement && route.pending.is_none())
-            && self.releases.is_empty()
+        self.routes.iter().enumerate().all(|(index, route)| {
+            if route.owner != RouteOwner::Arrangement || route.pending.is_some() {
+                return false;
+            }
+            let Some(track) = self.revision.arrangement().tracks().get(index) else {
+                return false;
+            };
+            if !track.instrument_enabled() {
+                return true;
+            }
+            let mut active = false;
+            track
+                .for_each_active_midi_span(self.arrangement_frame, |_, _| active = true)
+                .is_ok()
+                && !active
+        }) && self.releases.is_empty()
             && self.suppressions.is_empty()
+            && (self.performance_frame == 0
+                || !self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .iter()
+                    .any(crate::Track::has_stateful_devices))
+    }
+
+    pub(crate) fn has_active_arrangement_voices(&self) -> bool {
+        self.routes.iter().enumerate().any(|(index, route)| {
+            if route.owner != RouteOwner::Arrangement {
+                return false;
+            }
+            let Some(track) = self.revision.arrangement().tracks().get(index) else {
+                return false;
+            };
+            if !track.instrument_enabled() {
+                return false;
+            }
+            let mut active = false;
+            track
+                .for_each_active_midi_span(self.arrangement_frame, |_, _| active = true)
+                .is_err()
+                || active
+        })
     }
 
     pub fn release_voice_count(&self) -> usize {

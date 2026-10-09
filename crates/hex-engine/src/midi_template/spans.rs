@@ -262,6 +262,27 @@ impl MidiReleaseVoice {
         released.rebase(source_cut, performance_cut).map(Some)
     }
 
+    pub(crate) fn from_finite_span_preserving_gate(
+        start_frame: u64,
+        gate_end_frame: u64,
+        end_frame: u64,
+        voice: PreparedAnalyticNote,
+        source_cut: u64,
+        performance_cut: u64,
+    ) -> Result<Option<Self>, ReleaseVoiceError> {
+        if source_cut < start_frame || source_cut >= end_frame {
+            return Ok(None);
+        }
+        Self {
+            start_frame,
+            gate_end_frame,
+            end_frame,
+            voice,
+        }
+        .rebase(source_cut, performance_cut)
+        .map(Some)
+    }
+
     pub(crate) fn rebase(
         self,
         source_cut: u64,

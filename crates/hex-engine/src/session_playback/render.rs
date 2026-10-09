@@ -464,9 +464,20 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
     let source_mix = track.source_mix();
     match route.owner {
         RouteOwner::Arrangement => {
+            let has_active_suppression = suppressions
+                .iter()
+                .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
             match stage {
                 SourceStage::Whole => {
-                    if let Some(page_provider) = pages.as_deref_mut() {
+                    if has_active_suppression {
+                        track.render_additive_with_suppressions_and_pages(
+                            arrangement_frame,
+                            performance_frame,
+                            output,
+                            suppressions,
+                            pages.as_deref_mut(),
+                        )
+                    } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(arrangement_frame, output, page_provider)
                     } else {
                         track.render_additive(arrangement_frame, output)
@@ -483,9 +494,12 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         track.render_audio_additive(arrangement_frame, output)
                     }
                 }
-                SourceStage::Instrument => {
-                    track.render_instrument_additive(arrangement_frame, output)
-                }
+                SourceStage::Instrument => track.render_instrument_additive_with_suppressions(
+                    arrangement_frame,
+                    performance_frame,
+                    output,
+                    suppressions,
+                ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         }
