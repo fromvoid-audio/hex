@@ -200,3 +200,11 @@ the preview without publishing history. The Session actor repeats the generation
 revision, active-gesture, target and anchor checks before applying the typed add
 or move command. These contracts are source-tested; native pointer feel and
 cross-track behavior remain on the user review checklist.
+
+Starting a native-device drag from the browser reveals the device pane and
+selects device details so the drop receiver is visible, even when the pane was
+closed or clip details were active. This view change preserves the focused track
+and clip selection. A drag with no valid track still shows the truthful empty
+device pane and cannot create a track implicitly. Releasing without a target or
+canceling clears the drag but leaves the pane open; ordinary track focus keeps
+its existing visibility behavior.
