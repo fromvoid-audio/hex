@@ -1,6 +1,6 @@
 use super::clip_drag_ui_test::{audio_project, editor_window, midi_project};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
-use hex_project::Command;
+use hex_project::{BeatTime, Command, Created, Editor};
 use hex_session::service::Event;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -145,6 +145,75 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
     visual.simulate_keystrokes("cmd-e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
+    });
+}
+
+#[gpui::test]
+fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::bind_editor_keys);
+    let (base, audio_track, midi_track, _) = audio_project();
+    let mut project_editor = Editor::new(base, 8).expect("project editor");
+    let Created::Clip(midi_clip) = project_editor
+        .execute(Command::PlaceMidiClip {
+            track: midi_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).expect("midi length"),
+        })
+        .expect("midi clip")
+    else {
+        panic!("midi clip result")
+    };
+    project_editor
+        .execute(Command::AddMidiNote {
+            clip: midi_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .expect("midi note");
+    let (handle, editor) = editor_window(cx, project_editor.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let main_lane = visual.debug_bounds("main-track-lane").expect("main lane");
+    let click = point(
+        main_lane.origin.x + main_lane.size.width * 0.1,
+        main_lane.origin.y + main_lane.size.height * 0.7,
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let cursor = view.edit_cursor.expect("main cursor");
+        assert!(view.time_selection_project_scope);
+        assert!(cursor.frame > 0 && cursor.frame < 96_000);
+        assert!(view.selected_track.is_none());
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("edit-cursor-line-{}", audio_track.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("edit-cursor-line-{}", midi_track.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+
+    visual.simulate_keystrokes("cmd-e");
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit.as_ref(),
+            Some(Command::SplitTracksAtFrame { tracks, frame })
+                if tracks == &[audio_track, midi_track] && *frame == view.edit_cursor.unwrap().frame
+        ));
     });
 }
 

@@ -1,7 +1,7 @@
 use super::clip_drag_ui_test::editor_window;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
 use hex_project::{Command, Created, Editor, Project};
-use hex_session::service::ViewState;
+use hex_session::service::{Event, ViewState};
 use std::sync::Arc;
 
 fn project_with_tracks(count: usize) -> Project {
@@ -17,6 +17,37 @@ fn project_with_tracks(count: usize) -> Project {
         };
     }
     editor.project().clone()
+}
+
+fn completed_event(state: &ViewState) -> Event {
+    Event {
+        state: Arc::new(ViewState {
+            project: Arc::clone(&state.project),
+            waveforms: state.waveforms.clone(),
+            midi_preview: Arc::clone(&state.midi_preview),
+            timeline_frames: state.timeline_frames,
+            can_undo: state.can_undo,
+            can_redo: state.can_redo,
+            revision: state.revision.saturating_add(1),
+            unsaved: state.unsaved,
+            document_path: state.document_path.clone(),
+        }),
+        playback: None,
+        status: None,
+        error: None,
+        request_complete: true,
+        save_complete: false,
+        open_complete: false,
+        project_replaced: false,
+        created: None,
+        duplicate_complete: false,
+        restore_complete: None,
+        device_preview: None,
+        gesture_ack: None,
+        gesture_protocol_ack: false,
+        gesture_request: false,
+        active_device_gesture: None,
+    }
 }
 
 #[gpui::test]
@@ -101,8 +132,9 @@ fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.time_selection.is_none());
-        assert!(view.edit_cursor.is_none());
+        assert!(view.time_selection.is_some());
+        assert!(view.edit_cursor.is_some());
+        assert!(view.time_selection_project_scope);
         assert!(view.selected_track.is_none());
     });
     editor.update(cx, |view, cx| {
@@ -121,6 +153,199 @@ fn main_gain_control_dispatches_canonical_master_command(cx: &mut TestAppContext
         assert!(matches!(
             view.last_enqueued_edit.as_ref(),
             Some(Command::MasterGainBy { amount }) if (*amount - 0.1).abs() < f32::EPSILON
+        ));
+    });
+}
+
+#[gpui::test]
+fn main_lane_drag_selects_all_tracks_and_copy_uses_project_scope(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (handle, editor) = editor_window(cx, project_with_tracks(3), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds("main-track-lane")
+        .expect("main timeline lane");
+    let start = point(
+        lane.origin.x + lane.size.width * 0.2,
+        lane.origin.y + lane.size.height * 0.7,
+    );
+    let end = point(lane.origin.x + lane.size.width * 0.55, start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let track_ids = editor.read_with(cx, |view, _| {
+        let range = view.normalized_time_selection().expect("project selection");
+        assert_eq!(range.tracks().len(), 3);
+        assert_eq!(
+            range.tracks(),
+            view.state
+                .as_ref()
+                .expect("project state")
+                .project
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect::<Vec<_>>()
+        );
+        assert!(view.time_selection_project_scope);
+        assert!(view.selected_track.is_none());
+        range.tracks().to_vec()
+    });
+    for track in track_ids {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("edit-time-selection-{}", track.value()).into_boxed_str()
+                ))
+                .is_some()
+        );
+    }
+    visual.simulate_keystrokes("cmd-c");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.last_time_request, Some(("copy", None)));
+    });
+}
+
+#[gpui::test]
+fn empty_project_main_lane_does_not_create_an_invalid_selection(cx: &mut TestAppContext) {
+    let (handle, editor) = editor_window(cx, project_with_tracks(0), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds("main-track-lane")
+        .expect("main timeline lane");
+    let point = lane.center();
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.time_selection.is_none());
+        assert!(view.edit_cursor.is_none());
+        assert!(!view.time_selection_project_scope);
+        assert!(view.selected_track.is_none());
+    });
+    let stale_track = project_with_tracks(1).tracks()[0].id();
+    editor.update(cx, |view, _| {
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: stale_track,
+            end_track: stale_track,
+            anchor_frame: 0,
+            end_frame: 48_000,
+        });
+        view.time_selection_project_scope = true;
+        assert_eq!(view.time_selection_track_indices(), None);
+    });
+}
+
+#[gpui::test]
+fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope(
+    cx: &mut TestAppContext,
+) {
+    let project = project_with_tracks(3);
+    let track_ids: Vec<_> = project.tracks().iter().map(|track| track.id()).collect();
+    let (_handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, _| {
+        let state = view.state.as_ref().expect("view state");
+        let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: track_ids[0],
+            end_track: *track_ids.last().expect("tracks"),
+            anchor_frame: range.start(),
+            end_frame: range.end(),
+        });
+        view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
+            source: range.clone(),
+            range,
+            project_scope: false,
+            destination_first_index: 0,
+            destination_last_index: track_ids.len() - 1,
+            source_revision: state.revision,
+            copy_modifier: false,
+        });
+        let event = completed_event(state);
+        view.move_time_selection_complete(&event);
+        assert!(!view.time_selection_project_scope);
+        assert_eq!(view.selected_track, track_ids.last().copied());
+    });
+}
+
+#[gpui::test]
+fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppContext) {
+    let project = project_with_tracks(3);
+    let track_ids: Vec<_> = project.tracks().iter().map(|track| track.id()).collect();
+    let (_handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, _| {
+        let state = view.state.as_ref().expect("view state");
+        let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
+        view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
+            source: range.clone(),
+            range,
+            project_scope: true,
+            destination_first_index: 0,
+            destination_last_index: track_ids.len() - 1,
+            source_revision: state.revision,
+            copy_modifier: false,
+        });
+        let event = completed_event(state);
+        view.move_time_selection_complete(&event);
+        assert!(view.time_selection_project_scope);
+        assert_eq!(
+            view.time_selection
+                .map(|selection| (selection.anchor_track, selection.end_track)),
+            Some((track_ids[0], *track_ids.last().expect("tracks")))
+        );
+        assert_eq!(view.selected_track, None);
+    });
+}
+
+#[gpui::test]
+fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestAppContext) {
+    let project = project_with_tracks(3);
+    let track_ids: Vec<_> = project.tracks().iter().map(|track| track.id()).collect();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: track_ids[0],
+            end_track: *track_ids.last().expect("tracks"),
+            anchor_frame: 48_000,
+            end_frame: 144_000,
+        });
+        view.time_selection_project_scope = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds("main-track-lane")
+        .expect("main timeline lane");
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    let start = point(
+        lane.origin.x + lane.size.width * 0.25,
+        lane.origin.y + lane.size.height * 0.15,
+    );
+    let destination = point(lane.origin.x + lane.size.width * 0.7, start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, option);
+    visual.simulate_mouse_move(destination, MouseButton::Left, option);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let display = view
+            .time_range_move_display()
+            .expect("project copy preview");
+        assert!(display.copy_modifier);
+        assert_eq!(display.source.tracks(), track_ids);
+        assert_eq!(display.destination_first_index, 0);
+        assert_eq!(display.destination_last_index, 2);
+    });
+    visual.simulate_mouse_up(destination, MouseButton::Left, option);
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit.as_ref(),
+            Some(Command::CopyTimeRangeTo { range, track, .. })
+                if range.tracks() == track_ids && *track == track_ids[0]
         ));
     });
 }

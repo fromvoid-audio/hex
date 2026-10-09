@@ -18,6 +18,7 @@ mod midi_batch;
 mod midi_playback;
 mod session;
 mod snapshot;
+mod split_tracks;
 pub use session::{
     Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
 };

@@ -420,6 +420,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.edit_cursor = None;
             self.time_selection = None;
+            self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -434,6 +435,8 @@ impl EditorView {
             self.drag_lane_epochs.clear();
             self.arrangement_bounds = None;
             self.arrangement_bounds_epoch = 0;
+            self.main_track_lane_bounds = None;
+            self.main_track_lane_epoch = 0;
             self.active_clip_drag = None;
             self.pointer_down = None;
             self.stop();

@@ -27,8 +27,11 @@ registered catalog/views, stable entities and synchronously admitted typed draft
 are implemented. Original standalone Utility filters passed all 14 clean CI steps
 on `ee87e6e` in 147.627 s ([PR27](https://github.com/PORTALSURFER/hex/pull/27)).
 Generic transactional mutable runtime 16 is active separately. Pinned main 12 is
-source-implemented alongside it with 304 UI tests/two existing ignores, strict UI Clippy
-and guards; clean full CI, native and merge acceptance remain separate gates.
+source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30), with all
+14 clean CI steps passing on `3ee1edd` in 270.703 s. Main-project time selection
+14 is under focused verification, including atomic mixed audio/MIDI splitting
+and a 100-track single-Undo case. Native and merge acceptance remain separate
+gates. See [main track](main-track.md).
 
 The user's current implementation scope is every open ticket planned for Hex
 in Pulse, rather than only existing PRs. This priority order is a dependency
