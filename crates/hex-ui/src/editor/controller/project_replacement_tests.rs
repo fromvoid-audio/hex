@@ -93,6 +93,48 @@ fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut Test
         .expect("recent open response");
 }
 
+#[gpui::test]
+fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service =
+            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::midi_project();
+    let project = Arc::new(project);
+    let mut without_clip = Editor::new((*project).clone(), 8).expect("project editor");
+    without_clip
+        .execute(Command::RemoveMidiClip(clip))
+        .expect("remove clip");
+    let without_clip = Arc::new(without_clip.project().clone());
+
+    window
+        .update(cx, |view, _, _| {
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.selected_track = Some(track);
+            view.selected_clip = Some(clip);
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+
+            view.receive(event(Arc::clone(&without_clip), 2, false));
+            assert_eq!(view.selected_clip, None, "snapshot removes stale selection");
+            assert!(
+                !view.device_panel_active,
+                "snapshot does not replace clip focus"
+            );
+            assert!(view.clip_view_open, "selection removal leaves pane open");
+
+            view.device_panel_active = true;
+            view.receive(event(project, 3, false));
+            assert!(
+                view.device_panel_active,
+                "undo snapshot does not replace track focus"
+            );
+            assert!(view.clip_view_open, "undo leaves pane open");
+        })
+        .expect("receive snapshot and undo events");
+}
+
 fn receive_worker_event(view: &mut EditorView) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {

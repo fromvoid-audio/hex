@@ -192,6 +192,33 @@ fn session_key_dispatch_navigates_without_edits_and_enter_refuses_offline_playba
 }
 
 #[gpui::test]
+fn session_keyboard_focus_switches_details_between_cells_and_clips(cx: &mut TestAppContext) {
+    let (handle, editor, second_track, first_scene) = session_window(cx);
+    cx.simulate_keystrokes(handle, "right");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_cell, Some((second_track, first_scene)));
+        assert!(view.device_panel_active, "cell focus selects devices");
+        assert!(view.clip_view_open, "keyboard focus keeps the pane open");
+    });
+
+    cx.simulate_keystrokes(handle, "left");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.selected_cell,
+            Some((
+                view.state.as_ref().unwrap().project.tracks()[0].id(),
+                first_scene
+            ))
+        );
+        assert!(
+            !view.device_panel_active,
+            "midi clip focus selects clip details"
+        );
+        assert!(view.clip_view_open, "clip focus keeps the pane open");
+    });
+}
+
+#[gpui::test]
 fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &mut TestAppContext) {
     let (handle, editor, second_track, first_scene) = session_window(cx);
     cx.update_window(handle, |_, window, cx| {

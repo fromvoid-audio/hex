@@ -357,7 +357,11 @@ not Operator implementation. Source/native/merge gates remain separate.
 
 Menu follow-up2115: user accepted and manually merged PR37 into the stacked
 integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and
-open-panel/focus-switching2117 remain queued in Pulse.
+open-panel/focus-switching2117 is implemented in the focused detail-pane branch;
+targeted UI, Session keyboard navigation and worker-reconciliation checks pass.
+The pane's open state stays independent from user-driven clip/track content focus;
+an empty clip context retains its last valid body height. Focused local CI remains
+for integration, and native acceptance remains with the user.
 
 Indexed analytic sampler banks2125: prepared Arrangement occurrences and Session
 intro/repeat spans retain compact per-track bank indices; query/release paths
