@@ -2669,10 +2669,12 @@ dependencies = [
  "gpui",
  "hex-audio",
  "hex-engine",
+ "hex-lattice-contract",
  "hex-library",
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-widgets",
 ]
 
 [[package]]

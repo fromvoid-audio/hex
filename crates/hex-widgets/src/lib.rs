@@ -6,12 +6,14 @@ mod numeric_control;
 mod numeric_text;
 mod style;
 
-pub use discrete::{Selector, SelectorChanged, Toggle, ToggleChanged};
+pub use discrete::{
+    Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
+};
 pub use frame::device_frame;
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
-    NumericControl, NumericControlEvent, NumericControlKind, NumericEventPhase,
-    bind_numeric_control_keys,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
+    NumericControlKind, NumericEventPhase, bind_numeric_control_keys,
 };
 pub use style::ControlStyle;
 

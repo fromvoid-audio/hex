@@ -77,6 +77,51 @@ pub struct NumericControlEvent {
     pub value: f64,
 }
 
+/// Final value returned to an owner performing a lifecycle barrier. It lets
+/// the owner synchronously submit the same edit before GPUI flushes emitters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumericControlFinalValue {
+    pub previous: f64,
+    pub value: f64,
+    formatted: String,
+}
+
+/// Fully checked construction data for use inside an infallible GPUI entity
+/// factory. Invalid parameter metadata is rejected before creating the entity.
+pub struct NumericControlConfig {
+    id: SharedString,
+    label: SharedString,
+    kind: NumericControlKind,
+    spec: NumericSpec,
+    value: f64,
+    text: String,
+    style: ControlStyle,
+}
+
+impl NumericControlConfig {
+    pub fn new(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        kind: NumericControlKind,
+        spec: NumericSpec,
+        value: f64,
+        style: ControlStyle,
+    ) -> Result<Self, NumericError> {
+        spec.validate(value)?;
+        style.validate().map_err(|_| NumericError::InvalidStyle)?;
+        let text = spec.format(value)?;
+        Ok(Self {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            spec,
+            value,
+            text,
+            style,
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PressTarget {
     Control,
@@ -126,12 +171,25 @@ impl NumericControl {
         value: f64,
         style: ControlStyle,
     ) -> Result<Self, NumericError> {
-        spec.validate(value)?;
-        style.validate().map_err(|_| NumericError::InvalidStyle)?;
-        let text = spec.format(value)?;
-        Ok(Self {
-            id: id.into(),
-            label: label.into(),
+        Ok(Self::from_config(
+            cx,
+            NumericControlConfig::new(id, label, kind, spec, value, style)?,
+        ))
+    }
+
+    pub fn from_config(cx: &mut Context<Self>, config: NumericControlConfig) -> Self {
+        let NumericControlConfig {
+            id,
+            label,
+            kind,
+            spec,
+            value,
+            text,
+            style,
+        } = config;
+        Self {
+            id,
+            label,
             kind,
             spec,
             value,
@@ -150,7 +208,7 @@ impl NumericControl {
             style,
             focus: cx.focus_handle(),
             focus_blur: None,
-        })
+        }
     }
 
     pub fn value(&self) -> f64 {
@@ -448,43 +506,132 @@ impl NumericControl {
         }
     }
 
-    pub(crate) fn finish_text_edit_on_blur(&mut self, cx: &mut Context<Self>) {
-        if !self.editing {
-            return;
-        }
-        if let Ok(value) = self.spec.parse(&self.text) {
-            let old = self.value;
-            if old != value {
-                cx.emit(NumericControlEvent {
-                    phase: NumericEventPhase::Begin,
-                    value: old,
-                });
-                self.value = value;
-                self.draft = value;
-                cx.emit(NumericControlEvent {
-                    phase: NumericEventPhase::Change,
-                    value,
-                });
+    /// Commit a typed value or finish an active pointer gesture before its
+    /// owner hides or removes the control. Invalid text remains visible and
+    /// editing so the owner can refuse that lifecycle change.
+    pub fn finish_edit(&mut self, cx: &mut Context<Self>) -> Result<(), NumericError> {
+        if let Some(press) = self.press.take() {
+            if press.dragging {
                 cx.emit(NumericControlEvent {
                     phase: NumericEventPhase::Commit,
-                    value,
+                    value: self.draft,
                 });
             }
-            self.text = self
-                .spec
-                .format(value)
-                .unwrap_or_else(|_| self.text.clone());
-        } else {
-            self.text = self
-                .spec
-                .format(self.value)
-                .unwrap_or_else(|_| self.value.to_string());
+            cx.notify();
         }
+        if !self.editing {
+            return Ok(());
+        }
+        let value = match self.spec.parse(&self.text) {
+            Ok(value) => value,
+            Err(error) => {
+                self.invalid_text = true;
+                cx.notify();
+                return Err(error);
+            }
+        };
+        let old = self.value;
+        if old != value {
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Begin,
+                value: old,
+            });
+            self.value = value;
+            self.draft = value;
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Change,
+                value,
+            });
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value,
+            });
+        }
+        self.text = self.spec.format(value)?;
         self.editing = false;
         self.invalid_text = false;
         self.selected = 0..0;
         self.marked = None;
         cx.notify();
+        Ok(())
+    }
+
+    /// Validate and read a local draft without clearing it or emitting events.
+    /// Owners use this phase to admit the canonical edit before finalizing UI
+    /// state; a refused edit therefore remains available for correction/retry.
+    pub fn prepare_finish_edit_for_owner(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<NumericControlFinalValue>, NumericError> {
+        if let Some(press) = self.press {
+            if press.dragging {
+                return Ok(Some(NumericControlFinalValue {
+                    previous: press.start_value,
+                    value: self.draft,
+                    formatted: self.spec.format(self.draft)?,
+                }));
+            }
+            return Ok(Some(NumericControlFinalValue {
+                previous: self.value,
+                value: self.value,
+                formatted: self.spec.format(self.value)?,
+            }));
+        }
+        if !self.editing {
+            return Ok(None);
+        }
+        let value = match self.spec.parse(&self.text) {
+            Ok(value) => value,
+            Err(error) => {
+                self.invalid_text = true;
+                cx.notify();
+                return Err(error);
+            }
+        };
+        let previous = self.value;
+        let formatted = self.spec.format(value)?;
+        Ok(Some(NumericControlFinalValue {
+            previous,
+            value,
+            formatted,
+        }))
+    }
+
+    /// Complete a previously prepared draft after its owner admitted the
+    /// canonical change. This method emits no subscription events.
+    pub fn accept_finish_edit_for_owner(
+        &mut self,
+        finalized: NumericControlFinalValue,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(press) = self.press.take() {
+            if press.dragging {
+                self.value = finalized.value;
+                self.draft = finalized.value;
+                self.text = finalized.formatted;
+            }
+            self.editing = false;
+            self.invalid_text = false;
+            self.selected = 0..0;
+            self.marked = None;
+            cx.notify();
+            return;
+        }
+        if !self.editing {
+            return;
+        }
+        self.value = finalized.value;
+        self.draft = finalized.value;
+        self.text = finalized.formatted;
+        self.editing = false;
+        self.invalid_text = false;
+        self.selected = 0..0;
+        self.marked = None;
+        cx.notify();
+    }
+
+    pub(crate) fn finish_text_edit_on_blur(&mut self, cx: &mut Context<Self>) {
+        let _ = self.finish_edit(cx);
     }
 
     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {

@@ -1,5 +1,6 @@
 use crate::{
-    ControlStyle, NumericControl, NumericControlKind, NumericScale, NumericSpec, Selector, Toggle,
+    ControlStyle, NumericControl, NumericControlConfig, NumericControlKind, NumericScale,
+    NumericSpec, Selector, Toggle,
 };
 use gpui::{
     AppContext, Context, Empty, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers,
@@ -23,6 +24,56 @@ const STYLE: ControlStyle = ControlStyle {
     hover: 0x404040,
     font_size: 10.0,
 };
+
+#[test]
+fn numeric_control_config_rejects_values_that_would_fail_during_entity_creation() {
+    let spec = NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<String>)
+        .expect("valid spec");
+    assert!(
+        NumericControlConfig::new(
+            "invalid-value",
+            "gain",
+            NumericControlKind::HorizontalSlider,
+            spec.clone(),
+            f64::NAN,
+            STYLE,
+        )
+        .is_err()
+    );
+    let invalid_style = ControlStyle {
+        font_size: f32::NAN,
+        ..STYLE
+    };
+    assert!(
+        NumericControlConfig::new(
+            "invalid-style",
+            "gain",
+            NumericControlKind::HorizontalSlider,
+            spec,
+            0.0,
+            invalid_style,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn discrete_control_configs_validate_before_entity_factories() {
+    assert!(
+        crate::ToggleConfig::new(
+            "toggle",
+            "mono",
+            false,
+            ControlStyle {
+                font_size: f32::INFINITY,
+                ..STYLE
+            },
+        )
+        .is_err()
+    );
+    assert!(crate::SelectorConfig::new("empty", Vec::<String>::new(), 0, STYLE).is_err());
+    assert!(crate::SelectorConfig::new("bad-index", ["one", "two"], 2, STYLE).is_err());
+}
 
 struct TestRoot {
     control: Entity<NumericControl>,
@@ -398,6 +449,103 @@ fn stationary_value_click_enters_text_edit_without_dragging(cx: &mut TestAppCont
     control.read_with(cx, |control, _| {
         assert!(!control.is_editing());
         assert!((control.value() - 0.25).abs() < f64::EPSILON);
+    });
+}
+
+#[gpui::test]
+fn owner_finish_edit_commits_valid_text_once_and_preserves_invalid_text(cx: &mut TestAppContext) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let output = phases.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            output.borrow_mut().push(event.phase)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual
+        .debug_bounds("test-control-value")
+        .expect("value field");
+    let click = point(
+        value.origin.x + value.size.width / 2.0,
+        value.origin.y + value.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.5");
+    control.update(cx, |control, cx| {
+        control.finish_edit(cx).expect("valid draft commits");
+    });
+    assert_eq!(
+        phases.borrow().as_slice(),
+        [
+            crate::NumericEventPhase::Begin,
+            crate::NumericEventPhase::Change,
+            crate::NumericEventPhase::Commit,
+        ]
+    );
+    control.read_with(cx, |control, _| {
+        assert!(!control.is_editing());
+        assert_eq!(control.value(), 0.5);
+    });
+
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    let result = control.update(cx, |control, cx| control.finish_edit(cx));
+    assert!(result.is_err());
+    control.read_with(cx, |control, _| {
+        assert!(control.is_editing());
+        assert!(control.invalid_text);
+        assert_eq!(control.text, "invalid");
+        assert_eq!(control.value(), 0.5);
+    });
+    assert_eq!(phases.borrow().len(), 3, "invalid text emits no edit");
+}
+
+#[gpui::test]
+fn owner_finalization_returns_typed_value_without_emitting_protocol_events(
+    cx: &mut TestAppContext,
+) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let output = phases.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            output.borrow_mut().push(event.phase)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual
+        .debug_bounds("test-control-value")
+        .expect("value field");
+    let click = point(
+        value.origin.x + value.size.width / 2.0,
+        value.origin.y + value.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.625");
+    let finalized = control.update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx));
+    let finalized = finalized
+        .expect("valid draft prepares")
+        .expect("draft value");
+    assert_eq!((finalized.previous, finalized.value), (0.0, 0.625));
+    assert!(
+        phases.borrow().is_empty(),
+        "owner emits protocol exactly once"
+    );
+    control.update(cx, |control, cx| {
+        control.accept_finish_edit_for_owner(finalized, cx)
+    });
+    control.read_with(cx, |control, _| {
+        assert!(!control.is_editing());
+        assert_eq!(control.value(), 0.625);
     });
 }
 

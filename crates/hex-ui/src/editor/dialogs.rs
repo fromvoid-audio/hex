@@ -18,6 +18,9 @@ impl ImportPromptTarget {
 
 impl EditorView {
     pub(super) fn open_dialog(&mut self, cx: &mut Context<Self>) {
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
         if self.opening_project {
             return;
         }
@@ -38,7 +41,9 @@ impl EditorView {
                 match picked {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
-                            view.choose_project(path);
+                            if super::device_panel::finalize_controls(view, cx) {
+                                view.choose_project(path);
+                            }
                         }
                     }
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),

@@ -169,6 +169,159 @@ fn selected_arrangement_audio_shows_left_controls_ruler_and_stereo_waveform(
 }
 
 #[gpui::test]
+fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
+    cx: &mut TestAppContext,
+) {
+    let (base, track, _, _) = clip_drag_ui_test::midi_project();
+    let catalog = hex_engine::native_device_catalog().expect("built-in catalog");
+    let entry = catalog.first().expect("registered utility");
+    let device_state =
+        hex_engine::default_native_device_state(entry.type_id).expect("valid default state");
+    let mut editor = hex_project::Editor::new(base, 16).expect("project editor");
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: device_state.clone(),
+        })
+        .expect("insert utility");
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: device_state,
+        })
+        .expect("insert second utility");
+    let project = editor.project().clone();
+    let devices = project.track(track).unwrap().devices();
+    let device_id = devices[0].id();
+    let second_device_id = devices[1].id();
+    let parameter_id = entry.parameters[0].id;
+    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel_active = false;
+        view.clip_view_open = true;
+        view.mode = EditorMode::Session;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("clip-detail-tab").is_some());
+    assert!(visual.debug_bounds("device-detail-tab").is_some());
+    editor.read_with(cx, |view, _| assert!(!view.device_panel_active));
+    let tab = visual
+        .debug_bounds("device-detail-tab")
+        .expect("device tab");
+    let tab_point = point(tab.center().x, tab.center().y);
+    visual.simulate_mouse_down(tab_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("device-panel").expect("device panel");
+    assert!(f32::from(panel.size.height) >= 188.0);
+    assert!(visual.debug_bounds("device-panel-header").is_some());
+    assert!(visual.debug_bounds("device-add-toggle").is_some());
+    let parameter_selector = Box::leak(
+        format!(
+            "device-{}-parameter-{}",
+            device_id.value(),
+            parameter_id.value()
+        )
+        .into_boxed_str(),
+    );
+    assert!(
+        visual.debug_bounds(parameter_selector).is_some(),
+        "generic parameter control should render"
+    );
+
+    let add = visual
+        .debug_bounds("device-add-toggle")
+        .expect("add device toggle");
+    let click_point = point(add.center().x, add.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_some());
+    let add_utility_selector = Box::leak(
+        format!("add-native-device-{}", entry.type_id.as_str().unwrap()).into_boxed_str(),
+    );
+    let add_utility = visual
+        .debug_bounds(add_utility_selector)
+        .expect("registered utility add action");
+    let click_point = point(add_utility.center().x, add_utility.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_native_device_add,
+            Some((track, entry.type_id)),
+            "add menu dispatches the registered device type to the selected track"
+        );
+    });
+
+    let bypass_selector =
+        Box::leak(format!("device-bypass-{}", device_id.value()).into_boxed_str());
+    let bypass = visual.debug_bounds(bypass_selector).expect("bypass action");
+    let click_point = point(bypass.center().x, bypass.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(Command::SetDeviceBypass {
+                device,
+                bypassed: true
+            }) if device == device_id
+        ));
+    });
+
+    let second_up_selector =
+        Box::leak(format!("device-up-{}", second_device_id.value()).into_boxed_str());
+    let second_up = visual
+        .debug_bounds(second_up_selector)
+        .expect("move second device left");
+    let click_point = point(second_up.center().x, second_up.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(Command::MoveDevice {
+                device,
+                track: moved_track,
+                before: Some(before),
+            }) if device == second_device_id && moved_track == track && before == device_id
+        ));
+    });
+
+    let remove_selector =
+        Box::leak(format!("device-remove-{}", device_id.value()).into_boxed_str());
+    let remove = visual
+        .debug_bounds(remove_selector)
+        .expect("remove first device");
+    let click_point = point(remove.center().x, remove.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(Command::RemoveDevice(device)) if device == device_id
+        ));
+    });
+
+    let tab = visual.debug_bounds("clip-detail-tab").expect("clip tab");
+    let tab_point = point(tab.center().x, tab.center().y);
+    visual.simulate_mouse_down(tab_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(!view.device_panel_active));
+}
+
+#[gpui::test]
 fn status_slots_keep_layout_stable_while_edits_and_work_switch_pending(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);

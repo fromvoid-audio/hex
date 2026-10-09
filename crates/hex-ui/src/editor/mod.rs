@@ -12,6 +12,7 @@ mod close;
 mod context_menu;
 mod controller;
 mod device_gesture;
+mod device_panel;
 mod dialogs;
 mod drag;
 mod duplicate;
@@ -306,6 +307,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-up", MidiOctaveUp, Some("hex_midi")),
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
     ]);
+    hex_widgets::bind_numeric_control_keys(cx);
 }
 
 fn escape_binding() -> KeyBinding {
@@ -389,6 +391,7 @@ pub(super) struct EditorView {
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
     device_gesture_barriers: VecDeque<Request>,
+    device_panel: device_panel::DevicePanelState,
     worker_requests_pending: usize,
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
@@ -424,6 +427,7 @@ pub(super) struct EditorView {
     redraw_gate: RedrawGate,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
+    device_panel_active: bool,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -443,6 +447,8 @@ pub(super) struct EditorView {
     drag_move_event_count: usize,
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
+    #[cfg(test)]
+    last_enqueued_native_device_add: Option<(TrackId, hex_lattice_contract::DeviceTypeId)>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]
@@ -591,6 +597,7 @@ impl EditorView {
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
             device_gesture_barriers: VecDeque::new(),
+            device_panel: device_panel::DevicePanelState::default(),
             worker_requests_pending: 0,
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),
@@ -626,6 +633,7 @@ impl EditorView {
             redraw_gate: RedrawGate::default(),
             project_generation: 0,
             clip_view_open: true,
+            device_panel_active: false,
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
@@ -646,6 +654,8 @@ impl EditorView {
             drag_move_event_count: 0,
             #[cfg(test)]
             last_enqueued_edit: None,
+            #[cfg(test)]
+            last_enqueued_native_device_add: None,
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]
@@ -776,11 +786,14 @@ impl EditorView {
         }));
     }
 
-    pub(super) fn remove_track(&mut self) {
+    pub(super) fn remove_track(&mut self, cx: &mut Context<Self>) {
+        if !device_panel::finalize_controls(self, cx) {
+            return;
+        }
         if let (Some(track), Some(state)) = (self.selected_track, self.state.as_ref()) {
             if state.project.track(track).is_some() {
                 self.duplicate_intent.cancel_chain();
-                self.enqueue(Request::Edit(Command::RemoveTrack(track)));
+                self.enqueue_device_barrier(Request::Edit(Command::RemoveTrack(track)));
                 self.selected_track = None;
                 self.selected_clip = None;
             }
