@@ -66,7 +66,8 @@ goals, not established facts. Read this file first, then the relevant docs.
 Read actual source before changing behavior. Documentation may lag the code;
 resolve discrepancies and update the owning document. There is currently no
 `xtask`, generated parity scorecard, corpus fetcher, control server, or release
-pipeline. Do not invent commands or claim those systems are already enforced.
+pipeline. The local validation runner is documented in `docs/local-ci.md`; do not
+claim hosted CI or automatic enforcement is configured.
 
 ## 2. Workspace map
 
@@ -98,6 +99,7 @@ crates/
   hex-desktop/
     src/main.rs              startup/composition only; injects backend into UI
 scripts/
+  local-ci.py                sequential local validation and retained evidence
   inventory-live.sh          read-only reference bundle inventory
   bundle-macos.sh            local development app bundle; no publication
   check-architecture.py       crate goals and dependency policy
@@ -273,6 +275,8 @@ Do not mark an unchecked milestone complete because its starter code builds.
 For Rust changes, run the checks that cover the affected behavior:
 
 ```sh
+python3 scripts/local-ci.py              # full PR validation on the final tree
+python3 scripts/local-ci.py --quick      # guards/format preflight only
 python3 scripts/check-architecture.py
 python3 scripts/check-gpui-patch.py
 python3 scripts/check-ui-style.py
@@ -283,6 +287,11 @@ cargo build -p hex-desktop                 # desktop/backend changes
 cargo run --release -p hex-engine --example profile  # demo-render hot path
 sh scripts/bundle-macos.sh                # when checking the development app
 ```
+
+The full local runner is the default PR validation path. A quick run is useful
+while editing but is never sufficient merge evidence. Tie a full run to its
+recorded commit and unchanged tracked/untracked file digest; rerun after any tree
+change. See `docs/local-ci.md` for the exact steps and retained logs.
 
 Use targeted crate checks when appropriate; broaden only for a concrete dependency,
 new failure, or unresolved risk. Re-run checks after a material repair. Docs-only
@@ -383,8 +392,9 @@ create mandatory pipelines, swarms, duplicate investigations, or overlapping edi
 - `docs/research/` and `research/observations/`: reference identity and behavior evidence.
 - `artifacts/` and `research/private/`: ignored local outputs and analysis material.
 
-No release pipeline, project board, generated scorecard, or devlog is currently
-configured. Use existing tracking rather than inventing a second authority.
+No hosted/release pipeline, project board, generated scorecard, or devlog is
+currently configured. The local validation runner is not hosted CI. Use existing
+tracking rather than inventing a second authority.
 Do not commit, push, publish, choose a distribution license, or change permissions
 unless the user authorizes that action. Inspect checkout topology and status before editing. The workspace now uses Git
 on `main` with the private `PORTALSURFER/hex` remote, created at user request on

@@ -17,18 +17,20 @@ Completed chronology and superseded work orders are preserved in the
 - Preserve unrelated work. Native UI and listening checks belong to the user;
   automated source checks belong to the implementing agent.
 
-## current review stack
+## merged PR history and remaining acceptance
 
-All PRs below are open; none is recorded as merged.
+PRs #1–#7 were verified closed as merged on 9 October 2026. Merging records
+repository integration, not completion of the native checks below.
 
 | PR | focused change | remaining gate |
 | --- | --- | --- |
-| [#1](https://github.com/PORTALSURFER/hex/pull/1) | targeted PR workflow | review/merge |
-| [#2](https://github.com/PORTALSURFER/hex/pull/2) | arrangement edit cursor and split | review/merge; native boundary checks |
+| [#1](https://github.com/PORTALSURFER/hex/pull/1) | targeted PR workflow | workflow established; retain for future PRs |
+| [#2](https://github.com/PORTALSURFER/hex/pull/2) | arrangement edit cursor and split | native boundary checks |
 | [#3](https://github.com/PORTALSURFER/hex/pull/3) | unified clip detail view | native acceptance; complete DSP controls remain queued |
 | [#4](https://github.com/PORTALSURFER/hex/pull/4) | clip editing responsiveness | native smoothness/flicker acceptance |
 | [#5](https://github.com/PORTALSURFER/hex/pull/5) | track-scoped cursor and time rectangle edits | native selection/edit/undo/listening acceptance |
 | [#6](https://github.com/PORTALSURFER/hex/pull/6) | smooth pulse and upper-third selection handle | native hover/hand/move/reselection acceptance |
+| [#7](https://github.com/PORTALSURFER/hex/pull/7) | todo cleanup and focused request queue | no additional gate; open feature requests remain below |
 
 The selection handle is normally invisible, highlights on hover, and uses a
 hand cursor. Dragging below it paints a fresh selection. Point cursors pulse;
@@ -38,7 +40,14 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
 
 - [x] **queue cleanup** — [PR #7](https://github.com/PORTALSURFER/hex/pull/7):
   archive completed chronology and consolidate genuine open gates. Local links
-  checked; historical snapshot verified verbatim. Review/merge remains open.
+  checked; historical snapshot verified verbatim. Merged.
+- [x] **local validation pipeline** — [PR #8](https://github.com/PORTALSURFER/hex/pull/8):
+  run the project guards, locked tests,
+  allocation probes, strict Clippy and desktop build locally. Keep per-step logs
+  and a structured result bound to the exact commit and tracked/untracked source
+  digest. Quick mode is only a guards/format preflight, never merge evidence.
+  See [local CI design](docs/local-ci.md); full-run evidence is recorded in the PR.
+  Review/merge remains open.
 - [ ] **time-chunk move preview** — show selected audio/MIDI portions at their
   exact prospective destination and hide those portions at source. Preserve
   outside tails, gaps and destination replacement semantics. Restore the original
