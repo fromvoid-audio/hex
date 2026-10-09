@@ -66,6 +66,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 muted: false,
                 soloed: false,
                 devices: Vec::new(),
+                instrument: None,
                 content: hex_project::TrackContentSnapshot::Audio(clips),
             })
         })

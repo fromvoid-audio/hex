@@ -1120,6 +1120,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: Vec::new(),
+                instrument: None,
                 content: TrackContentSnapshot::Audio(Vec::new()),
             }],
             session: SessionSnapshot {
@@ -1551,6 +1552,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: Vec::new(),
+                instrument: None,
                 content: TrackContentSnapshot::Instrument(Vec::new()),
             }],
             session: SessionSnapshot {

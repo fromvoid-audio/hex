@@ -6,7 +6,8 @@ use super::{
 mod density;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix};
 use density::admit_voice_density;
-use hex_devices::{PreparedVoice, SineTable};
+use hex_devices::SineTable;
+use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, TempoMap};
 
 /// Maximum sounding note spans returned for one 256-frame window.
@@ -30,7 +31,7 @@ struct VoiceSpan {
     pitch: u8,
     channel: u8,
     velocity: u8,
-    voice: PreparedVoice,
+    voice: PreparedAnalyticNote,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -52,7 +53,6 @@ pub struct PreparedMidiInstrumentTemplate {
     admitted_max_micro_bpm: u64,
     first_pass: u64,
     period: Option<u64>,
-    release_frames: u64,
     release_raw: u64,
     intro: Vec<VoiceSpan>,
     repeats: Vec<VoiceSpan>,
@@ -65,6 +65,26 @@ pub struct PreparedMidiInstrumentTemplate {
     max_span_hits: usize,
     max_query_visits: usize,
     max_period_windows: usize,
+}
+
+struct SilentInstrument;
+impl PreparedNativeInstrument for SilentInstrument {
+    fn prepare_note(
+        &self,
+        _pitch: u8,
+        _velocity: u8,
+    ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+        Ok(PreparedAnalyticNote::new([0; 3], 0, silent_note_sample))
+    }
+}
+
+fn silent_note_sample(
+    _payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    _age_frames: u64,
+    _gate_frames: u64,
+    _release_frames: u64,
+) -> [f32; 2] {
+    [0.0; 2]
 }
 
 /// One immutable rendered-note interval in absolute project frames.
@@ -83,7 +103,7 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: PreparedVoice,
+    voice: PreparedAnalyticNote,
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
@@ -103,7 +123,7 @@ pub struct MidiReleaseVoice {
     start_frame: u64,
     gate_end_frame: u64,
     end_frame: u64,
-    voice: PreparedVoice,
+    voice: PreparedAnalyticNote,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,7 +230,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedVoice,
+        voice: PreparedAnalyticNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -273,12 +293,11 @@ impl MidiReleaseVoice {
         })
     }
 
-    pub(crate) fn sample_at(self, table: &SineTable, frame: u64) -> Option<f32> {
+    pub(crate) fn sample_at(self, frame: u64) -> Option<[f32; 2]> {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
         }
-        Some(table.sample(
-            self.voice,
+        Some(self.voice.sample(
             frame - self.start_frame,
             self.gate_end_frame - self.start_frame,
         ))
@@ -290,7 +309,6 @@ impl MidiReleaseVoice {
 pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTempoMap> {
     launch: BeatTime,
     timing: &'a T,
-    table: &'a SineTable,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
 }
@@ -304,11 +322,10 @@ impl<T: MidiTiming + ?Sized> Clone for MidiInstrumentRenderContext<'_, T> {
 }
 
 impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
-    pub fn new(launch: BeatTime, timing: &'a T, table: &'a SineTable) -> Self {
+    pub fn new(launch: BeatTime, timing: &'a T, _table: &'a SineTable) -> Self {
         Self {
             launch,
             timing,
-            table,
             onset_floor_exclusive: None,
             suppressions: &[],
         }
@@ -398,15 +415,43 @@ impl PreparedMidiInstrumentTemplate {
         source: &PreparedMidiSourceTemplate,
         table: &SineTable,
     ) -> Result<Self, MidiTemplateError> {
-        let release_frames = u64::from(source.sample_rate / 20).max(1);
+        let _ = table;
+        let instrument = hex_devices::prepare_legacy_sine_instrument(source.sample_rate)
+            .map_err(|_| MidiTemplateError::InvalidSource("sine instrument cannot be prepared"))?;
+        Self::prepare_with_instrument(source, instrument.as_ref())
+    }
+
+    /// Prepare authored note spans through the selected registered instrument
+    /// configuration. Each note retains its own bounded analytic sampler.
+    pub fn prepare_with_instrument(
+        source: &PreparedMidiSourceTemplate,
+        instrument: &dyn PreparedNativeInstrument,
+    ) -> Result<Self, MidiTemplateError> {
+        let intro = prepare_spans(
+            &source.intro_spans,
+            source.sample_rate,
+            source.admitted_max_micro_bpm,
+            instrument,
+        )?;
+        let repeats = prepare_spans(
+            &source.repeat_spans,
+            source.sample_rate,
+            source.admitted_max_micro_bpm,
+            instrument,
+        )?;
+        let release_frames = intro
+            .iter()
+            .chain(&repeats)
+            .map(|span| span.voice.release_frames())
+            .max()
+            .unwrap_or_else(|| u64::from(source.sample_rate / 20).max(1));
         let release_raw = release_window_raw(
             release_frames,
             source.sample_rate,
             source.admitted_max_micro_bpm,
         )?;
-        let mut intro = prepare_spans(&source.intro_spans, source.sample_rate, release_raw, table)?;
-        let mut repeats =
-            prepare_spans(&source.repeat_spans, source.sample_rate, release_raw, table)?;
+        let mut intro = intro;
+        let mut repeats = repeats;
         intro.sort_unstable_by_key(|span| (span.start, span.note));
         repeats.sort_unstable_by_key(|span| (span.start, span.note));
         if intro.len() > MIDI_SPAN_MAX_SOURCE_NOTES || repeats.len() > MIDI_SPAN_MAX_SOURCE_NOTES {
@@ -466,7 +511,6 @@ impl PreparedMidiInstrumentTemplate {
             admitted_max_micro_bpm: source.admitted_max_micro_bpm,
             first_pass: source.first_pass,
             period: source.period,
-            release_frames,
             release_raw,
             intro,
             repeats,
@@ -484,6 +528,11 @@ impl PreparedMidiInstrumentTemplate {
             },
             max_period_windows,
         })
+    }
+
+    /// Prepare an explicit silent slot for a missing or bypassed instrument.
+    pub fn prepare_silent(source: &PreparedMidiSourceTemplate) -> Result<Self, MidiTemplateError> {
+        Self::prepare_with_instrument(source, &SilentInstrument)
     }
 
     pub fn max_active_voices(&self) -> usize {
@@ -571,7 +620,7 @@ impl PreparedMidiInstrumentTemplate {
         &self,
         launch: BeatTime,
         timing: &T,
-        table: &SineTable,
+        _table: &SineTable,
         start_frame: u64,
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
@@ -596,18 +645,18 @@ impl PreparedMidiInstrumentTemplate {
         output.fill([0.0; 2]);
         for (frame_offset, output_frame) in output.iter_mut().enumerate() {
             let frame = start_frame + frame_offset as u64;
-            let mut sample = 0.0_f32;
+            let mut sample = [0.0_f32; 2];
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
-                    sample += table.sample(
-                        span.voice,
+                    let contribution = span.voice.sample(
                         frame - span.start_frame,
                         span.gate_end_frame - span.start_frame,
                     );
+                    sample[0] += contribution[0];
+                    sample[1] += contribution[1];
                 }
             }
-            output_frame[0] = sample;
-            output_frame[1] = sample;
+            *output_frame = sample;
         }
         Ok(())
     }
@@ -656,12 +705,13 @@ impl PreparedMidiInstrumentTemplate {
             let frame = start_frame + frame_offset as u64;
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
-                    let sample = context.table.sample(
-                        span.voice,
-                        frame - span.start_frame,
-                        span.gate_end_frame - span.start_frame,
+                    mix.add_frame(
+                        output_frame,
+                        span.voice.sample(
+                            frame - span.start_frame,
+                            span.gate_end_frame - span.start_frame,
+                        ),
                     );
-                    mix.add_frame(output_frame, [sample; 2]);
                 }
             }
         }
@@ -906,7 +956,7 @@ impl PreparedMidiInstrumentTemplate {
             .beat_to_frame(BeatTime::from_raw(gate_raw))
             .map_err(|_| MidiTemplateError::TempoConversion)?;
         let end = gate_end
-            .checked_add(self.release_frames)
+            .checked_add(span.voice.release_frames())
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         if onset >= context.end_frame || end <= context.start_frame {
             return Ok(());
@@ -947,8 +997,8 @@ struct QueryContext<'a, T: MidiTiming + ?Sized> {
 fn prepare_spans(
     source: &[SourceSpan],
     sample_rate: u32,
-    release_raw: u64,
-    table: &SineTable,
+    admitted_max_micro_bpm: u64,
+    instrument: &dyn PreparedNativeInstrument,
 ) -> Result<Vec<VoiceSpan>, MidiTemplateError> {
     if source.len() > MIDI_SPAN_MAX_SOURCE_NOTES {
         return Err(MidiTemplateError::TooManySourceNotes);
@@ -958,13 +1008,13 @@ fn prepare_spans(
         .try_reserve_exact(source.len())
         .map_err(|_| MidiTemplateError::Allocation)?;
     for span in source {
-        let voice = table
-            .prepare_voice(sample_rate, span.pitch, span.velocity)
+        let voice = instrument
+            .prepare_note(span.pitch, span.velocity)
             .map_err(|_| {
-                MidiTemplateError::InvalidSource(
-                    "midi pitch cannot be rendered at project sample rate",
-                )
+                MidiTemplateError::InvalidSource("midi note cannot be prepared by its instrument")
             })?;
+        let release_raw =
+            release_window_raw(voice.release_frames(), sample_rate, admitted_max_micro_bpm)?;
         let raw_end = u128::from(span.gate_end)
             .checked_add(u128::from(release_raw))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;

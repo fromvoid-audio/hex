@@ -287,7 +287,7 @@ fn maximum_cyclic_arc_overlap(
 mod tests {
     use super::{maximum_cyclic_arc_overlap, maximum_first_tail_overlap};
     use crate::midi_template::spans::VoiceSpan;
-    use hex_devices::PreparedVoice;
+    use hex_lattice::PreparedAnalyticNote;
     use hex_project::{BeatTime, Command, Created, Editor, NoteId, Project};
 
     fn span(
@@ -295,7 +295,7 @@ mod tests {
         gate_end: u64,
         release: u64,
         note: NoteId,
-        voice: PreparedVoice,
+        voice: PreparedAnalyticNote,
     ) -> VoiceSpan {
         VoiceSpan {
             start,
@@ -309,7 +309,7 @@ mod tests {
         }
     }
 
-    fn test_voice() -> (NoteId, PreparedVoice) {
+    fn test_voice() -> (NoteId, PreparedAnalyticNote) {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let track = match editor
             .execute(Command::AddMidiTrack {
@@ -345,9 +345,8 @@ mod tests {
             Created::Note(id) => id,
             _ => unreachable!(),
         };
-        let voice = hex_devices::SineTable::new()
-            .prepare_voice(48_000, 60, 100)
-            .unwrap();
+        let instrument = hex_devices::prepare_legacy_sine_instrument(48_000).unwrap();
+        let voice = instrument.prepare_note(60, 100).unwrap();
         (note, voice)
     }
 

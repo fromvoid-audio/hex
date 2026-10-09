@@ -1,8 +1,8 @@
 //! Validated MIDI clip source, arrangement and note metadata.
-use crate::edit::{Command, MidiNoteUpdate, name_valid};
+use crate::edit::{Command, MidiNoteUpdate};
 use crate::{
-    BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MAX_TRACKS, MidiSourcePlayback,
-    NoteId, Project, Track, TrackId,
+    BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiSourcePlayback, NoteId, Project,
+    Track, TrackId,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -344,21 +344,7 @@ pub(crate) fn validate_note(
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
         Command::AddMidiTrack { name } => {
-            name_valid(&name)?;
-            if project.tracks.len() >= MAX_TRACKS {
-                return Err(Invalid("track limit reached"));
-            }
-            let id = TrackId(project.allocate_id()?);
-            project.tracks.push(Track {
-                id,
-                name,
-                gain: 1.0,
-                balance: 0.0,
-                muted: false,
-                soloed: false,
-                devices: Vec::new(),
-                content: TrackContent::default(),
-            });
+            let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
         }
         Command::PlaceMidiClip {

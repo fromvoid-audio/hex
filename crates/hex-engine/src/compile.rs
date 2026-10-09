@@ -32,12 +32,35 @@ pub fn project_with_registry(
     media: &BTreeMap<AssetId, Audio>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<Project, Invalid> {
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_project(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         None,
         None,
         registry,
+        &instruments,
+    )
+    .map(|(project, _)| project)
+}
+
+/// Compile Arrangement audio and MIDI through a caller-provided analytic
+/// instrument catalog. Unknown instrument slots refuse publication.
+pub fn project_with_instrument_registry(
+    snapshot: &hex_project::Project,
+    media: &BTreeMap<AssetId, Audio>,
+    instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+) -> Result<Project, Invalid> {
+    let effects = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    compile_project(
+        snapshot,
+        |asset, project_rate| resolve_resident(asset, project_rate, media),
+        None,
+        None,
+        &effects,
+        instruments,
     )
     .map(|(project, _)| project)
 }
@@ -57,12 +80,15 @@ pub fn project_with_prepared_audio_sources(
     }
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_project(
         snapshot,
         |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
         None,
         None,
         &registry,
+        &instruments,
     )
     .map(|(project, _)| project)
 }
@@ -80,11 +106,14 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     }
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
         sine_table,
         &registry,
+        &instruments,
     )
 }
 
@@ -108,11 +137,14 @@ pub fn project_with_midi_preview_and_table(
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         sine_table,
         &registry,
+        &instruments,
     )
 }
 
@@ -121,6 +153,7 @@ fn compile_with_midi_preview<'a>(
     resolver: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -141,6 +174,7 @@ fn compile_with_midi_preview<'a>(
         Some(&mut previews),
         sine_table,
         registry,
+        instrument_registry,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -153,20 +187,12 @@ fn compile_project<'a>(
     snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
-    prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
+    _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
-    let has_instrument = snapshot
-        .tracks()
-        .iter()
-        .any(|track| !track.midi_clips().is_empty());
-    let sine_table = if has_instrument {
-        Some(prepared_sine_table.unwrap_or_else(|| Arc::new(hex_devices::SineTable::new())))
-    } else {
-        None
-    };
     let mut tracks = Vec::new();
     tracks
         .try_reserve_exact(snapshot.tracks().len())
@@ -174,6 +200,16 @@ fn compile_project<'a>(
     let mut stateful_count = 0_usize;
     let mut stateful_bytes = 0_usize;
     for track in snapshot.tracks() {
+        // Validate a present slot even when it is bypassed or has no current
+        // MIDI clips; unknown/future definitions must refuse graph publication.
+        let instrument_config = track
+            .instrument()
+            .map(|slot| {
+                instrument_registry
+                    .prepare_instrument(slot.state(), snapshot.sample_rate())
+                    .map_err(|_| Invalid("track instrument state is unsupported"))
+            })
+            .transpose()?;
         let clips = track
             .clips()
             .iter()
@@ -207,17 +243,19 @@ fn compile_project<'a>(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let muted = track.muted() || (any_soloed && !track.soloed());
-        let instrument = if track.midi_clips().is_empty() {
+        let instrument = if track.midi_clips().is_empty()
+            || track.instrument().is_none_or(hex_project::Device::bypassed)
+        {
             None
         } else {
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,
                     track,
-                    sine_table
+                    instrument_config
                         .as_ref()
-                        .ok_or(Invalid("instrument table missing"))?
-                        .clone(),
+                        .map(Box::as_ref)
+                        .ok_or(Invalid("instrument configuration missing"))?,
                     previews.as_deref_mut(),
                 )?
                 .ok_or(Invalid("instrument content missing after compile"))?,

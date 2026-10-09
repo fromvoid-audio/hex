@@ -331,7 +331,11 @@ fn failed_prepared_import_preserves_project_ids_and_resident_media() {
     let error = session
         .import_with_midi_preview(prepare(&directory, "candidate.wav", 8_000, &[[1, -1]]))
         .expect_err("candidate graph contains an unrenderable note");
-    assert!(error.to_string().contains("pitch cannot be rendered"));
+    assert!(
+        error
+            .to_string()
+            .contains("midi note cannot be prepared by its instrument")
+    );
     assert_eq!(session.project().snapshot(), before);
     assert_eq!(session.project().snapshot().next_id, allocator);
     assert_eq!(session.resident_frames(), before_frames);

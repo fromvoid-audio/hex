@@ -407,7 +407,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         .try_reserve_exact(MAX_CLIPS)
         .expect("test fixture capacity");
     clips.push(MidiClipSnapshot {
-        id: 3,
+        id: 5,
         start_raw: 0,
         length_raw: quarter(4).raw(),
         source_length_raw: quarter(4).raw(),
@@ -417,7 +417,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         looping: false,
         notes: Vec::new(),
     });
-    for id in 4..(MAX_CLIPS as u64 + 3) {
+    for id in 6..(MAX_CLIPS as u64 + 5) {
         clips.push(MidiClipSnapshot {
             id,
             start_raw: quarter(10).raw(),
@@ -430,7 +430,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
             notes: Vec::new(),
         });
     }
-    snapshot.next_id = MAX_CLIPS as u64 + 3;
+    snapshot.next_id = MAX_CLIPS as u64 + 5;
     let Some(track_snapshot) = snapshot
         .tracks
         .iter_mut()

@@ -89,6 +89,7 @@ pub struct TrackSnapshot {
     pub muted: bool,
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
+    pub instrument: Option<DeviceSnapshot>,
     pub content: TrackContentSnapshot,
 }
 
@@ -205,6 +206,11 @@ impl Project {
                             state: device.state.clone(),
                         })
                         .collect(),
+                    instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        id: instrument.id.value(),
+                        bypassed: instrument.bypassed,
+                        state: instrument.state.clone(),
+                    }),
                     content: TrackContentSnapshot::Hybrid {
                         audio_clips: track
                             .content
@@ -402,6 +408,22 @@ impl Project {
                     bypassed: device.bypassed,
                 });
             }
+            let instrument = if let Some(instrument) = track.instrument {
+                total_devices = total_devices
+                    .checked_add(1)
+                    .ok_or(Invalid("device count overflow"))?;
+                if total_devices > MAX_DEVICES {
+                    return Err(Invalid("project device limit reached"));
+                }
+                insert_id(instrument.id, &mut ids, &mut max_id)?;
+                Some(Device {
+                    id: DeviceId(instrument.id),
+                    state: instrument.state,
+                    bypassed: instrument.bypassed,
+                })
+            } else {
+                None
+            };
             let (audio_clips, midi_clips) = track.content.into_parts();
             let track_clip_count = audio_clips
                 .len()
@@ -515,6 +537,7 @@ impl Project {
                 muted: track.muted,
                 soloed: track.soloed,
                 devices,
+                instrument,
                 content,
             });
         }

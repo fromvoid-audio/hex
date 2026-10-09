@@ -390,13 +390,15 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             if prepared.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
-            let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
-            let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
-            let context = context.with_suppressions(suppressions);
-            prepared
-                .instrument_template()
-                .render_additive(context, source_mix, performance_frame, output, spans)
-                .map_err(SessionPlaybackError::Midi)?;
+            if prepared.instrument_enabled() {
+                let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
+                let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
+                let context = context.with_suppressions(suppressions);
+                prepared
+                    .instrument_template()
+                    .render_additive(context, source_mix, performance_frame, output, spans)
+                    .map_err(SessionPlaybackError::Midi)?;
+            }
         }
         RouteOwner::SessionAudio { clip, launch_frame } => {
             let prepared = revision
@@ -492,7 +494,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
 
 fn render_release(
     release: &super::ReleaseEntry,
-    table: &hex_devices::SineTable,
+    _table: &hex_devices::SineTable,
     performance_frame: u64,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
@@ -502,8 +504,8 @@ fn render_release(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(table, absolute) {
-            release.mix.add_frame(frame, [sample; 2]);
+        if let Some(sample) = release.voice.sample_at(absolute) {
+            release.mix.add_frame(frame, sample);
         }
     }
     Ok(())
@@ -511,7 +513,7 @@ fn render_release(
 
 fn render_release_raw(
     release: &super::ReleaseEntry,
-    table: &hex_devices::SineTable,
+    _table: &hex_devices::SineTable,
     performance_frame: u64,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
@@ -521,9 +523,9 @@ fn render_release_raw(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(table, absolute) {
-            frame[0] += sample;
-            frame[1] += sample;
+        if let Some(sample) = release.voice.sample_at(absolute) {
+            frame[0] += sample[0];
+            frame[1] += sample[1];
         }
     }
     Ok(())

@@ -4,7 +4,10 @@ mod clip_copy;
 mod clip_fragment;
 mod conversion;
 mod device;
-pub use device::{Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK};
+pub use device::{
+    DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
+    default_instrument_state,
+};
 mod edit;
 pub use clip_fragment::preview_clip_fragment;
 pub use conversion::{
@@ -311,6 +314,7 @@ pub struct Track {
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
+    pub(crate) instrument: Option<Device>,
     pub(crate) content: TrackContent,
 }
 impl Track {
@@ -335,6 +339,11 @@ impl Track {
     }
     pub fn devices(&self) -> &[Device] {
         &self.devices
+    }
+    /// Optional single native instrument slot, independent of the ordered
+    /// serial effect chain. `None` means MIDI on this track is silent.
+    pub fn instrument(&self) -> Option<&Device> {
+        self.instrument.as_ref()
     }
     /// Beat-anchored audio clips on this hybrid track.
     pub fn clips(&self) -> &[Clip] {
@@ -378,6 +387,50 @@ impl Project {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
+
+    /// Install the explicit default instrument on tracks decoded from schema
+    /// versions that predate the canonical slot. New schema data must preserve
+    /// `None` as an intentional silent slot and must not call this migration.
+    pub fn install_legacy_default_instruments(&mut self) -> Result<(), Invalid> {
+        let missing = self
+            .tracks
+            .iter()
+            .filter(|track| track.instrument.is_none())
+            .count();
+        if missing == 0 {
+            return Ok(());
+        }
+        let total_devices = self.tracks.iter().try_fold(0_usize, |count, track| {
+            count
+                .checked_add(track.devices.len())
+                .and_then(|sum| sum.checked_add(usize::from(track.instrument.is_some())))
+                .ok_or(Invalid("device count overflow"))
+        })?;
+        if total_devices
+            .checked_add(missing)
+            .ok_or(Invalid("device count overflow"))?
+            > MAX_DEVICES
+        {
+            return Err(Invalid("project device limit reached"));
+        }
+        let state = default_instrument_state()?;
+        let (first_id, _) = self.allocate_id_range(missing)?;
+        let mut id = first_id;
+        for track in &mut self.tracks {
+            if track.instrument.is_none() {
+                track.instrument = Some(Device {
+                    id: DeviceId(id),
+                    state: state.clone(),
+                    bypassed: false,
+                });
+                id = id
+                    .checked_add(1)
+                    .ok_or(Invalid("project id space exhausted"))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
@@ -506,14 +559,19 @@ impl Project {
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
         self.tracks
             .iter()
-            .flat_map(|track| track.devices())
+            .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
         self.tracks
             .iter_mut()
-            .flat_map(|track| track.devices.iter_mut())
-            .find(|device| device.id == id)
+            .find_map(|track| {
+                track
+                    .devices
+                    .iter_mut()
+                    .find(|device| device.id == id)
+                    .or_else(|| track.instrument.as_mut().filter(|device| device.id == id))
+            })
             .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {
