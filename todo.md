@@ -498,3 +498,14 @@ keeps the pane open. Ordinary track focus continues to honor the user's closed
 pane choice. Four targeted GPUI device-browser/device-focus tests, strict
 `hex-ui` Clippy, formatting, architecture, style and GPUI patch guards pass.
 Full local CI and native review remain open.
+
+Pulse2153: native metadata reports generic state-dependent parameter
+availability. Utility left/right channel mode disables width and mid-side
+controls without clearing authored values; stereo/swap restores editing. The
+contract defaults valid parameters to enabled, and canonical patching remains
+available for inactive stored values. The rendered actor test rejects disabled
+width/balance drags and mid-side toggles without revision or history changes,
+then confirms values and controls return in Swap mode. The targeted device-panel
+tests (17), contract/device/engine tests, affected strict Clippy, formatting,
+architecture, UI-style, GPUI-patch and diff guards pass. Full local CI remains
+before review; native UI acceptance remains open.

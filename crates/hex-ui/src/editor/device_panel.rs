@@ -1552,6 +1552,7 @@ fn parameter_control(
         },
         |snapshot| snapshot.value,
     );
+    let enabled = parameter.enabled;
     let compatible = matches!(
         (descriptor.kind, value),
         (ParameterKind::Float { .. }, ParameterValue::Float(_))
@@ -1613,11 +1614,13 @@ fn parameter_control(
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                     let _ = control.set_external_value(f64::from(value), cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                 });
             }
             div().w(px(136.0)).h(px(26.0)).child(entity.clone())
@@ -1626,11 +1629,13 @@ fn parameter_control(
             if let ParameterValue::Bool(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                     control.set_checked(value, cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                 });
             }
             div().w(px(136.0)).h(px(22.0)).child(entity.clone())
@@ -1639,11 +1644,13 @@ fn parameter_control(
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                     let _ = control.set_selected(value as usize, cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    control.set_enabled(enabled, cx);
                 });
             }
             div().w(px(136.0)).h(px(22.0)).child(entity.clone())
