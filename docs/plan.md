@@ -1,5 +1,23 @@
 # Project plan
 
+## active work unit — captured time-selection dragging, 9 October 2026
+
+Keep an Arrangement time gesture captured from its valid pointer-down until
+left-button release, even over blank space, the browser or outside the window.
+Clamp vertical selection/move targets to existing track bounds; never create
+extra rows. Clamp the visible horizontal endpoint to the timeline edge and scroll
+left/right while the held pointer is beyond it, including while stationary.
+Stop scrolling at valid viewport limits. Preserve snapping, Command override,
+Option copy mode and the existing upper-third move/lower selection zones.
+
+Acceptance: fast crossed-edge pointer moves keep updating; held out-of-window
+movement and release finalize once; reentry continues the same gesture; scrolling
+continues without mouse events, then stops on release/cancel/project replacement.
+No capture/compilation/history edits during pointer updates or timer ticks.
+Bound per-tick work to visible geometry/current gesture and existing frame limits.
+Cover selection painting and time-chunk movement where they share capture/targets.
+Source checks and a focused PR precede a fresh native review build for the user.
+
 ## source-complete work unit — Space restarts at the edit position, 9 October 2026
 
 Space pauses while playing. When starting again, it starts from the normalized
@@ -28,7 +46,8 @@ one prepared Undo operation and use the existing bounded fragment/gap contract.
 Opening a project clears provenance with its clipboard. No schema or callback
 changes. Targeted canonical/worker regressions precede final clean-commit local
 CI and a separate review bundle/PR. [PR #13](https://github.com/PORTALSURFER/hex/pull/13)
-passed all 14 steps on clean source `d1bcf26`; native acceptance remains open.
+passed all 14 steps on clean source `d1bcf26`; user accepted the combined review
+build and authorized merge. Merged.
 
 ## source-complete work unit — Option-drag copies, 9 October 2026
 
@@ -48,7 +67,8 @@ same-origin drops and rejected candidates preserve content and redo. Pointer
 updates do not compile projects or copy PCM. Validate canonical overlap, failure,
 Undo and modifier contracts, run local CI on the final clean commit, then provide
 a fresh review app for the user's native cursor/drag acceptance. Full local CI
-passed all 14 steps on clean source `494f641`; native acceptance remains open.
+passed all 14 steps on clean source `494f641`; user accepted the combined review
+build and authorized merge. Merged.
 
 ## Goal and target
 
@@ -3655,3 +3675,7 @@ Save from the toolbar. Reuse existing typed actions, scoped shortcuts, dialogs
 and unsaved-work guards. Separate focused PR; no window-titlebar redesign.
 Source guards and native compilation precede user checks of menu availability,
 action dispatch, shortcut glyphs/focus and safe Open/Quit behavior.
+
+PRs #12–#16 passed their individual full local CI runs, were accepted by the user
+in the combined review build, and are merged on 9 October. The captured selection
+fix remains a separate unmerged work unit.

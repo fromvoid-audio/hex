@@ -389,16 +389,6 @@ impl EditorView {
                         if !phase.capture() {
                             return;
                         }
-                        if event.pressed_button != Some(MouseButton::Left) {
-                            let finished = cursor_move_entity.update(cx, |view, _| {
-                                view.cancel_time_range_move_gesture()
-                                    || view.finish_time_selection_gesture()
-                            });
-                            if finished {
-                                window.refresh();
-                            }
-                            return;
-                        }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let changed = cursor_move_entity.update(cx, |view, _| {
@@ -420,7 +410,19 @@ impl EditorView {
                             return;
                         }
                         let finished = cursor_up_entity.update(cx, |view, _| {
-                            view.update_time_range_copy_modifier(event.modifiers.alt);
+                            let x = f32::from(event.position.x);
+                            let y = f32::from(event.position.y);
+                            view.refresh_time_gesture_modifiers(
+                                event.modifiers.platform,
+                                event.modifiers.alt,
+                            );
+                            let _ =
+                                view.update_time_range_move_gesture(x, y, event.modifiers.platform)
+                                    || view.update_time_selection_gesture(
+                                        x,
+                                        y,
+                                        event.modifiers.platform,
+                                    );
                             view.finish_time_range_move_gesture()
                                 || view.finish_time_selection_gesture()
                         });

@@ -3,6 +3,7 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::Command;
 use hex_session::service::Event;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[gpui::test]
 fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAppContext) {
@@ -594,7 +595,10 @@ fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut T
 
     editor.update(cx, |view, cx| {
         assert!(view.update_time_range_move_gesture(target_x, -100.0, true));
-        assert!(view.time_range_move_display().is_none());
+        assert!(
+            view.time_range_move_display().is_some(),
+            "moving outside the lane retains the last valid preview"
+        );
         cx.notify();
     });
     visual.run_until_parked();
@@ -604,6 +608,293 @@ fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut T
         cx.notify();
     });
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn captured_time_selection_projects_outside_pointer_and_release_position(cx: &mut TestAppContext) {
+    let (project, _source, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .expect("empty target lane");
+    let start = point(
+        lane.origin.x + lane.size.width * 0.25,
+        lane.origin.y + lane.size.height * 0.75,
+    );
+    let outside_left_above = point(px(-80.0), px(-300.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(outside_left_above, None, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.time_selection_gesture.is_some(),
+            "capture persists without button state"
+        );
+        let selection = view.time_selection.expect("live selection");
+        assert_eq!(
+            selection.end_track,
+            view.visible_lane_near_y(-300.0)
+                .expect("nearest fresh lane above the window")
+                .0,
+            "vertical target clamps to nearest fresh lane"
+        );
+        assert_eq!(
+            selection.end_frame, 0,
+            "left x clamps to the visible frame start"
+        );
+    });
+    let release = point(lane.origin.x + lane.size.width + px(250.0), px(1_000.0));
+    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.time_selection_gesture.is_none());
+        let selection = view.time_selection.expect("completed selection");
+        assert_eq!(
+            selection.end_track, target,
+            "release below tracks clamps to last lane"
+        );
+        let viewport = view.visible_viewport(384_000);
+        assert_eq!(selection.end_frame, viewport.end().expect("viewport end"));
+    });
+}
+
+#[gpui::test]
+fn command_modifier_reprojects_captured_selection_without_pointer_motion(cx: &mut TestAppContext) {
+    let (project, _, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .expect("empty lane");
+    let down = point(
+        lane.origin.x + lane.size.width * 0.1,
+        lane.origin.y + lane.size.height * 0.75,
+    );
+    let moved = point(lane.origin.x + lane.size.width * 0.12345, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let (raw_frame, snapped_frame) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        let geometry = view.drag_lanes.get(&target).expect("fresh lane");
+        let viewport = view.visible_viewport(state.timeline_frames);
+        let raw = super::seek::pointer_to_frame(
+            f32::from(moved.x),
+            geometry.left,
+            geometry.width,
+            viewport,
+        )
+        .expect("raw frame");
+        let snapped = view
+            .snap_grid
+            .with_platform_modifier(false)
+            .snap_frame(&state.project, raw, viewport, geometry.width)
+            .expect("snapped frame");
+        assert_ne!(raw, snapped, "fixture exercises the snapping difference");
+        assert_eq!(view.time_selection.expect("selection").end_frame, snapped);
+        (raw, snapped)
+    });
+    assert_ne!(raw_frame, snapped_frame);
+    visual.simulate_modifiers_change(Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.time_selection_gesture
+                .as_ref()
+                .expect("gesture")
+                .free_modifier
+        );
+        assert_eq!(
+            view.time_selection.expect("selection").end_frame,
+            raw_frame,
+            "Command updates snapping at the stored pointer"
+        );
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
+fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppContext) {
+    let (project, _, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .expect("empty target lane");
+    let start = point(
+        lane.origin.x + lane.size.width * 0.25,
+        lane.origin.y + lane.size.height * 0.75,
+    );
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::viewport::Viewport {
+            start: 0,
+            length: 100_000,
+        });
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let outside_right = point(lane.origin.x + lane.size.width + px(20.0), start.y);
+    visual.simulate_mouse_move(
+        outside_right,
+        MouseButton::Left,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    let base = Instant::now();
+    editor.update(cx, |view, _| {
+        let gesture = view
+            .time_selection_gesture
+            .as_mut()
+            .expect("captured selection");
+        gesture.last_tick = base;
+    });
+    let before = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        assert!(view.tick_time_gesture_autoscroll(base + Duration::from_millis(50)));
+    });
+    let first = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        let _ = view.update_time_selection_gesture(
+            f32::from(outside_right.x),
+            f32::from(outside_right.y),
+            true,
+        );
+        assert!(view.tick_time_gesture_autoscroll(base + Duration::from_millis(100)));
+    });
+    editor.read_with(cx, |view, _| {
+        let after = view.visible_viewport(384_000);
+        assert!(
+            first.start > before.start && after.start > first.start,
+            "interleaved pointer updates do not starve stationary right-edge panning"
+        );
+        assert_eq!(
+            view.time_selection
+                .expect("reprojected selection")
+                .end_frame,
+            after.end().expect("viewport end")
+        );
+        let gesture = view
+            .time_selection_gesture
+            .as_ref()
+            .expect("gesture remains active");
+        assert!(
+            gesture.free_modifier,
+            "Command/free-snap state survives pointer ticks"
+        );
+    });
+    let outside_left = point(lane.origin.x - px(20.0), start.y);
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::viewport::Viewport {
+            start: 100_000,
+            length: 100_000,
+        });
+        let _ = view.update_time_selection_gesture(
+            f32::from(outside_left.x),
+            f32::from(outside_left.y),
+            true,
+        );
+        assert!(view.tick_time_gesture_autoscroll(base + Duration::from_millis(150)));
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.visible_viewport(384_000).start < 100_000);
+    });
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::viewport::Viewport {
+            start: 284_000,
+            length: 100_000,
+        });
+        let _ = view.update_time_selection_gesture(
+            f32::from(outside_right.x),
+            f32::from(outside_right.y),
+            true,
+        );
+    });
+    let right_limit = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        assert!(!view.tick_time_gesture_autoscroll(base + Duration::from_millis(200)));
+        assert_eq!(view.visible_viewport(384_000), right_limit);
+    });
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::viewport::Viewport {
+            start: 0,
+            length: 100_000,
+        });
+        let _ = view.update_time_selection_gesture(
+            f32::from(outside_left.x),
+            f32::from(outside_left.y),
+            true,
+        );
+    });
+    let left_limit = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        assert!(!view.tick_time_gesture_autoscroll(base + Duration::from_millis(250)));
+        assert_eq!(view.visible_viewport(384_000), left_limit);
+    });
+    visual.simulate_mouse_up(outside_right, MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
+fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
+    let (project, _, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .expect("empty target lane");
+    let start = point(
+        lane.origin.x + lane.size.width * 0.25,
+        lane.origin.y + lane.size.height * 0.75,
+    );
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::viewport::Viewport {
+            start: 100_000,
+            length: 100_000,
+        });
+        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.update_time_selection_gesture(
+            f32::from(lane.origin.x + lane.size.width + px(10.0)),
+            f32::from(start.y),
+            true
+        ));
+        let gesture = view.time_selection_gesture.as_mut().expect("gesture");
+        gesture.revision = gesture.revision.wrapping_add(1);
+    });
+    let before_stale_tick = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        assert!(!view.tick_time_gesture_autoscroll(Instant::now() + Duration::from_secs(1)));
+        assert!(view.time_selection_gesture.is_none());
+        assert_eq!(view.visible_viewport(384_000), before_stale_tick);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.update_time_selection_gesture(
+            f32::from(lane.origin.x + lane.size.width + px(10.0)),
+            f32::from(start.y),
+            true
+        ));
+        assert!(view.cancel_time_selection_gesture());
+    });
+    let before_canceled_tick = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+    editor.update(cx, |view, _| {
+        assert!(!view.tick_time_gesture_autoscroll(Instant::now() + Duration::from_secs(1)));
+        assert_eq!(view.visible_viewport(384_000), before_canceled_tick);
+    });
 }
 
 #[gpui::test]
@@ -734,6 +1025,32 @@ fn multi_row_move_preview_maps_each_source_row_to_its_destination_offset(cx: &mu
         destination_lanes[0].origin.x + destination_lanes[0].size.width * 0.6,
         destination_lanes[0].origin.y + destination_lanes[0].size.height * 0.2,
     );
+    editor.update(cx, |view, _| {
+        let grab = point(
+            target_lane.origin.x + target_lane.size.width * 0.1,
+            target_lane.origin.y + target_lane.size.height * 0.2,
+        );
+        assert!(view.begin_time_range_move_gesture(f32::from(grab.x), f32::from(grab.y)));
+        assert!(view.update_time_range_move_gesture(f32::from(grab.x), -1_000.0, false));
+        assert_eq!(
+            view.time_range_move_display()
+                .expect("range clamps at top")
+                .destination_first_index,
+            0
+        );
+        assert!(view.update_time_range_move_gesture(
+            f32::from(target_lane.origin.x + target_lane.size.width * 0.25),
+            10_000.0,
+            false
+        ));
+        assert_eq!(
+            view.time_range_move_display()
+                .expect("range clamps at bottom")
+                .destination_first_index,
+            1
+        );
+        assert!(view.cancel_time_range_move_gesture());
+    });
     editor.update(cx, |view, cx| {
         assert!(view.begin_time_range_move_gesture(f32::from(down.x), f32::from(down.y)));
         assert!(view.update_time_range_move_gesture(

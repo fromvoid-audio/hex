@@ -96,7 +96,8 @@ and cached MIDI note shapes at the proposed destination. Hide the selected
 portions at source and hide content inside the replacement destination rectangle;
 keep outside tails visible. The preview includes gaps and preserves relative row
 and frame offsets, including overlapping moves. At the original location or an
-invalid/outside drop target, restore the ordinary source display. Keep a submitted
+invalid project state, restore the ordinary source display. Outside pointer
+positions clamp as described below. Keep a submitted
 move preview until its worker result arrives, and restore the source on rejection.
 
 `hex-project::preview_clip_fragment` slices only validated audio metadata with
@@ -108,7 +109,8 @@ the corresponding source rows, with the existing MIDI shape budget.
 
 Native checklist: move a mixed audio/MIDI time chunk across rows and earlier/later
 in time; check source and destination tails, silent cells and overlapping moves;
-leave the valid lanes or cancel and confirm the original display returns; release,
+leave the valid lanes and confirm the preview remains clamped; cancel and confirm
+the original display returns; release,
 Undo and confirm the preview matches the committed clip positions. Native
 smoothness, detailed waveform appearance and listening remain user acceptance.
 
@@ -193,3 +195,40 @@ checks pass; final local CI evidence belongs to the focused PR. Native checklist
 copy two tracks, click a different row at a later time, and use Cmd-V then
 Cmd-Shift-V; both should affect the original rows. Repeat with a single track and
 confirm it pastes onto the clicked row. Undo each successful operation.
+
+Native review, 9 October 2026: the user reported all other issues in the combined
+`hex-editing-menu-20261009.app` build look good and authorized merging PRs #12–#16.
+Those PRs are merged. This records acceptance of the reviewed editing/menu
+behavior, not physical timing measurements or exhaustive listening. Dragging time
+selections beyond visible lanes/window edges is a separately reported defect and
+the active follow-up.
+
+## captured time gestures and edge scrolling — 9 October 2026
+
+After a valid left-button down, painting a selection or moving/copying its upper
+handle stays captured until left-button release or explicit cancellation. Empty
+space, the browser and out-of-window coordinates project onto the nearest fresh
+visible track lane by y. Exact shared boundaries prefer half-open lane containment
+with deterministic ties. Multi-row move targets clamp the whole block to existing
+track indices. Transient missing measurements retain the last valid preview.
+Horizontal pointer coordinates clamp to the current visible time span, and release
+applies its final coordinates/current modifiers before finishing exactly once.
+
+The existing 16 ms UI tick scrolls horizontally when the held pointer is beyond
+an Arrangement edge. It preserves scale and clamps to the current project horizon;
+no extra tracks or project extension are created by selection alone. Scrolling
+uses 1.5 viewport spans per second with at most 50 ms elapsed work per tick, and
+reprojects the same stationary pointer. Only timer ticks advance its clock, so
+frequent/synthetic pointer events cannot suppress scrolling. Cancelled/stale
+revision or generation state, mode changes and modal/project guards prevent pan.
+Command snapping and Option-copy refresh without pointer motion. No authoritative
+project operation, compilation or PCM work occurs during updates/ticks.
+
+Source validation: 274 UI tests passed (2 ignored), strict UI Clippy, formatting,
+architecture, GPUI patch and style guards passed. Tests cover both edges and limits,
+interleaved pointer/timer updates, out-of-window release coordinates, nearest-row
+projection, whole-block clamping, Command changes and stale/cancelled gestures.
+Native checklist: paint and move a range below the last track; drag rapidly into
+browser and back; hold beyond left/right edges while zoomed/panned; release outside
+the window, then move normally and confirm no continued selection/scrolling.
+Also try Command/Option and Escape. Native AppKit delivery remains user acceptance.

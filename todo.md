@@ -19,7 +19,7 @@ Completed chronology and superseded work orders are preserved in the
 
 ## merged PR history and remaining acceptance
 
-PRs #1–#11 were verified closed as merged on 9 October 2026. Merging records
+PRs #1–#16 were verified closed as merged on 9 October 2026. Merging records
 repository integration, not completion of the native checks below.
 
 | PR | focused change | remaining gate |
@@ -34,13 +34,30 @@ repository integration, not completion of the native checks below.
 | [#8](https://github.com/PORTALSURFER/hex/pull/8) | local validation pipeline | full 14-step clean-commit run passed; merged |
 | [#9](https://github.com/PORTALSURFER/hex/pull/9) | time-chunk landing preview | user reports review build works as expected; merged; physical timing/listening not established |
 | [#10](https://github.com/PORTALSURFER/hex/pull/10) | project-wide time-selection request queue | planning only; implementation remains queued |
-| [#11](https://github.com/PORTALSURFER/hex/pull/11) | selected-track ripple insertion | user accepted ripple behavior; merged; keyboard source-track anchoring queued separately |
+| [#11](https://github.com/PORTALSURFER/hex/pull/11) | selected-track ripple insertion | user accepted ripple behavior; merged |
+| [#12](https://github.com/PORTALSURFER/hex/pull/12) | Option-drag copying | accepted in combined review build; merged |
+| [#13](https://github.com/PORTALSURFER/hex/pull/13) | multi-track keyboard paste anchoring | accepted in combined review build; merged |
+| [#14](https://github.com/PORTALSURFER/hex/pull/14) | stable zoom during project growth | accepted in combined review build; merged |
+| [#15](https://github.com/PORTALSURFER/hex/pull/15) | Space restarts at the edit position | accepted in combined review build; merged |
+| [#16](https://github.com/PORTALSURFER/hex/pull/16) | native File menu project actions | accepted in combined review build; merged |
 
 The selection handle is normally invisible, highlights on hover, and uses a
 hand cursor. Dragging below it paints a fresh selection. Point cursors pulse;
 nonzero time rectangles remain steady. See [time selection](docs/time-selection.md).
 
 ## new requests — separate PRs
+
+- [x] **captured time selection and edge scrolling** — focused source fix.
+  Keep held selection/time-chunk gestures active over empty space, browser and
+  outside the window until release. Clamp rows at existing first/last tracks;
+  continue horizontal selection at the visible edge and autoscroll left/right
+  while held beyond it, including stationary pointers. Preserve snapping,
+  Option-copy, cancellation and one-release behavior; no project work per move
+  or timer tick. Test fast boundary crossings, reentry, outside release, viewport
+  limits and cleanup; native acceptance belongs to the user. Source implemented:
+  274 UI tests (2 ignored), strict UI Clippy, formatting and source guards pass.
+  Final clean-commit local CI is recorded in the focused PR; native outside-window
+  delivery/scroll feel remains open. This PR stays unmerged per the user request.
 
 - [x] **queue cleanup** — [PR #7](https://github.com/PORTALSURFER/hex/pull/7):
   archive completed chronology and consolidate genuine open gates. Local links
@@ -66,7 +83,7 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   only on touched destination tracks. Ordinary Cmd-C/V replaces; cutting leaves
   a gap. Preserve crossings, source phase, history and atomic failure behavior.
   Full 14-step local CI passed clean commit `c7ae2d5`; the user accepted ripple
-  behavior on 9 October. Merged. Keyboard source-track anchoring is queued below.
+  behavior on 9 October. Merged. Keyboard source-track anchoring landed in PR #13.
   MIDI loop materialization/refusal policy is documented
   in [time selection](docs/time-selection.md).
 - [x] **Option-drag duplication** — [PR #12](https://github.com/PORTALSURFER/hex/pull/12) for supported draggable
@@ -80,8 +97,8 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Source implemented for Arrangement audio/MIDI clips, new-track drops and time
   rectangles. Project tests, 267 UI tests (2 ignored), targeted strict Clippy,
   formatting and source guards passed, including a release-time modifier regression.
-  Full local CI passed all 14 steps on clean source `494f641`; native plus-cursor
-  and drag acceptance remain open. Fresh app: `artifacts/hex-option-copy-20261009.app`.
+  Full local CI passed all 14 steps on clean source `494f641`. User accepted the
+  combined review build; merged. Outside-lane selection capture is the active fix.
 - [x] **multi-track keyboard paste stays on copied tracks** — separate focused PR after
   Option-drag. Normal and ripple keyboard paste of multiple tracks use the copied
   source track IDs; only the current horizontal time position determines placement,
@@ -90,8 +107,8 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   missing source tracks atomically, and keep visual time-chunk drags free to move
   or copy across tracks. Cover worker clipboard lifecycle, Undo and both shortcut
   variants; provide native acceptance checks. Source implemented; project/session
-  tests, targeted strict Clippy, formatting and architecture checks pass. Native
-  acceptance and review/merge remain open. [PR #13](https://github.com/PORTALSURFER/hex/pull/13)
+  tests, targeted strict Clippy, formatting and architecture checks pass. User
+  accepted the combined review build; merged. [PR #13](https://github.com/PORTALSURFER/hex/pull/13)
   passed all 14 local CI steps on clean source `d1bcf26`.
 - [x] **Space restarts from the edit position** — separate focused transport
   fix. Space starts at the current Arrangement edit cursor/selection, or project
@@ -100,16 +117,17 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   editor shortcut focus and bounded ordered seek/start delivery, with Stop still
   effective under queue pressure. Verify start position and stop/restart natively.
   Source implemented with one atomic PlayFrom action; engine/audio/UI and callback
-  allocation regressions plus targeted strict Clippy/guards pass. Final local CI
-  and native acceptance remain separate gates.
+  allocation regressions plus targeted strict Clippy/guards pass. [PR #15](https://github.com/PORTALSURFER/hex/pull/15)
+  passed all 14 local CI steps on clean source `e540ee5`; user accepted the
+  combined review build and authorized merge. Merged.
 - [x] **preserve zoom when the project grows** — separate focused fix. Moving,
   copying or pasting to the right may expand timeline/project extent, but must
   retain the user's zoom and viewport. Fit/overview navigation remain explicit
   user actions. Check normal/ripple paste, clip/time drags, new imports and Undo;
   preserve valid minimum/maximum coordinate bounds without implicit zoom-out.
   Source implemented; controller worker-event regressions, strict UI Clippy,
-  formatting and source guards pass. Final local CI and native acceptance remain
-  distinct; [PR #14](https://github.com/PORTALSURFER/hex/pull/14) passed all 14 local
+  formatting and source guards pass. User accepted the combined review build;
+  merged. [PR #14](https://github.com/PORTALSURFER/hex/pull/14) passed all 14 local
   CI steps on clean source `e04e2ec`.
 - [x] **project actions in macOS File menu** — separate focused UI PR after
   keyboard paste anchoring. Put Open Project, Save and Save As in the screen-top
@@ -118,7 +136,9 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Reuse existing controller commands and OS file dialogs; verify native menu
   operation with the user. This request is for the menu bar, not window buttons.
   Native File menu source is implemented; toolbar Save removed, existing actions
-  and shortcuts retained. Native menu/shortcut/dialog acceptance remains open.
+  and shortcuts retained. [PR #16](https://github.com/PORTALSURFER/hex/pull/16)
+  passed all 14 local CI steps on clean source `045201e`; user accepted the
+  combined review build and authorized merge. Merged.
 - [ ] **compact header composition** — separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes.
