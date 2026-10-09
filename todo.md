@@ -19,7 +19,7 @@ Completed chronology and superseded work orders are preserved in the
 
 ## merged PR history and remaining acceptance
 
-PRs #1–#7 were verified closed as merged on 9 October 2026. Merging records
+PRs #1–#9 were verified closed as merged on 9 October 2026. Merging records
 repository integration, not completion of the native checks below.
 
 | PR | focused change | remaining gate |
@@ -31,6 +31,8 @@ repository integration, not completion of the native checks below.
 | [#5](https://github.com/PORTALSURFER/hex/pull/5) | track-scoped cursor and time rectangle edits | native selection/edit/undo/listening acceptance |
 | [#6](https://github.com/PORTALSURFER/hex/pull/6) | smooth pulse and upper-third selection handle | native hover/hand/move/reselection acceptance |
 | [#7](https://github.com/PORTALSURFER/hex/pull/7) | todo cleanup and focused request queue | no additional gate; open feature requests remain below |
+| [#8](https://github.com/PORTALSURFER/hex/pull/8) | local validation pipeline | full 14-step clean-commit run passed; merged |
+| [#9](https://github.com/PORTALSURFER/hex/pull/9) | time-chunk landing preview | user reports review build works as expected; merged; physical timing/listening not established |
 
 The selection handle is normally invisible, highlights on hover, and uses a
 hand cursor. Dragging below it paints a fresh selection. Point cursors pulse;
@@ -47,19 +49,28 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   and a structured result bound to the exact commit and tracked/untracked source
   digest. Quick mode is only a guards/format preflight, never merge evidence.
   See [local CI design](docs/local-ci.md); full-run evidence is recorded in the PR.
-  Review/merge remains open.
+  Merged.
 - [x] **time-chunk move preview** — [PR #9](https://github.com/PORTALSURFER/hex/pull/9):
   show selected audio/MIDI portions at their
   exact prospective destination and hide those portions at source. Preserve
   outside tails, gaps and destination replacement semantics. Restore the original
   display on cancellation or rejected edit. No project compilation on pointer moves.
-  Native visual/smoothness acceptance and review/merge remain open; exact source
-  checks are recorded in the PR and [owning doc](docs/time-selection.md).
+  Full local CI passed all 14 steps on clean commit `4181d68`. The user accepted
+  the review build as behaving as expected on 9 October; merged. Native timing
+  and listening remain separate. See [owning doc](docs/time-selection.md).
 - [ ] **selected-track ripple insertion** — Cmd-Shift-C copies time and
   Cmd-Shift-V inserts the complete time rectangle, pushing later material right
   only on touched destination tracks. Ordinary Cmd-C/V replaces; cutting leaves
   a gap. Preserve crossings, source phase, history and atomic failure behavior.
   Backend implementation is in progress; UI wiring and acceptance remain open.
+- [ ] **Option-drag duplication** — separate feature PR for supported draggable
+  project items, including audio/MIDI clips and time chunks. Option selects copy
+  instead of move; show a small plus/copy cursor indicator while active. Preserve
+  source material and show the exact snapped destination copy, with Command's
+  free-placement override retained. Support modifier changes during a drag; release
+  uses the current mode. Drop creates fresh IDs in one atomic Undo operation;
+  cancellation/failure leaves the original intact. Browser imports retain their
+  existing copy semantics. Define Session/other draggable-item coverage explicitly.
 - [ ] **compact header composition** — separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes.
@@ -74,6 +85,18 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   above main, below the scrollable regular-track region. Implement canonical
   return routing, sends, history and persistence, not decorative rows. Keep both
   sections usable at small heights and prevent implicit feedback cycles.
+- [ ] **project-wide time selection on main/master** — separate feature PR
+  after the pinned main row. Selecting time there addresses every project track
+  as one rectangle, including returns when implemented, gaps and every supported
+  temporal lane. Copy/cut/replace-paste and selected-track ripple commands operate
+  across the whole project; the main row is an editing proxy, not a second model.
+  Define row mapping when topology changes, preserve outside tails and use one
+  atomic Undo; failures must not partially edit tracks. Reuse immutable media and
+  prepared metadata, keep capture/expansion/compilation on bounded control workers,
+  and provide prompt feedback without PCM copying or whole-project work on pointer
+  updates. Measure input-to-feedback and completion separately on 1- and 100-track
+  dense mixed audio/MIDI fixtures. Both must feel smooth; do not claim total work
+  is independent of project size. Future automation joins the same time contract.
 - [ ] **persistent four-color theme settings** — expose four primary color
   roles in a compact settings menu with simple color pickers and live previews.
   Proposed roles: background, text, primary accent and secondary accent; derive
