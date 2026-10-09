@@ -272,3 +272,20 @@ charcoal, a seconds ruler and source/play-start markers. Show only functional
 canonical parameters; pitch, gain and warp controls require their own playback
 implementation. See [clip-view.md](clip-view.md) for current controls, phase
 semantics, follow-ups and native acceptance.
+
+## native project menu — 9 October 2026
+
+The canonical editor installs a lowercase native macOS `file` menu with
+`open project…`, `save` and `save as…`. These dispatch the existing typed editor
+actions, dialogs, pending-work checks and replacement/unsaved-work protection.
+The toolbar Save icon is removed; import/export controls remain. The application
+menu's Quit action uses the existing guarded editor close path. Loading/bootstrap
+uses the same menu setup, with unavailable editor actions disabled by GPUI.
+Scoped Cmd-O, Cmd-S and Cmd-Shift-S bindings remain unchanged. Native menu chrome
+uses OS typography under the existing exemption.
+
+Native acceptance belongs to the user: confirm File entries are enabled in the
+editor, open/save/save-as dialogs work, shortcuts retain their focus behavior,
+the toolbar Save icon is gone, and unsaved Open/Quit protections remain effective.
+GPUI derives menu shortcut glyphs from key contexts; verify their display with
+these scoped bindings instead of broadening shortcut routing to change appearance.

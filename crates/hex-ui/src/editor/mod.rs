@@ -20,6 +20,7 @@ mod edit_cursor_ui_test;
 mod export;
 mod fades;
 mod loop_region;
+mod menus;
 mod midi;
 mod midi_canvas;
 mod midi_drag;
@@ -170,6 +171,7 @@ actions!(
 fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
+    menus::install(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();

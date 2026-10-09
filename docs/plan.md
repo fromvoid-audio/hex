@@ -1,6 +1,6 @@
 # Project plan
 
-## active work unit — Space restarts at the edit position, 9 October 2026
+## source-complete work unit — Space restarts at the edit position, 9 October 2026
 
 Space pauses while playing. When starting again, it starts from the normalized
 time-selection start, otherwise the clicked edit cursor, otherwise frame zero;
@@ -3647,3 +3647,11 @@ commands; it must not create a second editable model. Define topology changes an
 atomic failure explicitly. Benchmark prompt UI feedback separately from bounded
 background completion for 1 and 100 dense tracks; reuse immutable assets, never
 copy PCM or expand/compile on pointer movement. Queue details are in `todo.md`.
+
+## native File menu — 9 October 2026
+
+Move project Open/Save/Save As into the screen-top native File menu and remove
+Save from the toolbar. Reuse existing typed actions, scoped shortcuts, dialogs
+and unsaved-work guards. Separate focused PR; no window-titlebar redesign.
+Source guards and native compilation precede user checks of menu availability,
+action dispatch, shortcut glyphs/focus and safe Open/Quit behavior.
