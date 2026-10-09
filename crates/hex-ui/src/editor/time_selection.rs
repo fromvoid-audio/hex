@@ -302,6 +302,8 @@ impl EditorView {
         });
         self.selected_track = Some(track);
         self.selected_clip = None;
+        self.cancel_midi_note_gesture();
+        self.device_panel_active = true;
         true
     }
 

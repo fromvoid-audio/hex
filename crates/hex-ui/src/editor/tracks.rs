@@ -417,8 +417,8 @@ impl EditorView {
                 }))
                 .border_1()
                 .border_color(rgb(0x000000))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.set_selected_clip(track_id, midi_clip_id);
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.set_selected_clip(track_id, midi_clip_id, window, cx);
                     cx.notify();
                 }));
             midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -845,6 +845,7 @@ impl EditorView {
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
+            .debug_selector(|| format!("track-name-{}", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH - 10.0))
             .flex_shrink_0()
             .min_w_0()
@@ -860,8 +861,8 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |view, _, _, cx| {
-                view.select_track(track_id);
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.select_track(track_id, window);
                 cx.notify();
             }));
         let track_controls = div()
@@ -1149,8 +1150,8 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |view, _, _, cx| {
-                view.set_selected_clip(track, clip_id);
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.set_selected_clip(track, clip_id, window, cx);
                 cx.notify();
             }));
         if let Some((payload, lane)) = drag_payload {

@@ -99,6 +99,29 @@ impl EditorView {
         });
         self.time_selection_project_scope = false;
         self.selected_track = Some(track);
+        let selected_clip_under_pointer = state.project.track(track).is_some_and(|track_data| {
+            track_data.clips().iter().any(|clip| {
+                self.selected_clip == Some(clip.id())
+                    && frame >= clip.start()
+                    && clip
+                        .start()
+                        .checked_add(clip.duration())
+                        .is_some_and(|end| frame < end)
+            }) || {
+                let beat = state.project.tempo_map().frame_to_beat(frame).ok();
+                track_data.midi_clips().iter().any(|clip| {
+                    self.selected_clip == Some(clip.id())
+                        && beat.is_some_and(|beat| {
+                            beat >= clip.start()
+                                && beat.raw()
+                                    < clip.start().raw().saturating_add(clip.length().raw())
+                        })
+                })
+            }
+        });
+        if !selected_clip_under_pointer {
+            self.focus_track_details(window);
+        }
         self.focus.focus(window);
         cx.notify();
     }

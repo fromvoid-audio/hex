@@ -435,6 +435,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
+    clip_detail_body_height: f32,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -671,6 +672,7 @@ impl EditorView {
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,
+            clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
@@ -743,10 +745,11 @@ impl EditorView {
         ))
     }
 
-    pub(super) fn select_track(&mut self, track: TrackId) {
+    pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
+        self.focus_track_details(window);
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.midi_selection.clear();
@@ -794,7 +797,12 @@ impl EditorView {
         self.enqueue(Request::Edit(Command::ToggleSolo { track, exclusive }));
     }
 
-    pub(super) fn select_neighbor_track(&mut self, forward: bool) {
+    pub(super) fn select_neighbor_track(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.opening_project || self.close_prompt_open {
             return;
         }
@@ -803,8 +811,12 @@ impl EditorView {
             .as_ref()
             .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward));
         if let Some((index, track, clip)) = choice {
-            self.select_track(track);
-            self.selected_clip = clip;
+            self.select_track(track, window);
+            if let Some(clip) = clip
+                && self.focus_clip_details(window, cx)
+            {
+                self.selected_clip = Some(clip);
+            }
             self.track_scroll
                 .scroll_to_item(index, gpui::ScrollStrategy::Top);
         }
@@ -866,7 +878,16 @@ impl EditorView {
         self.selected_clip
     }
 
-    pub(super) fn set_selected_clip(&mut self, track: TrackId, clip: ClipId) {
+    pub(super) fn set_selected_clip(
+        &mut self,
+        track: TrackId,
+        clip: ClipId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.focus_clip_details(window, cx) {
+            return false;
+        }
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
             self.midi_note_gesture = None;
@@ -887,6 +908,7 @@ impl EditorView {
         }
         self.selected_track = Some(track);
         self.selected_clip = Some(clip);
+        true
     }
 
     pub(super) fn applied_project_revision(&self) -> Option<u64> {

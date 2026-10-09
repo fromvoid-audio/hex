@@ -185,7 +185,12 @@ pub(super) fn action_matches_project(
 }
 
 impl EditorView {
-    pub(super) fn navigate_session(&mut self, direction: super::session_navigation::Direction) {
+    pub(super) fn navigate_session(
+        &mut self,
+        direction: super::session_navigation::Direction,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.opening_project || self.close_prompt_open {
             return;
         }
@@ -199,20 +204,35 @@ impl EditorView {
         });
         match selection {
             Some(super::session_navigation::Selection::Scene(scene)) => {
-                self.select_session_scene(scene);
+                if self.focus_empty_details(window, cx) {
+                    self.select_session_scene(scene);
+                }
             }
             Some(super::session_navigation::Selection::Cell { track, scene }) => {
-                let clip = self.state.as_ref().and_then(|state| {
-                    match state.project.session_cell(track, scene) {
-                        Some(SessionCellContent::Midi(clip)) => Some(clip.id()),
-                        Some(SessionCellContent::Audio(_)) => None,
-                        Some(SessionCellContent::Stop) | None => None,
+                let content = self
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.project.session_cell(track, scene))
+                    .and_then(|content| match content {
+                        SessionCellContent::Midi(clip) => Some(Some(clip.id())),
+                        SessionCellContent::Audio(_) => Some(None),
+                        SessionCellContent::Stop => None,
+                    });
+                match content {
+                    Some(Some(clip)) => {
+                        if self.focus_clip_details(window, cx) {
+                            self.select_session_midi(track, scene, clip);
+                        }
                     }
-                });
-                if let Some(clip) = clip {
-                    self.select_session_midi(track, scene, clip);
-                } else {
-                    self.select_session_cell(track, scene);
+                    Some(None) => {
+                        if self.focus_clip_details(window, cx) {
+                            self.select_session_cell(track, scene);
+                        }
+                    }
+                    None => {
+                        self.focus_track_details(window);
+                        self.select_session_cell(track, scene);
+                    }
                 }
             }
             None => {}
@@ -938,6 +958,7 @@ impl EditorView {
                                             scene_id,
                                             CellExpectation::Midi(clip_id),
                                         )
+                                        && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
                                         view.select_session_cell(track_id, scene_id);
@@ -969,6 +990,7 @@ impl EditorView {
                                     scene_id,
                                     CellExpectation::Midi(clip_id),
                                 )
+                                && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
                                 view.select_session_midi(track_id, scene_id, clip_id);
@@ -1008,6 +1030,7 @@ impl EditorView {
                                             scene_id,
                                             CellExpectation::Audio(clip_id),
                                         )
+                                        && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
                                         view.select_session_cell(track_id, scene_id);
@@ -1037,6 +1060,7 @@ impl EditorView {
                                     scene_id,
                                     CellExpectation::Audio(clip_id),
                                 )
+                                && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
                                 view.select_session_cell(track_id, scene_id);
@@ -1057,6 +1081,7 @@ impl EditorView {
                                     CellExpectation::Stop,
                                 )
                             {
+                                view.focus_track_details(window);
                                 view.focus.focus(window);
                                 view.select_session_cell(track_id, scene_id);
                                 view.queue_session_command(
@@ -1085,6 +1110,7 @@ impl EditorView {
                                     CellExpectation::Empty,
                                 )
                             {
+                                view.focus_track_details(window);
                                 view.focus.focus(window);
                                 view.select_session_cell(track_id, scene_id);
                             }
@@ -1117,7 +1143,9 @@ impl EditorView {
                     .truncate()
                     .child(theme::text(scene.name().to_lowercase()))
                     .on_click(cx.listener(move |view, _, window, cx| {
-                        if view.session_callback_current(revision, generation) {
+                        if view.session_callback_current(revision, generation)
+                            && view.focus_empty_details(window, cx)
+                        {
                             view.focus.focus(window);
                             view.select_session_scene(scene_id);
                         }
@@ -1129,7 +1157,9 @@ impl EditorView {
                 "launch scene",
                 ("session-launch-scene", scene_id.value()),
                 cx.listener(move |view, _, window, cx| {
-                    if view.session_callback_current(revision, generation) {
+                    if view.session_callback_current(revision, generation)
+                        && view.focus_empty_details(window, cx)
+                    {
                         view.focus.focus(window);
                         view.select_session_scene(scene_id);
                         view.launch_scene(scene_id, revision, view.session_quantization);

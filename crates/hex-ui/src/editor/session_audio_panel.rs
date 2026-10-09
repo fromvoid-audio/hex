@@ -7,6 +7,7 @@ use hex_session::CachedWaveform;
 use std::ops::Range;
 
 const WAVEFORM_COLUMNS: usize = 48;
+pub(super) const DETAIL_HEIGHT: f32 = 38.0;
 
 pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Option<Stateful<Div>> {
     if view.mode != super::EditorMode::Session {
@@ -33,7 +34,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let mut row = div()
         .id("session-audio-source-panel")
         .w_full()
-        .h(px(38.0))
+        .h(px(DETAIL_HEIGHT))
         .flex_shrink_0()
         .flex()
         .items_center()

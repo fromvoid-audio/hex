@@ -482,7 +482,11 @@ impl Render for EditorView {
                         view.nudge_selected_note(false);
                     }
                     super::session_navigation::ArrowTarget::Session => {
-                        view.navigate_session(super::session_navigation::Direction::Left);
+                        view.navigate_session(
+                            super::session_navigation::Direction::Left,
+                            window,
+                            cx,
+                        );
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
@@ -507,7 +511,11 @@ impl Render for EditorView {
                         view.nudge_selected_note(true);
                     }
                     super::session_navigation::ArrowTarget::Session => {
-                        view.navigate_session(super::session_navigation::Direction::Right);
+                        view.navigate_session(
+                            super::session_navigation::Direction::Right,
+                            window,
+                            cx,
+                        );
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
@@ -752,10 +760,10 @@ impl Render for EditorView {
                         view.transpose_selected_note(true);
                     }
                     super::session_navigation::ArrowTarget::Session => {
-                        view.navigate_session(super::session_navigation::Direction::Up);
+                        view.navigate_session(super::session_navigation::Direction::Up, window, cx);
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
-                        view.select_neighbor_track(false);
+                        view.select_neighbor_track(false, window, cx);
                     }
                 }
                 cx.notify();
@@ -769,10 +777,14 @@ impl Render for EditorView {
                         view.transpose_selected_note(false);
                     }
                     super::session_navigation::ArrowTarget::Session => {
-                        view.navigate_session(super::session_navigation::Direction::Down);
+                        view.navigate_session(
+                            super::session_navigation::Direction::Down,
+                            window,
+                            cx,
+                        );
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
-                        view.select_neighbor_track(true);
+                        view.select_neighbor_track(true, window, cx);
                     }
                 }
                 cx.notify();

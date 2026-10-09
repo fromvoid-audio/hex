@@ -3,7 +3,46 @@ use super::{EditorMode, EditorView};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 
+pub(super) const CLIP_DETAIL_BODY_HEIGHT: f32 = 228.0;
+
 impl EditorView {
+    /// Change the detail content in response to explicit clip focus. Pane
+    /// visibility is a separate user choice and is intentionally untouched.
+    pub(super) fn focus_clip_details(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.device_panel_active && !super::device_panel::finalize_controls(self, cx) {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        self.device_panel_active = false;
+        if self.midi_focus.is_focused(window) {
+            self.focus.focus(window);
+        }
+        true
+    }
+
+    /// Track focus selects devices without implicitly opening a closed pane.
+    pub(super) fn focus_track_details(&mut self, window: &mut gpui::Window) {
+        self.cancel_midi_note_gesture();
+        self.device_panel_active = true;
+        if self.midi_focus.is_focused(window) {
+            self.focus.focus(window);
+        }
+    }
+
+    /// An explicit focus with no selected track or clip leaves an open pane
+    /// showing its compact empty state.
+    pub(super) fn focus_empty_details(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.focus_clip_details(window, cx)
+    }
+
     pub(super) fn clip_detail_view(&mut self, cx: &mut Context<Self>) -> Div {
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
@@ -34,6 +73,13 @@ impl EditorView {
         } else {
             None
         };
+        if detail.is_some() && !self.device_panel_active {
+            self.clip_detail_body_height = if has_session_audio {
+                super::session_audio_panel::DETAIL_HEIGHT
+            } else {
+                CLIP_DETAIL_BODY_HEIGHT
+            };
+        }
         let label = if self.device_panel_active {
             "devices"
         } else if !open {
@@ -120,12 +166,8 @@ impl EditorView {
                 .cursor(gpui::CursorStyle::PointingHand)
                 .child(theme::text("clip"))
                 .on_click(cx.listener(|view, _, window, cx| {
-                    if super::device_panel::finalize_controls(view, cx) {
-                        view.device_panel_active = false;
+                    if view.focus_clip_details(window, cx) {
                         view.clip_view_open = true;
-                        if view.midi_focus.is_focused(window) {
-                            view.focus.focus(window);
-                        }
                     }
                     cx.notify();
                 })),
@@ -148,12 +190,8 @@ impl EditorView {
                 .child(theme::text("devices"))
                 .on_click(cx.listener(|view, _, window, cx| {
                     if super::device_panel::finalize_controls(view, cx) {
-                        view.cancel_midi_note_gesture();
-                        view.device_panel_active = true;
+                        view.focus_track_details(window);
                         view.clip_view_open = true;
-                        if view.midi_focus.is_focused(window) {
-                            view.focus.focus(window);
-                        }
                     }
                     cx.notify();
                 })),
@@ -172,14 +210,15 @@ impl EditorView {
             } else {
                 panel = panel.child(
                     div()
-                        .h(px(18.0))
+                        .h(px(self.clip_detail_body_height))
                         .flex_shrink_0()
                         .px(px(6.0))
                         .flex()
                         .items_center()
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                        .child(theme::text("no clip selected")),
+                        .child(theme::text("no clip selected"))
+                        .debug_selector(|| "clip-detail-empty".into()),
                 );
             }
         }
