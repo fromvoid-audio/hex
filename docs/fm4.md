@@ -47,7 +47,20 @@ note into that owned, copyable representation without raw pointers or heap
 owners. Its sampler reads the packed fields by reference, rather than rebuilding
 the328byte `PreparedFm4` value on every frame. The call initializes the shared
 sine table on the control side; sampling only uses its already-prepared lookup.
-The adapter does not register FM4 or make it selectable in a project. The wider
+`Fm4Definition` exposes this kernel through the generic native-instrument
+contract for caller-owned registries. Its version-1 authored state is exactly
+36 little-endian `f32` values (144 bytes): four operator ratio/level/phase
+tuples, a source-major 4×4 routing-depth matrix, four carrier weights, then
+attack/decay/sustain/release. Stable IDs1–36 follow that field order; the four
+self-routing IDs are reserved, remain encoded as zero and are not exposed as
+editable parameters. The other32 values have generic descriptors. The state is
+validated as one graph before it is returned, so a patch
+that creates self-feedback or a cycle is rejected without changing the prior
+state. Unknown IDs, wrong types, unsupported versions and non-exact payload
+lengths are refused. The initial patch is an original single sine carrier with
+ratios1–4, no modulation, and a short ADSR; it is not a Live preset or a claim
+about Ableton's algorithms. The adapter is deliberately absent from the built-in
+instrument registry and cannot yet be selected by a project. The wider
 sampler grows `BankEntry` to352bytes and increases each fixed SessionPlayback
 release/span scratch by10,019,840bytes relative to the prior40byte sampler; see
 [lattice instruments](lattice-instruments.md) for checked ceilings and scope.
@@ -66,7 +79,7 @@ They cover arbitrary routing order, cycles and malformed numbers, envelope
 boundaries/early releases, zero stages, velocity, overflow-safe large ages and
 sample-identical block partitions1/64/128/256/513. The packed sampler is compared
 sample-exactly with the standalone kernel across its attack, gate and release
-boundaries. All30devices tests and strict
+boundaries. All37devices tests and strict
 device all-target Clippy pass; full local integration checks are recorded in the
 PR and Pulse. Native listening remains future work after registry admission.
 

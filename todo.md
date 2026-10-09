@@ -419,8 +419,14 @@ and user native acceptance follow; FM4 admission and full Operator remain open.
 
 Pulse2133: the analytic sampler payload is widened to41 owned `u64` words for
 the standalone validated FM4 kernel, with borrowed per-frame sampling and
-bit-exact legacy sine output. FM4 remains unregistered; this change does not
-admit it to projects or provide its state codec/UI. Bank and fixed Session MIDI
+bit-exact legacy sine output. Pulse2146 adds an exact version-1 authored-state
+codec and generic definition usable through an explicit caller-owned registry.
+FM4 remains excluded from the built-in instrument catalog and is not selectable
+in projects; catalog admission, engine/runtime support, and its UI remain open.
+Pulse2146 source checks: 37 `hex-devices` tests, strict device all-target
+Clippy, workspace formatting, architecture/style guards and GPUI patch guard pass.
+Full local CI, review and any native device/playback acceptance remain open.
+Bank and fixed Session MIDI
 scratch growth are derived and documented in [lattice instruments](docs/lattice-instruments.md);
 release timing and Session preparation before/after are recorded in
 [performance](docs/performance.md). Focused source checks remain separate from
