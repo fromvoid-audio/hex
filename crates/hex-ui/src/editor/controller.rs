@@ -8,6 +8,7 @@ use super::{
     EditorView, PendingPlayback, PendingPlaybackAction, Playback, PlaybackCandidate,
     UI_EVENT_BUDGET, UI_REQUEST_CAPACITY,
 };
+use gpui::Context;
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::service::{Event, Request, SubmitError};
@@ -26,7 +27,7 @@ impl EditorView {
         self.session_routes.clear();
     }
 
-    pub(super) fn tick(&mut self) -> bool {
+    pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         let pending_before = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
@@ -34,7 +35,9 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
-                    self.receive(event);
+                    if let Some(path) = self.receive(event) {
+                        self.record_opened_project(path, cx);
+                    }
                     visible_change = true;
                 }
                 Err(_) => break,
@@ -321,7 +324,7 @@ impl EditorView {
             .should_redraw(visible_change, Some(frame), Instant::now())
     }
 
-    fn receive(&mut self, event: Event) {
+    fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
         if event.save_complete {
             self.saving_project = false;
         }
@@ -337,8 +340,12 @@ impl EditorView {
             .restore_complete
             .is_some_and(|generation| self.recovery.generation() != Some(generation))
         {
-            return;
+            return None;
         }
+        let successfully_opened_path =
+            (event.open_complete && event.project_replaced && event.error.is_none())
+                .then(|| event.state.document_path.clone())
+                .flatten();
         if let Some(generation) = event.restore_complete {
             if let Some(error) = &event.error {
                 self.fail_audio_recovery(error.clone());
@@ -673,6 +680,7 @@ impl EditorView {
         {
             self.reveal_session_position(None, self.selected_scene);
         }
+        successfully_opened_path
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {

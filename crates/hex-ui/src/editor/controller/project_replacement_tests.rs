@@ -37,6 +37,57 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
     }
 }
 
+fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: bool) -> Event {
+    let previous = &event.state;
+    event.state = Arc::new(ViewState {
+        project: Arc::clone(&previous.project),
+        waveforms: Default::default(),
+        midi_preview: Arc::new(Default::default()),
+        timeline_frames: previous.timeline_frames,
+        can_undo: previous.can_undo,
+        can_redo: previous.can_redo,
+        revision: previous.revision,
+        unsaved: previous.unsaved,
+        document_path: path,
+    });
+    event.open_complete = true;
+    event.project_replaced = !failed;
+    event.error = failed.then(|| "could not read project".to_owned());
+    event
+}
+
+#[gpui::test]
+fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service =
+            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let actual_path = std::env::temp_dir().join("recent-open-document.hex");
+    window
+        .update(cx, |view, _, cx| {
+            let success = open_response(
+                event(Arc::clone(&project), 1, true),
+                Some(actual_path.clone()),
+                false,
+            );
+            if let Some(path) = view.receive(success) {
+                view.record_opened_project(path, cx);
+            }
+            assert_eq!(
+                view.recent_projects.projects.paths(),
+                std::slice::from_ref(&actual_path)
+            );
+
+            let failure_path = std::env::temp_dir().join("failed-open-request.hex");
+            let failure = open_response(event(project, 2, false), Some(failure_path), true);
+            assert!(view.receive(failure).is_none());
+            assert_eq!(view.recent_projects.projects.paths(), &[actual_path]);
+        })
+        .expect("recent open response");
+}
+
 fn receive_worker_event(view: &mut EditorView) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {

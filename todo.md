@@ -1,7 +1,8 @@
 # hex todo
 
 Updated 9 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
-macOS arm64 first. This is the current request queue; [plan](docs/plan.md)
+macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
+This file retains request order and repository evidence; [plan](docs/plan.md)
 owns milestone gates and [features](docs/features.md) owns capability assessment.
 Completed chronology and superseded work orders are preserved in the
 [historical snapshot](docs/history/todo-2026-10-09.md).
@@ -19,7 +20,7 @@ Completed chronology and superseded work orders are preserved in the
 
 ## merged PR history and remaining acceptance
 
-PRs #1–#16 were verified closed as merged on 9 October 2026. Merging records
+PRs #1–#17 were verified closed as merged on 9 October 2026. Merging records
 repository integration, not completion of the native checks below.
 
 | PR | focused change | remaining gate |
@@ -41,6 +42,8 @@ repository integration, not completion of the native checks below.
 | [#15](https://github.com/PORTALSURFER/hex/pull/15) | Space restarts at the edit position | accepted in combined review build; merged |
 | [#16](https://github.com/PORTALSURFER/hex/pull/16) | native File menu project actions | accepted in combined review build; merged |
 
+| [#17](https://github.com/PORTALSURFER/hex/pull/17) | captured time gestures and edge scrolling | user accepted review build; merged |
+
 The selection handle is normally invisible, highlights on hover, and uses a
 hand cursor. Dragging below it paints a fresh selection. Point cursors pulse;
 nonzero time rectangles remain steady. See [time selection](docs/time-selection.md).
@@ -56,8 +59,17 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   or timer tick. Test fast boundary crossings, reentry, outside release, viewport
   limits and cleanup; native acceptance belongs to the user. Source implemented:
   274 UI tests (2 ignored), strict UI Clippy, formatting and source guards pass.
-  Final clean-commit local CI is recorded in the focused PR; native outside-window
-  delivery/scroll feel remains open. This PR stays unmerged per the user request.
+  Full 14-step clean-commit local CI passed `25b797e`. The user accepted the
+  fresh native review build and authorized merging [PR #17](https://github.com/PORTALSURFER/hex/pull/17);
+  merged as `a250f83`. Pulse ticket 38 is done; measured timing remains separate.
+
+- [ ] **persistent recent projects** — Pulse ticket 39, in progress, separate PR.
+  Native File submenu lists up to ten successfully opened paths, most recent first,
+  preserving paths and existing open protections. Background bounded preferences
+  survive restart; failed opens do not promote entries, malformed preferences are
+  preserved. Targeted preference/UI checks and strict Clippy pass; full local CI evidence
+  belongs to the PR. Fresh native menu/restart acceptance remains open.
+  See [recent projects](docs/recent-projects.md).
 
 - [x] **queue cleanup** — [PR #7](https://github.com/PORTALSURFER/hex/pull/7):
   archive completed chronology and consolidate genuine open gates. Local links

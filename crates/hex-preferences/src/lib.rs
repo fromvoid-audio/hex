@@ -15,6 +15,7 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_TOTAL_PATH_BYTES: usize = 8 * 1024;
 pub const MAX_USER_PLACES: usize = 14;
+pub const MAX_RECENT_PROJECTS: usize = 10;
 const TEMPORARY_ATTEMPTS: usize = 8;
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
@@ -24,6 +25,14 @@ pub fn browser_places_path(home: &Path) -> PathBuf {
         .join("Application Support")
         .join("hex")
         .join("browser.json")
+}
+
+/// Stable app-support location for the independent recent-project history.
+pub fn recent_projects_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("hex")
+        .join("recent-projects.json")
 }
 
 /// Additional browser folders, in user-visible order.
@@ -71,6 +80,68 @@ impl BrowserPlaces {
     }
 }
 
+/// Recently opened project files, most recent first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecentProjects {
+    paths: Vec<PathBuf>,
+}
+
+impl RecentProjects {
+    /// Build an ordered list, deduplicating exact native paths and rejecting
+    /// malformed or excessive saved data rather than truncating it.
+    pub fn new(paths: impl IntoIterator<Item = PathBuf>) -> Result<Self, PreferencesError> {
+        let mut recent = Vec::new();
+        let mut seen = HashSet::new();
+        let mut total_path_bytes = 0_usize;
+        for path in paths {
+            validate_saved_path(&path)?;
+            if seen.insert(path.clone()) {
+                total_path_bytes = total_path_bytes.checked_add(native_path_len(&path)).ok_or(
+                    PreferencesError::DocumentTooLarge {
+                        maximum: MAX_DOCUMENT_BYTES,
+                    },
+                )?;
+                if total_path_bytes > MAX_TOTAL_PATH_BYTES {
+                    return Err(PreferencesError::DocumentTooLarge {
+                        maximum: MAX_DOCUMENT_BYTES,
+                    });
+                }
+                if recent.len() == MAX_RECENT_PROJECTS {
+                    return Err(PreferencesError::TooManyRecentProjects {
+                        maximum: MAX_RECENT_PROJECTS,
+                    });
+                }
+                recent.push(path);
+            }
+        }
+        Ok(Self { paths: recent })
+    }
+
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    /// Promote a successfully opened path to the front and evict the oldest
+    /// item when the bounded menu is full.
+    pub fn record_opened(&mut self, path: PathBuf) -> Result<bool, PreferencesError> {
+        validate_saved_path(&path)?;
+        if self.paths.first() == Some(&path) {
+            return Ok(false);
+        }
+        self.paths.retain(|item| item != &path);
+        self.paths.insert(0, path);
+        self.paths.truncate(MAX_RECENT_PROJECTS);
+        while total_native_path_bytes(&self.paths) > MAX_TOTAL_PATH_BYTES {
+            self.paths.pop();
+        }
+        Ok(true)
+    }
+}
+
+fn total_native_path_bytes(paths: &[PathBuf]) -> usize {
+    paths.iter().map(|path| native_path_len(path)).sum()
+}
+
 #[derive(Debug)]
 pub enum PreferencesError {
     Io(io::Error),
@@ -78,6 +149,7 @@ pub enum PreferencesError {
     UnsupportedPathEncoding(&'static str),
     EmptyPath,
     TooManyPlaces { maximum: usize },
+    TooManyRecentProjects { maximum: usize },
     DocumentTooLarge { maximum: u64 },
     PathTooLong { maximum: usize },
     TemporaryNameExhausted,
@@ -94,15 +166,18 @@ impl std::fmt::Display for PreferencesError {
                     "saved path encoding is unsupported on this platform: {encoding}"
                 )
             }
-            Self::EmptyPath => formatter.write_str("browser folder path is empty"),
+            Self::EmptyPath => formatter.write_str("path is empty"),
             Self::TooManyPlaces { maximum } => {
                 write!(formatter, "browser folder limit is {maximum}")
+            }
+            Self::TooManyRecentProjects { maximum } => {
+                write!(formatter, "recent project limit is {maximum}")
             }
             Self::DocumentTooLarge { maximum } => {
                 write!(formatter, "preferences document exceeds {maximum} bytes")
             }
             Self::PathTooLong { maximum } => {
-                write!(formatter, "browser folder path exceeds {maximum} bytes")
+                write!(formatter, "path exceeds {maximum} bytes")
             }
             Self::TemporaryNameExhausted => {
                 formatter.write_str("could not reserve a temporary preferences file")
@@ -129,26 +204,9 @@ impl From<io::Error> for PreferencesError {
 /// Load saved folders. A missing file is the default; malformed or oversized
 /// files return an error and are left untouched.
 pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(BrowserPlaces::default());
-        }
-        Err(error) => return Err(error.into()),
+    let Some(bytes) = read_document(path)? else {
+        return Ok(BrowserPlaces::default());
     };
-    let size = file.metadata()?.len();
-    if size > MAX_DOCUMENT_BYTES {
-        return Err(PreferencesError::DocumentTooLarge {
-            maximum: MAX_DOCUMENT_BYTES,
-        });
-    }
-    let mut bytes = Vec::with_capacity(size as usize);
-    file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err(PreferencesError::DocumentTooLarge {
-            maximum: MAX_DOCUMENT_BYTES,
-        });
-    }
     let document: Document = serde_json::from_slice(&bytes)
         .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
     if document.version != DOCUMENT_VERSION {
@@ -163,6 +221,55 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
         .map(StoredPath::into_path)
         .collect::<Result<Vec<_>, _>>()?;
     BrowserPlaces::new(paths)
+}
+
+/// Load recent project paths. Missing settings are empty; malformed files are
+/// returned as errors without modification.
+pub fn load_recent_projects(path: &Path) -> Result<RecentProjects, PreferencesError> {
+    let bytes = read_document(path)?;
+    let Some(bytes) = bytes else {
+        return Ok(RecentProjects::default());
+    };
+    let document: RecentProjectsDocument = serde_json::from_slice(&bytes)
+        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
+    if document.version != DOCUMENT_VERSION {
+        return Err(PreferencesError::InvalidDocument(format!(
+            "unsupported version {}",
+            document.version
+        )));
+    }
+    let paths = document
+        .paths
+        .into_iter()
+        .map(StoredPath::into_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    RecentProjects::new(paths)
+}
+
+/// Atomically save the recent-project document without replacing malformed or
+/// future-version settings.
+pub fn save_recent_projects(path: &Path, recent: &RecentProjects) -> Result<(), PreferencesError> {
+    let _ = load_recent_projects(path)?;
+    let paths = recent
+        .paths
+        .iter()
+        .map(|path| {
+            validate_saved_path(path)?;
+            StoredPath::from_path(path)
+        })
+        .collect::<Result<Vec<_>, PreferencesError>>()?;
+    let document = RecentProjectsDocument {
+        version: DOCUMENT_VERSION,
+        paths,
+    };
+    let bytes = serde_json::to_vec(&document)
+        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(PreferencesError::DocumentTooLarge {
+            maximum: MAX_DOCUMENT_BYTES,
+        });
+    }
+    atomic_save(path, &bytes)
 }
 
 /// Atomically publish the latest complete preferences document.
@@ -204,6 +311,32 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
             maximum: MAX_DOCUMENT_BYTES,
         });
     }
+    atomic_save(path, &bytes)
+}
+
+fn read_document(path: &Path) -> Result<Option<Vec<u8>>, PreferencesError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let size = file.metadata()?.len();
+    if size > MAX_DOCUMENT_BYTES {
+        return Err(PreferencesError::DocumentTooLarge {
+            maximum: MAX_DOCUMENT_BYTES,
+        });
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(PreferencesError::DocumentTooLarge {
+            maximum: MAX_DOCUMENT_BYTES,
+        });
+    }
+    Ok(Some(bytes))
+}
+
+fn atomic_save(path: &Path, bytes: &[u8]) -> Result<(), PreferencesError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -211,7 +344,7 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
     fs::create_dir_all(parent)?;
     let (temporary_path, mut temporary_file) = create_temporary(parent, path.file_name())?;
     let result = (|| {
-        temporary_file.write_all(&bytes)?;
+        temporary_file.write_all(bytes)?;
         temporary_file.sync_all()?;
         drop(temporary_file);
         fs::rename(&temporary_path, path)?;
@@ -222,6 +355,13 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
         let _ = fs::remove_file(&temporary_path);
     }
     result.map_err(PreferencesError::Io)
+}
+
+fn validate_saved_path(path: &Path) -> Result<(), PreferencesError> {
+    if path.as_os_str().is_empty() {
+        return Err(PreferencesError::EmptyPath);
+    }
+    validate_path_length(path)
 }
 
 fn validate_path_length(path: &Path) -> Result<(), PreferencesError> {
@@ -292,6 +432,13 @@ fn sync_directory(_directory: &Path) -> io::Result<()> {
 struct Document {
     version: u32,
     additional_places: Vec<StoredPath>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecentProjectsDocument {
+    version: u32,
+    paths: Vec<StoredPath>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -488,5 +635,103 @@ mod tests {
                 maximum: MAX_USER_PLACES
             })
         ));
+    }
+
+    #[test]
+    fn recent_projects_promote_exact_paths_deduplicate_and_evict_oldest() {
+        let mut recent = RecentProjects::default();
+        for index in 0..=MAX_RECENT_PROJECTS {
+            assert!(
+                recent
+                    .record_opened(PathBuf::from(format!("/project-{index}.hex")))
+                    .expect("record opened path")
+            );
+        }
+        assert_eq!(recent.paths().len(), MAX_RECENT_PROJECTS);
+        assert_eq!(recent.paths()[0], PathBuf::from("/project-10.hex"));
+        assert_eq!(
+            recent.paths()[MAX_RECENT_PROJECTS - 1],
+            PathBuf::from("/project-1.hex")
+        );
+        assert!(
+            recent
+                .record_opened(PathBuf::from("/project-5.hex"))
+                .expect("promote existing path")
+        );
+        assert_eq!(recent.paths()[0], PathBuf::from("/project-5.hex"));
+        assert_eq!(recent.paths().len(), MAX_RECENT_PROJECTS);
+        assert!(
+            !recent
+                .record_opened(PathBuf::from("/project-5.hex"))
+                .expect("same most-recent path is unchanged")
+        );
+        assert_eq!(recent.paths()[0], PathBuf::from("/project-5.hex"));
+    }
+
+    #[test]
+    fn recent_project_promotion_evicts_oldest_to_keep_combined_path_bytes_bounded() {
+        let long_a = PathBuf::from(format!("/{}", "a".repeat(4_090)));
+        let long_b = PathBuf::from(format!("/{}", "b".repeat(4_090)));
+        let mut recent = RecentProjects::new([long_a.clone(), PathBuf::from("/short.hex")])
+            .expect("initial recent projects");
+        recent
+            .record_opened(long_b.clone())
+            .expect("promote valid long path");
+        assert_eq!(
+            recent.paths(),
+            &[long_b.clone(), long_a.clone(), PathBuf::from("/short.hex")]
+        );
+        recent
+            .record_opened(PathBuf::from("/new.hex"))
+            .expect("promote short path");
+        assert_eq!(
+            recent.paths(),
+            &[PathBuf::from("/new.hex"), long_b, long_a,]
+        );
+    }
+
+    #[test]
+    fn recent_projects_round_trip_paths_without_requiring_files_to_exist() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("recent-projects.json");
+        let recent = RecentProjects::new([
+            PathBuf::from("/offline/session.hex"),
+            PathBuf::from("/other/session.hex"),
+        ])
+        .expect("recent projects");
+        save_recent_projects(&config, &recent).expect("save recent projects");
+        assert_eq!(load_recent_projects(&config).expect("load recents"), recent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recent_projects_preserve_non_utf8_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let directory = TestDirectory::new();
+        let config = directory.0.join("recent-projects.json");
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/session-\xff.hex".to_vec()));
+        let recent = RecentProjects::new([path]).expect("native path");
+        save_recent_projects(&config, &recent).expect("save native path");
+        assert_eq!(
+            load_recent_projects(&config).expect("load native path"),
+            recent
+        );
+    }
+
+    #[test]
+    fn recent_projects_refuse_to_overwrite_malformed_document() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("recent-projects.json");
+        let corrupt = b"not json";
+        fs::write(&config, corrupt).expect("write malformed document");
+        let mut recent = RecentProjects::default();
+        recent
+            .record_opened(PathBuf::from("/opened.hex"))
+            .expect("record path");
+        assert!(matches!(
+            save_recent_projects(&config, &recent),
+            Err(PreferencesError::InvalidDocument(_))
+        ));
+        assert_eq!(fs::read(&config).expect("read preserved document"), corrupt);
     }
 }

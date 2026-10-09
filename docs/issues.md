@@ -2279,3 +2279,9 @@ scrolling and reproject on release. Preserve viewport scale and current limits;
 no extra rows, callback work or project edits during dragging. Native macOS
 outside-window event delivery/release remains a user check; headless simulation
 cannot establish AppKit behavior. The existing pinned GPUI boundary stays intact.
+
+Native acceptance, 9 October 2026: the user accepted the captured-selection
+review build `hex-time-gesture-20261009.app` and authorized PR #17 to merge.
+It is merged as `a250f83`; exact source `25b797e` passed all 14 local CI steps.
+Pulse ticket 38 records this completion. This establishes the reviewed interaction
+acceptance, not physical input/paint timing measurements.
