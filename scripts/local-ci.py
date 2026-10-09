@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -18,6 +19,8 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+GIB = 1024 ** 3
+DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
 
 @dataclass(frozen=True)
@@ -73,8 +76,17 @@ class LocalCiRunner:
         run_id: str | None = None,
         env: dict[str, str] | None = None,
         steps: tuple[Step, ...] | None = None,
+        min_free_bytes: int | None = None,
     ) -> None:
         self.root = root.resolve()
+        default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode == "full" else 0
+        self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
+        if (
+            isinstance(self.min_free_bytes, bool)
+            or not isinstance(self.min_free_bytes, int)
+            or not 0 <= self.min_free_bytes <= sys.maxsize
+        ):
+            raise ValueError("minimum free space must be a bounded nonnegative integer byte count")
         self.mode = mode
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
@@ -172,6 +184,42 @@ class LocalCiRunner:
             ]
         return True
 
+    def _check_disk_headroom(self) -> bool:
+        """Read-only floor check; never remove caches, logs, source or artifacts."""
+        configured = self.env.get("CARGO_TARGET_DIR")
+        target = Path(configured) if configured else self.root / "target"
+        if not target.is_absolute():
+            target = self.root / target
+        probes = []
+        self.summary["disk_headroom"] = {
+            "checked_at": utc_now(),
+            "minimum_free_bytes": self.min_free_bytes,
+            "target_source": "CARGO_TARGET_DIR" if configured else "workspace default",
+            "probes": probes,
+        }
+        for label, requested in (("workspace", self.root), ("target", target)):
+            probe = requested.absolute()
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            entry = {"role": label, "requested_path": str(requested), "probed_path": str(probe)}
+            probes.append(entry)
+            try:
+                usage = shutil.disk_usage(probe)
+            except OSError as error:
+                entry["error"] = str(error)
+                self.summary["disk_error"] = f"could not inspect disk headroom for {label}: {error}"
+                return False
+            entry.update({"total_bytes": usage.total, "free_bytes": usage.free})
+            if usage.free < self.min_free_bytes:
+                self.summary["disk_error"] = (
+                    f"{label} has {usage.free / GIB:.2f} GiB free; "
+                    f"checks require the configured floor of {self.min_free_bytes / GIB:.2f} GiB. "
+                    "Inspect inactive generated caches manually; preserve active/shared builds, "
+                    "source/media and accepted artifacts. No files were removed. See docs/local-ci.md."
+                )
+                return False
+        return True
+
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
@@ -239,16 +287,24 @@ class LocalCiRunner:
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif not self._check_disk_headroom():
+                self.summary["status"] = "failed"
+                self.summary["exit_code"] = 2
+                print(self.summary["disk_error"], file=sys.stderr, flush=True)
             else:
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
+                    if self.mode == "full" and step.argv[0] == "cargo" and not self._check_disk_headroom():
+                        print(self.summary["disk_error"], file=sys.stderr, flush=True)
+                        failed = True
+                        break
                     result = self._run_step(step, index)
                     if result["status"] != "passed":
                         failed = True
                         break
                 self.summary["verification_status"] = "failed" if failed else ("partial" if self.mode == "quick" else "passed")
                 self.summary["status"] = self.summary["verification_status"]
-                self.summary["exit_code"] = 1 if failed else 0
+                self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0
         except InterruptedRun:
             self.summary["status"] = "interrupted"
             self.summary["exit_code"] = 130
@@ -305,13 +361,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run architecture/UI/GPUI guards and formatting only; this is not full CI",
     )
+    parser.add_argument(
+        "--min-free-gib", type=int,
+        help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
+        parser.error("--min-free-gib must be a bounded nonnegative integer")
     mode = "quick" if arguments.quick else "full"
-    runner = LocalCiRunner(mode=mode)
+    runner = LocalCiRunner(
+        mode=mode,
+        min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
+    )
     try:
         exit_code = runner.run()
     except FileExistsError:
         print(f"run output already exists: {runner.output_dir}", file=sys.stderr)
+        return 2
+    except OSError as error:
+        print(f"local ci could not retain its complete report at {runner.summary_path}: {error}", file=sys.stderr)
         return 2
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
     return exit_code
