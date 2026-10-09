@@ -6,6 +6,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
+    /// Seek and start in one callback action, resetting the same state as Seek.
+    PlayFrom(u64),
     Pause,
     Stop,
     Seek(u64),
@@ -404,6 +406,15 @@ impl Playback {
                 if let Some(runtime) = self.session_runtime.as_mut() {
                     let command = match command {
                         PlaybackCommand::Play => crate::SessionPlaybackCommand::Play,
+                        PlaybackCommand::PlayFrom(frame) => {
+                            runtime
+                                .apply(crate::SessionPlaybackCommand::Seek(frame))
+                                .map_err(PlaybackActionError::Session)?;
+                            runtime
+                                .apply(crate::SessionPlaybackCommand::Play)
+                                .map_err(PlaybackActionError::Session)?;
+                            return Ok(());
+                        }
                         PlaybackCommand::Pause => crate::SessionPlaybackCommand::Pause,
                         PlaybackCommand::Stop => crate::SessionPlaybackCommand::Stop,
                         PlaybackCommand::Seek(frame) => crate::SessionPlaybackCommand::Seek(frame),
@@ -412,6 +423,12 @@ impl Playback {
                 } else {
                     match command {
                         PlaybackCommand::Play => self.playing = true,
+                        PlaybackCommand::PlayFrom(frame) => {
+                            self.position = frame;
+                            self.performance_frame = frame;
+                            self.performance_clock_exhausted = false;
+                            self.playing = true;
+                        }
                         PlaybackCommand::Pause => self.playing = false,
                         PlaybackCommand::Stop => {
                             self.playing = false;

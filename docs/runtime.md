@@ -380,3 +380,22 @@ The callback dereferences index positions into canonical cells without allocatio
 or sorting. Runtime rollback/ownership rules are unchanged. Reordered/interleaved/
 empty tests and 100-track PCM regressions pass; measured dense-grid timings and
 memory overhead are in performance.md. Native deadlines remain unverified.
+
+## edit-position playback restart — 9 October 2026
+
+The canonical editor's Space action pauses active playback. Starting again uses
+the normalized time-selection start, otherwise the generation-valid clicked edit
+cursor, otherwise frame zero. It does not resume from the paused audio playhead.
+`PlaybackCommand::PlayFrom(frame)` performs seek/reset and start in one existing
+fixed-size queue action and ticket. Prepared Session playback starts only after
+seek succeeds; legacy Arrangement uses the same position fields as Seek. Priority
+Stop and bounded admission/drain remain unchanged. Pending restart acknowledgments
+are tracked as seeks; no compilation, decoding or callback allocation is added.
+
+Focused tests cover legacy/prepared restart, seek refusal, single-ticket position,
+Stop cutoff, a zero-allocation/deallocation callback fixture, and real Space routing
+for reverse time ranges, point cursors, no cursor, pause/restart and MIDI focus.
+Targeted strict Clippy, formatting and source guards pass. These are source gates;
+native audible start timing and interaction remain user acceptance. Check Space
+from a clicked point and reverse time selection, pause then restart, and clear
+selection/cursor to confirm project-start behavior.

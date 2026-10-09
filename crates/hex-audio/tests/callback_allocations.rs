@@ -257,6 +257,46 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 }
 
 #[test]
+fn play_from_callback_is_allocation_free_and_renders_from_requested_frame()
+-> Result<(), Box<dyn Error>> {
+    let workload = fixture::fixture(false)?;
+    let revision = prepare_fixture(&workload)?;
+    let playback = Playback::try_from_prepared_with_session(revision)?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial playback publication failed")?;
+    let start = 1_024;
+    let ticket = control
+        .command_with_ticket(PlaybackCommand::PlayFrom(start))
+        .map_err(|_| "PlayFrom command admission failed")?;
+    let mut actual = [[0.0; 2]; BLOCK];
+    measured_block(&mut callback, &mut actual);
+    let expected =
+        fixture::finite_arrangement_oracle(&workload.project, &workload.media, start, BLOCK)?;
+    compare_output(&actual, &expected);
+    assert_eq!(
+        control
+            .status
+            .consumed_command
+            .load(std::sync::atomic::Ordering::Acquire),
+        ticket
+    );
+    assert_eq!(
+        control
+            .status
+            .position
+            .load(std::sync::atomic::Ordering::Acquire),
+        start + BLOCK as u64
+    );
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn shared_and_distinct_session_audio_callback_blocks_are_allocation_free()
 -> Result<(), Box<dyn Error>> {
     for distinct in [false, true] {

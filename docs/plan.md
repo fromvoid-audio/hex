@@ -1,6 +1,20 @@
 # Project plan
 
-## active work unit — keyboard paste track anchoring, 9 October 2026
+## active work unit — Space restarts at the edit position, 9 October 2026
+
+Space pauses while playing. When starting again, it starts from the normalized
+time-selection start, otherwise the clicked edit cursor, otherwise frame zero;
+the paused audio playhead never becomes the restart target. Existing focus,
+recovery and project-change guards remain.
+
+Deliver seek-and-play as one fixed-size ticketed transport action, preserving the
+bounded queue, discontinuity reset contract and priority Stop. No graph compilation
+or media work on Space. Cover legacy/prepared playback, exact start position,
+failed admission, rapid intent changes, Stop cutoff, callback allocation probes
+and real scoped UI action routing. Source checks precede a fresh review app;
+audible/native acceptance remains distinct. The fixed demo has no editable cursor.
+
+## source-complete work unit — keyboard paste track anchoring, 9 October 2026
 
 Normal and ripple keyboard paste from a single-track clipboard follow the
 current target track and horizontal position. Multi-track clipboards instead
@@ -13,7 +27,8 @@ edit without changing content, clipboard or redo. Both replace and ripple remain
 one prepared Undo operation and use the existing bounded fragment/gap contract.
 Opening a project clears provenance with its clipboard. No schema or callback
 changes. Targeted canonical/worker regressions precede final clean-commit local
-CI and a separate review bundle/PR.
+CI and a separate review bundle/PR. [PR #13](https://github.com/PORTALSURFER/hex/pull/13)
+passed all 14 steps on clean source `d1bcf26`; native acceptance remains open.
 
 ## source-complete work unit — Option-drag copies, 9 October 2026
 
