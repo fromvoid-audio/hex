@@ -1226,6 +1226,7 @@ impl Default for WindowOptions {
                 title: Default::default(),
                 appears_transparent: Default::default(),
                 traffic_light_position: Default::default(),
+                hide_native_window_controls: Default::default(),
             }),
             focus: true,
             show: true,
@@ -1255,6 +1256,10 @@ pub struct TitlebarOptions {
 
     /// The position of the macOS traffic light buttons
     pub traffic_light_position: Option<Point<Pixels>>,
+
+    /// Hide the standard macOS close, minimize, and zoom buttons.
+    /// This does not change the native titlebar or window movement/resizing flags.
+    pub hide_native_window_controls: bool,
 }
 
 /// The kind of window to create

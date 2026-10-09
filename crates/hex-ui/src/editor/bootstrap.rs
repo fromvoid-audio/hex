@@ -98,7 +98,16 @@ impl Render for Bootstrap {
             .track_focus(&self.focus)
             .key_context("hex_bootstrap")
             .on_action(cx.listener(|_, _: &Quit, _, cx| cx.quit()))
-            .child(header::title_bar("hex"))
+            .child(header::title_bar("hex", |control| {
+                Box::new(move |event, window, _| match control {
+                    header::TitlebarControl::Close => window.remove_window(),
+                    header::TitlebarControl::Minimize => window.minimize_window(),
+                    header::TitlebarControl::Fullscreen if event.modifiers().alt => {
+                        window.zoom_window()
+                    }
+                    header::TitlebarControl::Fullscreen => window.toggle_fullscreen(),
+                })
+            }))
             .child(header::loading_toolbar(&self.message))
     }
 }
@@ -106,10 +115,16 @@ impl Render for Bootstrap {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests {
     use super::Bootstrap;
-    use gpui::{AppContext, Empty, TestAppContext, VisualTestContext};
+    use gpui::{
+        AppContext, Empty, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext,
+        VisualTestContext, point, px, size,
+    };
 
     #[gpui::test]
     fn bootstrap_stacks_shared_title_and_toolbar_rows(cx: &mut TestAppContext) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
         let bootstrap = cx.add_window(|_, _| Empty);
         let handle = *bootstrap;
         cx.update_window(handle, |_, window, cx| {
@@ -122,6 +137,7 @@ mod ui_tests {
         .expect("bootstrap window");
 
         let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(880.0), px(540.0)));
         visual.run_until_parked();
         let title = visual
             .debug_bounds("project-title-bar")
@@ -129,8 +145,34 @@ mod ui_tests {
         let toolbar = visual
             .debug_bounds("editor-toolbar")
             .expect("startup toolbar row");
+        let close = visual
+            .debug_bounds("window-control-close")
+            .expect("startup close control");
+        let fullscreen = visual
+            .debug_bounds("window-control-fullscreen")
+            .expect("startup fullscreen control");
         let title_bottom = f32::from(title.origin.y + title.size.height);
         assert!((f32::from(toolbar.origin.y) - title_bottom).abs() < 1.0);
+        assert!(f32::from(close.origin.x + close.size.width) < f32::from(fullscreen.origin.x));
+
+        let position = point(
+            close.origin.x + close.size.width / 2.0,
+            close.origin.y + close.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        assert!(cx.windows().is_empty());
     }
 }
 

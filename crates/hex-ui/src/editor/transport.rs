@@ -173,12 +173,30 @@ impl EditorView {
         row
     }
 
-    pub(super) fn title_bar(&self) -> Stateful<Div> {
+    pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let title = header::project_title(
             self.state()
                 .and_then(|state| state.document_path.as_deref()),
         );
-        header::title_bar(title)
+        header::title_bar(title, |control| match control {
+            header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
+                if view.request_window_close(window, cx) {
+                    window.remove_window();
+                }
+            })),
+            header::TitlebarControl::Minimize => {
+                Box::new(cx.listener(|_, _, window, _| window.minimize_window()))
+            }
+            header::TitlebarControl::Fullscreen => {
+                Box::new(cx.listener(|_, event: &gpui::ClickEvent, window, _| {
+                    if event.modifiers().alt {
+                        window.zoom_window();
+                    } else {
+                        window.toggle_fullscreen();
+                    }
+                }))
+            }
+        })
     }
 
     fn icon(
