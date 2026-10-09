@@ -1,0 +1,23 @@
+{
+  "mode": "custom",
+  "maxSavedSwatches": 64,
+  "selectedColor": "#f06449",
+  "savedSwatches": [
+    "#9994bd",
+    "#719cce",
+    "#70e8e3",
+    "#f06449",
+    "#c6c9c4",
+    "#6c7472",
+    "#363a39",
+    "#171b1b"
+  ],
+  "controls": [
+    "saturation/value",
+    "hue",
+    "hex",
+    "rgb",
+    "save swatch"
+  ],
+  "persistence": "design specification; native editing and persistence deferred"
+}

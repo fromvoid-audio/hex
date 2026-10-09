@@ -1,0 +1,104 @@
+//! Versioned, bounded persistence of canonical metadata; no media or callback work.
+mod files;
+mod replacement;
+mod schema;
+pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
+use hex_project::Project;
+pub use replacement::{
+    RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
+    replace_existing,
+};
+use std::{fmt, io, path::PathBuf};
+
+pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+#[derive(Debug)]
+pub enum StorageError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    Invalid(&'static str),
+    /// The document bytes differ from the snapshot captured when it was loaded.
+    Conflict {
+        path: PathBuf,
+    },
+    /// A complete destination exists, but cleanup or directory durability failed.
+    PublishedButNotDurable {
+        path: PathBuf,
+        operation: &'static str,
+        source: io::Error,
+    },
+    /// Recovery bytes were published, but the target replacement did not commit.
+    RecoveryBackupPublished {
+        path: PathBuf,
+        recovery_path: PathBuf,
+        operation: &'static str,
+        source: io::Error,
+    },
+}
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "project file error: {error}"),
+            Self::Json(error) => write!(f, "invalid project json: {error}"),
+            Self::Invalid(reason) => f.write_str(reason),
+            Self::Conflict { path } => {
+                write!(f, "project changed outside hex at {}", path.display())
+            }
+            Self::PublishedButNotDurable {
+                path,
+                operation,
+                source,
+            } => write!(
+                f,
+                "project was published at {} but could not {operation}: {source}",
+                path.display()
+            ),
+            Self::RecoveryBackupPublished {
+                path,
+                recovery_path,
+                operation,
+                source,
+            } => write!(
+                f,
+                "recovery copy for {} was published at {}, but could not {operation}: {source}",
+                path.display(),
+                recovery_path.display()
+            ),
+        }
+    }
+}
+impl std::error::Error for StorageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Json(e) => Some(e),
+            Self::Invalid(_) | Self::Conflict { .. } => None,
+            Self::PublishedButNotDurable { source, .. }
+            | Self::RecoveryBackupPublished { source, .. } => Some(source),
+        }
+    }
+}
+impl From<io::Error> for StorageError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+impl From<serde_json::Error> for StorageError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
+pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    let document = schema::DocumentV13::from_project(project)?;
+    let bytes = serde_json::to_vec_pretty(&document)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err(StorageError::Invalid("project document exceeds byte limit"));
+    }
+    Ok(bytes)
+}
+pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err(StorageError::Invalid("project document exceeds byte limit"));
+    }
+    schema::DocumentV11::decode(bytes)
+}

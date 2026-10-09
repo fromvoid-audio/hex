@@ -1,0 +1,194 @@
+{
+  "theme": {
+    "kind": "visual",
+    "designId": "hex-theme-board",
+    "revisionId": "hex-theme-r46",
+    "viewport": {
+      "width": 1080,
+      "height": 850
+    },
+    "issues": []
+  },
+  "default": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "playing": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "session": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "session-playing": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "clip-colors": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "time-selection": {
+    "kind": "visual",
+    "designId": "hex-yield-workstation",
+    "revisionId": "hex-live-r70",
+    "viewport": {
+      "width": 1900,
+      "height": 1120
+    },
+    "issues": []
+  },
+  "interactions": [
+    {
+      "name": "play",
+      "state": "playing",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "pause",
+      "state": "default",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "session view",
+      "state": "session",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "scene launch",
+      "state": "session-playing",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "session stop",
+      "state": "session",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "open colors",
+      "state": "clip-colors",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "close colors",
+      "state": "session",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "arrangement return",
+      "state": "default",
+      "passed": true,
+      "visual": {
+        "kind": "visual",
+        "designId": "hex-yield-workstation",
+        "revisionId": "hex-live-r70",
+        "viewport": {
+          "width": 1900,
+          "height": 1120
+        },
+        "issues": []
+      }
+    }
+  ]
+}

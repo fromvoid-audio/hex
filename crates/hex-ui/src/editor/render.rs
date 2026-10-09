@@ -1,0 +1,570 @@
+use super::{
+    AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, DeleteClip, DuplicateClip,
+    EditorView, ExportProject, FitTimeline, ImportAudio, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NextTrack, OpenProject, PanTimelineLeft, PanTimelineRight, PreviousTrack, Quit,
+    Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip,
+    Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo,
+    ZoomIn, ZoomOut,
+};
+use crate::theme::{self, Palette};
+use gpui::{Context, Window, div, prelude::*, px, rgb};
+use hex_project::Command;
+use hex_session::service::Request as SessionRequest;
+use std::sync::atomic::Ordering::Relaxed;
+
+impl EditorView {
+    pub(super) fn step_frames(&self) -> u64 {
+        self.state
+            .as_ref()
+            .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
+    }
+
+    fn status_bar(&self) -> gpui::Div {
+        let mut bar = div()
+            .h(px(22.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .border_t_1()
+            .border_color(rgb(Palette::BORDER))
+            .bg(rgb(Palette::SURFACE))
+            .text_xs();
+        if let Some(error) = &self.error {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::CORAL))
+                    .child(theme::text(error)),
+            );
+        } else {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text(&self.status)),
+            );
+        }
+        let project_revision = self.state.as_ref().map_or(0, |state| state.revision);
+        let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
+        let revision_label = match self.applied_project_revision() {
+            Some(revision) if revision == project_revision => format!("rev {revision} applied"),
+            Some(revision) => format!("rev {project_revision} pending · rev {revision} audible"),
+            None => format!("rev {project_revision} pending"),
+        };
+        let pending_commands = self
+            .worker_requests_pending
+            .saturating_add(self.pending_requests.len());
+        let revision_label = if pending_commands == 0 {
+            revision_label
+        } else {
+            format!("{revision_label} · ctl {pending_commands} pending")
+        };
+        bar = bar.child(div().flex_1()).child(
+            div()
+                .text_color(rgb(Palette::MUTED))
+                .child(theme::text(revision_label)),
+        );
+        if self.recovery.generation().is_some() {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::CYAN))
+                    .child(theme::text("audio recovery pending")),
+            );
+        }
+        if self.export_pending {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text("export pending")),
+            );
+        }
+        if self.saving_project {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text("save pending")),
+            );
+        }
+        if unsaved {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::CORAL))
+                    .child(theme::text("unsaved *")),
+            );
+        }
+        if let Some(status) = self.audio_status() {
+            let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
+            let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
+            bar = bar.child(
+                div()
+                    .w(px(38.0))
+                    .h(px(7.0))
+                    .flex()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .bg(rgb(Palette::RAISED))
+                            .child(div().h(px(7.0 * left)).w_full().bg(rgb(Palette::CORAL))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .bg(rgb(Palette::RAISED))
+                            .child(div().h(px(7.0 * right)).w_full().bg(rgb(Palette::CORAL))),
+                    ),
+            );
+            let applied_audio = status.applied_revision.load(Relaxed);
+            let misses = status.deadline_misses.load(Relaxed);
+            let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
+            let render_fault = status.render_fault.load(Relaxed);
+            bar = bar.child(
+                div()
+                    .text_color(rgb(if misses == 0 && !render_fault {
+                        Palette::MUTED
+                    } else {
+                        Palette::CORAL
+                    }))
+                    .child(theme::text(format!(
+                        "out {applied_audio} · cb {callback_us}µs · miss {misses}{}",
+                        if render_fault { " · render fault" } else { "" }
+                    ))),
+            );
+        } else {
+            bar = bar.child(
+                div()
+                    .text_color(rgb(Palette::MUTED))
+                    .child(theme::text("offline")),
+            );
+        }
+        bar
+    }
+}
+
+impl Render for EditorView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let midi_editor = self.midi_editor(cx);
+        let workspace_content = if self.mode == super::EditorMode::Session {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.session_grid(window, cx))
+                .children(super::session_audio_panel::view(self, cx))
+                .children(midi_editor)
+                .child(self.mixer_strip(cx))
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.arrangement(window, cx))
+                .children(midi_editor)
+                .child(self.mixer_strip(cx))
+        };
+        let workspace = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(self.browser_view(window, cx))
+            .child(workspace_content.flex_1().min_w_0());
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(Palette::BACKGROUND))
+            .text_color(rgb(Palette::TEXT))
+            .font_family(theme::FONT_FAMILY)
+            .track_focus(&self.focus)
+            .key_context(self.browser_key_context(window, cx))
+            .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
+                view.toggle_browser(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::BrowserPrevious, window, cx| {
+                view.browser_previous(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::BrowserNext, window, cx| {
+                view.browser_next(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
+                view.browser_activate(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
+                view.browser_escape(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &TogglePlay, _, cx| {
+                view.toggle_play();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &Stop, window, cx| {
+                cx.stop_active_drag(window);
+                view.stop();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                let midi_canceled = view.cancel_midi_note_gesture();
+                let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
+                    view.midi_marquee = None;
+                    view.midi_selection.clear()
+                } else {
+                    false
+                };
+                if !midi_canceled && !selection_cleared && !cx.stop_active_drag(window) {
+                    view.stop();
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SelectAllMidiNotes, _, cx| {
+                view.select_all_midi_notes();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ToggleMidiDrawMode, _, cx| {
+                view.midi_draw_mode = !view.midi_draw_mode;
+                view.cancel_midi_note_gesture();
+                view.midi_group_gesture = None;
+                view.midi_marquee = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
+            .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
+            .on_action(cx.listener(|view, _: &SaveProject, _, cx| {
+                view.save_project(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SaveAsProject, _, cx| {
+                view.save_as_dialog(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &Undo, _, cx| {
+                view.cancel_duplicate_chain();
+                view.enqueue(SessionRequest::Undo);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &Redo, _, cx| {
+                view.cancel_duplicate_chain();
+                view.enqueue(SessionRequest::Redo);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MoveLeft, window, cx| {
+                view.cancel_duplicate_chain();
+                match super::session_navigation::arrow_target(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    super::session_navigation::ArrowTarget::Piano => {
+                        view.nudge_selected_note(false);
+                    }
+                    super::session_navigation::ArrowTarget::Session => {
+                        view.navigate_session(super::session_navigation::Direction::Left);
+                    }
+                    super::session_navigation::ArrowTarget::Arrangement => {
+                        if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                            view.nudge_midi_clip(clip, false);
+                        } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
+                                clip,
+                                frames: -(view.step_frames() as i64),
+                            }));
+                        }
+                    }
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MoveRight, window, cx| {
+                view.cancel_duplicate_chain();
+                match super::session_navigation::arrow_target(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    super::session_navigation::ArrowTarget::Piano => {
+                        view.nudge_selected_note(true);
+                    }
+                    super::session_navigation::ArrowTarget::Session => {
+                        view.navigate_session(super::session_navigation::Direction::Right);
+                    }
+                    super::session_navigation::ArrowTarget::Arrangement => {
+                        if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                            view.nudge_midi_clip(clip, true);
+                        } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
+                                clip,
+                                frames: view.step_frames() as i64,
+                            }));
+                        }
+                    }
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &TrimLeft, window, cx| {
+                view.cancel_duplicate_chain();
+                if view.midi_focus.is_focused(window) {
+                    if view.midi_selection.len() == 1 {
+                        if let Some(note) = view.midi_selection.primary() {
+                            if let Some(state) = view.state.as_ref() {
+                                view.update_note_field(
+                                    note,
+                                    state.revision,
+                                    view.project_generation,
+                                    super::midi::NoteField::Duration(-1),
+                                );
+                            }
+                        }
+                    } else if view.midi_selection.len() > 1 {
+                        view.adjust_selected_group_current(
+                            super::midi_group_drag::GroupParameter::Duration(-1),
+                        );
+                    }
+                } else if view.selected_midi_clip_data().is_some() {
+                    view.error = Some("midi clip trimming is not supported yet".into());
+                } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                    view.enqueue(SessionRequest::Edit(Command::TrimClipEndBy {
+                        clip,
+                        frames: -(view.step_frames() as i64),
+                    }));
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &TrimRight, window, cx| {
+                view.cancel_duplicate_chain();
+                if view.midi_focus.is_focused(window) {
+                    if view.midi_selection.len() == 1 {
+                        if let Some(note) = view.midi_selection.primary() {
+                            if let Some(state) = view.state.as_ref() {
+                                view.update_note_field(
+                                    note,
+                                    state.revision,
+                                    view.project_generation,
+                                    super::midi::NoteField::Duration(1),
+                                );
+                            }
+                        }
+                    } else if view.midi_selection.len() > 1 {
+                        view.adjust_selected_group_current(
+                            super::midi_group_drag::GroupParameter::Duration(1),
+                        );
+                    }
+                } else if view.selected_midi_clip_data().is_some() {
+                    view.error = Some("midi clip trimming is not supported yet".into());
+                } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                    view.enqueue(SessionRequest::Edit(Command::TrimClipEndBy {
+                        clip,
+                        frames: view.step_frames() as i64,
+                    }));
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                let target = super::session_grid::resolve_delete_target(
+                    view.state.as_ref().map(|state| state.project.as_ref()),
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                    !view.midi_selection.is_empty(),
+                    view.selected_cell,
+                    view.selected_scene,
+                    view.selected_clip,
+                );
+                match target {
+                    Some(super::session_grid::DeleteTarget::MidiNotes) => {
+                        view.remove_selected_note();
+                    }
+                    Some(super::session_grid::DeleteTarget::SessionCell { track, scene }) => {
+                        if view.enqueue(SessionRequest::Edit(Command::ClearSessionCell {
+                            track,
+                            scene,
+                        })) {
+                            view.cancel_duplicate_chain();
+                            view.cancel_midi_note_gesture();
+                            view.selected_clip = None;
+                        }
+                    }
+                    Some(super::session_grid::DeleteTarget::SessionScene(scene)) => {
+                        if view.enqueue(SessionRequest::Edit(Command::RemoveScene(scene))) {
+                            view.cancel_duplicate_chain();
+                            view.cancel_midi_note_gesture();
+                            view.selected_scene = None;
+                            view.selected_cell = None;
+                            view.selected_clip = None;
+                            view.midi_selection.clear();
+                        }
+                    }
+                    Some(super::session_grid::DeleteTarget::ArrangementClip(clip)) => {
+                        let command = if view.selected_midi_clip_data().is_some() {
+                            Command::RemoveMidiClip(clip)
+                        } else {
+                            Command::RemoveClip(clip)
+                        };
+                        if view.enqueue(SessionRequest::Edit(command)) {
+                            view.cancel_duplicate_chain();
+                            view.cancel_midi_note_gesture();
+                            view.selected_clip = None;
+                        }
+                    }
+                    None => {}
+                }
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::LaunchSessionSelection, window, cx| {
+                    if super::session_navigation::session_editor_has_focus(
+                        view.mode,
+                        view.midi_focus.is_focused(window),
+                    ) {
+                        view.launch_session_selection();
+                    }
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.listener(|view, _: &DuplicateClip, window, cx| {
+                if view.mode == super::EditorMode::Session
+                    && !view.midi_focus.is_focused(window)
+                    && view.selected_cell.is_none()
+                    && view.selected_scene.is_some()
+                {
+                    view.duplicate_selected_scene();
+                } else if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                    view.duplicate_midi_clip(clip);
+                } else if view.mode == super::EditorMode::Session {
+                    view.error = Some("session cell duplication is not available yet".into());
+                } else {
+                    view.duplicate_selected();
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::MoveSceneUp, window, cx| {
+                if super::session_navigation::session_editor_has_focus(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    view.move_selected_scene(super::session_navigation::Direction::Up);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::MoveSceneDown, window, cx| {
+                if super::session_navigation::session_editor_has_focus(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    view.move_selected_scene(super::session_navigation::Direction::Down);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SplitClip, _, cx| {
+                view.split_selected_at_playhead();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ExportProject, _, cx| {
+                view.export_dialog(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
+                view.set_loop_from_clip();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {
+                view.toggle_loop();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ZoomIn, _, cx| {
+                view.zoom_timeline(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ZoomOut, _, cx| {
+                view.zoom_timeline(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &FitTimeline, _, cx| {
+                view.fit_timeline();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &PanTimelineLeft, _, cx| {
+                view.pan_timeline(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &PanTimelineRight, _, cx| {
+                view.pan_timeline(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ToggleSolo, _, cx| {
+                if let Some(track) = view.selected_track {
+                    view.toggle_solo(track, true);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &AdditiveSolo, _, cx| {
+                if let Some(track) = view.selected_track {
+                    view.toggle_solo(track, false);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &PreviousTrack, window, cx| {
+                match super::session_navigation::arrow_target(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    super::session_navigation::ArrowTarget::Piano => {
+                        view.transpose_selected_note(true);
+                    }
+                    super::session_navigation::ArrowTarget::Session => {
+                        view.navigate_session(super::session_navigation::Direction::Up);
+                    }
+                    super::session_navigation::ArrowTarget::Arrangement => {
+                        view.select_neighbor_track(false);
+                    }
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &NextTrack, window, cx| {
+                match super::session_navigation::arrow_target(
+                    view.mode,
+                    view.midi_focus.is_focused(window),
+                ) {
+                    super::session_navigation::ArrowTarget::Piano => {
+                        view.transpose_selected_note(false);
+                    }
+                    super::session_navigation::ArrowTarget::Session => {
+                        view.navigate_session(super::session_navigation::Direction::Down);
+                    }
+                    super::session_navigation::ArrowTarget::Arrangement => {
+                        view.select_neighbor_track(true);
+                    }
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MidiOctaveUp, window, cx| {
+                if view.midi_focus.is_focused(window) {
+                    view.transpose_selected_note_by(12);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MidiOctaveDown, window, cx| {
+                if view.midi_focus.is_focused(window) {
+                    view.transpose_selected_note_by(-12);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &AddTrack, _, cx| {
+                view.add_track();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &AddMidiTrack, _, cx| {
+                view.add_midi_track();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &AddMidiClip, _, cx| {
+                view.add_midi_clip();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &RemoveTrack, _, cx| {
+                view.remove_track();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &Quit, window, cx| {
+                view.request_quit(window, cx);
+            }))
+            .child(self.transport(cx))
+            .child(workspace)
+            .child(self.status_bar())
+    }
+}

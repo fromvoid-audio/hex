@@ -1,0 +1,14 @@
+[package]
+name = "hex-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex-ui = { path = "../hex-ui" }
+hex-audio = { path = "../hex-audio" }
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
+
+[lints]
+workspace = true

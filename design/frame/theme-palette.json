@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "id": "hex-theme",
+  "name": "orbital",
+  "anchors": [
+    "violet",
+    "blue",
+    "sea_glass",
+    "orange"
+  ],
+  "theme": {
+    "background": "#2a2828",
+    "surface": "#2f2d2d",
+    "well": "#242222",
+    "overlay": "#363333",
+    "separator": "#191717",
+    "field_border": "#211e1e",
+    "tag_border": "#211f1f",
+    "tag_fill": "#242222",
+    "selection_fill": "#35302f",
+    "text": "#c3c5c0",
+    "muted": "#9ea59f",
+    "orange": "#f06449",
+    "sea_glass": "#70e8e3",
+    "violet": "#9994bd",
+    "blue": "#719cce",
+    "success": "#65ffad",
+    "warning": "#ffd35e",
+    "error": "#ff7086",
+    "enabled": "#858f88",
+    "waveform": "#c0c4bb",
+    "piano_row": "#2e2b2b",
+    "key_dark": "#625e5a",
+    "key_light": "#a6a69c"
+  },
+  "conceptColors": {
+    "coral": "#454c49",
+    "pink": "#454c49",
+    "purple": "#454c49",
+    "blue": "#454c49",
+    "cyan": "#454c49",
+    "yellow": "#454c49"
+  },
+  "clipPicker": {
+    "mode": "custom",
+    "maxSavedSwatches": 64,
+    "selectedColor": "#f06449",
+    "savedSwatches": [
+      "#9994bd",
+      "#719cce",
+      "#70e8e3",
+      "#f06449",
+      "#c6c9c4",
+      "#6c7472",
+      "#363a39",
+      "#171b1b"
+    ],
+    "controls": [
+      "saturation/value",
+      "hue",
+      "hex",
+      "rgb",
+      "save swatch"
+    ],
+    "persistence": "design specification; native editing and persistence deferred"
+  }
+}

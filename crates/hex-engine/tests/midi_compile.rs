@@ -1,0 +1,662 @@
+use hex_engine::{
+    Invalid, Renderer, compile,
+    midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
+    playback::{Playback, PlaybackCommand},
+};
+use hex_project::{
+    BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
+};
+use std::collections::BTreeMap;
+
+fn beat(num: u64, den: u64) -> BeatTime {
+    BeatTime::from_ratio(num, den).unwrap()
+}
+fn setup() -> (Editor, hex_project::TrackId) {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "keys".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    (editor, track)
+}
+fn add_clip(
+    editor: &mut Editor,
+    track: hex_project::TrackId,
+    start: BeatTime,
+    len: BeatTime,
+) -> hex_project::ClipId {
+    match editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start,
+            length: len,
+        })
+        .unwrap()
+    {
+        Created::Clip(id) => id,
+        _ => panic!("clip"),
+    }
+}
+
+#[test]
+fn note_edges_convert_across_tempo_changes_and_sort_off_before_on() {
+    let (mut editor, track) = setup();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: beat(1, 1),
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(3, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 2),
+            duration: beat(1, 2),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 1),
+            duration: beat(1, 2),
+            pitch: 62,
+            channel: 0,
+            velocity: 90,
+        })
+        .unwrap();
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0].frame, 12_000);
+    assert_eq!(events[1].frame, 24_000);
+    assert_eq!(events[1].kind, MidiEventKind::NoteOff);
+    assert_eq!(events[2].frame, 24_000);
+    assert_eq!(events[2].kind, MidiEventKind::NoteOn);
+    assert_eq!(events[3].frame, 48_000); // tempo change affects note-off conversion.
+    let (_, preview) =
+        compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+    let summary = preview
+        .get(editor.project().tracks()[0].midi_clips()[0].id())
+        .expect("one-shot summary");
+    assert_eq!((summary.frame_start, summary.frame_end), (0, 120_000));
+    assert_eq!(summary.occurrence_count, 2);
+    assert_eq!(
+        summary
+            .samples
+            .iter()
+            .map(|sample| (sample.frame_start, sample.frame_gate_end, sample.pitch))
+            .collect::<Vec<_>>(),
+        [(12_000, 24_000, 60), (24_000, 48_000, 62)]
+    );
+}
+
+#[test]
+fn source_offset_local_loop_projects_tempo_edges_gates_and_finite_tail() {
+    let (mut editor, track) = setup();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: beat(4, 1),
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(8, 1),
+            source_start: beat(1, 1),
+            loop_start: beat(2, 1),
+            loop_end: beat(4, 1),
+            looping: true,
+            length: beat(13, 2),
+        })
+        .unwrap();
+    let hidden = match editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 2),
+            duration: beat(1, 4),
+            pitch: 48,
+            channel: 0,
+            velocity: 90,
+        })
+        .unwrap()
+    {
+        Created::Note(id) => id,
+        _ => panic!("note expected"),
+    };
+    let intro = match editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(3, 2),
+            duration: beat(1, 1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    {
+        Created::Note(id) => id,
+        _ => panic!("note expected"),
+    };
+    let looping = match editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(5, 2),
+            duration: beat(5, 2),
+            pitch: 62,
+            channel: 0,
+            velocity: 110,
+        })
+        .unwrap()
+    {
+        Created::Note(id) => id,
+        _ => panic!("note expected"),
+    };
+    let outside_loop = match editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(6, 1),
+            duration: beat(1, 4),
+            pitch: 64,
+            channel: 0,
+            velocity: 90,
+        })
+        .unwrap()
+    {
+        Created::Note(id) => id,
+        _ => panic!("note expected"),
+    };
+
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 8);
+    assert!(!events.iter().any(|event| event.note == hidden));
+    assert!(!events.iter().any(|event| event.note == outside_loop));
+    let actual = events
+        .iter()
+        .map(|event| (event.frame, event.kind, event.note, event.iteration))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            (12_000, MidiEventKind::NoteOn, intro, 0),
+            (36_000, MidiEventKind::NoteOff, intro, 0),
+            (36_000, MidiEventKind::NoteOn, looping, 0),
+            (72_000, MidiEventKind::NoteOff, looping, 0),
+            (84_000, MidiEventKind::NoteOn, looping, 1),
+            (144_000, MidiEventKind::NoteOff, looping, 1),
+            (168_000, MidiEventKind::NoteOn, looping, 2),
+            (216_000, MidiEventKind::NoteOff, looping, 2),
+        ]
+    );
+
+    let linear = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let (_, preview) =
+        compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+    let summary = preview.get(clip).expect("loop summary");
+    assert_eq!((summary.frame_start, summary.frame_end), (0, 216_000));
+    assert_eq!(
+        (summary.authored_note_count, summary.occurrence_count),
+        (4, 4)
+    );
+    assert_eq!(
+        summary
+            .samples
+            .iter()
+            .map(|sample| (sample.frame_start, sample.frame_gate_end, sample.pitch))
+            .collect::<Vec<_>>(),
+        [
+            (12_000, 36_000, 60),
+            (36_000, 72_000, 62),
+            (84_000, 144_000, 62),
+            (168_000, 216_000, 62),
+        ]
+    );
+    assert_eq!(linear.audible_end_frame(), Some(218_400));
+    let mut renderer = Renderer::new(&linear);
+    renderer.play();
+    let mut tail = vec![[0.0; 2]; 218_410];
+    renderer.render(&mut tail).unwrap();
+    assert!(
+        tail[216_000..218_400]
+            .iter()
+            .any(|frame| frame[0].abs() + frame[1].abs() > 0.0)
+    );
+    assert!(tail[218_400..].iter().all(|frame| *frame == [0.0; 2]));
+
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 216_000,
+            enabled: true,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = vec![[0.0; 2]; 250_000];
+    whole_playback.render(&mut whole).unwrap();
+
+    let mut split_playback = Playback::new(project.clone());
+    split_playback.apply(PlaybackCommand::Play);
+    let mut split = vec![[0.0; 2]; 250_000];
+    for chunk in split.chunks_mut(127) {
+        split_playback.render(chunk).unwrap();
+    }
+    assert_eq!(whole, split);
+
+    let mut seek = Playback::new(project);
+    seek.apply(PlaybackCommand::Seek(83_900));
+    seek.apply(PlaybackCommand::Play);
+    let mut sought = [[0.0; 2]; 256];
+    seek.render(&mut sought).unwrap();
+    assert_eq!(sought, whole[83_900..84_156]);
+}
+
+#[test]
+fn looping_preview_is_evenly_sampled_and_includes_empty_clips() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(1, 1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: beat(1, 100),
+            looping: true,
+            length: beat(1, 1),
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 200),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let empty = add_clip(&mut editor, track, beat(2, 1), beat(1, 1));
+
+    let (_, preview) =
+        compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+    let loop_summary = preview.get(clip).expect("loop summary");
+    assert_eq!(loop_summary.occurrence_count, 100);
+    assert_eq!(loop_summary.samples.len(), 32);
+    assert_eq!(
+        loop_summary
+            .samples
+            .first()
+            .map(|sample| sample.frame_start),
+        Some(0)
+    );
+    assert_eq!(
+        loop_summary.samples.last().map(|sample| sample.frame_start),
+        Some(23_760)
+    );
+    let sample_gaps = loop_summary
+        .samples
+        .windows(2)
+        .map(|pair| pair[1].frame_start - pair[0].frame_start)
+        .collect::<Vec<_>>();
+    assert!(sample_gaps.iter().all(|gap| matches!(gap, 720 | 960)));
+    assert!(sample_gaps.contains(&720));
+    assert!(sample_gaps.contains(&960));
+    let empty_summary = preview.get(empty).expect("empty clip summary");
+    assert_eq!(empty_summary.authored_note_count, 0);
+    assert_eq!(empty_summary.occurrence_count, 0);
+    assert!(empty_summary.samples.is_empty());
+    assert!(
+        preview
+            .clips()
+            .windows(2)
+            .all(|pair| pair[0].clip_id < pair[1].clip_id)
+    );
+}
+
+#[test]
+fn project_wide_occurrence_budget_rejects_before_edges_or_spans_are_emitted() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: BeatTime::from_raw(2),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::from_raw(1),
+            looping: true,
+            length: BeatTime::from_raw(65_538),
+        })
+        .unwrap();
+
+    assert_eq!(
+        midi_events(editor.project()),
+        Err(Invalid("compiled midi occurrence limit reached"))
+    );
+    assert_eq!(
+        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+        Invalid("compiled midi occurrence limit reached")
+    );
+}
+
+#[test]
+fn zero_frame_note_is_explicitly_refused() {
+    let (mut editor, track) = setup();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(1_000_000_000).unwrap(),
+        })
+        .unwrap();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, BeatTime::ONE);
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    assert_eq!(
+        midi_events(editor.project()),
+        Err(Invalid("midi note duration quantizes to zero frames"))
+    );
+    assert_eq!(
+        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+        Invalid("midi note duration quantizes to zero frames")
+    );
+}
+
+#[test]
+fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 2));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    assert_eq!(project.audible_end_frame(), Some(14_400));
+
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = [[0.0; 2]; 6_000];
+    whole_playback.render(&mut whole).unwrap();
+    assert!(whole.iter().any(|frame| frame[0].abs() > 0.05));
+
+    let mut split_playback = Playback::new(project.clone());
+    split_playback.apply(PlaybackCommand::Play);
+    let mut split = [[0.0; 2]; 6_000];
+    for chunk in split.chunks_mut(127) {
+        split_playback.render(chunk).unwrap();
+    }
+    assert_eq!(whole, split);
+    assert_eq!(whole_playback.position(), split_playback.position());
+
+    let mut seek_playback = Playback::new(project);
+    seek_playback.apply(PlaybackCommand::Seek(5_000));
+    seek_playback.apply(PlaybackCommand::Play);
+    let mut sought = [[0.0; 2]; 128];
+    seek_playback.render(&mut sought).unwrap();
+    assert_eq!(sought, whole[5_000..5_128]);
+    seek_playback.apply(PlaybackCommand::Pause);
+    let paused_at = seek_playback.position();
+    sought.fill([9.0; 2]);
+    seek_playback.render(&mut sought).unwrap();
+    assert_eq!(sought, [[0.0; 2]; 128]);
+    assert_eq!(seek_playback.position(), paused_at);
+    seek_playback.apply(PlaybackCommand::Stop);
+    assert_eq!(seek_playback.position(), 0);
+
+    let mut playing_graph =
+        Playback::new(compile::project(editor.project(), &BTreeMap::new()).unwrap());
+    playing_graph.apply(PlaybackCommand::Seek(5_000));
+    playing_graph.apply(PlaybackCommand::Play);
+    let replacement_project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut replacement = Playback::new(replacement_project);
+    replacement.inherit_transport(&playing_graph);
+    assert_eq!(replacement.position(), 5_000);
+    assert!(replacement.playing());
+    let mut replacement_output = [[0.0; 2]; 128];
+    replacement.render(&mut replacement_output).unwrap();
+    assert_eq!(replacement_output, whole[5_000..5_128]);
+}
+
+#[test]
+fn interval_tree_keeps_earlier_notes_when_median_onset_is_in_the_future() {
+    const TOTAL_FRAMES: usize = 320_000;
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(16, 1));
+    let positions = [0_u64, 4, 8, 12];
+    for (index, start) in positions.into_iter().enumerate() {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(start, 1),
+                duration: beat(1, 1),
+                pitch: 48 + index as u8 * 7,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+
+    let source_snapshot = editor.project().snapshot();
+    let combined = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let combined_output = render_chunks(&combined, TOTAL_FRAMES, &[128, 512, 43]);
+    let mut isolated_sum = vec![[0.0; 2]; TOTAL_FRAMES];
+    let hex_project::TrackContentSnapshot::Hybrid {
+        midi_clips: clips, ..
+    } = &source_snapshot.tracks[0].content
+    else {
+        panic!("midi track")
+    };
+    for note in &clips[0].notes {
+        let mut isolated_snapshot = source_snapshot.clone();
+        let hex_project::TrackContentSnapshot::Hybrid {
+            midi_clips: clips, ..
+        } = &mut isolated_snapshot.tracks[0].content
+        else {
+            panic!("midi track")
+        };
+        clips[0].notes = vec![note.clone()];
+        let isolated_edit = Project::from_snapshot(isolated_snapshot).unwrap();
+        let isolated = compile::project(&isolated_edit, &BTreeMap::new()).unwrap();
+        let isolated_output = render_chunks(&isolated, TOTAL_FRAMES, &[257]);
+        for (sum, sample) in isolated_sum.iter_mut().zip(isolated_output) {
+            sum[0] += sample[0];
+            sum[1] += sample[1];
+        }
+    }
+    assert_eq!(combined_output, isolated_sum);
+
+    let mut seeking = Playback::new(combined);
+    seeking.apply(PlaybackCommand::Seek(50_000));
+    seeking.apply(PlaybackCommand::Play);
+    let mut gap = [[9.0; 2]; 128];
+    seeking.render(&mut gap).unwrap();
+    assert_eq!(gap, [[0.0; 2]; 128]);
+
+    seeking.apply(PlaybackCommand::Seek(96_000));
+    let mut later_note = [[0.0; 2]; 128];
+    seeking.render(&mut later_note).unwrap();
+    assert_eq!(later_note, isolated_sum[96_000..96_128]);
+    assert!(
+        combined_output[0..128]
+            .iter()
+            .any(|frame| frame[0].abs() > 0.01)
+    );
+    assert!(
+        combined_output[96_000..96_128]
+            .iter()
+            .any(|frame| frame[0].abs() > 0.01)
+    );
+}
+
+fn render_chunks(
+    project: &hex_engine::Project,
+    frames: usize,
+    block_sizes: &[usize],
+) -> Vec<[f32; 2]> {
+    let mut playback = Playback::new(project.clone());
+    playback.apply(PlaybackCommand::Play);
+    let mut output = vec![[0.0; 2]; frames];
+    let mut offset = 0;
+    let mut block_index = 0;
+    while offset < frames {
+        let block_size = block_sizes[block_index % block_sizes.len()];
+        let count = block_size.min(frames - offset);
+        playback
+            .render(&mut output[offset..offset + count])
+            .unwrap();
+        offset += count;
+        block_index += 1;
+    }
+    output
+}
+
+#[test]
+fn same_pitch_overlaps_remain_distinct_and_release_tails_count_toward_voice_cap() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    for _ in 0..64 {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat(1, 4),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let project = compile::project(editor.project(), &BTreeMap::new()).expect("64 voices accepted");
+    let mut playback = Playback::new(project);
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 32];
+    playback.render(&mut output).unwrap();
+    assert!(output[8..].iter().any(|frame| frame[0].abs() > 0.1));
+
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 4),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    assert_eq!(
+        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+        Invalid("midi voice density exceeds 64 simultaneous voices per track")
+    );
+}
+
+#[test]
+fn empty_midi_clip_has_no_edges_and_event_capacity_is_two_per_note() {
+    assert_eq!(MAX_MIDI_EVENT_EDGES, 131_072);
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    assert!(midi_events(editor.project()).unwrap().is_empty());
+    assert!(editor.project().midi_clip(clip).unwrap().notes().is_empty());
+    let compiled = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    assert_eq!(compiled.audible_end_frame(), Some(96_000));
+}
+
+#[test]
+fn compile_refuses_pitch_at_or_above_project_nyquist() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "keys".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 127,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    assert_eq!(
+        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+        Invalid("midi pitch cannot be rendered at project sample rate")
+    );
+}
+
+#[test]
+fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    let mut snapshot = editor.project().snapshot();
+    let hex_project::TrackSnapshot { content, .. } = &mut snapshot.tracks[0];
+    let TrackContentSnapshot::Hybrid {
+        midi_clips: clips, ..
+    } = content
+    else {
+        panic!("instrument snapshot")
+    };
+    clips[0].notes = (0..hex_project::MAX_NOTES)
+        .map(|index| MidiNoteSnapshot {
+            id: 3 + index as u64,
+            start_raw: 0,
+            duration_raw: BeatTime::ONE.raw(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .collect();
+    snapshot.next_id = 3 + hex_project::MAX_NOTES as u64;
+    let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
+    let events = midi_events(&project).expect("exact maximum event count");
+    assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);
+    assert_eq!(events[0].kind, MidiEventKind::NoteOn);
+    assert_eq!(events[0].frame, 0);
+    assert_eq!(events[hex_project::MAX_NOTES].kind, MidiEventKind::NoteOff);
+    assert_eq!(events[hex_project::MAX_NOTES].frame, 24_000);
+    assert!(
+        events
+            .windows(2)
+            .take(hex_project::MAX_NOTES - 1)
+            .all(|w| w[0].note.value() < w[1].note.value())
+    );
+    assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
+}

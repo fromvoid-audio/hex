@@ -1,0 +1,20 @@
+[package]
+name = "hex-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+ui-test-support = ["gpui/test-support"]
+
+[dependencies]
+hex-session = { path = "../hex-session" }
+hex-project = { path = "../hex-project" }
+hex-engine = { path = "../hex-engine" }
+hex-audio = { path = "../hex-audio" }
+hex-library = { path = "../hex-library" }
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
+
+[lints]
+workspace = true

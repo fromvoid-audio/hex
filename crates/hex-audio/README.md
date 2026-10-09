@@ -1,0 +1,86 @@
+# hex-audio
+
+## Purpose
+
+Own device output, stream lifetime, bounded real-time control delivery, and backend telemetry.
+
+The desktop's nonblocking initial open uses `request_initial_open()` and polls
+its one-result handle; the lifecycle worker uses the device's actual default
+rate without assuming a project rate. Recovery uses
+`request_recovery_open(expected_rate)` and checks the default device rate before
+constructing a stream. `PreparedOutput::open` remains available as a synchronous
+startup path for existing callers.
+Only one recovery open may be pending. Its reservation remains held until the
+result is consumed, or until an abandoned late output and any retained stream
+lease have retired. Device setup and stream disposal stay off the audio callback
+and caller thread.
+
+`prepared::Control` publishes a fixed-size `Playback` wrapper through a one-slot
+queue and keeps publication admission closed until the callback accepts or
+returns that candidate. Session route commands share the bounded command queue
+with transport actions; failed actions have a separate ticket/reason snapshot.
+Priority Stop uses a ticket marker independent of queue capacity: at callback
+entry it stops immediately, discards queued commands admitted through that
+marker, and applies later commands from the captured queue prefix in FIFO order.
+Commands admitted after the callback's entry cut remain for the next block;
+ordinary actions are refused before ticket wraparound. The callback examines at
+most the fixed 32-command queue and never waits for control admission.
+The callback retries transient Session handoff capacity refusals while the old
+graph continues playing, and permanently rejected candidates return through the
+retirement queue. Read rejection tuples through `Status` snapshot methods so the
+reason and ticket/revision remain paired. Session capability status is reported
+separately from render faults. Graph construction and final destruction remain
+off the callback.
+
+`Status::session_routes` copies one coherent route snapshot into caller-owned
+storage with at most three reader attempts. A short buffer or concurrent writer
+returns `None`; callers must ignore the whole output buffer on `None`. Allocate
+at least `SESSION_ROUTE_CAPACITY` entries for complete snapshots. The fixed
+256-slot atomic table is allocated with the channel. Each accepted graph revision
+and committed route-generation change writes a complete snapshot, including
+clearing unused slots; unchanged render blocks compare only the revision and
+opaque engine generation. The snapshot's `performance_at_update` is its cut
+frame, not a live cursor. Read `Status::performance_frame` for current transport.
+Legacy and unavailable Session capability snapshots have zero route entries and
+retain their explicit capability status. After shutdown retires the active graph,
+the route snapshot publishes revision `0`, zero entries and Legacy capability;
+`applied_revision` remains the separate accepted-revision high-water mark.
+
+`Control::launch_and_play_with_ticket` queues one atomic Session action. Only
+`LaunchClip` and `LaunchScene` payloads are accepted; transport starts after the
+route command succeeds. An invalid target or non-launch command leaves the
+current transport state unchanged and reports through the ordinary action
+rejection snapshot.
+
+The development-only `profile_session_routes` example constructs canonical
+100/256-track fixtures using the existing dev dependency. Run with
+`cargo run --release -p hex-audio --example profile_session_routes -- 100`.
+It compares callback PCM/routes to the headless kernel and times changed and
+unchanged control entries plus snapshot reads. Render/validation checks stay
+outside timing; no CPAL stream is opened. See docs/performance.md for methodology,
+retained outliers and the separate physical deadline gate.
+
+## Dependencies
+
+hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
+hex-project as a dev-dependency to build canonical prepared revisions for the
+callback boundary.
+
+## Does not own
+
+GPUI views, project editing/history, file parsing, or DSP algorithms.
+
+Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
+
+## Opt-in allocation probes
+
+`cargo test -p hex-audio --features allocation-probe` enables headless integration
+probes over the real prepared callback API. The pinned dev-only allocation-counter
+0.8.1 supplies a per-thread allocator counter; Hex uses its safe API and adds no
+unsafe code. Production never references this dependency. The architecture policy
+rejects it outside audio dev dependencies. Sensitivity tests must detect both
+allocate/free pairs and freeing objects allocated before a measured scope, so
+callback checks require zero total allocation count/bytes and zero signed net
+count/bytes. Construction, control admission, independent PCM oracles and control
+reclamation remain outside callback scopes. This is allocator evidence, not timing,
+other-thread/native-API allocation, locking, CPAL or physical deadline acceptance.

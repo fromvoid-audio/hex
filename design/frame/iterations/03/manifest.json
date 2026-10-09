@@ -1,0 +1,46 @@
+{
+  "iteration": 3,
+  "acceptedDate": "2026-10-08",
+  "revision": "hex-live-r70",
+  "themeRevision": "hex-theme-r46",
+  "status": "user-approved current visual implementation reference",
+  "supersedes": "../02/",
+  "size": {
+    "width": 1900,
+    "height": 1120
+  },
+  "states": [
+    "default",
+    "playing",
+    "session",
+    "session-playing",
+    "clip-colors",
+    "time-selection"
+  ],
+  "files": {
+    "README.md": "88a890892ea47e79d4a572f45af1c404ca2f6423c5e0fecb4acb50c271f55dfc",
+    "arrangement.png": "98e126be0a39f13489a412a4b59b51c4ea5b575afddda27ed3e625b7c01ed8f1",
+    "build_live_study.py": "0f33b923bf1ff6fa33b75f484fde7c5eba0cdd786b2bfdce378328206da8a4ec",
+    "clip-colors.json": "b71d3962f93710ec1e0f1016015662ed244e91ee7e14162143877929410dea16",
+    "clip_palette.py": "64f4ed193d7b526006b819f8cfe3283dd1ca792cc8edb43023b357cc115e09ae",
+    "hex-live-r70.json": "747d2a671026fec64290198db9d1bfdda5b4faaa2c6ddd66ecf23ef9a628900c",
+    "hex.frame.json": "cc732c80cb52d4e7b8c0cb29bd7556682edda453bfb41ddbf0dc0a8631848398",
+    "live-layout-styleguide.json": "a8e0434f3fd35a86263e00b3b30a4252b12c0d4e253a14f56c33c16df29d8b89",
+    "load.js": "c5bc108271b66fd97076ecc2b6cd8f1e7ed04f218bc1a394c709787d03a1197a",
+    "palette.png": "27523b6b49a4b534733c8a5599aa2324cbfbaf65fd3b3bbf78a6d04dd6d2f12d",
+    "review.json": "43205ae3bf853f59f1f32fd0b2a1e48602240506fb646176ac2ed865ed493a31",
+    "serve.py": "efee206acb7303de6fb017ece5e4a65a47cfde1a9752681400dcc8025f453ac7",
+    "session.png": "f4130a3fad63478108d68471daf2566b54d9cbb1d60d0cf002c4587aff43a06f",
+    "states/clip-colors.png": "27523b6b49a4b534733c8a5599aa2324cbfbaf65fd3b3bbf78a6d04dd6d2f12d",
+    "states/default.png": "8c2118149b783028fe8841c668cf3c950473ca73da869e41f63902ce16795b3d",
+    "states/index.html": "a93a995c6375670a5b504e4d157667fdc56d9c24bc7a570cb00501b36a4dc7dc",
+    "states/playing.png": "98e126be0a39f13489a412a4b59b51c4ea5b575afddda27ed3e625b7c01ed8f1",
+    "states/session-playing.png": "f4130a3fad63478108d68471daf2566b54d9cbb1d60d0cf002c4587aff43a06f",
+    "states/session.png": "e69bdd5448e882c7a160ead8c81da905f2d8ac105b636d56c768692d1f3f37da",
+    "states/time-selection.png": "98a300555e86895927df9727e2b3ce750d7ca6e1e0983f191217f3135881f366",
+    "theme-palette.frame.json": "01043130f75fe50833925c9219805e684928e7cd93a89bc2b6827c89b609e47a",
+    "theme-palette.json": "e62051abd17ae4b5f9916b639a46794fd905b12be3c8b0566c5e5e3e4edbe321",
+    "theme-palette.png": "ec9bb3ff305749e6efc3926c9e1d2e25d171dda9a0d8278c7a14cacc66d4b95b",
+    "theme_palette.py": "06ea6ae342184b01e91a035612f52da492f6100bf12779e95451aba63a00e0b0"
+  }
+}

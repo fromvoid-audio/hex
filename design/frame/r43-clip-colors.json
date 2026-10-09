@@ -1,0 +1,252 @@
+{
+  "version": 1,
+  "id": "hex-clip-colors",
+  "theme": "hex orbital",
+  "count": 24,
+  "identityCount": 16,
+  "utilityCount": 8,
+  "construction": "eight coordinated violet, blue, mint, coral and rose seeds, each with a core and soft OKLCH shade; sRGB gamut mapping by chroma reduction",
+  "usage": "identity colors for clips/tracks/elements; utility colors for neutral or standout elements; selection/focus must use a separate outline, not color alone",
+  "colors": [
+    {
+      "id": "violet-4",
+      "name": "violet 4",
+      "family": "violet",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#8474b6",
+      "labelColor": "#000000",
+      "labelContrast": 5.15
+    },
+    {
+      "id": "orchid-4",
+      "name": "orchid 4",
+      "family": "orchid",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#8379a4",
+      "labelColor": "#000000",
+      "labelContrast": 5.24
+    },
+    {
+      "id": "blue-4",
+      "name": "blue 4",
+      "family": "blue",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#5e81b7",
+      "labelColor": "#000000",
+      "labelContrast": 5.3
+    },
+    {
+      "id": "ice-4",
+      "name": "ice 4",
+      "family": "ice",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#6a82a4",
+      "labelColor": "#11191d",
+      "labelContrast": 4.52
+    },
+    {
+      "id": "mint-4",
+      "name": "mint 4",
+      "family": "mint",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#43917b",
+      "labelColor": "#11191d",
+      "labelContrast": 4.72
+    },
+    {
+      "id": "jade-4",
+      "name": "jade 4",
+      "family": "jade",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#5d8b7d",
+      "labelColor": "#11191d",
+      "labelContrast": 4.62
+    },
+    {
+      "id": "coral-4",
+      "name": "coral 4",
+      "family": "coral",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#bd6069",
+      "labelColor": "#000000",
+      "labelContrast": 5.04
+    },
+    {
+      "id": "rose-4",
+      "name": "rose 4",
+      "family": "rose",
+      "tone": 4,
+      "role": "identity",
+      "hex": "#b5608a",
+      "labelColor": "#000000",
+      "labelContrast": 5.0
+    },
+    {
+      "id": "violet-6",
+      "name": "violet 6",
+      "family": "violet",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#bcb4db",
+      "labelColor": "#20282c",
+      "labelContrast": 7.63
+    },
+    {
+      "id": "orchid-6",
+      "name": "orchid 6",
+      "family": "orchid",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#bcb7d0",
+      "labelColor": "#20282c",
+      "labelContrast": 7.72
+    },
+    {
+      "id": "blue-6",
+      "name": "blue 6",
+      "family": "blue",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#a7bcdc",
+      "labelColor": "#20282c",
+      "labelContrast": 7.76
+    },
+    {
+      "id": "ice-6",
+      "name": "ice 6",
+      "family": "ice",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#aebcd0",
+      "labelColor": "#20282c",
+      "labelContrast": 7.78
+    },
+    {
+      "id": "mint-6",
+      "name": "mint 6",
+      "family": "mint",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#9dc5b8",
+      "labelColor": "#20282c",
+      "labelContrast": 7.93
+    },
+    {
+      "id": "jade-6",
+      "name": "jade 6",
+      "family": "jade",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#a8c1b9",
+      "labelColor": "#20282c",
+      "labelContrast": 7.85
+    },
+    {
+      "id": "coral-6",
+      "name": "coral 6",
+      "family": "coral",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#e2aaad",
+      "labelColor": "#20282c",
+      "labelContrast": 7.56
+    },
+    {
+      "id": "rose-6",
+      "name": "rose 6",
+      "family": "rose",
+      "tone": 6,
+      "role": "identity",
+      "hex": "#dcaac1",
+      "labelColor": "#20282c",
+      "labelContrast": 7.54
+    },
+    {
+      "id": "ink",
+      "name": "ink",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#10171e",
+      "labelColor": "#e8ede8",
+      "labelContrast": 15.22
+    },
+    {
+      "id": "charcoal",
+      "name": "charcoal",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#2b2d2d",
+      "labelColor": "#e8ede8",
+      "labelContrast": 11.68
+    },
+    {
+      "id": "graphite",
+      "name": "graphite",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#3b4651",
+      "labelColor": "#e8ede8",
+      "labelContrast": 8.12
+    },
+    {
+      "id": "gray",
+      "name": "gray",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#657583",
+      "labelColor": "#ffffff",
+      "labelContrast": 4.75
+    },
+    {
+      "id": "silver",
+      "name": "silver",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#a2b2bf",
+      "labelColor": "#20282c",
+      "labelContrast": 6.89
+    },
+    {
+      "id": "chalk",
+      "name": "chalk",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#cad4dd",
+      "labelColor": "#20282c",
+      "labelContrast": 9.97
+    },
+    {
+      "id": "white",
+      "name": "white",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#edf3f8",
+      "labelColor": "#20282c",
+      "labelContrast": 13.4
+    },
+    {
+      "id": "signal",
+      "name": "signal",
+      "family": "utility",
+      "tone": null,
+      "role": "utility",
+      "hex": "#ff8873",
+      "labelColor": "#20282c",
+      "labelContrast": 6.44
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "id": "hex-yield-editorial",
+  "name": "hex / yield editorial terminal",
+  "summary": "Yield typography and surfaces adapted to a dense musical workspace.",
+  "document": "charcoal surfaces #1b1e1e; hairline borders #3a3d3d; warm text #d8d7d3; muted text #999b9a; sparse coral #e95843. All Hex interface text is lowercase and uses bundled Ioskeley Mono. Browser, timeline, mixer and devices share flat contiguous geometry. Track tint is subdued; selection uses a coral edge. Waveforms and note marks carry information, not decoration.",
+  "prompt": "Design a dense native Rust DAW using Yield editorial terminal styling. Keep all app text lowercase in Ioskeley Mono, flat charcoal panels, precise warm text, fine grid dividers, subdued clips and rare coral transport or selection accents. Preserve arrangement and session workflows, visible mixer context and a bottom device dock.",
+  "rules": [
+    "all app text is lowercase",
+    "all app text uses Ioskeley Mono",
+    "flat surfaces, one-pixel dividers, no decorative cards",
+    "use coral for selection and primary action",
+    "keep transport and track context visible",
+    "prototype states do not establish audio or device behavior",
+    "preserve Live density; minimal dead space, small gutters, compact controls and contiguous panels"
+  ],
+  "tokens": {
+    "palette": [
+      {
+        "name": "background",
+        "value": "#1b1e1e"
+      },
+      {
+        "name": "surface",
+        "value": "#1b1e1e"
+      },
+      {
+        "name": "border",
+        "value": "#3a3d3d"
+      },
+      {
+        "name": "text",
+        "value": "#d8d7d3"
+      },
+      {
+        "name": "muted",
+        "value": "#999b9a"
+      },
+      {
+        "name": "accent",
+        "value": "#e95843"
+      }
+    ],
+    "typography": "Ioskeley Mono; 10\u201312 px dense labels, 15 px position, 22 px brand",
+    "spacing": "4 px control padding; 14\u201318 px panel margins; 41 px track lanes; 22 px browser rows",
+    "geometry": "square corners; one-pixel borders; contiguous workspace panels"
+  }
+}

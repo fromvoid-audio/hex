@@ -1,0 +1,110 @@
+{
+  "version": 3,
+  "design": "hex-yield-workstation",
+  "revisionId": "hex-live-r54",
+  "width": 1900,
+  "height": 1120,
+  "lines": [],
+  "notes": [
+    {
+      "id": "07652793-7201-4be8-9578-5269b17ae1d8",
+      "type": "note",
+      "designId": "hex-yield-workstation",
+      "revisionId": "hex-live-r54",
+      "createdAt": "2026-10-08T10:58:21.273Z",
+      "updatedAt": "2026-10-08T10:58:21.273Z",
+      "status": "open",
+      "reviewedViewport": {
+        "width": 1900,
+        "height": 1120
+      },
+      "elementAnchor": {
+        "elementId": "n-172",
+        "offset": [
+          19.61780383795309,
+          13.82762031254424
+        ]
+      },
+      "anchor": [
+        266.6178038379531,
+        1019.8276203125442
+      ],
+      "text": "make these colors pop more, clear bright indicators"
+    },
+    {
+      "id": "2e5b2519-b6df-4e25-9dc8-ff4a45182946",
+      "type": "note",
+      "designId": "hex-yield-workstation",
+      "revisionId": "hex-live-r54",
+      "createdAt": "2026-10-08T10:58:28.642Z",
+      "updatedAt": "2026-10-08T10:58:28.642Z",
+      "status": "open",
+      "reviewedViewport": {
+        "width": 1900,
+        "height": 1120
+      },
+      "elementAnchor": {
+        "elementId": "n-46",
+        "offset": [
+          9.338152985074657,
+          9.700850594851218
+        ]
+      },
+      "anchor": [
+        400.33815298507466,
+        77.70085059485122
+      ],
+      "text": "make these colors also pop more"
+    },
+    {
+      "id": "865fb400-2db9-49ea-8054-5f19d2ba383c",
+      "type": "note",
+      "designId": "hex-yield-workstation",
+      "revisionId": "hex-live-r54",
+      "createdAt": "2026-10-08T10:59:09.678Z",
+      "updatedAt": "2026-10-08T10:59:09.678Z",
+      "status": "open",
+      "reviewedViewport": {
+        "width": 1900,
+        "height": 1120
+      },
+      "elementAnchor": {
+        "elementId": "n-3035",
+        "offset": [
+          15.063965884861432,
+          8.634328990872362
+        ]
+      },
+      "anchor": [
+        955.0639658848614,
+        99.63432899087236
+      ],
+      "text": "simplify the clip colors so they better fit the overal theme"
+    },
+    {
+      "id": "d30efedc-ae21-4a32-8912-92db4635a39b",
+      "type": "note",
+      "designId": "hex-yield-workstation",
+      "revisionId": "hex-live-r54",
+      "createdAt": "2026-10-08T10:59:45.789Z",
+      "updatedAt": "2026-10-08T10:59:45.789Z",
+      "status": "open",
+      "reviewedViewport": {
+        "width": 1900,
+        "height": 1120
+      },
+      "elementAnchor": {
+        "elementId": "browser",
+        "offset": [
+          415.4680836886994,
+          474.2217480995846
+        ]
+      },
+      "anchor": [
+        425.4680836886994,
+        539.2217480995846
+      ],
+      "text": "overall, let make grey and bright orange the core of the theme, the other colors should be subject to this"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-audio"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

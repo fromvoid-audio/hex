@@ -1,0 +1,16 @@
+[package]
+name = "hex-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex-storage = { path = "../hex-storage" }
+hex-media = { path = "../hex-media" }
+hex-engine = { path = "../hex-engine" }
+hex-project = { path = "../hex-project" }
+hex-export = { path = "../hex-export" }
+
+[lints]
+workspace = true

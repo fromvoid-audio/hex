@@ -1,0 +1,132 @@
+# hex-project
+
+## Purpose
+
+Canonical control-side arrangement: stable typed IDs, media references,
+validated frame-based audio clips and beat-based MIDI clips, shared track controls,
+and bounded undo/redo. Commands
+are transactional; failed edits leave state and history unchanged. No PCM is
+stored in history. Each asset records its original source rate/frame count and
+its prepared project-rate playback frame count plus conversion version. Clip
+source intervals use playback frames.
+Track solo state is canonical metadata. Exclusive solo clears other solo states
+when enabling; additive solo preserves them, and toggling off only clears the
+selected track. The optional half-open loop region has validated positive length,
+an independent enabled flag and transactional set/toggle/clear commands.
+Tracks also carry a validated original Hex stereo balance in -1..=1, and the
+project carries linear master gain in 0..=2. Relative edits resolve from
+canonical state and clamp to those endpoints. Balance attenuates the opposite
+channel without crossfeed; this is an explicit Hex policy, not a measured Live
+pan law. Clips carry validated fixed-domain fade metadata. Setting fades anchors
+them to current duration; moves and duplicates preserve the envelope, splits
+retain its original span and advance the right segment offset, and trims reanchor
+and clamp both fade lengths. The explicit original Hex fade curve is linear with
+endpoint samples and multiplicative overlap, not a confirmed Live curve.
+Looping clips retain a source-relative phase at their timeline start. Splits
+preserve the full source interval and advance the right clip's phase; one-shots
+keep their prior source partition behavior. Absolute left/right edge trims use
+the same metadata-only preview helper as the canonical command. One-shot trims
+preserve the clip's duration/source-length difference and shift source bounds
+with the timeline; loop left trims move phase while right trims only change
+duration. Actual trims reanchor fades, while boundary no-ops preserve them.
+
+## Dependencies
+
+std only. The engine consumes read-only snapshots to compile playback; storage
+owns the versioned native metadata file. The model never depends on playback,
+devices or UI.
+
+## Does not own
+
+PCM decoding, disk I/O, audio callbacks, render scheduling, GUI state,
+resampling, warp, MIDI synthesis/playback, devices or compatibility import. Undo history is a bounded
+control-side snapshot implementation, not a real-time API.
+
+IDs are project-scoped, monotonically allocated and never reused by an Editor
+across undo/redo branches. Do not mix IDs from independent projects. Timeline and
+clip source regions use project-rate playback frames, not source-file frames,
+beats or bytes. Conversion metadata validates duration and stable algorithm ID;
+actual PCM preparation belongs to hex-media on the control side.
+
+Musical position metadata is represented by `BeatTime`, unsigned Q32.32
+quarter-note beats, integer micro-BPM `Tempo`, and validated `Meter` values.
+Projects own bounded, sorted tempo and meter maps beginning at beat zero.
+Tempo conversion uses checked fractional-frame prefixes and rounds once to the
+nearest frame with ties later; inverse conversion uses those same prefixes.
+The control-side lower-bound query returns the first raw Q32.32 beat whose
+forward conversion reaches a requested frame, with `u64::MAX + 1` as the
+no-representable-beat sentinel. It solves the crossing within a cached tempo
+segment and is distinct from the inverse query's latest-boundary rule.
+Meter markers may occur mid-bar. Hex starts a new numbered bar there and marks
+the preceding truncated bar fragmentary. These maps drive ruler/snap queries;
+existing clips remain frame-anchored and are not implicitly warped or retimed.
+Every track owns both Arrangement audio clips and beat-anchored MIDI clips, with
+one stable track identity and shared mix controls. MIDI clips retain independent
+source length/start, loop markers, looping enable and finite arrangement duration. A shared
+`MidiSource` owns those source fields and note data; `MidiClip` adds only stable
+clip identity and finite Arrangement start/length. The sparse Session grid owns
+independent `SessionMidiClip` values with a user name and `MidiSource`, stable
+scene IDs, and typed MIDI or explicit stop cells. A missing cell is structurally
+empty. Stop cells are valid on any existing track; setting a stop intentionally replaces
+the cell, while create/copy/move/duplicate refuse occupied destinations. Clear
+removes any cell. Removing a track or scene removes its cells atomically. Session
+clips have no Arrangement placement and do not refer back to Arrangement clips.
+Project clones share immutable source allocations with `Arc`; source mutation
+detaches only the changed source. Prepared-cache identity is an opaque owning
+token holding that `Arc` and comparing allocation identity, so an allocation
+cannot be recycled while cached artifacts still use its key. Arrangement-to-
+Session copies and duplicated clips receive independent source allocations and
+fresh clip/note IDs.
+`DuplicateScene` copies the scene name and each populated cell, preserving track
+associations, Stop cells, MIDI source fields, notes, and clip names. Copied MIDI
+clips and notes receive fresh project-wide IDs and independent sources; empty
+cells remain empty. The duplicate is inserted immediately after its source.
+`MoveScene` reorders by stable scene IDs, placing before a target or appending
+when no target is supplied. These edits preserve cell content and IDs while
+reordering and use the same transactional project/history path as other edits.
+Notes use source-local
+Q32.32 positions and may overlap; they require channel 0..15, pitch 0..127 and
+velocity 1..127, and must fit inside the source length. Track order and identity
+are shared by both clip collections. One global ID allocator covers assets,
+tracks, Arrangement and Session clip kinds, scenes and notes. The project bounds
+combined clips at 16,384, notes at 65,536, scenes at 256 and sparse Session cells
+at 65,536. Scene and cell maxima are format-safety caps, not performance promises.
+MIDI trim and split remain unsupported until their source
+semantics are specified. `SetMidiClipSource` replaces all source and arrangement
+fields atomically and refuses to shrink a source past any authored note, even if
+that note is hidden by the current playback offset or loop.
+
+`MidiSourcePlayback` is an allocation-free beat-domain projection for finite
+one-shot or looped source regions. It validates source/loop bounds and produces
+an O(1)-count per-note occurrence plan whose iterator carries loop iteration,
+timeline onset and gate duration, including source-seam and arrangement-end
+cuts. It does not implement MIDI scheduling or synthesis.
+
+`UpdateMidiNotes` and `RemoveMidiNotes` operate atomically within one MIDI source,
+whether its owning clip is in Arrangement or Session.
+Nonempty batches are capped at `MAX_NOTES`; IDs must be unique and owned by that
+clip. Update records replace all canonical note fields, validating every record
+before mutation. Untouched order/IDs are retained; removals compact in one pass.
+One successful changed batch is one history step. `hex-session` additionally
+compiles the candidate before committing, so runtime budget rejection preserves
+the prior project/history. Selection and group preview remain UI responsibilities.
+
+`AddMidiNotes` inserts a nonempty clip-scoped batch of `MidiNoteInsert` records.
+All fields, final project-wide note count, storage and the complete ID range are
+admitted before note mutation. Records append in input order; identical musical
+values are permitted. `Created::Notes` reports the owning clip and inclusive
+contiguous first/last IDs while remaining Copy. A successful batch is one history
+step; undo retains the allocator high-water and redo restores the same notes/IDs.
+Mixed insertion/removal is provided by `EditMidiNotes`; continuous draw previews
+remain a UI dependency.
+
+`midi_batch` contains shared admission, stable compaction and ordered append for
+insertion, removal and mixed commands. Mixed removals and insertions validate as
+one transaction; storage reserves only net growth and global capacity reflects
+removed notes. Erase-only uses no IDs. Rejected candidate preparation preserves
+notes slated for removal and does not publish a replacement playback graph.
+
+`Editor::undo_prepared` and `Editor::redo_prepared` prepare the target history
+snapshot before moving either stack. A failed compiler or validator leaves the
+current project, allocator high-water and undo/redo order unchanged; successful
+preparation returns its artifact with the committed history transition.

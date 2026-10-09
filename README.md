@@ -1,0 +1,264 @@
+# Hex
+
+An independent Rust DAW reconstruction project. The long-term goal is to study
+Ableton Live through behavior experiments and targeted decompilation, then
+reimplement the required workflows and audio behavior in Rust.
+
+Reference: `/Applications/Ableton Live 12 Suite.app`, version
+**12.4.6 (2026-09-10_0de5c8fa9a)**. Start with its arm64 slice.
+See [reference inventory](docs/research/reference.md).
+
+## Current state
+
+The default GPUI desktop now edits a canonical audio project, with background WAV
+import, cached waveforms, compiled CoreAudio playback, track gain/balance/mute/solo
+and master gain, clip nudge/trim/delete/split/duplicate, editable linear fades and source-implemented pointer dragging, timeline zoom/pan/fit,
+undo/redo, project
+open/save/save-as and background PCM16 WAV export. The older four-track generated
+Arrangement/Session prototype remains available with `--demo`.
+App text uses lowercase and embedded Ioskeley Mono with compact Yield styling.
+Canonical Session scenes and independent MIDI/stop cells persist in schema 11.
+Every revision prepares their immutable inventory before edits/history/open commit,
+with compatible source reuse and structural per-track work envelopes. Playback
+retains that exact artifact while rendering Arrangement. A separate headless
+SessionPlayback kernel supports mixed track routes, quantized launches and bounded
+outgoing releases, loop-aware tempo and transactional phase-preserving revision
+handoff. Prepared native Playback now delegates capable graphs to that kernel;
+bounded action/publication queues retain transient handoff refusals, report
+permanent rejections and reclaim graphs off the callback. The canonical editor
+now has a compact Session grid and shared MIDI source editor, with atomic
+clip/scene launch-and-play, ticketed rapid launch/toggle intent, ordered priority
+Stop, and accepted-revision active/queued route indicators. Native Session
+interaction remains unverified.
+
+This is an early working foundation. Recording, MIDI I/O/expression, warp, routing, device
+selection, plugin hosting and Live-set compatibility remain planned. A bounded
+fade-controller callback/target has been decompiled into private research storage;
+its types/control-flow warnings remain unresolved and no audio behavior is matched. Project-open validation and
+schema migration pass source tests; final native replacement acceptance remains open.
+Token-checked existing-project replacement and create-new Save As are implemented
+in the session and editor source; fresh native Save/Save As interaction acceptance
+remains open. Asset relinking is deferred.
+
+## Run
+
+```sh
+cargo run -p hex-desktop
+cargo run -p hex-desktop -- --demo
+# Or create the local development app, then open artifacts/hex.app:
+sh scripts/bundle-macos.sh
+python3 scripts/check-architecture.py
+python3 scripts/check-ui-style.py
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+mkdir -p artifacts
+cargo run -p hex-cli -- demo artifacts/hex-demo.wav
+cargo run -p hex-cli -- edit-demo artifacts/hex-edited-demo.wav
+cargo run -p hex-cli -- render-wav source.wav artifacts/imported.wav
+cargo run -p hex-cli -- import-project source.wav artifacts/project.hex
+cargo run -p hex-cli -- render-project artifacts/project.hex artifacts/project.wav
+cargo run -p hex-cli -- recover-project artifacts/project.hex artifacts/recovered.hex
+```
+
+The bundle script refuses to overwrite a running development app, including
+macOS case-insensitive `Hex.app` aliases. Close the development app first or use
+a separately named review bundle to preserve an unsaved project.
+
+The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by
+seven repetitions of an enveloped 220 Hz tone. Output creation refuses to
+overwrite an existing file. The engine preserves floating-point headroom;
+WAV export clamps to the 16-bit range. Listening acceptance remains pending.
+
+## Project map
+
+- `crates/hex-project`: canonical editable metadata, stable IDs, validated commands and history.
+- `crates/hex-media`: bounded WAV decoding and cached stereo peak summaries.
+- `crates/hex-stream`: verified WAV worker, fixed page pool/cache and ownership queues; headless streamed engine rendering, with native integration pending.
+- `crates/hex-session`: canonical controller, retained media and bounded background operations.
+- `crates/hex-storage`: versioned metadata, create-new files and token-checked recovery replacement.
+- `crates/hex-engine`: project compiler, platform-independent timeline and renderer.
+- `crates/hex-devices`: prepared original sine/envelope DSP.
+- `crates/hex-audio`: device streams and bounded audio controls.
+- `crates/hex-library`: bounded background folder, WAV and project listings.
+- `crates/hex-ui`: GPUI shell, compact left browser, lowercase display text, bundled Ioskeley Mono.
+- `crates/hex-desktop`: startup and composition only.
+- `crates/hex-export`: shared fixed-block linear PCM16 WAV export and create-new publication.
+- `crates/hex-cli`: generated audio and headless WAV export through hex-export.
+- [Plan](docs/plan.md): stages and acceptance gates.
+- [Architecture](docs/architecture.md): implemented contracts and future boundaries.
+- [Research workflow](docs/research/workflow.md): evidence and decompilation process.
+- [todo.md](todo.md): ordered implementation and research backlog.
+
+“Pure Rust” means Hex's application logic, scheduling, and DSP are Rust.
+GPUI 0.2.2 uses the native macOS UI/GPU boundary and CPAL 0.17.3 uses CoreAudio;
+these are intentional system interfaces. `rtrb` 0.3.4 provides a bounded SPSC
+control queue. `hex-project` uses only the standard library; `hex-engine` depends on that model and std-only `hex-devices` DSP. All workspace
+code forbids unsafe Rust; native dependencies may use FFI internally.
+
+Desktop shortcuts: Space plays/pauses; Escape cancels an active clip drag, otherwise
+stops and returns to start; the Stop icon always stops transport;
+Command-I imports a WAV; Command-O opens a project; Command-S saves its associated
+file, or opens Save As when untitled; Command-Shift-S always opens create-new Save
+As. Command-Z and
+Command-Shift-Z undo/redo. Select a clip, then Left/Right nudges it by a quarter
+second, Shift-Left/Right adjusts its end, and Delete/Backspace removes it. Command-D duplicates it immediately after
+its end; rapid repeated presses chain from returned canonical IDs. Command-E
+splits a selected one-shot clip at the playback cursor, preserving its source
+audio; looping clips and out-of-range cursors are explicitly refused.
+Pointer dragging moves an audio clip within or between tracks using one undoable
+edit on drop; Escape or dropping outside a lane cancels. Stale/project-busy drops
+are refused. Snap grids, trim handles and drag autoscroll remain planned; fresh
+native drag acceptance is open.
+Selected-clip fade controls occupy the existing mixer strip, with 5 ms steps,
+compact readouts and an envelope preview. Splits preserve the original envelope;
+editing or trimming reanchors it. Native edit/save/undo/redo passed on an original
+muted fixture. Listening, curve adjustment and Live fade-law parity remain open.
+See [clip fade contract](docs/clip-fades.md).
+Click the timeline ruler to seek; splitting waits for seek acknowledgment.
+Up/Down selects tracks; S toggles exclusive solo and Shift-S additive solo.
+Compact zoom buttons change the viewport; Alt-Left/Right pans and Command-0 fits.
+Command-Plus zooms in and Command-Minus zooms out (also bound to Command-Equal
+where the keyboard layout delivers it). Command-L sets/enables the loop from the
+selected clip; L toggles it. Native loop playback honors this region; CLI export
+renders the linear arrangement.
+Command-Shift-E exports the current linear Arrangement to a new stereo PCM16 WAV
+in the background. It captures the latest compiled revision, writes from frame
+zero through the latest clip end, ignores the global loop, and refuses empty
+projects or an existing destination. One export may be active at a time; closing
+while it is pending warns that it may not finish.
+Command-Q quits. Initial project rate follows the output device; mixed-rate WAVs
+are converted on the background worker. Opening still requires the saved project
+rate to match the active device. When output fails, the ⟳ toolbar action requests a
+restart of the default output and restores the current project graph while
+staying stopped. Device selection is not available. Recovery source checks pass;
+physical device failure/restart and listening acceptance remain open.
+
+See [feature roadmap](docs/features.md), [runtime design](docs/runtime.md), and
+[performance baseline](docs/performance.md). The app is a local development build,
+with no signing, installer, or distribution release.
+
+Native export was accepted on a fresh development bundle: revision 1 exported
+507,150 frames at 44.1 kHz, stereo PCM16. Its WAV matched an independent linear
+render byte-for-byte. This confirms the tested fixture and path only; listening
+quality and sustained export performance remain unverified. Progress, cancellation,
+overwrite, stems, and user-selected ranges are not implemented.
+
+[PhotoCraft](https://github.com/storytold/photocraft) is the engineering reference;
+[adaptation notes](docs/reference-project.md) separate adopted patterns from future
+work. Crate responsibilities are documented in each crate's README and checked
+by the architecture policy. [UI rules](docs/ui-design.md) require lowercase app
+text and embedded Ioskeley Mono; attribution is in ATTRIBUTION.md.
+
+The scripted `edit-demo` trims the source region, moves the start to beat three,
+reduces gain and exercises undo/redo before export. It demonstrates the control-side
+model and compiler; the native editor now dispatches the same validated project commands.
+See [implementation issues](docs/issues.md) for constraints and next acceptance steps.
+
+Imported WAV support: mono/stereo PCM16/24/32 and float32, 8–192 kHz, finite
+samples only. Initial CLI ceilings are 64 MiB input and 8 million resident stereo
+frames; project rendering enforces that frame budget across referenced assets.
+Source-rate conversion uses a versioned windowed-sinc filter; same-rate PCM stays
+bit-identical. Source decode and prepared playback have separate 8-million-frame
+limits. Native playback/import remains resident. The headless `hex-stream` worker
+and borrowed engine renderer now support bounded verified pages; native Session,
+publication, history and export integration remains pending. No device hosting yet.
+Track balance ranges from -1 to 1 with unity center; the original Hex linear
+balance attenuates the opposite channel without boost or crossfeed. Master gain
+ranges from 0 to 2 and applies after track summing without a limiter. These are
+Hex-defined controls; Live pan-law parity has not been measured. Project schema 11
+preserves original source rate/count, prepared playback length, conversion version,
+solo, loop, balance, master gain, fixed clip-fade domains and ID high-water state.
+Schema 1 migrates identity media; schema 1/2 tracks default to solo off, and
+schema 1/2/3 projects default to no loop region. Schemas 1–4 default new mixer
+fields to center balance and unity master gain. Schemas 1–5 migrate to neutral
+clip fades; schemas 1–6 migrate loop source phase to zero. Schemas 1–7 receive
+120 bpm and 4/4 canonical tempo/meter defaults. Schemas 8–11 preserve bounded tempo
+and meter maps, including midbar meter changes. Existing audio stays frame-anchored
+when these maps change; audio warping and beat-anchored audio remain future work.
+See [docs/musical-time.md](docs/musical-time.md) for conversion and rounding rules.
+Schema 9 tags audio versus instrument track contents and preserves headless MIDI
+notes with musical clip anchors and stable IDs. Schemas 1–8 migrate all tracks as
+audio. Schema 10 adds independent MIDI source/start/loop settings and finite
+Arrangement duration; schema 9 migrates to unchanged one-shot defaults.
+Schema 11 adds stable scenes and sparse Session cells with independently owned
+named MIDI sources or explicit stop cells; schemas 1–10 migrate to an empty grid.
+Source copies allocate fresh clip/note IDs, and commands/history preserve both
+ownership locations. Session data, source preparation and a headless mixed-route
+launch kernel and periodic loop-aware tempo are implemented. Native prepared
+publication and action queues, compact grid and shared Session-source piano-roll
+integration and accepted-revision active/queued grid indicators are implemented
+in source. Native interaction remains pending.
+Canonical source edits, looped playback/export and source-aware piano bounds are implemented;
+prepared loop thumbnails and compact source controls are integrated; native
+minimum-layout and listening acceptance remain pending. Instrument
+tracks now render an original sine instrument through shared
+native/offline playback, with bounded voices and checked candidate compilation.
+Native cmd+shift+t creates a hybrid track; cmd+shift+m creates a four-quarter
+MIDI clip. Selecting it opens a compact piano roll for insertion, pitch/onset/gate/
+velocity edits and delete/undo. Musical clips support move/duplicate/delete and
+Save/reopen. Direct body drag and both edge resizes preview locally and commit one edit;
+off-roll release cancels. Native move/resize/undo and exact saved normal/short-note
+metadata checks pass. The cached Canvas paints all visible notes, supports overlap
+cycling and local zoom/fit/pan, and passes native 600-note and minimum-window
+checks. Configurable fixed/free grids pass native author/move/resize/save checks.
+Normal/draw modes, Shift/marquee/select-all selection and atomic group body move/
+delete are implemented. Native group saved-value/history, no-op/off-roll and
+focused single-note arrow checks pass. Native additive marquee, held-modifier gestures, held-Escape and measured
+input/paint timing remain work. Group arrow movement/transposition, undo/redo,
+boundary no-op and minimum layout pass native checks. Continuous Draw mode now
+previews insertions/erasures locally and commits one mixed edit on release, with
+pitch-lock/melodic controls and cancellation on stale context, focus or resize.
+Source tests pass; initial native locked drawing passes visual/revision checks,
+but pristine saved stroke/history/erasure acceptance remains open. See
+[draw acceptance](research/observations/midi-draw-native-001.md).
+Hold Cmd while inserting or dragging a note/edge to invert snapping temporarily;
+Native saved-value checks cover both insertion inversion directions; held-modifier
+dragging and mid-drag toggles remain source-tested with native acceptance open.
+See [docs/midi.md](docs/midi.md) for rendering limits and remaining workflows.
+Unknown fields/versions are
+rejected. Save As refuses overwrites. Existing-file
+Save Current uses a captured content token, one validated rolling recovery file,
+and atomic replacement; an external content change causes a conflict. If a
+create-new publication succeeds but cleanup or directory synchronization fails,
+the save error names the already-published path and the editor conservatively
+keeps the project marked unsaved. Native Save/Save As interaction acceptance and
+asset relinking remain open. Prepared
+playback handoff connects the canonical editor to CPAL; graph
+retirement and stream disposal stay away from the realtime callback.
+
+`recover-project` explicitly copies a valid recovery sidecar to a new project
+path after validating it. It preserves the existing target and sidecar; there is
+no automatic crash journal or recovery on startup.
+
+Opening validates every saved asset before replacing the project; failure leaves
+the current session intact. A nonempty project requires invoking open again to
+confirm discarding it. Saving an opened project into another directory resolves
+relative asset references against its original document directory, preserving
+path spelling/case without mutating current history.
+
+The editor marks unsaved work and guards ordinary window-close/Cmd-Q with an
+asynchronous cancel-first discard prompt, including pending operations. Undo
+conservatively marks the project unsaved. Forced termination and app-level OS
+quit are not crash-recovery mechanisms; a recovery journal remains planned.
+Native and CLI defaults both cap resident audio at 8,000,000 stereo frames.
+
+## Hybrid-track update — 9 October 2026
+
+Every canonical track now accepts audio and MIDI clips under one stable track
+identity and shared mixer controls. Schema 13 stores both clip collections;
+legacy schemas 1–12 migrate their typed contents without splitting tracks.
+Arrangement sources sum when overlapping; Session cells remain one source per
+track/scene and may alternate audio or MIDI on the same track. Source-based
+editing retains frame-anchored audio and beat-anchored MIDI.
+
+Workspace tests/lints/build, independent exact-sum rendering and schema/history
+acceptance, GPUI support tests and callback allocation probes pass. User native
+acceptance and the review build are tracked in
+[hybrid tracks](docs/hybrid-tracks.md) and todo.md. Original sine playback remains
+the MIDI instrument; device chains/plugin hosting are separate future work.
+
+## Source repository
+
+Private development repository: https://github.com/PORTALSURFER/hex.
+Build artifacts, private reference analysis and local caches remain ignored.
+Distribution licensing and public release remain undecided.

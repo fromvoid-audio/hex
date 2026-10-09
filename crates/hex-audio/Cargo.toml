@@ -1,0 +1,22 @@
+[package]
+name = "hex-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Instrumented headless tests only; never referenced by production code.
+allocation-probe = []
+
+[dependencies]
+hex-engine = { path = "../hex-engine" }
+cpal = "=0.17.3"
+rtrb = "=0.3.4"
+
+[dev-dependencies]
+hex-project = { path = "../hex-project" }
+allocation-counter = "=0.8.1"
+
+[lints]
+workspace = true

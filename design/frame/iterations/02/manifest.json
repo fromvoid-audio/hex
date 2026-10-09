@@ -1,0 +1,36 @@
+{
+  "iteration": 2,
+  "acceptedDate": "2026-10-08",
+  "revision": "hex-live-r67",
+  "themeRevision": "hex-theme-r43",
+  "status": "approved iteration 2 with subsequent user-requested cool-accent refinement",
+  "previousApprovedSnapshot": "approved-r66/",
+  "size": {
+    "width": 1900,
+    "height": 1120
+  },
+  "files": {
+    "hex-live-r67.json": "c7ee9e6b44ea7d037d0a20deefe56b1ea84cf4b6e392a009bc8f1f2ac6e536dc",
+    "hex.frame.json": "39920cb983f6aeb1129b5d021f1e7baf9a66a1436c07d1fcdf637e6aabe1657c",
+    "arrangement.png": "c75660ddb8cc318dc2d8874a22ad481eb6025bd609f8c51a985c608ec372e78f",
+    "session.png": "fc299603f584738fede8b44466e616b7072ce5720eb811eb4b21cb19603db9f9",
+    "palette.png": "3535e82337594775e7b86024ec68d9b8309ca4ac5431499728116fb4cf05a5ba",
+    "theme-palette.png": "f04e095c16a8b65e51ba568168a86d79b210c5077e0c1efe554805ea9cf7d6bf",
+    "theme-palette.json": "a64d631e4c3269b95b3da0bb078429664862f1b623fa38e5beb008d61d955fcb",
+    "theme-palette.frame.json": "fd80c77a683d8adb3798d0c86231e3442f6de8a39498c185244aac73bdbcba42",
+    "live-layout-styleguide.json": "06282fff132be044fae4f906ef478c2f01be4b9df956f10d0891175120a9e32d",
+    "clip-colors.json": "8e7b374359b50e703d7d1b71fe7cbf18dc9e956ea5f8d95bedbb12cc9b4b0338",
+    "review.json": "36a2b2d5f091fffccd5668045abccfe82c27bfca9188c7d9337ca1520dc7db3c",
+    "build_live_study.py": "fe4a4a60d78690571f423d91c0206d4277bfd6af10c3d7a0cb84f0fe266b5c25",
+    "theme_palette.py": "29a4ee9815d59d85bc0399298bee845308ea785375153f5a486d536e4162d11d",
+    "clip_palette.py": "64f4ed193d7b526006b819f8cfe3283dd1ca792cc8edb43023b357cc115e09ae",
+    "load.js": "31bc611bf52a957628725da7bc1eb8ffee2ab186f83d54f0b7f20e8a2fabb001",
+    "states/playing.png": "c75660ddb8cc318dc2d8874a22ad481eb6025bd609f8c51a985c608ec372e78f",
+    "states/index.html": "d4abcafffffc5b8c3d30c0a3d61c000211b8da52f268cb0e69f235daad47f4b9",
+    "states/session.png": "22c509de1f6033a7f546a6200f6b4e378bc6248fae9da8afb35dd67bd2b68565",
+    "states/session-playing.png": "fc299603f584738fede8b44466e616b7072ce5720eb811eb4b21cb19603db9f9",
+    "states/README.md": "3b986dc1dbaafc6322b4affc0c442a3d196a674e406f5a9dd76ca65f547d644b",
+    "states/default.png": "be25fc687eb4dadd539b7eb1330e9dacb345bb13465da73a2803bb0de40505c7",
+    "states/clip-colors.png": "3535e82337594775e7b86024ec68d9b8309ca4ac5431499728116fb4cf05a5ba"
+  }
+}

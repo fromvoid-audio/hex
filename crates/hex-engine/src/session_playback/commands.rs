@@ -1,0 +1,549 @@
+use super::*;
+use crate::MidiTiming;
+
+impl SessionPlayback {
+    pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        match command {
+            SessionPlaybackCommand::Play => self.playing = true,
+            SessionPlaybackCommand::Pause => self.playing = false,
+            SessionPlaybackCommand::Stop => {
+                if self.stop_transport() {
+                    self.advance_route_state_generation();
+                }
+            }
+            SessionPlaybackCommand::Seek(frame) => self.seek(frame)?,
+            SessionPlaybackCommand::CancelPending { track } => {
+                let mut changed = false;
+                if let Some(track) = track {
+                    let index = self.route_index(track)?;
+                    changed = self.routes[index].pending.take().is_some();
+                } else {
+                    for route in &mut self.routes {
+                        changed |= route.pending.take().is_some();
+                    }
+                }
+                if changed {
+                    self.advance_route_state_generation();
+                }
+            }
+            command => self.apply_route_command(command)?,
+        }
+        Ok(())
+    }
+
+    fn stop_transport(&mut self) -> bool {
+        let mut changed = self.performance_frame != 0;
+        self.playing = false;
+        self.performance_frame = 0;
+        self.arrangement_frame = 0;
+        self.anchor = None;
+        self.historical_floor = None;
+        self.releases.clear();
+        self.suppressions.clear();
+        self.release_order = 0;
+        for route in &mut self.routes {
+            changed |= route.pending.take().is_some();
+            if let RouteOwner::Session { clip, launch } = route.owner {
+                changed |= launch != BeatTime::ZERO;
+                route.owner = RouteOwner::Session {
+                    clip,
+                    launch: BeatTime::ZERO,
+                };
+            }
+            if let RouteOwner::SessionAudio { clip, launch_frame } = route.owner {
+                changed |= launch_frame != 0;
+                route.owner = RouteOwner::SessionAudio {
+                    clip,
+                    launch_frame: 0,
+                };
+            }
+        }
+        changed
+    }
+
+    fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo);
+        let beat = base_timing
+            .frame_to_beat(frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let mut changed = self.performance_frame != frame;
+        for route in &self.routes {
+            changed |= route.pending.is_some();
+            if let RouteOwner::Session { launch, .. } = route.owner {
+                changed |= launch != beat;
+            }
+            if let RouteOwner::SessionAudio { launch_frame, .. } = route.owner {
+                changed |= launch_frame != frame;
+            }
+        }
+        self.performance_frame = frame;
+        self.arrangement_frame = frame;
+        self.anchor = None;
+        self.releases.clear();
+        self.suppressions.clear();
+        self.historical_floor = None;
+        self.release_order = 0;
+        for route in &mut self.routes {
+            route.pending = None;
+            if let RouteOwner::Session { clip, .. } = route.owner {
+                route.owner = RouteOwner::Session { clip, launch: beat };
+            }
+            if let RouteOwner::SessionAudio { clip, .. } = route.owner {
+                route.owner = RouteOwner::SessionAudio {
+                    clip,
+                    launch_frame: frame,
+                };
+            }
+        }
+        if changed {
+            self.advance_route_state_generation();
+        }
+        Ok(())
+    }
+
+    fn route_index(&self, track: TrackId) -> Result<usize, SessionPlaybackError> {
+        self.routes
+            .iter()
+            .position(|route| route.id == track)
+            .ok_or(SessionPlaybackError::UnknownTrack)
+    }
+
+    fn apply_route_command(
+        &mut self,
+        command: SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
+        self.route_scratch.copy_from_slice(&self.routes);
+        self.release_scratch.clear();
+        self.release_scratch.extend_from_slice(&self.releases);
+        self.release_order_scratch = self.release_order;
+        self.suppression_scratch.clear();
+        self.suppression_scratch.extend(
+            self.suppressions
+                .iter()
+                .copied()
+                .filter(|entry| entry.until_frame > self.performance_frame),
+        );
+        self.release_scratch
+            .retain(|entry| entry.voice.end_frame() > self.performance_frame);
+        let (target_frame, target_beat) = match command {
+            SessionPlaybackCommand::LaunchClip { quantization, .. }
+            | SessionPlaybackCommand::LaunchScene { quantization, .. }
+            | SessionPlaybackCommand::StopTrack { quantization, .. }
+            | SessionPlaybackCommand::StopAllClips { quantization }
+            | SessionPlaybackCommand::BackToArrangement { quantization } => {
+                self.scheduled_at(quantization)?
+            }
+            _ => return Err(SessionPlaybackError::InvalidCommand),
+        };
+        let immediate = !self.playing || target_frame == self.performance_frame;
+        let moment = TransitionMoment {
+            target_frame,
+            target_beat,
+            immediate,
+            source_frame: self.arrangement_frame,
+            performance_frame: self.performance_frame,
+        };
+        match command {
+            SessionPlaybackCommand::LaunchClip { clip, .. } => {
+                let track = self
+                    .revision
+                    .session()
+                    .midi_clip(clip)
+                    .map(|prepared| prepared.track)
+                    .or_else(|| {
+                        self.revision
+                            .session()
+                            .audio_clip(clip)
+                            .map(|prepared| prepared.track)
+                    })
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let index = self.route_index(track)?;
+                self.set_route(index, RouteTarget::Session(clip), moment)?;
+            }
+            SessionPlaybackCommand::LaunchScene { scene, .. } => {
+                let (start, end) = self
+                    .revision
+                    .session()
+                    .scene_cell_range(scene)
+                    .ok_or(SessionPlaybackError::UnknownScene)?;
+                for scene_position in start..end {
+                    let cell_index = self
+                        .revision
+                        .session()
+                        .scene_cell_index(scene_position)
+                        .ok_or(SessionPlaybackError::UnknownScene)?;
+                    let Some(cell) = self.revision.session().cells().get(cell_index).copied()
+                    else {
+                        return Err(SessionPlaybackError::UnknownScene);
+                    };
+                    let target = match cell.content {
+                        crate::PreparedSessionCellContent::Stop => RouteTarget::Silence,
+                        crate::PreparedSessionCellContent::Midi(clip) => {
+                            let prepared = self
+                                .revision
+                                .session()
+                                .midi_clip(clip)
+                                .ok_or(SessionPlaybackError::UnknownClip)?;
+                            if prepared.track != cell.track {
+                                return Err(SessionPlaybackError::ClipTrackMismatch);
+                            }
+                            RouteTarget::Session(clip)
+                        }
+                        crate::PreparedSessionCellContent::Audio(clip) => {
+                            let prepared = self
+                                .revision
+                                .session()
+                                .audio_clip(clip)
+                                .ok_or(SessionPlaybackError::UnknownClip)?;
+                            if prepared.track != cell.track {
+                                return Err(SessionPlaybackError::ClipTrackMismatch);
+                            }
+                            RouteTarget::Session(clip)
+                        }
+                    };
+                    let index = self.route_index(cell.track)?;
+                    self.set_route(index, target, moment)?;
+                }
+            }
+            SessionPlaybackCommand::StopTrack { track, .. } => {
+                let index = self.route_index(track)?;
+                self.set_route(index, RouteTarget::Silence, moment)?;
+            }
+            SessionPlaybackCommand::StopAllClips { .. } => {
+                for index in 0..self.route_scratch.len() {
+                    self.set_route(index, RouteTarget::Silence, moment)?;
+                }
+            }
+            SessionPlaybackCommand::BackToArrangement { .. } => {
+                for index in 0..self.route_scratch.len() {
+                    self.set_route(index, RouteTarget::Arrangement, moment)?;
+                }
+            }
+            _ => return Err(SessionPlaybackError::InvalidCommand),
+        }
+        self.check_release_reservations(&self.route_scratch, self.release_scratch.len())?;
+        self.release_scratch
+            .sort_unstable_by_key(|entry| (entry.track_index, entry.order));
+        let route_changed = self.routes != self.route_scratch;
+        std::mem::swap(&mut self.routes, &mut self.route_scratch);
+        std::mem::swap(&mut self.releases, &mut self.release_scratch);
+        std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
+        self.release_order = self.release_order_scratch;
+        if route_changed {
+            self.advance_route_state_generation();
+        }
+        Ok(())
+    }
+
+    fn scheduled_at(
+        &self,
+        quantization: LaunchQuantization,
+    ) -> Result<(u64, BeatTime), SessionPlaybackError> {
+        let timing = self.timing_view();
+        if !self.playing || quantization == LaunchQuantization::Immediate {
+            let beat = timing
+                .frame_to_beat(self.performance_frame)
+                .map_err(|_| SessionPlaybackError::TempoConversion)?;
+            return Ok((self.performance_frame, beat));
+        }
+
+        let current = timing
+            .frame_to_beat(self.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let bar_count = current.raw() / FOUR_QUARTERS_RAW;
+        let last_boundary_raw = bar_count
+            .checked_mul(FOUR_QUARTERS_RAW)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let last_boundary = BeatTime::from_raw(last_boundary_raw);
+        if self
+            .anchor
+            .is_none_or(|anchor| last_boundary >= anchor.old_beat)
+            && timing
+                .beat_to_frame(last_boundary)
+                .map_err(|_| SessionPlaybackError::TempoConversion)?
+                == self.performance_frame
+        {
+            return Ok((self.performance_frame, last_boundary));
+        }
+        let next_raw = bar_count
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(FOUR_QUARTERS_RAW))
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let next = BeatTime::from_raw(next_raw);
+        let frame = timing
+            .beat_to_frame(next)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?
+            .max(self.performance_frame);
+        Ok((frame, next))
+    }
+
+    fn set_route(
+        &mut self,
+        index: usize,
+        target: RouteTarget,
+        moment: TransitionMoment,
+    ) -> Result<(), SessionPlaybackError> {
+        let owner = self
+            .route_scratch
+            .get(index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?
+            .owner;
+        if moment.immediate {
+            if transition_captures(owner, target) {
+                self.capture_outgoing(index, owner, moment.source_frame, moment.performance_frame)?;
+            }
+            let next_owner =
+                self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
+            let route = self
+                .route_scratch
+                .get_mut(index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            route.pending = None;
+            route.owner = next_owner;
+            self.suppression_scratch
+                .retain(|entry| entry.track != route.id);
+        } else {
+            let route = self
+                .route_scratch
+                .get_mut(index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            route.pending = Some(PendingRoute {
+                frame: moment.target_frame,
+                beat: moment.target_beat,
+                target,
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn capture_outgoing(
+        &mut self,
+        index: usize,
+        owner: RouteOwner,
+        source_frame: u64,
+        performance_frame: u64,
+    ) -> Result<(), SessionPlaybackError> {
+        let arrangement = self.revision.arrangement();
+        match owner {
+            RouteOwner::Arrangement => {
+                let track = arrangement
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let mut failure = None;
+                let mut next_order = self.release_order_scratch;
+                track
+                    .for_each_active_midi_span(source_frame, |span| {
+                        let voice = match MidiReleaseVoice::from_finite_span(
+                            span.start,
+                            span.gate_end,
+                            span.end,
+                            span.voice,
+                            source_frame,
+                            performance_frame,
+                        ) {
+                            Ok(voice) => voice,
+                            Err(_) => {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            }
+                        };
+                        if let Some(voice) = voice {
+                            let Some(route) = self.routes.get(index) else {
+                                failure = Some(SessionPlaybackError::UnknownTrack);
+                                return;
+                            };
+                            if let Err(error) = append_release(
+                                &mut self.release_scratch,
+                                self.release_capacity,
+                                &mut next_order,
+                                ReleaseEntry {
+                                    track_index: index,
+                                    track_id: route.id,
+                                    order: 0,
+                                    mix: track.mix(),
+                                    continuation: None,
+                                    voice,
+                                },
+                            ) {
+                                failure = Some(error);
+                            }
+                        }
+                    })
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                self.release_order_scratch = next_order;
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+            }
+            RouteOwner::Session { clip, launch } => {
+                // A prior handoff may have copied active held voices into the
+                // shared release bank. Cut those copies in-place in scratch
+                // before querying the current template so they are neither
+                // left ringing nor captured twice.
+                for entry in &mut self.release_scratch {
+                    if entry.track_id != self.routes[index].id || entry.continuation.is_none() {
+                        continue;
+                    }
+                    entry.voice = entry
+                        .voice
+                        .reconcile_at(performance_frame, None)
+                        .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    entry.continuation = None;
+                }
+                let prepared = self
+                    .revision
+                    .session()
+                    .midi_clip(clip)
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                if prepared.track != self.routes[index].id {
+                    return Err(SessionPlaybackError::ClipTrackMismatch);
+                }
+                let end = performance_frame
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                let timing =
+                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                let template = prepared.instrument_template();
+                if let Some(floor) = self.historical_floor {
+                    template
+                        .query_after_onset(
+                            launch,
+                            &timing,
+                            performance_frame,
+                            end,
+                            &mut self.spans,
+                            floor,
+                        )
+                        .map_err(SessionPlaybackError::Midi)?;
+                } else {
+                    template
+                        .query(launch, &timing, performance_frame, end, &mut self.spans)
+                        .map_err(SessionPlaybackError::Midi)?;
+                }
+                for span in self.spans.spans() {
+                    if is_suppressed_in(
+                        &self.suppression_scratch,
+                        self.routes[index].id,
+                        ContinuationKey {
+                            clip: span.clip,
+                            note: span.note,
+                            iteration: span.iteration,
+                        },
+                        performance_frame,
+                    ) {
+                        continue;
+                    }
+                    if let Some(voice) = span
+                        .release_at(performance_frame)
+                        .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+                    {
+                        let route = self
+                            .routes
+                            .get(index)
+                            .ok_or(SessionPlaybackError::UnknownTrack)?;
+                        let mix = arrangement
+                            .tracks()
+                            .get(index)
+                            .ok_or(SessionPlaybackError::UnknownTrack)?
+                            .mix();
+                        append_release(
+                            &mut self.release_scratch,
+                            self.release_capacity,
+                            &mut self.release_order_scratch,
+                            ReleaseEntry {
+                                track_index: index,
+                                track_id: route.id,
+                                order: 0,
+                                mix,
+                                continuation: None,
+                                voice,
+                            },
+                        )?;
+                    }
+                }
+            }
+            RouteOwner::SessionAudio { .. } => {}
+            RouteOwner::Silence => {}
+        }
+        Ok(())
+    }
+
+    fn owner_voice_budget(&self, index: usize, owner: RouteOwner) -> usize {
+        match owner {
+            RouteOwner::Arrangement => self
+                .revision
+                .arrangement()
+                .tracks()
+                .get(index)
+                .filter(|track| track.has_instrument_source())
+                .map_or(0, |_| MAX_SIMULTANEOUS_VOICES_PER_TRACK),
+            RouteOwner::Session { clip, .. } => self
+                .revision
+                .session()
+                .midi_clip(clip)
+                .map_or(0, |prepared| prepared.work.active_voices),
+            RouteOwner::SessionAudio { .. } => 0,
+            RouteOwner::Silence => 0,
+        }
+    }
+
+    fn check_release_reservations(
+        &self,
+        routes: &[TrackRoute],
+        release_count: usize,
+    ) -> Result<(), SessionPlaybackError> {
+        let reserved = routes
+            .iter()
+            .enumerate()
+            .try_fold(0_usize, |sum, (index, route)| {
+                let pending = if route
+                    .pending
+                    .is_some_and(|pending| transition_captures(route.owner, pending.target))
+                {
+                    self.owner_voice_budget(index, route.owner)
+                } else {
+                    0
+                };
+                sum.checked_add(pending)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)
+            })?;
+        if release_count
+            .checked_add(reserved)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?
+            > self.release_capacity
+        {
+            return Err(SessionPlaybackError::ReleaseBankFull);
+        }
+        Ok(())
+    }
+}
+
+fn is_suppressed_in(
+    suppressions: &[MidiOccurrenceSuppression],
+    track: TrackId,
+    key: ContinuationKey,
+    frame: u64,
+) -> bool {
+    suppressions
+        .binary_search_by(|entry| {
+            (entry.track, entry.clip, entry.note, entry.iteration).cmp(&(
+                track,
+                key.clip,
+                key.note,
+                key.iteration,
+            ))
+        })
+        .ok()
+        .and_then(|index| suppressions.get(index))
+        .is_some_and(|entry| entry.until_frame > frame)
+}
+
+pub(super) fn transition_captures(owner: RouteOwner, target: RouteTarget) -> bool {
+    !matches!(
+        (owner, target),
+        (RouteOwner::Arrangement, RouteTarget::Arrangement)
+            | (RouteOwner::Silence, RouteTarget::Silence)
+    )
+}
