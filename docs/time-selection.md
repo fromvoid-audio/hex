@@ -82,3 +82,26 @@ value changes. Nonzero time areas remain steady and do not drive pulse redraws.
 Source tests cover intermediate colors, exact cycle endpoints, skipped timer
 ticks, handle extent/hand cursor, reselection inside a previous area, and both
 gesture zones over selected clips. Native animation smoothness remains a user check.
+
+## time-chunk landing preview — 9 October 2026
+
+While the upper-third handle moves a time rectangle, draw its audio fragments
+and cached MIDI note shapes at the proposed destination. Hide the selected
+portions at source and hide content inside the replacement destination rectangle;
+keep outside tails visible. The preview includes gaps and preserves relative row
+and frame offsets, including overlapping moves. At the original location or an
+invalid/outside drop target, restore the ordinary source display. Keep a submitted
+move preview until its worker result arrives, and restore the source on rejection.
+
+`hex-project::preview_clip_fragment` slices only validated audio metadata with
+the original clip ID, source mapping and fade domain. It does not mutate the
+project or allocate PCM. UI previews borrow the existing waveform cache and
+prepared finite MIDI thumbnails; pointer updates do not compile, capture a
+clipboard or expand MIDI occurrences. Render work is limited to visible rows and
+the corresponding source rows, with the existing MIDI shape budget.
+
+Native checklist: move a mixed audio/MIDI time chunk across rows and earlier/later
+in time; check source and destination tails, silent cells and overlapping moves;
+leave the valid lanes or cancel and confirm the original display returns; release,
+Undo and confirm the preview matches the committed clip positions. Native
+smoothness, detailed waveform appearance and listening remain user acceptance.

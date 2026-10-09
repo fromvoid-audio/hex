@@ -47,6 +47,7 @@ mod session_navigation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_navigation_ui_test;
 mod session_route_view;
+mod time_move_preview;
 mod time_selection;
 mod tracks;
 mod transport;

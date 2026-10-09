@@ -1,4 +1,8 @@
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
+use super::time_move_preview::{
+    clip_fragments_outside, clip_intersection, clip_intersects_exclusions, move_exclusions,
+    passive_audio_fragment, passive_midi_fragment, time_fragments_outside,
+};
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
@@ -206,6 +210,7 @@ impl EditorView {
         &self,
         state: &ViewState,
         track: &Track,
+        track_index: usize,
         selected: bool,
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
@@ -242,6 +247,8 @@ impl EditorView {
                     }
                 }),
             );
+        let move_display = self.time_range_move_display();
+        let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         for clip in track.clips() {
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;
@@ -250,6 +257,29 @@ impl EditorView {
                 continue;
             }
             let selected_clip = self.selected_clip() == Some(clip.id());
+            if clip_intersects_exclusions(clip, exclusions) {
+                for fragment in clip_fragments_outside(clip, exclusions)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(fragment_view) = passive_audio_fragment(
+                        &fragment,
+                        state.waveforms.get(&fragment.asset()),
+                        viewport,
+                        viewport_end,
+                        grid,
+                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                        format!(
+                            "time-move-audio-residual-{}-{}",
+                            track_id.value(),
+                            fragment.start()
+                        ),
+                    ) {
+                        clip_area = clip_area.children([fragment_view]);
+                    }
+                }
+                continue;
+            }
             clip_area = clip_area.child(self.clip_view(
                 state,
                 track_id,
@@ -264,6 +294,7 @@ impl EditorView {
             ));
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
+        let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
@@ -273,6 +304,36 @@ impl EditorView {
                 continue;
             }
             if start >= viewport_end || end <= viewport.start {
+                continue;
+            }
+            if exclusions
+                .into_iter()
+                .flatten()
+                .any(|(exclude_start, exclude_end)| exclude_start < end && exclude_end > start)
+            {
+                for (fragment_index, interval) in time_fragments_outside(start, end, exclusions)
+                    .into_iter()
+                    .enumerate()
+                {
+                    let Some(interval) = interval else {
+                        continue;
+                    };
+                    let (fragment, shown) = passive_midi_fragment(
+                        clip.id(),
+                        &preview.samples,
+                        interval,
+                        interval,
+                        viewport,
+                        viewport_end,
+                        grid,
+                        format!("time-move-midi-residual-{fragment_index}"),
+                        midi_shape_budget,
+                    );
+                    midi_shape_budget = midi_shape_budget.saturating_sub(shown);
+                    if let Some(fragment) = fragment {
+                        clip_area = clip_area.children([fragment]);
+                    }
+                }
                 continue;
             }
             let selected_clip = self.selected_clip() == Some(clip.id());
@@ -636,8 +697,89 @@ impl EditorView {
         if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
             clip_area = clip_area.children([selection]);
         }
-        if let Some(preview) = self.time_range_move_preview_overlay(track_id, viewport) {
+        if let Some(preview) = self.time_range_move_preview_overlay(track_id, track_index, viewport)
+        {
             clip_area = clip_area.children([preview]);
+        }
+        if let Some(display) = move_display.as_ref()
+            && let Some(destination_offset) = track_index
+                .checked_sub(display.destination_first_index)
+                .filter(|_| track_index <= display.destination_last_index)
+            && let Some(source_track_id) = display.source.tracks().get(destination_offset)
+            && let Some(source_track) = state.project.track(*source_track_id)
+        {
+            for clip in source_track.clips() {
+                let Some((selected_start, selected_end)) =
+                    clip_intersection(clip, (display.source.start(), display.source.end()))
+                else {
+                    continue;
+                };
+                let Some(destination_start) = display
+                    .destination_start
+                    .checked_add(selected_start - display.source.start())
+                else {
+                    continue;
+                };
+                let Ok(fragment) = hex_project::preview_clip_fragment(
+                    clip,
+                    selected_start,
+                    selected_end,
+                    destination_start,
+                ) else {
+                    continue;
+                };
+                if let Some(fragment_view) = passive_audio_fragment(
+                    &fragment,
+                    state.waveforms.get(&fragment.asset()),
+                    viewport,
+                    viewport_end,
+                    grid,
+                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    format!(
+                        "time-move-audio-fragment-{}-{}",
+                        track_id.value(),
+                        clip.id().value()
+                    ),
+                ) {
+                    clip_area = clip_area.children([fragment_view]);
+                }
+            }
+            for clip in source_track.midi_clips() {
+                let Some(preview) = state.midi_preview.get(clip.id()) else {
+                    continue;
+                };
+                let selected_start = preview.frame_start.max(display.source.start());
+                let selected_end = preview.frame_end.min(display.source.end());
+                if selected_start >= selected_end {
+                    continue;
+                }
+                let Some(destination_start) = display
+                    .destination_start
+                    .checked_add(selected_start - display.source.start())
+                else {
+                    continue;
+                };
+                let Some(destination_end) =
+                    destination_start.checked_add(selected_end - selected_start)
+                else {
+                    continue;
+                };
+                let (fragment, shown) = passive_midi_fragment(
+                    clip.id(),
+                    &preview.samples,
+                    (selected_start, selected_end),
+                    (destination_start, destination_end),
+                    viewport,
+                    viewport_end,
+                    grid,
+                    "time-move-midi-fragment".to_owned(),
+                    move_preview_shape_budget,
+                );
+                move_preview_shape_budget = move_preview_shape_budget.saturating_sub(shown);
+                if let Some(fragment) = fragment {
+                    clip_area = clip_area.children([fragment]);
+                }
+            }
         }
         clip_area = clip_area.child(
             div()

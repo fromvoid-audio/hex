@@ -48,10 +48,13 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   digest. Quick mode is only a guards/format preflight, never merge evidence.
   See [local CI design](docs/local-ci.md); full-run evidence is recorded in the PR.
   Review/merge remains open.
-- [ ] **time-chunk move preview** — show selected audio/MIDI portions at their
+- [x] **time-chunk move preview** — [PR #9](https://github.com/PORTALSURFER/hex/pull/9):
+  show selected audio/MIDI portions at their
   exact prospective destination and hide those portions at source. Preserve
   outside tails, gaps and destination replacement semantics. Restore the original
   display on cancellation or rejected edit. No project compilation on pointer moves.
+  Native visual/smoothness acceptance and review/merge remain open; exact source
+  checks are recorded in the PR and [owning doc](docs/time-selection.md).
 - [ ] **selected-track ripple insertion** — Cmd-Shift-C copies time and
   Cmd-Shift-V inserts the complete time rectangle, pushing later material right
   only on touched destination tracks. Ordinary Cmd-C/V replaces; cutting leaves

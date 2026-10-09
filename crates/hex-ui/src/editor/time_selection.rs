@@ -35,17 +35,31 @@ pub(super) struct TimeRangeMoveGesture {
     preview: Option<TimeRangeMovePreview>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TimeRangeMovePreview {
     first_track: TrackId,
     last_track: TrackId,
+    first_index: usize,
+    last_index: usize,
     start_frame: u64,
     end_frame: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TimeRangeMoveDisplay<'a> {
+    pub source: &'a hex_project::TimeRange,
+    pub destination_first_index: usize,
+    pub destination_last_index: usize,
+    pub destination_start: u64,
+    pub destination_end: u64,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct PendingTimeRangeMove {
+    pub source: hex_project::TimeRange,
     pub range: hex_project::TimeRange,
+    pub destination_first_index: usize,
+    pub destination_last_index: usize,
     pub source_revision: u64,
 }
 
@@ -270,6 +284,8 @@ impl EditorView {
         gesture.preview = Some(TimeRangeMovePreview {
             first_track: first_track.id(),
             last_track: last_track.id(),
+            first_index,
+            last_index,
             start_frame: candidate_frame,
             end_frame,
         });
@@ -338,13 +354,17 @@ impl EditorView {
         };
         let target = preview.first_track;
         let source_revision = gesture.revision;
+        let source = gesture.range.clone();
         if self.enqueue(Request::Edit(Command::MoveTimeRange {
             range: gesture.range,
             track: target,
             frame: destination.start(),
         })) {
             self.pending_time_range_move = Some(PendingTimeRangeMove {
+                source,
                 range: destination,
+                destination_first_index: first,
+                destination_last_index: last,
                 source_revision,
             });
         }
@@ -690,37 +710,19 @@ impl EditorView {
     pub(super) fn time_range_move_preview_overlay(
         &self,
         track: TrackId,
+        track_index: usize,
         viewport: super::viewport::Viewport,
     ) -> Option<Stateful<Div>> {
-        let preview = self
-            .time_range_move_gesture
-            .as_ref()
-            .and_then(|gesture| gesture.preview)
-            .or_else(|| {
-                self.pending_time_range_move.as_ref().and_then(|pending| {
-                    Some(TimeRangeMovePreview {
-                        first_track: *pending.range.tracks().first()?,
-                        last_track: *pending.range.tracks().last()?,
-                        start_frame: pending.range.start(),
-                        end_frame: pending.range.end(),
-                    })
-                })
-            })?;
-        let state = self.state.as_ref()?;
-        let tracks = state.project.tracks();
-        let first = tracks
-            .iter()
-            .position(|item| item.id() == preview.first_track)?;
-        let last = tracks
-            .iter()
-            .position(|item| item.id() == preview.last_track)?;
-        let current = tracks.iter().position(|item| item.id() == track)?;
-        if current < first || current > last {
+        let display = self.time_range_move_display()?;
+        let preview = display;
+        if track_index < preview.destination_first_index
+            || track_index > preview.destination_last_index
+        {
             return None;
         }
         let viewport_end = viewport.end()?;
-        let visible_start = preview.start_frame.max(viewport.start);
-        let visible_end = preview.end_frame.min(viewport_end);
+        let visible_start = preview.destination_start.max(viewport.start);
+        let visible_end = preview.destination_end.min(viewport_end);
         if visible_start >= visible_end {
             return None;
         }
@@ -738,8 +740,62 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(Palette::CYAN))
-                .opacity(0.2),
+                .opacity(0.12),
         )
+    }
+
+    pub(super) fn time_range_move_display(&self) -> Option<TimeRangeMoveDisplay<'_>> {
+        let state = self.state.as_ref()?;
+        let (source, destination_first_index, destination_last_index, start, end) =
+            if let Some(pending) = &self.pending_time_range_move {
+                (
+                    &pending.source,
+                    pending.destination_first_index,
+                    pending.destination_last_index,
+                    pending.range.start(),
+                    pending.range.end(),
+                )
+            } else {
+                let gesture = self.time_range_move_gesture.as_ref()?;
+                if gesture.generation != self.project_generation
+                    || gesture.revision != state.revision
+                {
+                    return None;
+                }
+                let preview = gesture.preview.as_ref()?;
+                if gesture.range.tracks().first() == Some(&preview.first_track)
+                    && gesture.range.tracks().last() == Some(&preview.last_track)
+                    && gesture.range.start() == preview.start_frame
+                {
+                    return None;
+                }
+                (
+                    &gesture.range,
+                    preview.first_index,
+                    preview.last_index,
+                    preview.start_frame,
+                    preview.end_frame,
+                )
+            };
+        let same_rows = state
+            .project
+            .tracks()
+            .get(destination_first_index..=destination_last_index)
+            .is_some_and(|rows| {
+                rows.iter()
+                    .map(|row| row.id())
+                    .eq(source.tracks().iter().copied())
+            });
+        if same_rows && source.start() == start {
+            return None;
+        }
+        Some(TimeRangeMoveDisplay {
+            source,
+            destination_first_index,
+            destination_last_index,
+            destination_start: start,
+            destination_end: end,
+        })
     }
 }
 

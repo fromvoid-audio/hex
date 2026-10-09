@@ -172,3 +172,7 @@ change. The original one-shot/intro/loop phase policy is in `docs/midi.md`.
 
 `InsertTrack` creates an empty hybrid track before an optional stable anchor
 (or appends), with existing validation/history and no schema change.
+
+The pure `preview_clip_fragment` helper exposes validated control-side audio
+fragment metadata for view previews. It preserves source mapping, inherited fade
+domains and the original clip ID without editing the project or copying PCM.
