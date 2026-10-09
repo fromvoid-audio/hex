@@ -196,6 +196,79 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
+    cx: &mut TestAppContext,
+) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service =
+                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("service");
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                let project = Project::new(48_000).expect("project");
+                view.state = Some(Arc::new(ViewState {
+                    project: Arc::new(project),
+                    waveforms: Default::default(),
+                    midi_preview: Arc::new(Default::default()),
+                    timeline_frames: 0,
+                    can_undo: false,
+                    can_redo: false,
+                    revision: 0,
+                    unsaved: false,
+                    document_path: None,
+                }));
+                view.browser.section = BrowserSection::Instruments;
+                cx.notify();
+            });
+            editor
+        })
+        .expect("editor window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let instrument = visual
+        .debug_bounds("browser-device-instrument-0")
+        .expect("registered sine instrument row");
+    assert!(visual.debug_bounds("browser-device-effect-1").is_some());
+
+    let down = point(
+        instrument.origin.x + instrument.size.width / 2.0,
+        instrument.origin.y + instrument.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(cx.update(|app| app.has_active_drag()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.selected_track.is_none());
+        let drag = view
+            .active_native_device_drag
+            .as_ref()
+            .expect("browser device drag begins without a focused track");
+        assert!(matches!(
+            drag.source,
+            super::drag::NativeDeviceDragSource::Browser {
+                class: hex_engine::NativeDeviceClass::Instrument,
+                ..
+            }
+        ));
+        assert!(drag.destination.get().is_none());
+    });
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_none());
+    });
+}
+
+#[gpui::test]
 fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &mut TestAppContext) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;

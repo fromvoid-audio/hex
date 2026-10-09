@@ -455,6 +455,7 @@ pub(super) struct EditorView {
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
+    active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
@@ -473,6 +474,14 @@ pub(super) struct EditorView {
         hex_project::DeviceId,
         hex_engine::NativeDeviceClass,
         hex_lattice_contract::DeviceTypeId,
+    )>,
+    #[cfg(test)]
+    last_enqueued_native_device_drop: Option<(
+        u64,
+        u64,
+        hex_session::service::NativeDeviceDropSource,
+        TrackId,
+        Option<hex_project::DeviceId>,
     )>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
@@ -705,6 +714,7 @@ impl EditorView {
             )),
             active_clip_drag: None,
             active_browser_audio_drag: None,
+            active_native_device_drag: None,
             active_trim_drag: None,
             active_midi_trim_drag: None,
             pointer_down: None,
@@ -716,6 +726,8 @@ impl EditorView {
             last_enqueued_native_device_add: None,
             #[cfg(test)]
             last_enqueued_native_device_replace: None,
+            #[cfg(test)]
+            last_enqueued_native_device_drop: None,
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]

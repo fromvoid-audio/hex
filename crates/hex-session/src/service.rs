@@ -132,6 +132,15 @@ pub fn prepare_audio_preview(
 #[derive(Debug)]
 pub enum Request {
     DeviceGesture(GestureRequest),
+    /// One metadata-only browser/rail device drop, admitted only against the
+    /// exact project generation and canonical revision captured at drag start.
+    DropNativeDevice {
+        project_generation: u64,
+        revision: u64,
+        source: NativeDeviceDropSource,
+        track: hex_project::TrackId,
+        before: Option<hex_project::DeviceId>,
+    },
     AddNativeDevice {
         track: hex_project::TrackId,
         class: hex_engine::NativeDeviceClass,
@@ -189,6 +198,19 @@ pub enum Request {
         generation: u64,
     },
     Export(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeDeviceDropSource {
+    Browser {
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
+    Existing {
+        device: hex_project::DeviceId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
 }
 
 /// A rejected request is returned intact so the caller can retry or report it.
@@ -633,6 +655,114 @@ fn run_worker(
                         } else {
                             restore_prepared = Some(prepared);
                         }
+                    }
+                }
+                Request::DropNativeDevice {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    source,
+                    track,
+                    before,
+                } => {
+                    let command = if device_gesture.snapshot().is_some() {
+                        Err("device edit is still applying; drag again".to_owned())
+                    } else if expected_generation != project_generation
+                        || expected_revision != revision
+                    {
+                        Err("device drag canceled · project changed".to_owned())
+                    } else if before.is_some_and(|anchor| {
+                        !session.project().track(track).is_some_and(|target| {
+                            target.ordered_device_chain().any(|node| match node {
+                                hex_project::TrackDeviceRef::Instrument(device)
+                                | hex_project::TrackDeviceRef::Effect(device) => {
+                                    device.id() == anchor
+                                }
+                            })
+                        })
+                    }) {
+                        Err("device insertion anchor no longer exists".to_owned())
+                    } else {
+                        match source {
+                            NativeDeviceDropSource::Browser { class, type_id } => match class {
+                                hex_engine::NativeDeviceClass::Effect => {
+                                    hex_engine::default_native_device_state_for_class(
+                                        class, type_id,
+                                    )
+                                    .map(|state| Command::InsertDevice {
+                                        track,
+                                        before,
+                                        state,
+                                    })
+                                    .map_err(|reason| reason.to_string().to_lowercase())
+                                }
+                                hex_engine::NativeDeviceClass::Instrument => session
+                                    .project()
+                                    .track(track)
+                                    .ok_or_else(|| "track no longer exists".to_owned())
+                                    .and_then(|target| {
+                                        if target.instrument().is_some() {
+                                            return Err(
+                                                "instrument slot is already occupied".into()
+                                            );
+                                        }
+                                        hex_engine::default_native_device_state_for_class(
+                                            class, type_id,
+                                        )
+                                        .map(|state| Command::InsertInstrument { track, state })
+                                        .map_err(|reason| reason.to_string().to_lowercase())
+                                    }),
+                            },
+                            NativeDeviceDropSource::Existing {
+                                device,
+                                class,
+                                type_id,
+                            } => session
+                                .native_device_class(device)
+                                .map_err(|reason| reason.to_string().to_lowercase())
+                                .and_then(|actual_class| {
+                                    if actual_class != class {
+                                        return Err("device drag class changed".to_owned());
+                                    }
+                                    let actual_type = session
+                                        .project()
+                                        .device(device)
+                                        .map(|device| device.state().type_id())
+                                        .ok_or_else(|| "device no longer exists".to_owned())?;
+                                    if actual_type != type_id {
+                                        return Err("device drag type changed".to_owned());
+                                    }
+                                    Ok(Command::MoveTrackDevice {
+                                        device,
+                                        track,
+                                        before,
+                                    })
+                                }),
+                        }
+                    };
+                    match command {
+                        Ok(command) => {
+                            let before_project = session.project().clone();
+                            match session.command_prepared_revision(
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before_project => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some(match source {
+                                        NativeDeviceDropSource::Browser { .. } => {
+                                            "device added".into()
+                                        }
+                                        NativeDeviceDropSource::Existing { .. } => {
+                                            "device moved".into()
+                                        }
+                                    });
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
                     }
                 }
                 Request::Import(path) => match import(
@@ -3152,6 +3282,247 @@ mod service_tests {
             .unwrap(),
             hex_lattice_contract::ParameterValue::Float(1.0)
         );
+    }
+
+    #[test]
+    fn native_device_drops_add_move_and_reject_stale_or_occupied_targets() {
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "devices".into(),
+            }))
+            .expect("first track");
+        let first = next_event(&service);
+        let first_track = first.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::RemoveInstrument {
+                track: first_track,
+            }))
+            .expect("empty the built-in instrument slot");
+        let first = next_event(&service);
+        let utility = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: first.state.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: utility,
+                },
+                track: first_track,
+                before: None,
+            })
+            .expect("drop utility from browser");
+        let added_effect = next_event(&service);
+        assert!(added_effect.error.is_none());
+        assert_eq!(added_effect.status.as_deref(), Some("device added"));
+        let utility_id = added_effect.state.project.tracks()[0].devices()[0].id();
+
+        let sine = hex_lattice_contract::DeviceTypeId::new("hex.instrument.sine").unwrap();
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: added_effect.state.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: sine,
+                },
+                track: first_track,
+                before: Some(utility_id),
+            })
+            .expect("drop sine into empty instrument slot");
+        let added_instrument = next_event(&service);
+        assert!(added_instrument.error.is_none());
+        let instrument_id = added_instrument.state.project.tracks()[0]
+            .instrument()
+            .expect("sine inserted")
+            .id();
+        assert!(matches!(
+            added_instrument.state.project.tracks()[0]
+                .ordered_device_chain()
+                .next(),
+            Some(hex_project::TrackDeviceRef::Instrument(device)) if device.id() == instrument_id
+        ));
+
+        let before_rejection = added_instrument.state.clone();
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: before_rejection.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: sine,
+                },
+                track: first_track,
+                before: None,
+            })
+            .expect("occupied instrument drop");
+        let occupied = next_event(&service);
+        assert_eq!(
+            occupied.error.as_deref(),
+            Some("instrument slot is already occupied")
+        );
+        assert_eq!(occupied.state.revision, before_rejection.revision);
+        assert_eq!(occupied.state.project, before_rejection.project);
+        assert_eq!(occupied.state.can_undo, before_rejection.can_undo);
+        assert!(occupied.playback.is_none());
+
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "destination".into(),
+            }))
+            .expect("destination track");
+        let destination = next_event(&service);
+        let destination_track = destination.state.project.tracks()[1].id();
+        service
+            .submit(Request::Edit(Command::RemoveInstrument {
+                track: destination_track,
+            }))
+            .expect("empty the destination slot");
+        let destination = next_event(&service);
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: destination.state.revision,
+                source: NativeDeviceDropSource::Existing {
+                    device: instrument_id,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: sine,
+                },
+                track: destination_track,
+                before: None,
+            })
+            .expect("move instrument to destination");
+        let moved_instrument = next_event(&service);
+        assert!(
+            moved_instrument.error.is_none(),
+            "{:?}",
+            moved_instrument.error
+        );
+        assert_eq!(
+            moved_instrument.state.project.tracks()[1]
+                .instrument()
+                .map(hex_project::Device::id),
+            Some(instrument_id)
+        );
+        assert!(
+            moved_instrument.state.project.tracks()[0]
+                .instrument()
+                .is_none()
+        );
+
+        let stable = moved_instrument.state.clone();
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: stable.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: utility,
+                },
+                track: destination_track,
+                before: Some(utility_id),
+            })
+            .expect("anchor from another track");
+        let rejected_anchor = next_event(&service);
+        assert_eq!(
+            rejected_anchor.error.as_deref(),
+            Some("device insertion anchor no longer exists")
+        );
+        assert_eq!(rejected_anchor.state.revision, stable.revision);
+        assert_eq!(rejected_anchor.state.project, stable.project);
+        assert_eq!(rejected_anchor.state.can_undo, stable.can_undo);
+        assert!(rejected_anchor.playback.is_none());
+
+        for (generation, revision) in [(1, stable.revision), (0, stable.revision.saturating_sub(1))]
+        {
+            service
+                .submit(Request::DropNativeDevice {
+                    project_generation: generation,
+                    revision,
+                    source: NativeDeviceDropSource::Browser {
+                        class: hex_engine::NativeDeviceClass::Effect,
+                        type_id: utility,
+                    },
+                    track: destination_track,
+                    before: None,
+                })
+                .expect("stale device drop");
+            let rejected = next_event(&service);
+            assert_eq!(
+                rejected.error.as_deref(),
+                Some("device drag canceled · project changed")
+            );
+            assert_eq!(rejected.state.revision, stable.revision);
+            assert_eq!(rejected.state.project, stable.project);
+            assert_eq!(rejected.state.can_undo, stable.can_undo);
+            assert!(rejected.playback.is_none());
+        }
+    }
+
+    #[test]
+    fn native_device_drop_refuses_while_a_parameter_gesture_is_active() {
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "devices".into(),
+            }))
+            .expect("track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let utility = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(utility),
+                before: None,
+            })
+            .expect("utility");
+        let added = next_event(&service);
+        let device = added.state.project.tracks()[0].devices()[0].id();
+        let gesture = crate::device_gesture::GestureKey {
+            generation: 0,
+            token: 41,
+        };
+        service
+            .submit(Request::DeviceGesture(
+                crate::device_gesture::GestureRequest::Begin {
+                    key: gesture,
+                    target: crate::device_gesture::GestureTarget {
+                        device,
+                        parameter: hex_lattice_contract::ParameterId::new(1).unwrap(),
+                    },
+                },
+            ))
+            .expect("begin parameter gesture");
+        let active = next_event(&service);
+        assert!(active.active_device_gesture.is_some());
+
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: active.state.revision,
+                source: NativeDeviceDropSource::Existing {
+                    device,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: utility,
+                },
+                track,
+                before: None,
+            })
+            .expect("drop during parameter gesture");
+        let refused = next_event(&service);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("device edit is still applying; drag again")
+        );
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.revision, active.state.revision);
+        assert_eq!(refused.state.project, active.state.project);
+        assert_eq!(refused.state.can_undo, active.state.can_undo);
+        assert!(refused.playback.is_none());
     }
 
     fn next_event(service: &Service) -> Event {

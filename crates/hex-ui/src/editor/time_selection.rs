@@ -114,6 +114,7 @@ impl EditorView {
             || self.export_dialog_open
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
@@ -189,6 +190,7 @@ impl EditorView {
             || self.export_dialog_open
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
@@ -244,6 +246,7 @@ impl EditorView {
             || self.export_dialog_open
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
@@ -317,6 +320,7 @@ impl EditorView {
             || self.export_dialog_open
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
         {
