@@ -111,12 +111,14 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   formatting and source guards pass. Final local CI and native acceptance remain
   distinct; [PR #14](https://github.com/PORTALSURFER/hex/pull/14) passed all 14 local
   CI steps on clean source `e04e2ec`.
-- [ ] **project actions in macOS File menu** — separate focused UI PR after
+- [x] **project actions in macOS File menu** — separate focused UI PR after
   keyboard paste anchoring. Put Open Project, Save and Save As in the screen-top
   native File menu and remove corresponding toolbar actions. Preserve existing
   shortcuts, focus routing, pending-work handling and unsaved-project protection.
   Reuse existing controller commands and OS file dialogs; verify native menu
   operation with the user. This request is for the menu bar, not window buttons.
+  Native File menu source is implemented; toolbar Save removed, existing actions
+  and shortcuts retained. Native menu/shortcut/dialog acceptance remains open.
 - [ ] **compact header composition** — separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes.

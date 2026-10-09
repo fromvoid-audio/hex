@@ -1,6 +1,6 @@
 use super::{
-    AddMidiClip, AddTrack, EditorMode, EditorView, ImportAudio, Redo, RemoveTrack, SaveProject,
-    SplitClip, Stop, ToggleBrowser, TogglePlay, Undo,
+    AddMidiClip, AddTrack, EditorMode, EditorView, ImportAudio, Redo, RemoveTrack, SplitClip, Stop,
+    ToggleBrowser, TogglePlay, Undo,
 };
 use crate::theme::{self, Palette};
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
@@ -39,12 +39,6 @@ impl EditorView {
                 "↑",
                 "export wav · cmd+shift+e",
                 |view, _, cx| view.export_dialog(cx),
-                cx,
-            ))
-            .child(self.icon(
-                "▣",
-                "save project · cmd+s · save as · cmd+shift+s",
-                SaveProject,
                 cx,
             ))
             .child(self.icon(
