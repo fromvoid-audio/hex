@@ -1,7 +1,7 @@
 //! Release CPU benchmark for shared original MIDI instrument rendering.
 //! This measures the offline renderer, not an audio device, UI, or audible acceptance.
 use hex_engine::{
-    compile,
+    PreparedRevision, compile,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -9,7 +9,7 @@ use hex_project::{
     BeatTime, DeviceSnapshot, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{error::Error, hint::black_box, time::Instant};
+use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 
 const RATE: u32 = 48_000;
 const TRACKS: usize = 100;
@@ -105,8 +105,24 @@ fn fixture(instrument_position: usize) -> Result<Project, Box<dyn Error>> {
     })?)
 }
 
-fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_engine::Invalid> {
-    let mut playback = Playback::new(project.clone());
+fn measure(
+    project: &hex_engine::Project,
+    prepared: Option<&Arc<PreparedRevision>>,
+    force_session: bool,
+    block_size: usize,
+) -> Result<(), Box<dyn Error>> {
+    let construction_started = Instant::now();
+    let mut playback = match prepared {
+        Some(revision) if force_session => {
+            Playback::try_from_prepared_with_session(Arc::clone(revision))?
+        }
+        Some(revision) => Playback::from_prepared(Arc::clone(revision)),
+        None => Playback::new(project.clone()),
+    };
+    println!(
+        "playback_construction_elapsed={:.6}s",
+        construction_started.elapsed().as_secs_f64()
+    );
     playback.apply(PlaybackCommand::Play);
     let mut output = vec![[0.0; 2]; block_size];
     for _ in 0..WARMUP_BLOCKS {
@@ -142,6 +158,12 @@ fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_e
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<_> = std::env::args().collect();
+    let prepared_runtime = arguments
+        .iter()
+        .any(|argument| argument == "--prepared-runtime");
+    let forced_session_runtime = arguments
+        .iter()
+        .any(|argument| argument == "--session-runtime");
     let instrument_position = if arguments.iter().any(|argument| argument == "--gap-end") {
         2
     } else if arguments.iter().any(|argument| argument == "--ordered-gap") {
@@ -152,6 +174,53 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("instrument position: {instrument_position}");
     let editable = fixture(instrument_position)?;
     let project = compile::project(&editable, &Default::default())?;
+    let prepare_started = Instant::now();
+    let prepared = prepared_runtime
+        .then(|| {
+            PreparedRevision::prepare(
+                &editable,
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .map(Arc::new)
+        })
+        .transpose()?;
+    if let Some(revision) = &prepared {
+        let arrangement_bank_bytes = revision.arrangement().midi_note_bank_storage_bytes()?;
+        let session_bank_bytes = revision.session().midi_note_bank_storage_bytes();
+        let bank_bytes = arrangement_bank_bytes
+            .checked_add(session_bank_bytes)
+            .ok_or("prepared bank byte count overflow")?;
+        let references = project
+            .midi_note_sampler_reference_count()?
+            .checked_add(revision.session().midi_note_bank_reference_count())
+            .ok_or("prepared bank reference count overflow")?;
+        let indexed_bytes = bank_bytes
+            .checked_add(
+                references
+                    .checked_mul(std::mem::size_of::<u16>())
+                    .ok_or("prepared bank index byte count overflow")?,
+            )
+            .ok_or("prepared bank component byte count overflow")?;
+        println!(
+            "prepared_revision_construction_elapsed={:.6}s bank_component_bytes={} note_references={} indexed_bank_component_bytes={}",
+            prepare_started.elapsed().as_secs_f64(),
+            bank_bytes,
+            references,
+            indexed_bytes
+        );
+    }
+    println!(
+        "runtime: {}",
+        if forced_session_runtime {
+            "explicit SessionPlayback::new wrapper"
+        } else if prepared_runtime {
+            "ordinary prepared Playback::from_prepared"
+        } else {
+            "legacy Playback::new"
+        }
+    );
     let sampler_references = project.midi_note_sampler_reference_count()?;
     let old_sampler_bytes = sampler_references
         .checked_mul(PREVIOUS_INLINE_SAMPLER_BYTES)
@@ -169,7 +238,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         sampler_references, indexed_bytes, old_sampler_bytes
     );
     for block_size in [128, 512] {
-        measure(&project, block_size)?;
+        measure(
+            &project,
+            prepared.as_ref(),
+            forced_session_runtime,
+            block_size,
+        )?;
     }
     Ok(())
 }

@@ -441,6 +441,9 @@ pub struct Track {
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
     device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    instrument_id: Option<hex_project::DeviceId>,
+    instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    instrument_bypassed: bool,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -528,6 +531,9 @@ impl Track {
             ordered_prefix: None,
             ordered_suffix: None,
             device_chain: std::sync::Arc::from([]),
+            instrument_id: None,
+            instrument_state: None,
+            instrument_bypassed: false,
         })
     }
 
@@ -567,7 +573,30 @@ impl Track {
             ordered_prefix,
             ordered_suffix,
             device_chain: std::sync::Arc::from(device_chain),
+            instrument_id: None,
+            instrument_state: None,
+            instrument_bypassed: false,
         })
+    }
+
+    pub(crate) fn with_instrument_config(
+        mut self,
+        instrument: Option<&hex_project::Device>,
+    ) -> Self {
+        self.instrument_id = instrument.map(hex_project::Device::id);
+        self.instrument_state = instrument.map(|device| device.state().clone());
+        self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
+        self
+    }
+
+    pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
+        self.instrument_id == other.instrument_id
+            && self.instrument_state == other.instrument_state
+            && self.instrument_bypassed == other.instrument_bypassed
+    }
+
+    pub(crate) fn instrument_enabled(&self) -> bool {
+        self.instrument_id.is_some() && !self.instrument_bypassed && self.instrument.is_some()
     }
 
     pub(crate) fn new_device_runtime(
@@ -681,6 +710,36 @@ impl Track {
         Ok(())
     }
 
+    pub(crate) fn render_additive_with_suppressions_and_pages(
+        &self,
+        start_frame: u64,
+        performance_frame: u64,
+        output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+        pages: Option<&mut (impl MediaPages + ?Sized)>,
+    ) -> Result<(), Invalid> {
+        let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
+        let end_frame = start_frame
+            .checked_add(length)
+            .ok_or(Invalid("render range overflow"))?;
+        if !self.source_mix.muted {
+            if let Some(page_provider) = pages {
+                self.render_audio_range_with_pages(start_frame, end_frame, output, page_provider);
+            } else {
+                self.render_audio_range(start_frame, end_frame, output);
+            }
+            self.render_instrument_range_with_suppressions(
+                start_frame,
+                end_frame,
+                output,
+                None,
+                performance_frame,
+                suppressions,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn render_additive_with_pages(
         &self,
         start_frame: u64,
@@ -724,17 +783,25 @@ impl Track {
         Ok(())
     }
 
-    pub(crate) fn render_instrument_additive(
+    pub(crate) fn render_instrument_additive_with_suppressions(
         &self,
         start_frame: u64,
+        performance_frame: u64,
         output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
-        self.render_instrument_range(start_frame, end_frame, output, None);
-        Ok(())
+        self.render_instrument_range_with_suppressions(
+            start_frame,
+            end_frame,
+            output,
+            None,
+            performance_frame,
+            suppressions,
+        )
     }
 
     pub(crate) fn for_each_active_midi_span(
@@ -910,17 +977,55 @@ impl Track {
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
     ) {
+        let _ = self.render_instrument_range_with_suppressions(
+            start_frame,
+            end_frame,
+            output,
+            midi_onset_floor_exclusive,
+            0,
+            &[],
+        );
+    }
+
+    fn render_instrument_range_with_suppressions(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        midi_onset_floor_exclusive: Option<u64>,
+        performance_frame: u64,
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+    ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             for chunk_start in (start_frame..end_frame).step_by(256) {
                 let chunk_end = chunk_start.saturating_add(256).min(end_frame);
                 let output_start = (chunk_start - start_frame) as usize;
                 let output_end = (chunk_end - start_frame) as usize;
                 let target = &mut output[output_start..output_end];
+                let chunk_performance_frame = performance_frame
+                    .checked_add(chunk_start - start_frame)
+                    .ok_or(Invalid("midi performance frame overflow"))?;
                 instrument.for_each_intersecting(
                     chunk_start,
                     chunk_end,
                     midi_onset_floor_exclusive,
                     |span| {
+                        let carried =
+                            self.track_id.is_some_and(|track| {
+                                suppressions
+                                    .binary_search_by(|entry| {
+                                        (entry.track, entry.clip, entry.note, entry.iteration)
+                                            .cmp(&(track, span.clip, span.note, span.iteration))
+                                    })
+                                    .ok()
+                                    .and_then(|index| suppressions.get(index))
+                                    .is_some_and(|entry| {
+                                        entry.until_frame > chunk_performance_frame
+                                    })
+                            });
+                        if carried {
+                            return;
+                        }
                         let start = span.start.max(chunk_start);
                         let end = span.end.min(chunk_end);
                         let Some(voice) = instrument.bank.sampler(span.sampler_index) else {
@@ -938,6 +1043,7 @@ impl Track {
                 );
             }
         }
+        Ok(())
     }
 }
 

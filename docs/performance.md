@@ -62,6 +62,76 @@ against d88f880 over `crates/hex-engine/src/{lib.rs,compile.rs,session_inventory
 `crates/hex-lattice/src/lib.rs`. The profile-example source hash is recorded above;
 tests and documentation are outside the renderer digest.
 
+## Prepared Arrangement continuity owner — 10 October 2026
+
+To estimate the cost of using the shared Session renderer for ordinary prepared
+Arrangement playback, the existing release `profile_instrument` fixture was
+measured on Apple M5 Pro arm64 at 48 kHz: 100 MIDI tracks × 16 authored notes,
+100 warm-up blocks and 3,000 timed blocks at 128 and 512 frames. The comparison
+used one pre-continuity source build and the same prepared revision/fixture; it
+contrasted ordinary `Playback::from_prepared` (then the finite path) with
+`try_from_prepared_with_session` (the shared owner). Prepared revision/runtime
+construction was outside the render timer.
+
+| Runtime path | 128-frame totals | 512-frame totals | Last-block digest |
+| --- | --- | --- | --- |
+| Ordinary prepared, first run | 0.063 s | 0.219 s | `c469948f0bee4ead` / `51d88627df287325` |
+| Shared Session, first run | 0.068 s | 0.229 s | `c469948f0bee4ead` / `51d88627df287325` |
+| Ordinary prepared, repeat | 0.062 s | 0.225 s | same |
+| Shared Session, repeat | 0.063 s | 0.217 s | same |
+
+These short A/B render samples vary and do not establish a timing regression or
+improvement. They do not measure preparation cost, handoff, callbacks or a full
+run output digest; the hash covers only the final block. The preceding ordered
+profile recorded one 2.924 ms block against a nominal 2.667 ms period; that
+separate workload remains an open deadline gate.
+
+The ordinary prepared path was measured once before the final handoff
+suppression-prefix repair. That bounded control-side change does not alter the
+render path and is not exercised by this profile. It was measured with
+`profile_instrument --prepared-runtime`. The fixture remains 100 tracks × 16
+authored notes, with the same two 0.999 Utility effects and instrument at gap 0.
+On Apple M5 Pro arm64, 48 kHz, it reported 0.073 s / 207.6 µs max for 128-frame
+blocks and 0.238 s / 275.8 µs max for 512-frame blocks. Last-block digests match
+the earlier gap-0 fixture (`c469948f0bee4ead` / `51d88627df287325`); this is not
+a whole-run oracle. Compared with the earlier shared-Session samples of
+0.068/0.229 s and 0.063/0.217 s, this single run is slower, but a Yield release
+build was compiling concurrently. Treat it as a contention-affected observation,
+not evidence of a regression or deadline behavior. No repeated quiet matched
+run was collected.
+
+Prepared revision construction was 0.294 ms; ordinary prepared playback owner
+construction was 37 µs and 19 µs before the 128- and 512-frame runs. The
+instrument bank component reports 572,800 bytes plus 3,200 bytes of note
+indices, for 576,000 indexed component bytes in this fixture. `time -l` reported
+4,866,048 bytes maximum resident set and 3,998,008 bytes peak footprint, but
+these sparse fixtures do not touch every pre-reserved Session buffer page and
+the values are not a capacity bound. The derived Session scratch capacity is
+17,382,920 bytes per owner, or about 33.15 MiB for active plus candidate owners
+before other graph metadata; queued/retired owners may coexist. This is a
+component accounting scenario, not whole-process maximum memory. Log:
+`artifacts/profiles/arrangement-continuity-final-prepared.log`. From the
+worktree, the build command was
+`CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/Users/portalsurfer/dev/hex/artifacts/build-cache/stateful-lattice cargo build --release -p hex-engine --example profile_instrument`;
+the measured command was
+`/usr/bin/time -l /Users/portalsurfer/dev/hex/artifacts/build-cache/stateful-lattice/release/examples/profile_instrument --prepared-runtime`.
+The binary SHA-256 is
+`4bbe6997be4d076ed60d31ec528000ff848f887f825c0756bda574bc7d989320`; the
+renderer/example source diff SHA-256 at profile capture is
+`609ca7cdbf93726f4262c30baea25e4969bec8cc5fe4be98bfd7bf2aa9e6e2a9` (HEAD
+`80df5ad6d88930420a58cb41f884b0ce4c53c549`). The current source adds the
+handoff-only sorted-prefix lookup repair and its multi-track regression; the
+profile is retained without repeating because it does not exercise handoff.
+These are one-run offline render and sparse-memory observations; physical
+callback deadlines and fully resident memory remain unverified.
+
+The component capacity calculation for one Session owner is 16,072,200 bytes of
+paired MIDI release buffers and span storage plus 1,310,720 bytes for its two
+fixed suppression buffers (`2 × 16,384 × 40`), totaling 17,382,920 bytes (about
+16.58 MiB) in these known MIDI arrays. An active/candidate pair accounts for
+about 33.15 MiB before route/device/tail metadata. Queued, retired and other
+prepared owners can coexist, so this is not a whole-process maximum.
+
 ## Indexed analytic note banks — 9 October 2026
 
 The profile logs and numbers in this section predate the ordered-render fixture

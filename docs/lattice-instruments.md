@@ -94,6 +94,34 @@ routes across that floor. Instrument-only edits do not advance it or capture
 unrelated routes. The route floor remains through a monotonic Session loop and
 allows later looped source occurrences whose onsets are after the floor.
 
+Arrangement handoffs suppress a matching candidate occurrence until the later
+of the copied old voice's end and the candidate occurrence's own end. Repeated
+edits and track removal carry an already-copied voice once instead of recapturing
+the still-visible source span. Candidate occurrence spans are collected once
+into fixed-capacity scratch and matched by stable occurrence key.
+
+Prepared `Playback::from_prepared` revisions always use this shared
+`SessionPlayback` owner, even when all routes initially remain Arrangement-owned.
+This gives Arrangement MIDI the same copied-voice, suppression, suffix-tail and
+handoff lifecycle as Session MIDI. The legacy `Playback::new` and
+`Playback::from_shared` constructors retain their finite Arrangement renderer.
+Promotion from that renderer refuses while an enabled Arrangement note is held
+or a stateful effect has untransferable history; a safe retry is allowed after
+the voice ends or a discontinuity clears it. It also refuses after a nonzero
+legacy performance frame when stateful-effect history cannot be transferred. A
+Session-to-legacy demotion refuses active Arrangement notes, stateful-effect
+history after rendering has begun, and any carried releases, pending route,
+selected Session owner or suppression. Refusal leaves both candidate and
+previous transport/graph usable. Disabled instrument slots have no held voice
+and do not create a false promotion/demotion fence.
+
+If Session runtime preparation fails for a prepared revision with an instrument
+slot or stateful effect, the explicit `Unavailable` capability is retained and
+rendering refuses before touching output. Such revisions do not silently fall
+back to the finite renderer, which cannot preserve their handoff ownership.
+Revisions without instrument slots or stateful effects retain the finite
+fallback when Session timing is unavailable.
+
 Prepared Arrangement tracks and Session instrument configurations intern each
 distinct pitch/velocity pair into a track- and configuration-scoped immutable
 note bank. Arrangement spans and Session intro/repeat source spans retain a

@@ -79,6 +79,7 @@ impl SessionPlayback {
         self.release_scratch.clear();
         let mut next_order = previous.release_order;
         let mut track_map = [usize::MAX; MAX_TRACKS];
+        let mut arrangement_instrument_changed = [false; MAX_TRACKS];
         for (old_index, old_route) in previous.routes.iter().enumerate() {
             let Some(new_index) = self
                 .routes
@@ -105,6 +106,17 @@ impl SessionPlayback {
                     let mut failure = None;
                     old_track
                         .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
+                            let key = ContinuationKey {
+                                clip: span.clip,
+                                note: span.note,
+                                iteration: span.iteration,
+                            };
+                            // This occurrence was already copied to a release bank
+                            // by an earlier instrument handoff. Removing the track
+                            // must carry that release, not recapture its source span.
+                            if is_suppressed(previous, old_route.id, key) {
+                                return;
+                            }
                             let voice = MidiReleaseVoice::from_finite_span(
                                 span.start,
                                 span.gate_end,
@@ -156,6 +168,25 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::RevisionTrackMismatch);
             };
             *mapped_index = new_index;
+            if old_route.owner == RouteOwner::Arrangement {
+                let old_track = previous
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(old_index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let new_track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(new_index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                if !old_track.instrument_config_matches(new_track)
+                    && let Some(changed) = arrangement_instrument_changed.get_mut(old_index)
+                {
+                    *changed = true;
+                }
+            }
             if let Some(floor) = previous
                 .route_historical_floors
                 .get(old_index)
@@ -293,6 +324,260 @@ impl SessionPlayback {
                         .and_then(|index| midi_route_changed.get(index))
                         .is_none_or(|changed| !changed)
             }));
+        // Previous suppressions are sorted by their occurrence key. Keep this
+        // boundary: later tracks may append fresh entries before an existing
+        // carried key is extended, so the full scratch vector is not sorted.
+        let carried_suppression_count = self.suppression_scratch.len();
+        for (old_index, old_route) in previous.routes.iter().enumerate() {
+            if !arrangement_instrument_changed
+                .get(old_index)
+                .copied()
+                .unwrap_or(false)
+                || old_route.owner != RouteOwner::Arrangement
+            {
+                continue;
+            }
+            let Some(new_index) = track_map
+                .get(old_index)
+                .copied()
+                .filter(|index| *index != usize::MAX)
+            else {
+                continue;
+            };
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let new_track = self
+                .revision
+                .arrangement()
+                .tracks()
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let cut_frame = previous.arrangement_frame;
+            let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
+            let mut candidate_occurrence_count = 0;
+            if new_track.instrument_enabled() {
+                let mut overflow = false;
+                new_track
+                    .for_each_active_midi_span(cut_frame, |candidate, _| {
+                        if let Some(slot) =
+                            candidate_occurrences.get_mut(candidate_occurrence_count)
+                        {
+                            *slot = Some((
+                                candidate.clip,
+                                candidate.note,
+                                candidate.iteration,
+                                candidate.start,
+                                candidate.gate_end,
+                                candidate.end,
+                            ));
+                            candidate_occurrence_count += 1;
+                        } else {
+                            overflow = true;
+                        }
+                    })
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                if overflow {
+                    return Err(SessionPlaybackError::ReleaseBankFull);
+                }
+                candidate_occurrences[..candidate_occurrence_count].sort_unstable_by_key(|entry| {
+                    entry.map(|(clip, note, iteration, _, _, _)| (clip, note, iteration))
+                });
+                // A repeated configuration edit can outlive the sampler which
+                // first created this suppression. Extend an already-carried
+                // occurrence to the current candidate's full end even when its
+                // original copied voice has already completed.
+                for (clip, note, iteration, _, _, candidate_end) in candidate_occurrences
+                    [..candidate_occurrence_count]
+                    .iter()
+                    .flatten()
+                    .copied()
+                {
+                    let existing_index = self
+                        .suppression_scratch
+                        .get(..carried_suppression_count)
+                        .and_then(|carried| {
+                            carried
+                                .binary_search_by_key(
+                                    &(old_route.id, clip, note, iteration),
+                                    |entry| (entry.track, entry.clip, entry.note, entry.iteration),
+                                )
+                                .ok()
+                        });
+                    let Some(index) = existing_index else {
+                        continue;
+                    };
+                    let elapsed = candidate_end
+                        .checked_sub(cut_frame)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    let candidate_end = previous
+                        .performance_frame
+                        .checked_add(elapsed)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    if let Some(suppression) = self.suppression_scratch.get_mut(index) {
+                        suppression.until_frame = suppression.until_frame.max(candidate_end);
+                    }
+                }
+            }
+            if old_track.instrument_enabled() {
+                let mut failure = None;
+                old_track
+                    .for_each_active_midi_span(cut_frame, |span, sampler| {
+                        if span.start >= cut_frame {
+                            return;
+                        }
+                        let key = ContinuationKey {
+                            clip: span.clip,
+                            note: span.note,
+                            iteration: span.iteration,
+                        };
+                        if is_suppressed(previous, old_route.id, key) {
+                            return;
+                        }
+                        let voice_result = if new_track.instrument_enabled() {
+                            MidiReleaseVoice::from_finite_span_preserving_gate(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler,
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        } else {
+                            MidiReleaseVoice::from_finite_span(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler,
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        };
+                        let voice = match voice_result {
+                            Ok(Some(voice)) => voice,
+                            Ok(None) => return,
+                            Err(_) => {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            }
+                        };
+                        let candidate = candidate_occurrences[..candidate_occurrence_count]
+                            .binary_search_by(|entry| {
+                                let Some((clip, note, iteration, _, _, _)) = entry else {
+                                    return std::cmp::Ordering::Greater;
+                                };
+                                (*clip, *note, *iteration).cmp(&(key.clip, key.note, key.iteration))
+                            })
+                            .ok()
+                            .and_then(|index| candidate_occurrences[index]);
+                        let matching_candidate =
+                            candidate.is_some_and(|(_, _, _, start, gate_end, _)| {
+                                start == span.start && gate_end == span.gate_end
+                            });
+                        let candidate_end_frame = if matching_candidate {
+                            let Some((_, _, _, _, _, candidate_end)) = candidate else {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            };
+                            let Some(elapsed) = candidate_end.checked_sub(cut_frame) else {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            };
+                            let Some(end_frame) = previous.performance_frame.checked_add(elapsed)
+                            else {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            };
+                            Some(end_frame)
+                        } else {
+                            None
+                        };
+                        if self.release_scratch.len() >= self.release_capacity {
+                            failure = Some(SessionPlaybackError::ReleaseBankFull);
+                            return;
+                        }
+                        if let Err(error) = append_release(
+                            &mut self.release_scratch,
+                            self.release_capacity,
+                            &mut next_order,
+                            ReleaseEntry {
+                                track_index: new_index,
+                                track_id: old_route.id,
+                                order: 0,
+                                mix: old_track.mix(),
+                                tail_group: None,
+                                continuation: None,
+                                voice,
+                            },
+                        ) {
+                            failure = Some(error);
+                            return;
+                        }
+                        if matching_candidate
+                            && let Err(error) = add_or_extend_suppression(
+                                &mut self.suppression_scratch,
+                                self.release_capacity,
+                                MidiOccurrenceSuppression {
+                                    track: old_route.id,
+                                    clip: span.clip,
+                                    note: span.note,
+                                    iteration: span.iteration,
+                                    until_frame: candidate_end_frame
+                                        .map_or(voice.end_frame(), |end| {
+                                            end.max(voice.end_frame())
+                                        }),
+                                },
+                            )
+                        {
+                            failure = Some(error);
+                        }
+                    })
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+            } else if new_track.instrument_enabled() {
+                // Re-enabling an instrument must not chase notes already in
+                // progress; exact-boundary and later onsets remain eligible.
+                let mut failure = None;
+                new_track
+                    .for_each_active_midi_span(cut_frame, |span, _| {
+                        if span.start >= cut_frame {
+                            return;
+                        }
+                        let until_frame = match previous
+                            .performance_frame
+                            .checked_add(span.end.saturating_sub(cut_frame))
+                        {
+                            Some(frame) => frame,
+                            None => {
+                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                return;
+                            }
+                        };
+                        if let Err(error) = add_or_extend_suppression(
+                            &mut self.suppression_scratch,
+                            self.release_capacity,
+                            MidiOccurrenceSuppression {
+                                track: old_route.id,
+                                clip: span.clip,
+                                note: span.note,
+                                iteration: span.iteration,
+                                until_frame,
+                            },
+                        ) {
+                            failure = Some(error);
+                        }
+                    })
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+            }
+        }
         for entry in &previous.releases {
             if entry.voice.end_frame() <= previous.performance_frame {
                 continue;
@@ -747,6 +1032,29 @@ fn is_suppressed(playback: &SessionPlayback, track: TrackId, key: ContinuationKe
         .ok()
         .and_then(|index| playback.suppressions.get(index))
         .is_some_and(|entry| entry.until_frame > playback.performance_frame)
+}
+
+fn add_or_extend_suppression(
+    suppressions: &mut Vec<MidiOccurrenceSuppression>,
+    capacity: usize,
+    entry: MidiOccurrenceSuppression,
+) -> Result<(), SessionPlaybackError> {
+    if let Some(existing) = suppressions.iter_mut().find(|existing| {
+        (
+            existing.track,
+            existing.clip,
+            existing.note,
+            existing.iteration,
+        ) == (entry.track, entry.clip, entry.note, entry.iteration)
+    }) {
+        existing.until_frame = existing.until_frame.max(entry.until_frame);
+        return Ok(());
+    }
+    if suppressions.len() >= capacity {
+        return Err(SessionPlaybackError::ReleaseBankFull);
+    }
+    suppressions.push(entry);
+    Ok(())
 }
 
 fn remap_release_gate(

@@ -383,6 +383,22 @@ strict Clippy, formatting and architecture/style checks pass on the frozen
 source; full local CI remains with the integration owner. See
 [instrument continuity](docs/lattice-instruments.md).
 
+Pulse2149 Arrangement instrument continuity: ordinary prepared playback now
+uses the same bounded Session owner as native playback, so Arrangement-held
+voices follow instrument edits with copied old samplers, exact-occurrence
+suppression through the later old-voice/candidate-occurrence end, and the old
+effect suffix. Repeated edits and track removal retain already-copied voices
+without recapturing active source spans. Legacy `new/from_shared` remains a
+separate API with explicit promotion/demotion fences; unsafe active Arrangement
+state cannot be silently dropped or synthesized by a new graph. Prepared
+instrument/stateful revisions whose Session runtime is unavailable refuse
+rendering rather than silently using the finite renderer. Targeted engine and
+Session transition tests pass, including active-voice refusal/retry, disabled
+instrument promotion, copied Arrangement suffix tails, capacity rollback, and
+exact-cut onsets. Clean full local CI and review remain with the integration
+owner; timing and fixed per-instance storage are recorded in
+[performance](docs/performance.md).
+
 Menu follow-up2115: user accepted and manually merged PR37 into the stacked
 integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and
 open-panel/focus-switching2117 remain queued in Pulse.
