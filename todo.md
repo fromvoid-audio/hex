@@ -363,6 +363,14 @@ The pane's open state stays independent from user-driven clip/track content focu
 an empty clip context retains its last valid body height. Focused local CI remains
 for integration, and native acceptance remains with the user.
 
+Native metadata class facades2131: engine metadata/catalog/default/read/patch
+helpers now take an explicit effect or instrument class; existing unqualified
+helpers remain effect-only wrappers. Targeted engine tests cover Utility and sine,
+wrong-class refusal and unchanged malformed/future instrument state. Four targeted
+engine tests, all 33 Lattice/device tests, strict engine Clippy, formatting and
+architecture/UI-style guards pass. Full local CI remains for integration; keep this
+prerequisite separate from the instrument-slot panel2127.
+
 Arrangement loop rail2120: source implementation adds a compact timeline-width
 rail below the ruler, snapped drag preview, Command free placement, visible-edge
 resize, click-to-enable, and the existing L/toolbar toggle. It uses the canonical
