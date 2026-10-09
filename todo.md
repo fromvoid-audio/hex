@@ -58,11 +58,15 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Full local CI passed all 14 steps on clean commit `4181d68`. The user accepted
   the review build as behaving as expected on 9 October; merged. Native timing
   and listening remain separate. See [owning doc](docs/time-selection.md).
-- [ ] **selected-track ripple insertion** — Cmd-Shift-C copies time and
+- [x] **selected-track ripple insertion** — [PR #11](https://github.com/PORTALSURFER/hex/pull/11):
+  Cmd-Shift-C copies time and
   Cmd-Shift-V inserts the complete time rectangle, pushing later material right
   only on touched destination tracks. Ordinary Cmd-C/V replaces; cutting leaves
   a gap. Preserve crossings, source phase, history and atomic failure behavior.
-  Backend implementation is in progress; UI wiring and acceptance remain open.
+  Backend and shortcut wiring are source implemented; native acceptance and
+  review/merge remain open. Full source checks are recorded in the PR.
+  MIDI loop materialization/refusal policy is documented
+  in [time selection](docs/time-selection.md).
 - [ ] **Option-drag duplication** — separate feature PR for supported draggable
   project items, including audio/MIDI clips and time chunks. Option selects copy
   instead of move; show a small plus/copy cursor indicator while active. Preserve

@@ -673,6 +673,18 @@ impl EditorView {
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         #[cfg(test)]
+        match &request {
+            Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
+            Request::CutTimeRange(_) => self.last_time_request = Some(("cut", None)),
+            Request::PasteTimeRange { track, frame } => {
+                self.last_time_request = Some(("paste", Some((*track, *frame))))
+            }
+            Request::InsertTimeRange { track, frame } => {
+                self.last_time_request = Some(("insert", Some((*track, *frame))))
+            }
+            _ => {}
+        }
+        #[cfg(test)]
         if let Request::Edit(command) = &request {
             self.last_enqueued_edit = Some(command.clone());
         }

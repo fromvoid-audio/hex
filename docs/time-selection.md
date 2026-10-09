@@ -56,7 +56,9 @@ carry-note boundaries is not established.
 
 Cmd-E continues to split the clip at the point cursor's anchor track. Splitting
 both edges of a multi-track time area, system clipboard exchange, range duplication,
-insert/delete time with gap movement and Session time-area editing are deferred.
+delete time with gap movement and Session time-area editing are deferred.
+Cmd-Shift-C copies the same time rectangle; Cmd-Shift-V inserts it and shifts
+later content right on only the destination rows. Ordinary paste still replaces.
 No schema change is introduced.
 
 ## acceptance
@@ -111,3 +113,24 @@ Native review, 9 October 2026: the user reported that the separately launched
 acceptance of the presented preview behavior, not measured paint/device deadlines
 or sustained-note listening. The bundle manifest identifies clean source commit
 `4181d68` and its release binary. Full local CI passed all 14 steps on that commit.
+
+## selected-track ripple insertion — 9 October 2026
+
+`InsertTimeRange` opens a gap equal to the copied duration on exactly its
+contiguous destination row count, then places the full rectangle including gaps.
+Audio crossing the insertion splits with phase/fade continuity; later audio moves
+without changing its source mapping. Unselected rows and the global tempo map
+stay unchanged. The worker uses the same project-scoped clipboard and prepares
+once before one history commit; rejected edits preserve content, history and redo.
+
+Whole MIDI sources keep IDs and loop metadata when every shifted event can be
+proven to retain the exact frame translation under constant tempo. Otherwise,
+finite occurrences become one-shot fragments with crossing gates retriggered at
+the cut. Expansion is bounded and may refuse a densely looped source. Undo keeps
+the authored source. No schema change or callback work is introduced.
+
+Native checklist: copy a rectangle with sound and gaps using Cmd-Shift-C;
+insert with Cmd-Shift-V at a point or the left boundary of a reverse selection.
+Only affected destination tracks should shift, including a clip crossing the
+insertion. Compare ordinary Cmd-V, then Undo/Redo. Check browser/note-editor
+focus and saved/reopened metadata; sustained-note listening remains separate.

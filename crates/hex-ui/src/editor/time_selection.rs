@@ -405,6 +405,14 @@ impl EditorView {
     }
 
     pub(super) fn paste_time_selection(&mut self, window: &Window) {
+        self.paste_or_insert_time_selection(false, window);
+    }
+
+    pub(super) fn insert_time_selection(&mut self, window: &Window) {
+        self.paste_or_insert_time_selection(true, window);
+    }
+
+    fn paste_or_insert_time_selection(&mut self, insert: bool, window: &Window) {
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
             || !self.focus.is_focused(window)
@@ -414,7 +422,11 @@ impl EditorView {
         let Some((track, frame)) = self.time_selection_paste_target() else {
             return;
         };
-        self.enqueue(Request::PasteTimeRange { track, frame });
+        self.enqueue(if insert {
+            Request::InsertTimeRange { track, frame }
+        } else {
+            Request::PasteTimeRange { track, frame }
+        });
     }
 
     pub(super) fn time_selection_paste_target(&self) -> Option<(TrackId, u64)> {
