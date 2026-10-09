@@ -27,7 +27,8 @@ widgets = (
     'super::waveform::waveform_source_segment_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
-    'self.title_bar()', 'header::title_bar(', 'header::loading_toolbar(',
+    'self.title_bar()', 'self.title_bar(cx)', 'header::title_bar(', 'header::loading_toolbar(',
+    'lights)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
@@ -51,7 +52,7 @@ if '.px(px(theme::TITLEBAR_LEADING_INSET))' not in header:
     errors.append('editor/header.rs: center title with balanced native-control insets')
 for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
-    if 'header::title_bar' not in source and 'self.title_bar()' not in source:
+    if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
         errors.append(f'{top_row}: use the shared title row')
 if 'header::loading_toolbar' not in (ROOT / 'crates/hex-ui/src/editor/bootstrap.rs').read_text():
     errors.append('editor/bootstrap.rs: align startup toolbar with editor toolbar geometry')
