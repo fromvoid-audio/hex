@@ -3551,3 +3551,12 @@ remain usable. No persistence fields or audio callback work are added.
 Acceptance: affected-crate tests and source guards, desktop build and focused PR;
 then user native checks. Exact Live time-edit parity, system clipboard, gap-shifting
 edits and multi-track Cmd-E splits are deferred. Native timing remains unmeasured.
+
+## selection-handle refinement — 9 October 2026
+
+Use a 1.2-second eased white/cyan point pulse. The top third of each selected
+track area is a normally invisible hover-highlighted move handle with an open-hand
+cursor. Dragging below it starts a replacement selection, including over selected
+clips. Outside the selection, ordinary clip dragging/resizing keeps its priority.
+Acceptance: focused color/gesture/hover regression tests, strict UI checks, fresh
+release review bundle and user native animation/handle checks.

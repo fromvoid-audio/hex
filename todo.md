@@ -1939,3 +1939,16 @@ feature-enabled UI Clippy, format, architecture/style guards and release desktop
 build pass. Fresh review app: `artifacts/hex-time-selection-20261009.app`;
 identity/logs: `artifacts/time-selection-manifest.json`. Native acceptance remains
 with the user; automated checks do not establish actual native paint/input timing.
+
+## smooth pulse and selection handle — 9 October 2026
+
+- [x] Smooth 1.2-second white/cyan pulse; steady nonzero time selections.
+- [x] Upper-third hover-only handle and open-hand cursor on each selected row.
+- [x] Drag below the handle to replace a selection from inside itself, including over clips.
+- [x] 256 feature-enabled UI tests pass (2 ignored), including gesture ownership and hover cursor.
+- [x] Strict UI Clippy, format, source guards and release build pass. Fresh review: `artifacts/hex-selection-handle-20261009.app`.
+- [ ] User native pulse/hover/move/reselection acceptance.
+
+Next requested work: compact bottom device panel, internal device architecture,
+VST3 and CLAP hosting. Astra is reviewing architecture and native boundaries;
+full hosting is a separate sequence of targeted, independently tested PRs.

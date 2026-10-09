@@ -2,10 +2,12 @@
 use super::edit_cursor::EditCursor;
 use super::{EditorMode, EditorView};
 use crate::theme::Palette;
-use gpui::{Div, Stateful, Window, div, prelude::*, px, relative, rgb};
+use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
 use hex_project::{Command, TrackId};
 use hex_session::service::Request;
 use std::time::Instant;
+
+const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
@@ -91,6 +93,9 @@ impl EditorView {
         let Some(frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport) else {
             return false;
         };
+        let inside_selection = self.normalized_time_selection().is_some_and(|range| {
+            range.tracks().contains(&track) && frame >= range.start() && frame < range.end()
+        });
         let Some(frame) = self.snap_grid.with_platform_modifier(free).snap_frame(
             &state.project,
             frame,
@@ -99,7 +104,7 @@ impl EditorView {
         ) else {
             return false;
         };
-        if self.track_has_clip_at_frame(track, frame, viewport) {
+        if !inside_selection && self.track_has_clip_at_frame(track, frame, viewport) {
             return false;
         }
         let generation = self.project_generation;
@@ -114,8 +119,8 @@ impl EditorView {
             track,
             frame,
             generation,
-            bright: true,
-            last_blink: Instant::now(),
+            pulse_color: Palette::TEXT,
+            pulse_started: Instant::now(),
         });
         self.time_selection = Some(selection);
         self.time_selection_gesture = Some(TimeSelectionGesture {
@@ -153,6 +158,10 @@ impl EditorView {
         let Some((track, lane)) = self.visible_lane_at(x, y) else {
             return false;
         };
+        // Only the upper third is a move handle; the rest always reselects.
+        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+            return false;
+        }
         let Some(track_offset) = range.tracks().iter().position(|item| *item == track) else {
             return false;
         };
@@ -160,10 +169,7 @@ impl EditorView {
         let Some(frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport) else {
             return false;
         };
-        if frame < range.start()
-            || frame >= range.end()
-            || self.track_has_clip_at_frame(track, frame, viewport)
-        {
+        if frame < range.start() || frame >= range.end() {
             return false;
         }
         let Some(grab_frame_offset) = frame.checked_sub(range.start()) else {
@@ -666,7 +672,18 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(Palette::CYAN))
-                .opacity(0.13),
+                .opacity(0.13)
+                .child(
+                    div()
+                        .id(("time-selection-handle", track.value()))
+                        .debug_selector(|| format!("time-selection-handle-{}", track.value()))
+                        .absolute()
+                        .top_0()
+                        .w_full()
+                        .h(relative(SELECTION_HANDLE_FRACTION))
+                        .cursor(CursorStyle::OpenHand)
+                        .hover(|style| style.bg(rgb(Palette::TEXT))),
+                ),
         )
     }
 

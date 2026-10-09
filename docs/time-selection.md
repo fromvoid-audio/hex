@@ -7,9 +7,11 @@ Click empty track space to place a point selection. Drag horizontally to select
 a half-open frame interval, and vertically to include contiguous tracks. Reverse
 dragging normalizes the interval without changing the endpoint focus: the last
 track reached receives a subtle background highlight. One-track selection focuses
-that track. Clip bodies and resize edges retain their existing drag priority.
+that track. Outside an existing time area, clip bodies and resize edges retain their drag priority.
+Inside a selected area, its upper third is a move handle, including over clips;
+dragging below that handle replaces the selection.
 A highlighted area is steady translucent cyan; only a zero-width point selection
-blinks white/cyan. Track dividers remain above these overlays. Selection is
+smoothly pulses white/cyan with a 1.2-second cycle. Track dividers remain above these overlays. Selection is
 transient view state, cleared on project replacement and invalidated track removal.
 
 The selection uses the current adaptive grid and Command snapping override.
@@ -17,8 +19,11 @@ Cmd-C copies, Cmd-X cuts, Cmd-V pastes at the selection’s first row/left bound
 (or at a point cursor when no time area is selected), and Delete clears the
 area without closing the gap. These shortcuts apply at Arrangement workspace
 focus; browser text input and MIDI note editor shortcuts keep their own context.
-Dragging selected empty background moves the area. Existing clips remain directly
-draggable; a range move is not started from their bodies.
+The upper third of each selected track area is normally invisible as a handle.
+Hovering highlights it and shows an open-hand cursor; dragging there moves the
+whole area. Below it, dragging creates a new selection, including from inside
+the existing selection and over selected clips. These gesture zones own input
+inside the area; normal clip dragging resumes outside it.
 
 ## canonical edits and clipboard
 
@@ -70,3 +75,10 @@ workspace and feature-enabled UI Clippy, format, source guards and release deskt
 build pass. Fresh review bundle: `artifacts/hex-time-selection-20261009.app`;
 manifest: `artifacts/time-selection-manifest.json`. No native input/listening or
 paint-time claim is made.
+
+Selection refinement, 9 October: the existing 16ms UI timer samples a cosine
+color interpolation with elapsed-time phase, requesting redraw only when its RGB
+value changes. Nonzero time areas remain steady and do not drive pulse redraws.
+Source tests cover intermediate colors, exact cycle endpoints, skipped timer
+ticks, handle extent/hand cursor, reselection inside a previous area, and both
+gesture zones over selected clips. Native animation smoothness remains a user check.
