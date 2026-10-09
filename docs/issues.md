@@ -2208,3 +2208,19 @@ one frame), not numeric entry or draggable markers. Source trims reset phase,
 and one-shot play-start changes source in. The initial panel deliberately exposes
 no inactive gain/pitch/warp controls; those remain requested model/DSP follow-ups.
 Review fixed source-end marker/final ruler-label clipping at the right edge.
+
+## clip edit responsiveness — 9 October 2026
+
+User reports panel position/size flicker and slow resizing. Investigation identifies
+repeated root paint/tessellation, a transparent original waveform plus resize
+preview, repeated identical snapped candidates and pending control color pulses.
+Finite scope and native acceptance: `docs/clip-edit-performance.md`. Overview
+revision scans and control-side compile/history costs remain future measured
+work; no callback/scheduling architecture changes are implied. MIDI handle
+project captures are Arc clones, not deep project copies.
+
+The smooth-edit fix is source-tested and a release app is prepared. User reports
+text/status flicker specifically; pending control color pulses and shifting status
+slots are addressed. Waveform preparation reuse is measured separately from
+paint/GPU/input latency. Native verdict remains open; no faster-DAW or complete
+100-track responsiveness claim is established by the component benchmark.

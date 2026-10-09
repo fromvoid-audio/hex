@@ -1908,3 +1908,18 @@ undoable edits. 715 workspace tests passed (1 ignored); feature-enabled GPUI
 Review: `artifacts/hex-clip-view-20261009.app` and
 `artifacts/clip-view-manifest.json`. Native acceptance and the remaining gain,
 pitch, warp, marker gestures, zoom and numeric entry are open.
+
+## current optimization unit — 9 October 2026
+
+Smooth clip edits: bounded retained waveform geometry, skip invisible resize
+waveforms, coalesce unchanged snapped previews and stable pending control colors.
+Keep canonical edit/history and publication contracts. Targeted checks, release
+microbenchmark and fresh native review app are required; user flicker/resize
+acceptance remains open. Contract: `docs/clip-edit-performance.md`.
+
+Smooth-edit source milestone: 253 UI tests passed (2 ignored), strict UI lint,
+source guards and release desktop build pass. Retained geometry component
+measurement is in `docs/performance.md`; full native responsiveness remains
+unverified. Review release app: `artifacts/hex-smooth-clip-20261009.app`, identity:
+`artifacts/smooth-clip-manifest.json`. User check details/status flicker, audio/
+MIDI snapping/free resize, preview/release agreement, cancel/Undo and replacement.

@@ -226,3 +226,12 @@ column. MIDI uses the existing note editor with its source controls on the left;
 Session audio retains its existing source controls in the shared slot. Gain,
 pitch, warp modes, numeric entry and marker dragging remain follow-ups.
 See ../../docs/clip-view.md for contracts and user acceptance checks.
+
+Waveform drawing retains ready-to-paint paths in the editor-owned bounded
+`waveform_geometry` cache (128 entries, 65,536 aggregate device columns). Keys
+include retained source identity, clip/source mapping, visible interval, bounds
+and scale. Project replacement clears cached ownership. Arrangement/detail
+redraws reuse unchanged geometry; live trims omit invisible original paint
+children and suppress notifications for identical snapped candidates. Pending
+control colors and compact status slot widths remain stable. See
+../../docs/clip-edit-performance.md for measurement scope and native checks.

@@ -163,11 +163,12 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .border_color(rgb(Palette::BORDER))
         .debug_selector(|| "arrangement-audio-waveform".into());
     if let Some(waveform) = waveform {
-        canvas_region = canvas_region.child(super::waveform::waveform_source_segment_view(
+        canvas_region = canvas_region.child(super::waveform::waveform_source_segment_view_cached(
             waveform,
             0,
             0,
             window.asset_frames,
+            std::rc::Rc::clone(&view.waveform_geometry_cache),
         ));
     } else {
         canvas_region = canvas_region.child(
@@ -344,11 +345,7 @@ fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> 
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(if pending {
-                    Palette::MUTED
-                } else {
-                    Palette::TEXT
-                }))
+                .text_color(rgb(Palette::TEXT))
                 .child(theme::text(if window.looping { "on" } else { "off" })),
         )
 }
@@ -386,11 +383,7 @@ fn control_button(
         .flex()
         .items_center()
         .justify_center()
-        .text_color(rgb(if pending {
-            Palette::MUTED
-        } else {
-            Palette::CYAN
-        }))
+        .text_color(rgb(Palette::CYAN))
         .hover(|style| style.bg(rgb(Palette::BACKGROUND)))
         .debug_selector(move || {
             let field = match field {

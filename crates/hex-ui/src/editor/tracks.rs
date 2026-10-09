@@ -3,7 +3,7 @@ use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
     ClipTooltip, button, fade_envelope_samples, waveform_source_segment_view,
-    waveform_summary_view, waveform_view, waveform_view_at,
+    waveform_summary_view, waveform_view_at,
 };
 use super::{EditorView, ViewState};
 use crate::theme::{self, Palette};
@@ -507,11 +507,12 @@ impl EditorView {
                         .bg(rgb(Palette::CLIP_FILL))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if let Some(waveform) = state.waveforms.get(&asset) {
-                        preview = preview.child(waveform_view(
+                        preview = preview.child(super::waveform::waveform_view_cached(
                             waveform,
                             &preview_clip,
                             visible_start,
                             visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
                         ));
                     }
                     clip_area = clip_area.children([preview]);
@@ -888,23 +889,31 @@ impl EditorView {
             }))
             .hover(|style| style.bg(rgb(Palette::CLIP_HOVER)));
         content = content.border_1().border_color(rgb(0x000000));
-        content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
-        match waveform {
-            Some(waveform) => {
-                content = content.child(waveform_view(waveform, clip, visible_start, visible_end));
-            }
-            None => {
-                content = content.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .px_1()
-                        .text_xs()
-                        .text_color(rgb(Palette::MUTED))
-                        .child(theme::text("missing media")),
-                );
+        if !active_trim_preview {
+            content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
+            match waveform {
+                Some(waveform) => {
+                    content = content.child(super::waveform::waveform_view_cached(
+                        waveform,
+                        clip,
+                        visible_start,
+                        visible_end,
+                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    ));
+                }
+                None => {
+                    content = content.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .px_1()
+                            .text_xs()
+                            .text_color(rgb(Palette::MUTED))
+                            .child(theme::text("missing media")),
+                    );
+                }
             }
         }
         let fade = clip.fade();
@@ -913,7 +922,10 @@ impl EditorView {
             .get(&track)
             .map(|lane| (lane.width * width as f32).max(3.0))
             .unwrap_or(0.0);
-        if envelope_width >= 40.0 && (fade.fade_in() > 0 || fade.fade_out() > 0) {
+        if !active_trim_preview
+            && envelope_width >= 40.0
+            && (fade.fade_in() > 0 || fade.fade_out() > 0)
+        {
             let samples = fade_envelope_samples(fade, clip.start(), visible_start, visible_end);
             if samples.len() >= 2 {
                 content = content.children([canvas(

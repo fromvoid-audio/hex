@@ -1,21 +1,17 @@
 use crate::theme::{self, Palette};
-use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
-use std::{ops::Range, sync::Arc};
+use std::{ops::Range, rc::Rc, sync::Arc};
+
+use super::waveform_geometry::{
+    WaveformGeometryCache, WaveformGeometryRequest, WaveformMapping, cached_waveform_geometry,
+    prepare_waveform_geometry,
+};
 
 const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 4;
-
-pub(super) fn waveform_view(
-    waveform: &Arc<CachedWaveform>,
-    clip: &Clip,
-    visible_start: u64,
-    visible_end: u64,
-) -> Div {
-    waveform_view_at(waveform, clip, clip.start(), visible_start, visible_end)
-}
 
 pub(super) fn waveform_view_at(
     waveform: &Arc<CachedWaveform>,
@@ -32,6 +28,26 @@ pub(super) fn waveform_view_at(
         },
         visible_start,
         visible_end,
+        None,
+    )
+}
+
+pub(super) fn waveform_view_cached(
+    waveform: &Arc<CachedWaveform>,
+    clip: &Clip,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+) -> Div {
+    waveform_canvas(
+        Arc::clone(waveform),
+        WaveformMapping::Clip {
+            clip: clip.clone(),
+            timeline_origin: clip.start(),
+        },
+        visible_start,
+        visible_end,
+        Some(cache),
     )
 }
 
@@ -46,6 +62,23 @@ pub(super) fn waveform_source_segment_view(
         WaveformMapping::Source { timeline_origin },
         visible_start,
         visible_end,
+        None,
+    )
+}
+
+pub(super) fn waveform_source_segment_view_cached(
+    waveform: Arc<CachedWaveform>,
+    timeline_origin: u64,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+) -> Div {
+    waveform_canvas(
+        waveform,
+        WaveformMapping::Source { timeline_origin },
+        visible_start,
+        visible_end,
+        Some(cache),
     )
 }
 
@@ -54,17 +87,12 @@ pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
     waveform_source_segment_view(waveform, 0, 0, end)
 }
 
-#[derive(Clone)]
-enum WaveformMapping {
-    Clip { clip: Clip, timeline_origin: u64 },
-    Source { timeline_origin: u64 },
-}
-
 fn waveform_canvas(
     waveform: Arc<CachedWaveform>,
     mapping: WaveformMapping,
     visible_start: u64,
     visible_end: u64,
+    cache: Option<Rc<std::cell::RefCell<WaveformGeometryCache>>>,
 ) -> Div {
     let mapping = mapping.clone();
     waveform_surface(canvas(
@@ -76,97 +104,38 @@ fn waveform_canvas(
                 return;
             }
             let columns = waveform_column_count(width, window.scale_factor());
-            let frames = visible_end - visible_start;
-            let mut stereo_peaks = Vec::with_capacity(columns);
-            for column in 0..columns {
-                let start = visible_start.saturating_add(fraction_u64(frames, column, columns));
-                let end = visible_start
-                    .saturating_add(fraction_u64(frames, column + 1, columns))
-                    .max(start.saturating_add(1));
-                let peaks = match &mapping {
-                    WaveformMapping::Clip {
-                        clip,
-                        timeline_origin,
-                    } => {
-                        let ranges = timeline_source_ranges_at(
-                            clip,
-                            *timeline_origin,
-                            start..end,
-                            waveform.source_frames,
-                        );
-                        aggregate_ranges(&waveform, ranges.as_slice())
-                    }
-                    WaveformMapping::Source { timeline_origin } => start
-                        .checked_sub(*timeline_origin)
-                        .zip(end.checked_sub(*timeline_origin))
-                        .and_then(|(start, end)| {
-                            usize::try_from(start).ok().zip(usize::try_from(end).ok())
-                        })
-                        .and_then(|(start, end)| aggregate_peaks(&waveform, start, end)),
+            let geometry = cache.as_ref().and_then(|cache| {
+                let request = WaveformGeometryRequest {
+                    mapping: &mapping,
+                    visible_start,
+                    visible_end,
+                    bounds,
+                    scale: window.scale_factor(),
+                    columns,
                 };
-                stereo_peaks.push(peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]));
-            }
-            for channel in 0..2 {
-                let band_top = height * channel as f32 * 0.5;
-                let band_height = height * 0.5;
-                let center = band_top + band_height * 0.5;
-                let amplitude = (band_height * 0.44).max(0.5);
-
-                let mut maxima = Vec::with_capacity(columns);
-                let mut minima = Vec::with_capacity(columns);
-                for (column, peaks) in stereo_peaks.iter().enumerate() {
-                    let x = (column as f32 + 0.5) * width / columns as f32;
-                    let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
-                    maxima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(top)));
-                    minima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(bottom)));
-                }
-
-                let mut centerline = PathBuilder::stroke(px(0.5));
-                centerline.move_to(point(bounds.origin.x, bounds.origin.y + px(center)));
-                centerline.line_to(point(
-                    bounds.origin.x + bounds.size.width,
-                    bounds.origin.y + px(center),
-                ));
-                if let Ok(path) = centerline.build() {
-                    window.paint_path(path, rgb(Palette::BORDER));
-                }
-
-                let has_area = maxima
-                    .iter()
-                    .zip(&minima)
-                    .any(|(maximum, minimum)| (f32::from(maximum.y - minimum.y)).abs() >= 0.5);
-                if has_area && let Some(first) = maxima.first().copied() {
-                    let mut silhouette = PathBuilder::fill();
-                    silhouette.move_to(first);
-                    for point in maxima.iter().skip(1) {
-                        silhouette.line_to(*point);
-                    }
-                    for point in minima.iter().rev() {
-                        silhouette.line_to(*point);
-                    }
-                    silhouette.close();
-                    if let Ok(path) = silhouette.build() {
-                        window.paint_path(path, rgb(0x000000));
-                    }
-                } else if let Some(first) = maxima.first().copied() {
-                    // A constant sample has zero fill area; stroke its real level so
-                    // deep zoom never turns a non-silent signal into empty space.
-                    let mut trace = PathBuilder::stroke(px(1.0));
-                    trace.move_to(first);
-                    for point in maxima.iter().skip(1) {
-                        trace.line_to(*point);
-                    }
-                    if let Ok(path) = trace.build() {
-                        window.paint_path(path, rgb(0x000000));
-                    }
+                cached_waveform_geometry(cache, &waveform, &request)
+            });
+            let geometry = geometry.or_else(|| {
+                prepare_waveform_geometry(
+                    &waveform,
+                    &mapping,
+                    visible_start,
+                    visible_end,
+                    bounds,
+                    columns,
+                )
+                .map(Arc::new)
+            });
+            if let Some(geometry) = geometry {
+                for channel in &geometry.channels {
+                    window.paint_path(channel.centerline.clone(), rgb(Palette::BORDER));
+                    window.paint_path(channel.waveform.clone(), rgb(0x000000));
                 }
             }
         },
     ))
 }
 
-// The canvas has no intrinsic size. Pin it to all four edges so its paint
-// bounds cover the clip, rather than collapsing to a zero-height child.
 fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
     div()
         .absolute()
@@ -174,14 +143,14 @@ fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
         .children([canvas.absolute().inset_0()])
 }
 
-fn waveform_column_count(width: f32, scale: f32) -> usize {
+pub(super) fn waveform_column_count(width: f32, scale: f32) -> usize {
     if !width.is_finite() || width <= 0.0 || !scale.is_finite() || scale <= 0.0 {
         return 1;
     }
     ((width * scale).ceil() as usize).clamp(1, MAX_WAVEFORM_COLUMNS)
 }
 
-fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32) -> (f32, f32) {
+pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32) -> (f32, f32) {
     let top = center - peak.max.clamp(-1.0, 1.0) * amplitude;
     let bottom = center - peak.min.clamp(-1.0, 1.0) * amplitude;
     (top.min(bottom), top.max(bottom))
@@ -257,7 +226,7 @@ pub(super) fn fade_envelope_samples(
     points
 }
 
-fn fraction_u64(value: u64, numerator: usize, denominator: usize) -> u64 {
+pub(super) fn fraction_u64(value: u64, numerator: usize, denominator: usize) -> u64 {
     if denominator == 0 {
         return 0;
     }
@@ -267,12 +236,12 @@ fn fraction_u64(value: u64, numerator: usize, denominator: usize) -> u64 {
 /// A display column can touch at most two source intervals at a loop wrap.
 /// Keep these intervals on the stack rather than allocating a vector per column.
 #[derive(Default)]
-struct SourceRanges {
+pub(super) struct SourceRanges {
     ranges: [Range<usize>; 2],
     len: usize,
 }
 impl SourceRanges {
-    fn as_slice(&self) -> &[Range<usize>] {
+    pub(super) fn as_slice(&self) -> &[Range<usize>] {
         &self.ranges[..self.len]
     }
     #[cfg(test)]
@@ -291,7 +260,7 @@ fn timeline_source_ranges(
     timeline_source_ranges_at(clip, clip.start(), visible, available_frames)
 }
 
-fn timeline_source_ranges_at(
+pub(super) fn timeline_source_ranges_at(
     clip: &Clip,
     timeline_origin: u64,
     visible: Range<u64>,
@@ -380,11 +349,18 @@ fn push_source_range(ranges: &mut SourceRanges, start: u64, end: u64, available_
     }
 }
 
-fn aggregate_peaks(waveform: &CachedWaveform, start: usize, end: usize) -> Option<[CachedPeak; 2]> {
+pub(super) fn aggregate_peaks(
+    waveform: &CachedWaveform,
+    start: usize,
+    end: usize,
+) -> Option<[CachedPeak; 2]> {
     waveform.peaks_for_frames(start, end)
 }
 
-fn aggregate_ranges(waveform: &CachedWaveform, ranges: &[Range<usize>]) -> Option<[CachedPeak; 2]> {
+pub(super) fn aggregate_ranges(
+    waveform: &CachedWaveform,
+    ranges: &[Range<usize>],
+) -> Option<[CachedPeak; 2]> {
     let mut merged = None;
     for range in ranges {
         let peaks = aggregate_peaks(waveform, range.start, range.end)?;
@@ -461,7 +437,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, size};
+        use gpui::{IntoElement, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();
