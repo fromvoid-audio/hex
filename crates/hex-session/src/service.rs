@@ -2553,6 +2553,150 @@ mod service_tests {
     }
 
     #[test]
+    fn builtin_fm4_state_edits_save_reopen_undo_redo_and_reject_cycles_atomically() {
+        use hex_engine::NativeDeviceClass;
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "fm4 persistence".into(),
+            }))
+            .expect("add track");
+        let track_event = next_event(&service);
+        let track = track_event.state.project.tracks()[0].id();
+        let instrument = track_event.state.project.tracks()[0]
+            .instrument()
+            .expect("default sine slot");
+        let device = instrument.id();
+        let fm4 = DeviceTypeId::from_static("hex.instrument.fm4");
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device,
+                class: NativeDeviceClass::Instrument,
+                type_id: Box::new(fm4),
+            })
+            .expect("replace default instrument with registered FM4");
+        let admitted = next_event(&service);
+        assert!(admitted.error.is_none(), "{:?}", admitted.error);
+        let admitted_state = admitted.state.project.device(device).unwrap().state();
+        assert_eq!(admitted_state.type_id(), fm4);
+        let carrier = ParameterId::from_static(29);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                admitted_state,
+                carrier,
+            ),
+            Ok(ParameterValue::Float(1.0))
+        );
+
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: carrier,
+                value: ParameterValue::Float(0.625),
+            })
+            .expect("edit FM4 carrier");
+        let changed = next_event(&service);
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                changed.state.project.device(device).unwrap().state(),
+                carrier,
+            ),
+            Ok(ParameterValue::Float(0.625))
+        );
+
+        service
+            .submit(Request::Undo)
+            .expect("undo FM4 parameter edit");
+        let undone = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                undone.state.project.device(device).unwrap().state(),
+                carrier,
+            ),
+            Ok(ParameterValue::Float(1.0))
+        );
+        service
+            .submit(Request::Redo)
+            .expect("redo FM4 parameter edit");
+        let redone = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                redone.state.project.device(device).unwrap().state(),
+                carrier,
+            ),
+            Ok(ParameterValue::Float(0.625))
+        );
+
+        let directory = TestDir::new();
+        let path = directory.0.join("fm4.hex");
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save FM4 project");
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        let reopened_service = Service::new(48_000, 16, 0).expect("reopen service");
+        next_event(&reopened_service);
+        reopened_service
+            .submit(Request::Open(path))
+            .expect("reopen FM4 project");
+        let reopened = next_event(&reopened_service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        let persisted = reopened
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        assert_eq!(persisted.id(), device);
+        assert_eq!(persisted.state().type_id(), fm4);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                persisted.state(),
+                carrier,
+            ),
+            Ok(ParameterValue::Float(0.625))
+        );
+
+        reopened_service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: ParameterId::from_static(14),
+                value: ParameterValue::Float(0.2),
+            })
+            .expect("author first acyclic edge");
+        let edged = next_event(&reopened_service);
+        assert!(edged.error.is_none(), "{:?}", edged.error);
+        let before_cycle = edged.state.clone();
+        reopened_service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: ParameterId::from_static(17),
+                value: ParameterValue::Float(0.2),
+            })
+            .expect("submit cyclic edge");
+        let rejected = next_event(&reopened_service);
+        assert_eq!(
+            rejected.error.as_deref(),
+            Some("device parameter value is invalid")
+        );
+        assert_eq!(rejected.state.revision, before_cycle.revision);
+        assert_eq!(rejected.state.project, before_cycle.project);
+        assert_eq!(rejected.state.can_undo, before_cycle.can_undo);
+        assert!(rejected.playback.is_none());
+    }
+
+    #[test]
     fn explicit_effect_replacement_preserves_identity_order_bypass_and_undo() {
         use hex_engine::NativeDeviceClass;
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};

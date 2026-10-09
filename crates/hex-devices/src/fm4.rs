@@ -1,8 +1,9 @@
 //! Original standalone phase-modulation kernel, a prerequisite for Operator.
 //!
-//! No built-in registry admission, feedback, mutable voices or Live algorithm
-//! numbering. The standalone kernel and optional custom-registry definition
-//! validate on control; sampling uses fixed arrays and a borrowed sine table.
+//! The built-in definition admits this bounded acyclic kernel to native MIDI
+//! playback. It does not provide feedback, mutable voices or Live algorithm
+//! numbering. State and note preparation validate on control; sampling uses
+//! fixed arrays and a borrowed sine table.
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 
@@ -222,8 +223,8 @@ impl PreparedFm4 {
     }
 
     /// Pack this validated standalone note into the bounded immutable analytic
-    /// sampler ABI. FM4 remains unregistered; callers must not infer admission
-    /// from this adapter. The shared table is initialized on this control-side
+    /// sampler ABI used by the registered FM4 instrument. The shared table is
+    /// initialized on this control-side
     /// call so the returned sampler never initializes it while rendering.
     /// Words are: 4 steps, 4 phases, 4 levels, 16 row-major modulation values,
     /// 4 carrier values, 4 topological-order indices, attack, decay, sustain,

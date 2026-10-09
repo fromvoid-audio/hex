@@ -234,7 +234,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     let instrument = visual
         .debug_bounds("browser-device-instrument-0")
         .expect("registered sine instrument row");
-    assert!(visual.debug_bounds("browser-device-effect-1").is_some());
+    assert!(visual.debug_bounds("browser-device-effect-2").is_some());
 
     let down = point(
         instrument.origin.x + instrument.size.width / 2.0,

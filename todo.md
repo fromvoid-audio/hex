@@ -366,9 +366,11 @@ remains the implementation scope; current checkpoints are not the final build.
 
 Operator prerequisite Pulse2119: standalone original FM4 kernel with four sine
 operators, validated acyclic phase routing and authored-age/gate ADSR is source
-implemented and targeted-tested. See [contract](docs/fm4.md). Catalog/runtime
-admission, feedback and complete Operator feature/reference acceptance remain
-open. Keep this focused PR separate from panel-focus2117 and loop-rail2120.
+implemented and targeted-tested. Pulse2154 admits its bounded analytic sampler
+through the built-in catalog and shared Arrangement/Session/export paths. See
+[contract](docs/fm4.md). Mutable feedback and complete Operator feature/reference
+acceptance remain open. Keep this focused PR separate from panel-focus2117 and
+loop-rail2120.
 
 Pulse2114: schema15 optional instrument slot, generic registry and copied analytic
 note samplers are implemented in source; targeted tests/strict checks pass.
@@ -436,8 +438,9 @@ notes, preserving source-window admission. Focused engine/session/export and
 callback allocation checks pass; clean full local CI remains the integration gate.
 Accounted repeated-note sampler/index storage falls in the Session fixture, while
 unique-heavy Arrangement storage rises; noisy timings establish no speedup.
-FM4 registry/state admission2124 remains open; native instrument panel2127 is
-implemented in source below. Pulse remains authoritative for review and acceptance.
+FM4 registry/state admission is implemented by Pulse2154; native instrument
+panel2127 is implemented in source below. Full Operator remains deferred. Pulse
+remains authoritative for review and acceptance.
 
 Native metadata class facades2131: engine metadata/catalog/default/read/patch
 helpers now take an explicit effect or instrument class; existing unqualified
@@ -462,15 +465,16 @@ Instrument panel2127: canonical instrument slot now renders before effects, with
 registered add/replace/remove/bypass and no reorder controls. Session routes
 parameters and gestures by canonical slot ownership; UI caches class/type identity.
 Sine exposes no fabricated parameters. Full Session tests, rendered panel actions,
-nine gesture tests, strict affected Clippy and source guards pass. Full local CI
-and user native acceptance follow; FM4 admission and full Operator remain open.
+nine gesture tests, strict affected Clippy and source guards pass. FM4 now uses
+this generic panel; full Operator remains open.
 
 Pulse2133: the analytic sampler payload is widened to41 owned `u64` words for
 the standalone validated FM4 kernel, with borrowed per-frame sampling and
 bit-exact legacy sine output. Pulse2146 adds an exact version-1 authored-state
-codec and generic definition usable through an explicit caller-owned registry.
-FM4 remains excluded from the built-in instrument catalog and is not selectable
-in projects; catalog admission, engine/runtime support, and its UI remain open.
+codec and generic definition. Pulse2154 registers that definition as a built-in,
+selectable instrument through the existing engine, Session, panel and export
+seams; no device-specific storage or schema branch was added. Mutable FM feedback,
+full Operator and physical listening remain open.
 Pulse2146 source checks: 37 `hex-devices` tests, strict device all-target
 Clippy, workspace formatting, architecture/style guards and GPUI patch guard pass.
 Full local CI, review and any native device/playback acceptance remain open.
@@ -503,8 +507,7 @@ add, occupied refusal, stable move, stale-state refusal and active-gesture refus
 Targeted checks pass: 334 UI tests (2 existing ignored), Session drop/gesture
 tests, affected strict Clippy, formatting and architecture/style guards. Full
 local CI remains before review; native pointer/track-focus review remains with
-the user. FM4 remains
-unregistered and is intentionally absent from this catalog.
+the user. FM4 appears through the same registered catalog as sine and Utility.
 
 Pulse2152: starting a native-device drag from the left browser opens the device
 pane and switches its content from clip details to devices, while preserving the
@@ -525,3 +528,17 @@ then confirms values and controls return in Swap mode. The targeted device-panel
 tests (17), contract/device/engine tests, affected strict Clippy, formatting,
 architecture, UI-style, GPUI-patch and diff guards pass. Full local CI remains
 before review; native UI acceptance remains open.
+
+Pulse2154: the validated FM4 definition is admitted to the built-in instrument
+registry and uses the existing generic slot/state/session/export pipeline. No
+schema or FM4-specific project-storage branch was added. Source tests cover
+independent carrier PCM through Arrangement, Session and streamed hybrid playback,
+PCM16 export, save/reopen plus Undo/Redo and cycle-refusal atomicity, browser drag
+and parameter rendering, and zero total/net allocation/deallocation in callback
+publication/rendering scopes. The probe separately confirms reclamation occurs on
+control with the expected negative net allocation count/bytes.
+Focused device, engine, Session, CLI, UI and audio allocation-probe suites, strict
+affected Clippy and source guards pass. A short release profile found 100×16 FM4
+block maxima above nominal periods; Pulse2108 owns the open performance follow-up.
+Full local CI and user native listening remain separate acceptance gates. See
+[FM4 contract](docs/fm4.md) and [performance evidence](docs/performance.md).

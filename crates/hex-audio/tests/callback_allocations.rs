@@ -1005,6 +1005,123 @@ fn arrangement_instrument_bypass_and_reenable_are_callback_allocation_free()
     Ok(())
 }
 
+#[test]
+fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "fm4 arrangement".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected FM4 instrument track".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("default instrument slot missing")?
+        .id();
+    let fm4_type = DeviceTypeId::from_static("hex.instrument.fm4");
+    let fm4_default = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        fm4_type,
+    )?;
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: fm4_default,
+    })?;
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 120,
+    })?;
+    let first_project = editor.project().clone();
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let first_revision = Arc::new(PreparedRevision::prepare(
+        &first_project,
+        &media,
+        Arc::clone(&table),
+        None,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial FM4 graph publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    oracle.apply(PlaybackCommand::Play);
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = [[0.0; 2]; 128];
+    oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+
+    let changed_state = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        editor
+            .project()
+            .device(instrument)
+            .ok_or("FM4 disappeared")?
+            .state(),
+        ParameterId::from_static(29),
+        ParameterValue::Float(0.5),
+    )?;
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: changed_state,
+    })?;
+    let changed_project = editor.project().clone();
+    let changed_revision = Arc::new(PreparedRevision::prepare(
+        &changed_project,
+        &media,
+        Arc::clone(&table),
+        Some(first_revision.session()),
+    )?);
+    let mut changed_oracle =
+        Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    changed_oracle
+        .try_inherit_runtime_from(&mut oracle)
+        .map_err(|_| "FM4 state-change oracle handoff failed")?;
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "FM4 state-change publication failed")?;
+    changed_oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+
+    let mut completed = 0;
+    let retired = measure(|| completed = control.reclaim());
+    assert!(completed > 0, "old FM4 graph retires on the control side");
+    assert_eq!(retired.count_total, 0, "retirement does not allocate");
+    assert!(
+        retired.count_current < 0,
+        "retirement performs its drops on control"
+    );
+    assert!(retired.bytes_current < 0);
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    drop((changed_revision, first_revision, changed_oracle, oracle));
+    Ok(())
+}
+
 fn arrangement_instrument_bypass_at_position(
     instrument_position: usize,
 ) -> Result<(), Box<dyn Error>> {

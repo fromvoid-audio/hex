@@ -275,20 +275,10 @@ fn explicit_definition_prepares_analytic_notes_matching_the_standalone_kernel() 
 }
 
 #[test]
-fn definition_is_available_for_custom_registries_but_not_builtin_catalogs() {
+fn definition_is_admitted_by_builtin_and_explicit_registries() {
     let registry = explicit_registry();
     assert!(registry.definition(FM4_TYPE_ID).is_some());
-    assert!(
-        crate::native_instrument_registry()
-            .unwrap()
-            .definition(FM4_TYPE_ID)
-            .is_none()
-    );
-    assert_eq!(
-        crate::native_instrument_registry()
-            .unwrap()
-            .definitions()
-            .len(),
-        1
-    );
+    let builtins = crate::native_instrument_registry().unwrap();
+    assert!(builtins.definition(FM4_TYPE_ID).is_some());
+    assert_eq!(builtins.definitions().len(), 2);
 }
