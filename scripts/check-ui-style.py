@@ -32,7 +32,8 @@ widgets = (
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)',
-    'super::loop_rail::view(',
+    'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
+    'device_drag_grip(', 'uniform_list(',
     'loop_grid_layer(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):

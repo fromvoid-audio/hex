@@ -459,3 +459,21 @@ preserves stable identity, chain position and bypass and remains Undoable. The
 device menu's replace action routes through this request, while add stays add.
 Targeted Session/UI checks pass; clean full local CI remains before review.
 Native interaction acceptance remains with the user.
+
+Pulse2136 native device browser and ordered rail: the existing left browser now
+shows actual registered Utility and Sine definitions in its devices category and
+starts drags without requiring prior track focus. The device rail renders the
+canonical ordered chain with card-half stable-ID insertion targets, a wide empty
+end target and compact insertion previews. Browser effects add before/after or
+at the end; an instrument adds at the front only when its slot is empty. Existing
+cards reorder by header grip and keep identity. Stale generation/revision, missing
+source/anchor, occupied instrument, active gesture and pending edits refuse
+without publishing a drop; release outside and Escape clear transient preview.
+Rendered GPUI coverage exercises browser discovery, a hovered-card insertion,
+outside-release cleanup and Escape; Session coverage exercises effect/instrument
+add, occupied refusal, stable move, stale-state refusal and active-gesture refusal.
+Targeted checks pass: 334 UI tests (2 existing ignored), Session drop/gesture
+tests, affected strict Clippy, formatting and architecture/style guards. Full
+local CI remains before review; native pointer/track-focus review remains with
+the user. FM4 remains
+unregistered and is intentionally absent from this catalog.

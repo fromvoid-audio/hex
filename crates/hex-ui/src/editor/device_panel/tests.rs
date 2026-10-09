@@ -218,6 +218,318 @@ fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mu
     assert!(visual.debug_bounds("instrument-empty").is_none());
 }
 
+#[gpui::test]
+fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut TestAppContext) {
+    let (service, state, track, existing, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let source = visual
+        .debug_bounds("browser-device-effect-1")
+        .expect("registered utility in device browser");
+    let card_selector =
+        Box::leak(format!("device-drop-card-{}", existing.value()).into_boxed_str());
+    let card = visual
+        .debug_bounds(card_selector)
+        .expect("existing utility card drop receiver");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let destination = point(
+        card.origin.x + px(24.0),
+        card.origin.y + card.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_native_device_drag
+            .as_ref()
+            .expect("native device drag remains active over rail");
+        assert_eq!(
+            drag.destination.get(),
+            Some(drag::NativeDeviceDropTarget {
+                track,
+                before: Some(existing),
+            })
+        );
+    });
+
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .is_some_and(|track| track.devices().len() == 2)
+    });
+    editor.read_with(cx, |view, _| {
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(devices[1].id(), existing);
+        assert_ne!(devices[0].id(), existing);
+        assert!(view.active_native_device_drag.is_none());
+    });
+}
+
+#[gpui::test]
+fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut TestAppContext) {
+    let (service, initial_state, track, _, _, _) = actor_utility_fixture();
+    let utility = hex_engine::native_device_catalog()
+        .expect("registered utility")
+        .remove(0);
+    let mut state = initial_state;
+    for _ in 0..8 {
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(utility.type_id),
+                before: None,
+            })
+            .expect("append utility");
+        state = receive_service_event(&service).state;
+    }
+    let device_ids: Vec<_> = state
+        .project
+        .track(track)
+        .expect("track")
+        .devices()
+        .iter()
+        .map(hex_project::Device::id)
+        .collect();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let rail = visual
+        .debug_bounds("device-chain-scroll")
+        .expect("visible rail bounds");
+    let outside = point(
+        rail.origin.x + rail.size.width + px(2.0),
+        rail.origin.y + rail.size.height / 2.0,
+    );
+    let clipped_card_contains_pointer = device_ids.iter().any(|device| {
+        let selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
+        visual
+            .debug_bounds(selector)
+            .is_some_and(|bounds| bounds.contains(&outside))
+    });
+    assert!(
+        clipped_card_contains_pointer,
+        "fixture reaches overflow card bounds"
+    );
+
+    let source = visual
+        .debug_bounds("browser-device-effect-1")
+        .expect("registered utility row");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.active_native_device_drag
+                .as_ref()
+                .is_some_and(|drag| { drag.destination.get().is_none() })
+        );
+    });
+}
+
+#[gpui::test]
+fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAppContext) {
+    let (service, _state, track, first, _, _) = actor_utility_fixture();
+    let utility = hex_engine::native_device_catalog()
+        .expect("registered utility")
+        .remove(0);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(utility.type_id),
+            before: None,
+        })
+        .expect("second utility");
+    let second_state = receive_service_event(&service).state;
+    let second = second_state
+        .project
+        .track(track)
+        .expect("track")
+        .devices()
+        .iter()
+        .find(|device| device.id() != first)
+        .expect("second utility")
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, second_state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let grip_selector = Box::leak(format!("device-drag-grip-{}", first.value()).into_boxed_str());
+    let target_selector =
+        Box::leak(format!("device-drop-card-{}", second.value()).into_boxed_str());
+    let grip = visual
+        .debug_bounds(grip_selector)
+        .expect("first device grip");
+    let target = visual
+        .debug_bounds(target_selector)
+        .expect("second device receiver");
+    let down = point(
+        grip.origin.x + grip.size.width / 2.0,
+        grip.origin.y + grip.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let destination = point(
+        target.origin.x + target.size.width - px(8.0),
+        target.origin.y + target.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_native_device_drag
+            .as_ref()
+            .expect("existing device drag");
+        assert_eq!(
+            drag.destination.get(),
+            Some(drag::NativeDeviceDropTarget {
+                track,
+                before: None
+            })
+        );
+    });
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state.project.track(track).is_some_and(|track| {
+                track
+                    .devices()
+                    .iter()
+                    .map(|device| device.id())
+                    .collect::<Vec<_>>()
+                    == vec![second, first]
+            })
+        })
+    });
+}
+
+#[gpui::test]
+fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_none());
+        assert!(view.last_enqueued_native_device_drop.is_none());
+    });
+
+    let source = visual
+        .debug_bounds("browser-device-effect-1")
+        .expect("registered utility row");
+    let card_selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
+    let card = visual.debug_bounds(card_selector).expect("device card");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let card_point = point(
+        card.origin.x + card.size.width / 2.0,
+        card.origin.y + card.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(card_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.active_native_device_drag
+                .as_ref()
+                .and_then(|drag| drag.destination.get())
+                .is_some()
+        );
+    });
+
+    let outside_rail = point(px(500.0), px(360.0));
+    visual.simulate_mouse_move(outside_rail, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.active_native_device_drag
+                .as_ref()
+                .is_some_and(|drag| drag.destination.get().is_none())
+        );
+    });
+    visual.simulate_mouse_up(outside_rail, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_none());
+        assert!(view.last_enqueued_native_device_drop.is_none());
+    });
+
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(card_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_some())
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_none());
+        assert!(view.last_enqueued_native_device_drop.is_none());
+    });
+}
+
 fn utility_fixture() -> (
     hex_project::Project,
     TrackId,
@@ -1107,4 +1419,35 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         });
     });
     let _ = handle;
+}
+
+#[test]
+fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
+    let viewport = gpui::Bounds::new(
+        gpui::point(px(200.0), px(300.0)),
+        gpui::size(px(400.0), px(100.0)),
+    );
+    let clipped_card = gpui::Bounds::new(
+        gpui::point(px(100.0), px(300.0)),
+        gpui::size(px(286.0), px(100.0)),
+    );
+    let inside_both = gpui::point(px(250.0), px(330.0));
+    let offscreen_card_area = gpui::point(px(150.0), px(330.0));
+    let outside_rail = gpui::point(px(250.0), px(420.0));
+
+    assert!(super::pointer_within_visible_device_drop_bounds(
+        &inside_both,
+        &clipped_card,
+        Some(&viewport),
+    ));
+    assert!(!super::pointer_within_visible_device_drop_bounds(
+        &offscreen_card_area,
+        &clipped_card,
+        Some(&viewport),
+    ));
+    assert!(!super::pointer_within_visible_device_drop_bounds(
+        &outside_rail,
+        &clipped_card,
+        Some(&viewport),
+    ));
 }
