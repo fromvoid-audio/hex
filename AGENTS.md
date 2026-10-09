@@ -413,9 +413,11 @@ per page). Reuse matching records. Tickets describe actionable outcomes,
 acceptance criteria, dependencies and source/PR links; use discovered feature,
 bug, improvement, documentation, maintenance or testing tags.
 
-Keep ticket states accurate: `todo`, `in_progress`, `blocked`, `done` or
-`cancelled`. Move active work to `in_progress` and explain blockers in the
-description. Before every update, call `get_ticket` and pass its current revision
+Keep ticket states accurate: `todo`, `in_progress`, `blocked`,
+`ready_for_review`, `in_review`, `done` or `cancelled`. Move active implementation
+to `in_progress`; use `ready_for_review` when implementation and its source checks
+are complete but review or native/user acceptance is pending, and `in_review`
+while that review is actively underway. Explain blockers in the description. Before every update, call `get_ticket` and pass its current revision
 as `expected_revision`; on conflict, re-read and reconsider. Update fields
 selectively, preserving descriptions, tags and source context. Mark `done` only
 when acceptance criteria are met; source-complete work with pending native/user
