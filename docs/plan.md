@@ -29,9 +29,19 @@ on `ee87e6e` in 147.627 s ([PR27](https://github.com/PORTALSURFER/hex/pull/27)).
 Generic transactional mutable runtime 16 is active separately. Pinned main 12 is
 source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30), with all
 14 clean CI steps passing on `3ee1edd` in 270.703 s. Main-project time selection
-14 is under focused verification, including atomic mixed audio/MIDI splitting
-and a 100-track single-Undo case. Native and merge acceptance remain separate
+14 passed all 14 clean CI steps on `373e8c2` in 276.455 s
+([PR31](https://github.com/PORTALSURFER/hex/pull/31)), including atomic mixed
+audio/MIDI splitting and a 100-track single-Undo case. Native and merge acceptance remain separate
 gates. See [main track](main-track.md).
+
+Four-color theme settings 15 are now active in their own focused change;
+stateful runtime 16 is still under lifecycle/allocation validation. The local CI
+headroom guard passed all 14 checks on `5033c02` in 294.905 s
+([PR32](https://github.com/PORTALSURFER/hex/pull/32)). Original planned Operator
+experiments and the proposed instrument boundary are documented in
+[operator-contract-001](../research/observations/operator-contract-001.md)
+([PR33](https://github.com/PORTALSURFER/hex/pull/33)); no Operator implementation
+or parity is claimed.
 
 The user's current implementation scope is every open ticket planned for Hex
 in Pulse, rather than only existing PRs. This priority order is a dependency

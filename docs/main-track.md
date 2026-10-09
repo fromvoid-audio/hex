@@ -49,7 +49,11 @@ Focused source checks cover mixed audio/MIDI atomic splitting and one Undo on
 audio deadlines. After storage recovery, all four project split tests, seven main-row UI tests
 and eighteen edit-cursor tests pass. Empty/stale topology and explicit move-scope
 retention regressions pass, along with strict project/UI Clippy and source guards.
-Full clean CI and native acceptance are still pending. In the
+Full local CI passed all 14 steps on clean `373e8c2` in 276.455 s, with
+unchanged source digest and `stale=false`. Evidence:
+`artifacts/local-ci/20261009T182718Z-b28879d0/summary.json`.
+[PR31](https://github.com/PORTALSURFER/hex/pull/31) is source-complete; native
+interaction and dense 1/100-track feedback/completion measurements remain open. In the
 combined build, select time on main, copy/cut/paste and ripple-paste over gaps,
 move through the upper-third handle, Option-copy, and split a main cursor across
 audio and MIDI. Check Undo, selection after track deletion, and empty projects.
