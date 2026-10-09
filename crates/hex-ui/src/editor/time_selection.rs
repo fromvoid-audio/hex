@@ -23,16 +23,24 @@ pub(super) struct TimeSelectionGesture {
     pub generation: u64,
     pub revision: u64,
     pub moved: bool,
+    pub(super) pointer_x: f32,
+    pub(super) pointer_y: f32,
+    pub(super) free_modifier: bool,
+    pub(super) last_tick: Instant,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct TimeRangeMoveGesture {
     range: hex_project::TimeRange,
-    generation: u64,
-    revision: u64,
+    pub(super) generation: u64,
+    pub(super) revision: u64,
     grab_frame_offset: u64,
     grab_track_offset: usize,
     pub(super) copy_modifier: bool,
+    pub(super) pointer_x: f32,
+    pub(super) pointer_y: f32,
+    pub(super) free_modifier: bool,
+    pub(super) last_tick: Instant,
     preview: Option<TimeRangeMovePreview>,
 }
 
@@ -145,6 +153,10 @@ impl EditorView {
             generation,
             revision,
             moved: false,
+            pointer_x: x,
+            pointer_y: y,
+            free_modifier: free,
+            last_tick: Instant::now(),
         });
         self.selected_track = Some(track);
         self.selected_clip = None;
@@ -199,6 +211,10 @@ impl EditorView {
             grab_frame_offset,
             grab_track_offset: track_offset,
             copy_modifier: false,
+            pointer_x: x,
+            pointer_y: y,
+            free_modifier: false,
+            last_tick: Instant::now(),
             preview: None,
         });
         self.suppress_cursor_click = false;
@@ -225,8 +241,10 @@ impl EditorView {
         {
             return true;
         }
-        let Some((pointer_track, lane)) = self.visible_lane_at(x, y) else {
-            gesture.preview = None;
+        gesture.pointer_x = x;
+        gesture.pointer_y = y;
+        gesture.free_modifier = free;
+        let Some((pointer_track, lane)) = self.visible_lane_near_y(y) else {
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
@@ -238,50 +256,41 @@ impl EditorView {
         else {
             return true;
         };
-        let Some(first_index) = pointer_index.checked_sub(gesture.grab_track_offset) else {
-            gesture.preview = None;
-            self.time_range_move_gesture = Some(gesture);
-            return true;
-        };
+        let row_count = gesture.range.tracks().len();
+        let max_first = state.project.tracks().len().saturating_sub(row_count);
+        let first_index = pointer_index
+            .saturating_sub(gesture.grab_track_offset)
+            .min(max_first);
         let Some(last_index) = first_index.checked_add(gesture.range.tracks().len() - 1) else {
             gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
         let Some(rows) = state.project.tracks().get(first_index..=last_index) else {
-            gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(pointer_frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport)
         else {
-            gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
-        let Some(candidate_frame) = pointer_frame.checked_sub(gesture.grab_frame_offset) else {
-            gesture.preview = None;
-            self.time_range_move_gesture = Some(gesture);
-            return true;
-        };
+        let candidate_frame = pointer_frame.saturating_sub(gesture.grab_frame_offset);
         let Some(candidate_frame) = self.snap_grid.with_platform_modifier(free).snap_frame(
             &state.project,
             candidate_frame,
             viewport,
             lane.width,
         ) else {
-            gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
         let Some(end_frame) = candidate_frame.checked_add(gesture.range.duration()) else {
-            gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
         let (Some(first_track), Some(last_track)) = (rows.first(), rows.last()) else {
-            gesture.preview = None;
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
@@ -524,7 +533,11 @@ impl EditorView {
             self.time_selection_gesture = None;
             return false;
         }
-        let Some((track, lane)) = self.visible_lane_at(x, y) else {
+        gesture.pointer_x = x;
+        gesture.pointer_y = y;
+        gesture.free_modifier = free;
+        let Some((track, lane)) = self.visible_lane_near_y(y) else {
+            self.time_selection_gesture = Some(gesture);
             return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -545,6 +558,7 @@ impl EditorView {
             ..gesture.selection
         };
         if next == gesture.selection {
+            self.time_selection_gesture = Some(gesture);
             return false;
         }
         gesture.selection = next;

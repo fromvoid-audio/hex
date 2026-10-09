@@ -289,3 +289,10 @@ editor, open/save/save-as dialogs work, shortcuts retain their focus behavior,
 the toolbar Save icon is gone, and unsaved Open/Quit protections remain effective.
 GPUI derives menu shortcut glyphs from key contexts; verify their display with
 these scoped bindings instead of broadening shortcut routing to change appearance.
+
+Native review, 9 October 2026: the user reported all other issues in the combined
+`hex-editing-menu-20261009.app` build look good and authorized merging PRs #12–#16.
+Those PRs are merged. This records acceptance of the reviewed editing/menu
+behavior, not physical timing measurements or exhaustive listening. Dragging time
+selections beyond visible lanes/window edges is a separately reported defect and
+the active follow-up.

@@ -325,7 +325,10 @@ impl Render for EditorView {
                         window,
                         cx,
                     );
-                    if view.update_time_range_copy_modifier(event.modifiers.alt) {
+                    if view.refresh_time_gesture_modifiers(
+                        event.modifiers.platform,
+                        event.modifiers.alt,
+                    ) {
                         cx.notify();
                     }
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);

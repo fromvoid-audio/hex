@@ -80,7 +80,9 @@ impl EditorView {
                 }
             }
         }
-        visible_change |= self.tick_edit_cursor(Instant::now());
+        let now = Instant::now();
+        visible_change |= self.tick_time_gesture_autoscroll(now);
+        visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self

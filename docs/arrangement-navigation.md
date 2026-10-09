@@ -84,3 +84,16 @@ covering growth, same-horizon updates, explicit fit, later zoom/pan and project
 replacement. Focused tests, strict UI Clippy, formatting and source guards pass.
 Native acceptance: paste or move beyond the project end and confirm the grid
 scale stays stable, then use fit to see the full expanded project.
+
+Native review, 9 October 2026: the user reported all other issues in the combined
+`hex-editing-menu-20261009.app` build look good and authorized merging PRs #12–#16.
+Those PRs are merged. This records acceptance of the reviewed editing/menu
+behavior, not physical timing measurements or exhaustive listening. Dragging time
+selections beyond visible lanes/window edges is a separately reported defect and
+the active follow-up.
+
+Captured time-selection painting and time-chunk movement now share horizontal
+edge scrolling while held beyond the timeline, including over the browser or
+outside the window. The viewport scale stays fixed and pan stops at current
+horizon bounds; no vertical autoscroll is introduced. See the captured-gesture
+contract and native checklist in [time selection](time-selection.md).

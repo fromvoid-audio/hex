@@ -2262,3 +2262,20 @@ directly. Removed selectors therefore remain queryable across frame reuse.
 Do not use selector absence after a redraw as visibility evidence. Check current
 fragment/interval decisions and newly rendered geometry, and keep native source
 disappearance as user acceptance. No GPUI dependency change is included here.
+
+## time gestures stall outside visible lanes — 9 October 2026
+
+User report in the combined editing/menu review build: held time selection stops
+updating below tracks, over the browser and beyond window edges; fast crossing
+moves fail to cover the full range. Window-level capture listeners already exist,
+but updates require exact x/y containment in a fresh visible lane. Painting
+freezes on a miss, while time-chunk movement clears its preview. There is no
+horizontal edge autoscroll for these gestures.
+
+The focused repair clamps projection to fresh visible lanes/existing row bounds,
+uses raw x with the clamping time conversion, and retains capture until explicit
+release/cancel. Use the existing bounded UI tick for held-pointer horizontal
+scrolling and reproject on release. Preserve viewport scale and current limits;
+no extra rows, callback work or project edits during dragging. Native macOS
+outside-window event delivery/release remains a user check; headless simulation
+cannot establish AppKit behavior. The existing pinned GPUI boundary stays intact.
