@@ -372,3 +372,14 @@ Accounted repeated-note sampler/index storage falls in the Session fixture, whil
 unique-heavy Arrangement storage rises; noisy timings establish no speedup.
 FM4 registration/payload expansion2124 and native instrument panel2127 remain
 separate open work, with Pulse authoritative for review and acceptance.
+
+Arrangement loop rail2120: source implementation adds a compact timeline-width
+rail below the ruler, snapped drag preview, Command free placement, visible-edge
+resize, click-to-enable, and the existing L/toolbar toggle. It uses the canonical
+loop command; captured previews cancel if project generation, revision or the
+canonical loop range changes. Five targeted GPUI pointer tests, three existing
+canonical loop tests, strict UI Clippy, formatting, architecture/style guards and
+diff checks pass. Coverage includes snap/free placement, zoom/pan mapping,
+outside-rail release, lane-selection ownership, resize, activation, toggle and
+stale-state protection. Clean full local CI and native acceptance remain open;
+this stays a separate focused PR.

@@ -32,6 +32,8 @@ widgets = (
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)',
+    'super::loop_rail::view(',
+    'loop_grid_layer(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

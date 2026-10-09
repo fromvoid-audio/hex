@@ -393,6 +393,14 @@ impl EditorView {
         } else if !event.gesture_request {
             self.move_time_selection_complete(&event);
         }
+        if !event.project_replaced {
+            super::loop_rail::cancel_stale(
+                self,
+                self.project_generation,
+                revision,
+                event_state.project.loop_region(),
+            );
+        }
         if self
             .state
             .as_ref()
@@ -406,6 +414,7 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.state = Some(event.state);
         if event.project_replaced {
+            self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();

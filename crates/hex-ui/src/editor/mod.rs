@@ -24,6 +24,9 @@ mod edit_cursor_ui_test;
 mod export;
 mod fades;
 mod header;
+mod loop_rail;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod loop_rail_ui_test;
 mod loop_region;
 mod menus;
 mod midi;
@@ -436,6 +439,8 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
+    loop_rail_cursor: gpui::CursorStyle,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -673,6 +678,8 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            loop_rail_gesture: None,
+            loop_rail_cursor: gpui::CursorStyle::Crosshair,
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,

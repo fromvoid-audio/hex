@@ -18,6 +18,7 @@ impl EditorView {
             || self.context_menu.is_some()
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.loop_rail_gesture.is_some()
             || self.arrangement_bounds.is_none()
             || !x.is_finite()
             || !y.is_finite()
@@ -138,6 +139,13 @@ impl EditorView {
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
                 .child(self.ruler(state, ruler_width, cx))
+                .child(super::loop_rail::view(
+                    self,
+                    state,
+                    empty_viewport,
+                    &grid,
+                    cx,
+                ))
                 .children([self.arrangement_body(
                     div()
                         .relative()
@@ -244,6 +252,7 @@ impl EditorView {
             .min_h_0()
             .children([overview])
             .child(self.ruler(state, ruler_width, cx))
+            .child(super::loop_rail::view(self, state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)]);
         let main = self.main_track_row(viewport, &bands, &grid, cx);
         self.arrangement_surface(upper, main, cx)
@@ -647,23 +656,6 @@ impl EditorView {
             );
         let entity = cx.entity();
         let seek_viewport = viewport;
-        let mut loop_band = div().absolute().top_0().h(px(2.0));
-        if let (Some(region), Some(viewport_end)) = (state.project.loop_region(), viewport.end()) {
-            let start = region.start().max(viewport.start);
-            let end = region.end().min(viewport_end);
-            if start < end && viewport.length > 0 {
-                let left = (start - viewport.start) as f64 / viewport.length as f64;
-                let width = (end - start) as f64 / viewport.length as f64;
-                loop_band = loop_band
-                    .left(relative(left as f32))
-                    .w(relative(width as f32))
-                    .bg(rgb(if region.enabled() {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }));
-            }
-        }
         let cells = div()
             .id("timeline-ruler")
             .debug_selector(|| "timeline-ruler".to_owned())
@@ -679,7 +671,7 @@ impl EditorView {
                 })
                 .into()
             })
-            .children([labels, loop_band])
+            .children([labels])
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
