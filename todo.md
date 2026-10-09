@@ -69,7 +69,7 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   behavior on 9 October. Merged. Keyboard source-track anchoring is queued below.
   MIDI loop materialization/refusal policy is documented
   in [time selection](docs/time-selection.md).
-- [x] **Option-drag duplication** — focused feature PR for supported draggable
+- [x] **Option-drag duplication** — [PR #12](https://github.com/PORTALSURFER/hex/pull/12) for supported draggable
   project items, including audio/MIDI clips and time chunks. Option selects copy
   instead of move; show a small plus/copy cursor indicator while active. Preserve
   source material and show the exact snapped destination copy, with Command's
@@ -79,16 +79,36 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   existing copy semantics. Define Session/other draggable-item coverage explicitly.
   Source implemented for Arrangement audio/MIDI clips, new-track drops and time
   rectangles. Project tests, 267 UI tests (2 ignored), targeted strict Clippy,
-  formatting and source guards passed. Final local CI/PR evidence is recorded in
-  the feature PR; native plus-cursor and drag acceptance remain open.
-- [ ] **multi-track keyboard paste stays on copied tracks** — separate focused PR after
+  formatting and source guards passed, including a release-time modifier regression.
+  Full local CI passed all 14 steps on clean source `494f641`; native plus-cursor
+  and drag acceptance remain open. Fresh app: `artifacts/hex-option-copy-20261009.app`.
+- [x] **multi-track keyboard paste stays on copied tracks** — separate focused PR after
   Option-drag. Normal and ripple keyboard paste of multiple tracks use the copied
   source track IDs; only the current horizontal time position determines placement,
   regardless of cursor/selection vertical position. A single-track clipboard uses
   the current destination track, allowing cross-track paste. Preserve gaps and order, refuse
   missing source tracks atomically, and keep visual time-chunk drags free to move
   or copy across tracks. Cover worker clipboard lifecycle, Undo and both shortcut
-  variants; provide native acceptance checks.
+  variants; provide native acceptance checks. Source implemented; project/session
+  tests, targeted strict Clippy, formatting and architecture checks pass. Native
+  acceptance and review/merge remain open.
+- [ ] **Space restarts from the edit position** — separate focused transport
+  fix. Space starts at the current Arrangement edit cursor/selection, or project
+  start if neither exists. While playing it may pause; the next Space restarts
+  from that editing position, never resumes the paused playhead. Preserve text/note
+  editor shortcut focus and bounded ordered seek/start delivery, with Stop still
+  effective under queue pressure. Verify start position and stop/restart natively.
+- [ ] **preserve zoom when the project grows** — separate focused fix. Moving,
+  copying or pasting to the right may expand timeline/project extent, but must
+  retain the user's zoom and viewport. Fit/overview navigation remain explicit
+  user actions. Check normal/ripple paste, clip/time drags, new imports and Undo;
+  preserve valid minimum/maximum coordinate bounds without implicit zoom-out.
+- [ ] **project actions in macOS File menu** — separate focused UI PR after
+  keyboard paste anchoring. Put Open Project, Save and Save As in the screen-top
+  native File menu and remove corresponding toolbar actions. Preserve existing
+  shortcuts, focus routing, pending-work handling and unsaved-project protection.
+  Reuse existing controller commands and OS file dialogs; verify native menu
+  operation with the user. This request is for the menu bar, not window buttons.
 - [ ] **compact header composition** — separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes.

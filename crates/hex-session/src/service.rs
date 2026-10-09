@@ -601,7 +601,7 @@ fn run_worker(
             Request::PasteTimeRange { track, frame } => {
                 if let Some(clipboard) = &range_clipboard {
                     match session.command_prepared_revision(
-                        Command::PasteTimeRange {
+                        Command::PasteTimeRangeOnSourceTracks {
                             clipboard: Arc::clone(clipboard),
                             track,
                             frame,
@@ -624,7 +624,7 @@ fn run_worker(
             Request::InsertTimeRange { track, frame } => {
                 if let Some(clipboard) = &range_clipboard {
                     match session.command_prepared_revision(
-                        Command::InsertTimeRange {
+                        Command::InsertTimeRangeOnSourceTracks {
                             clipboard: Arc::clone(clipboard),
                             track,
                             frame,
@@ -1355,6 +1355,323 @@ mod service_tests {
         assert!(refused.error.is_some());
         assert_eq!(refused.state.revision, opened.state.revision);
         assert_eq!(refused.state.project, opened.state.project);
+    }
+
+    #[test]
+    fn keyboard_multitrack_copy_pastes_to_original_tracks_after_topology_change() {
+        let service = Service::new(48_000, 32, 0).expect("service");
+        next_event(&service);
+        let mut tracks = Vec::new();
+        for name in ["source a", "source b", "current target"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .expect("add track");
+            let event = next_event(&service);
+            tracks.push(event.state.project.tracks().last().expect("track").id());
+        }
+        let [source_a, source_b, target] = tracks.as_slice() else {
+            panic!("expected three tracks")
+        };
+        for track in [*source_a, *source_b] {
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::from_quarters(4).expect("length"),
+                }))
+                .expect("place source clip");
+            next_event(&service);
+        }
+        service
+            .submit(Request::CopyTimeRange(
+                hex_project::TimeRange::new(vec![*source_a, *source_b], 0, 48_000).expect("range"),
+            ))
+            .expect("copy rows");
+        assert!(next_event(&service).error.is_none());
+        service
+            .submit(Request::Edit(Command::InsertTrack {
+                name: "intervening".into(),
+                before_track: Some(*source_b),
+            }))
+            .expect("insert between clipboard rows");
+        let inserted = match next_event(&service).created {
+            Some(Created::Track(track)) => track,
+            other => panic!("unexpected result {other:?}"),
+        };
+
+        service
+            .submit(Request::PasteTimeRange {
+                track: inserted,
+                frame: 120_000,
+            })
+            .expect("paste at current vertical target");
+        let pasted = next_event(&service);
+        assert!(pasted.error.is_none(), "{:?}", pasted.error);
+        for track in [*source_a, *source_b] {
+            let row = pasted.state.project.track(track).expect("source row");
+            assert_eq!(row.midi_clips().len(), 2);
+            assert!(row.midi_clips().iter().any(|clip| {
+                pasted
+                    .state
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(clip.start())
+                    .is_ok_and(|frame| frame == 120_000)
+            }));
+        }
+        assert!(
+            pasted
+                .state
+                .project
+                .track(inserted)
+                .expect("intervening")
+                .midi_clips()
+                .is_empty()
+        );
+        assert!(
+            pasted
+                .state
+                .project
+                .track(*target)
+                .expect("current target")
+                .midi_clips()
+                .is_empty()
+        );
+
+        service.submit(Request::Undo).expect("undo paste");
+        let undone = next_event(&service);
+        assert_eq!(
+            undone
+                .state
+                .project
+                .track(*source_a)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            1
+        );
+        service.submit(Request::Redo).expect("redo paste");
+        let redone = next_event(&service);
+        assert_eq!(
+            redone
+                .state
+                .project
+                .track(*source_b)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn keyboard_single_row_paste_uses_current_target_track() {
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        let mut tracks = Vec::new();
+        for name in ["source", "target"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .expect("add track");
+            let event = next_event(&service);
+            tracks.push(event.state.project.tracks().last().expect("track").id());
+        }
+        let [source, target] = tracks.as_slice() else {
+            panic!("expected two tracks")
+        };
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track: *source,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(4).expect("length"),
+            }))
+            .expect("source clip");
+        next_event(&service);
+        service
+            .submit(Request::CopyTimeRange(
+                hex_project::TimeRange::new(vec![*source], 0, 48_000).expect("range"),
+            ))
+            .expect("copy one row");
+        assert!(next_event(&service).error.is_none());
+        service
+            .submit(Request::PasteTimeRange {
+                track: *target,
+                frame: 96_000,
+            })
+            .expect("paste on current target");
+        let pasted = next_event(&service);
+        assert!(pasted.error.is_none(), "{:?}", pasted.error);
+        assert_eq!(
+            pasted
+                .state
+                .project
+                .track(*source)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            1
+        );
+        let target_clip = &pasted
+            .state
+            .project
+            .track(*target)
+            .expect("target")
+            .midi_clips()[0];
+        assert_eq!(
+            pasted
+                .state
+                .project
+                .tempo_map()
+                .beat_to_frame(target_clip.start())
+                .expect("frame"),
+            96_000
+        );
+    }
+
+    #[test]
+    fn keyboard_multitrack_cut_ripple_inserts_on_original_rows_only() {
+        let service = Service::new(48_000, 32, 0).expect("service");
+        next_event(&service);
+        let mut tracks = Vec::new();
+        for name in ["source a", "source b", "current target"] {
+            service
+                .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .expect("add track");
+            let event = next_event(&service);
+            tracks.push(event.state.project.tracks().last().expect("track").id());
+        }
+        let [source_a, source_b, target] = tracks.as_slice() else {
+            panic!("expected three tracks")
+        };
+        for track in [*source_a, *source_b] {
+            for (start, length) in [(0, 4), (8, 1)] {
+                service
+                    .submit(Request::Edit(Command::PlaceMidiClip {
+                        track,
+                        start: hex_project::BeatTime::from_quarters(start).expect("start"),
+                        length: hex_project::BeatTime::from_quarters(length).expect("length"),
+                    }))
+                    .expect("place source clip");
+                next_event(&service);
+            }
+        }
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track: *target,
+                start: hex_project::BeatTime::from_quarters(8).expect("target start"),
+                length: hex_project::BeatTime::from_quarters(1).expect("target length"),
+            }))
+            .expect("place target clip");
+        next_event(&service);
+        service
+            .submit(Request::CutTimeRange(
+                hex_project::TimeRange::new(vec![*source_a, *source_b], 0, 24_000).expect("range"),
+            ))
+            .expect("cut rows");
+        let cut = next_event(&service);
+        assert!(cut.error.is_none());
+        service
+            .submit(Request::Edit(Command::InsertTrack {
+                name: "intervening".into(),
+                before_track: Some(*source_b),
+            }))
+            .expect("insert between clipboard rows");
+        let inserted = match next_event(&service).created {
+            Some(Created::Track(track)) => track,
+            other => panic!("unexpected result {other:?}"),
+        };
+
+        service
+            .submit(Request::InsertTimeRange {
+                track: inserted,
+                frame: 120_000,
+            })
+            .expect("ripple insert at current vertical target");
+        let inserted_result = next_event(&service);
+        assert!(
+            inserted_result.error.is_none(),
+            "{:?}",
+            inserted_result.error
+        );
+        for track in [*source_a, *source_b] {
+            let row = inserted_result
+                .state
+                .project
+                .track(track)
+                .expect("source row");
+            assert!(row.midi_clips().iter().any(|clip| {
+                inserted_result
+                    .state
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(clip.start())
+                    .is_ok_and(|frame| frame == 120_000)
+            }));
+            assert!(row.midi_clips().iter().any(|clip| {
+                inserted_result
+                    .state
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(clip.start())
+                    .is_ok_and(|frame| frame == 216_000)
+            }));
+        }
+        assert!(
+            inserted_result
+                .state
+                .project
+                .track(inserted)
+                .expect("intervening")
+                .midi_clips()
+                .is_empty()
+        );
+        assert_eq!(
+            inserted_result
+                .state
+                .project
+                .track(*target)
+                .expect("current target")
+                .midi_clips()[0]
+                .start(),
+            hex_project::BeatTime::from_quarters(8).expect("target beat")
+        );
+
+        service.submit(Request::Undo).expect("undo ripple insert");
+        let undone = next_event(&service);
+        for track in [*source_a, *source_b] {
+            assert!(
+                undone
+                    .state
+                    .project
+                    .track(track)
+                    .expect("source row")
+                    .midi_clips()
+                    .iter()
+                    .all(|clip| undone
+                        .state
+                        .project
+                        .tempo_map()
+                        .beat_to_frame(clip.start())
+                        .is_ok_and(|frame| frame != 216_000))
+            );
+        }
+        service.submit(Request::Redo).expect("redo ripple insert");
+        let redone = next_event(&service);
+        assert!(
+            redone
+                .state
+                .project
+                .track(*source_a)
+                .expect("source row")
+                .midi_clips()
+                .iter()
+                .any(|clip| redone
+                    .state
+                    .project
+                    .tempo_map()
+                    .beat_to_frame(clip.start())
+                    .is_ok_and(|frame| frame == 216_000))
+        );
     }
 
     #[test]
