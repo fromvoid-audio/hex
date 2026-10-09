@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
@@ -201,6 +201,7 @@ fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mu
         "removing the instrument leaves the chain without a placeholder block"
     );
     let panel_after_instrument = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel_after_instrument.size.height, px(188.0));
     assert_eq!(panel_after_instrument.size.height, panel_before.size.height);
 
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
