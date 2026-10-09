@@ -10,6 +10,9 @@ mod controller;
 mod dialogs;
 mod drag;
 mod duplicate;
+mod edit_cursor;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod edit_cursor_ui_test;
 mod export;
 mod fades;
 mod loop_region;
@@ -412,6 +415,7 @@ pub(super) struct EditorView {
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
+    edit_cursor: Option<edit_cursor::EditCursor>,
 }
 
 impl EditorView {
@@ -587,6 +591,7 @@ impl EditorView {
             snap_grid: musical_time::SnapGrid::default(),
             browser,
             context_menu: None,
+            edit_cursor: None,
         };
         view.browser_scan_initial(cx);
         view

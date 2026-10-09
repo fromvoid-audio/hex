@@ -412,6 +412,142 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             }
             Ok(Created::None)
         }
+        Command::SplitMidiClip { clip, beat } => {
+            let (track, clip_index) = project
+                .tracks
+                .iter()
+                .find_map(|track| {
+                    track
+                        .midi_clips()
+                        .iter()
+                        .position(|item| item.id == clip)
+                        .map(|index| (track.id, index))
+                })
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let original = project
+                .midi_clip(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?
+                .clone();
+            let end = original
+                .start
+                .raw()
+                .checked_add(original.length.raw())
+                .ok_or(Invalid("midi clip timeline end overflow"))?;
+            if beat.raw() <= original.start.raw() || beat.raw() >= end {
+                return Err(Invalid("split cursor must be inside the midi clip"));
+            }
+            if clip_count(project) >= MAX_CLIPS {
+                return Err(Invalid("clip limit reached"));
+            }
+            let left_length = crate::BeatTime::from_raw(beat.raw() - original.start.raw());
+            let right_length = crate::BeatTime::from_raw(end - beat.raw());
+            validate_clip(original.start, left_length)?;
+            validate_clip(beat, right_length)?;
+
+            // Materialize the finite playback that belongs in the right
+            // region. This includes a clipped occurrence already sounding at
+            // the cut and every later loop onset, without repeating the carry
+            // note at subsequent loop iterations.
+            let playback = original.source_playback()?;
+            let mut occurrence_bound = 0_usize;
+            for note in original.notes() {
+                let count = usize::try_from(
+                    playback
+                        .note_occurrences(note.start, note.duration)?
+                        .count(),
+                )
+                .map_err(|_| Invalid("midi split occurrence count exceeds addressable range"))?;
+                occurrence_bound = occurrence_bound
+                    .checked_add(count)
+                    .ok_or(Invalid("midi split occurrence count overflow"))?;
+                if occurrence_bound > MAX_NOTES {
+                    return Err(Invalid("midi split note expansion exceeds project limit"));
+                }
+            }
+
+            project
+                .track_mut(track)?
+                .content
+                .midi_clips
+                .try_reserve(1)
+                .map_err(|_| Invalid("could not reserve midi clip storage"))?;
+            let mut notes = Vec::new();
+            notes
+                .try_reserve_exact(occurrence_bound)
+                .map_err(|_| Invalid("could not reserve split midi notes"))?;
+            for note in original.notes() {
+                let occurrences = playback.note_occurrences(note.start, note.duration)?;
+                for occurrence in occurrences.iter() {
+                    let absolute_start = original
+                        .start
+                        .raw()
+                        .checked_add(occurrence.timeline_start().raw())
+                        .ok_or(Invalid("midi note timeline overflow"))?;
+                    let absolute_end = absolute_start
+                        .checked_add(occurrence.gate_duration().raw())
+                        .ok_or(Invalid("midi note gate overflow"))?;
+                    let kept_start = absolute_start.max(beat.raw());
+                    let kept_end = absolute_end.min(end);
+                    if kept_start < kept_end {
+                        notes.push(MidiNote {
+                            id: NoteId(0),
+                            start: BeatTime::from_raw(kept_start - beat.raw()),
+                            duration: BeatTime::from_raw(kept_end - kept_start),
+                            pitch: note.pitch,
+                            channel: note.channel,
+                            velocity: note.velocity,
+                        });
+                    }
+                }
+            }
+            let final_notes = note_count(project)
+                .checked_add(notes.len())
+                .ok_or(Invalid("midi note count overflow"))?;
+            if final_notes > MAX_NOTES {
+                return Err(Invalid("midi note limit reached"));
+            }
+            let id_count = notes
+                .len()
+                .checked_add(1)
+                .ok_or(Invalid("midi split id count overflow"))?;
+            let (first_id, _) = project.allocate_id_range(id_count)?;
+            let right_id = ClipId(first_id);
+            for (index, note) in notes.iter_mut().enumerate() {
+                let id = first_id
+                    .checked_add(1)
+                    .and_then(|base| base.checked_add(index as u64))
+                    .ok_or(Invalid("project id space exhausted"))?;
+                note.id = NoteId(id);
+                validate_note(
+                    note.start,
+                    note.duration,
+                    right_length,
+                    note.pitch,
+                    note.channel,
+                    note.velocity,
+                )?;
+            }
+
+            let mut left = original;
+            left.length = left_length;
+            let right = MidiClip {
+                id: right_id,
+                start: beat,
+                length: right_length,
+                source: Arc::new(MidiSource {
+                    source_length: right_length,
+                    source_start: BeatTime::ZERO,
+                    loop_start: BeatTime::ZERO,
+                    loop_end: right_length,
+                    looping: false,
+                    notes,
+                }),
+            };
+            let clips = &mut project.track_mut(track)?.content.midi_clips;
+            clips[clip_index] = left;
+            clips.insert(clip_index + 1, right);
+            Ok(Created::Clip(right_id))
+        }
         Command::SetMidiClipSource {
             clip,
             source_length,

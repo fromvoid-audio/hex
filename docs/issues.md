@@ -2171,3 +2171,21 @@ architecture/UI-style/GPUI guards passed. Separate review bundle:
 `artifacts/waveform-menu-manifest.json`. User checks: visible waveform while
 zooming/resizing; right-click track/empty space; insert position; Undo/Redo;
 Escape and outside-click dismissal. Running apps and unsaved work preserved.
+
+## arrangement edit cursor and Command-E — 9 October 2026
+
+Finite work unit: track clicks place a grid-aware pulsing one-device-pixel edit
+cursor with steady top/bottom markers; Command-E splits the containing audio or
+MIDI clip without reading/waiting for the audio playhead. Keep clip drag/trim
+priority, transient cursor lifecycle, canonical validation/history and separate
+transport behavior. Contract: `docs/edit-cursor.md`. Native acceptance pending.
+MIDI split retains the left authored source and materializes the finite right
+region into a one-shot; carry notes retrigger, and right loop/source settings
+reset. Expansion is bounded and errors leave project/history unchanged. No
+claim of exact Live split or seamless DSP parity.
+
+Verification: 757 workspace tests passed, 1 ignored; strict UI and
+project/session/storage lint, desktop build and source guards pass. Fresh review
+app: `artifacts/hex-edit-cursor-20261009.app`; identity and logs:
+`artifacts/edit-cursor-manifest.json`. Native click/pulse/markers, Command-E,
+Undo/Redo and continued clip drag/resize checks remain with the user.

@@ -223,7 +223,20 @@ impl EditorView {
             .h(px(TRACK_ROW_HEIGHT))
             .overflow_hidden()
             .border_r_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(Palette::BORDER))
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    if let Some(position) = event.mouse_position() {
+                        view.place_edit_cursor(
+                            track_id,
+                            f32::from(position.x),
+                            event.modifiers().platform,
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            );
         for clip in track.clips() {
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;

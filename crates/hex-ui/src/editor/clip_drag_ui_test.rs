@@ -40,7 +40,7 @@ pub(super) fn audio_project() -> (
     (editor.project().clone(), source, target, clip)
 }
 
-fn midi_project() -> (
+pub(super) fn midi_project() -> (
     Project,
     hex_project::TrackId,
     hex_project::TrackId,

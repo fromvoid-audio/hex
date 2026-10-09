@@ -666,6 +666,100 @@ fn split_edit_event_returns_the_exact_right_clip_id() {
 }
 
 #[test]
+fn midi_split_edit_compiles_and_undo_redo_keep_the_exact_right_id() {
+    let service = Service::new(48_000, 16, 32).expect("service");
+    let _ = next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "hybrid".into(),
+        }))
+        .expect("add track");
+    let track = match next_event(&service).created {
+        Some(Created::Track(track)) => track,
+        other => panic!("missing track result: {other:?}"),
+    };
+    let length = hex_project::BeatTime::from_quarters(2).expect("two beats");
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length,
+        }))
+        .expect("place midi clip");
+    let clip = match next_event(&service).created {
+        Some(Created::Clip(clip)) => clip,
+        other => panic!("missing midi clip result: {other:?}"),
+    };
+    service
+        .submit(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }))
+        .expect("add midi note");
+    let _ = next_event(&service);
+    let split_beat = hex_project::BeatTime::ONE;
+    service
+        .submit(Request::Edit(Command::SplitMidiClip {
+            clip,
+            beat: split_beat,
+        }))
+        .expect("submit midi split");
+    let split = next_event(&service);
+    assert!(split.error.is_none(), "{:?}", split.error);
+    let right = match split.created {
+        Some(Created::Clip(id)) => id,
+        other => panic!("split event did not return the right clip ID: {other:?}"),
+    };
+    let clips = split
+        .state
+        .project
+        .track(track)
+        .expect("hybrid track")
+        .midi_clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(clips[0].id(), clip);
+    assert_eq!(clips[1].id(), right);
+    assert_eq!(clips[1].source_start(), hex_project::BeatTime::ZERO);
+    assert!(!clips[1].looping());
+    assert_eq!(clips[0].notes().len(), 1);
+    assert_eq!(clips[1].notes().len(), 1);
+    assert_eq!(clips[1].notes()[0].start(), hex_project::BeatTime::ZERO);
+    assert_eq!(clips[1].notes()[0].duration(), hex_project::BeatTime::ONE);
+    assert_ne!(clips[0].notes()[0].id(), clips[1].notes()[0].id());
+
+    service.submit(Request::Undo).expect("undo split");
+    let undone = next_event(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .track(track)
+            .expect("hybrid track")
+            .midi_clips()
+            .len(),
+        1
+    );
+    service.submit(Request::Redo).expect("redo split");
+    let redone = next_event(&service);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(
+        redone
+            .state
+            .project
+            .track(track)
+            .expect("hybrid track")
+            .midi_clips()[1]
+            .id(),
+        right
+    );
+}
+
+#[test]
 fn dirty_state_tracks_edits_saves_and_undo_conservatively() {
     let directory = TempDir::new();
     let service = Service::new(48_000, 16, 32).expect("service");
