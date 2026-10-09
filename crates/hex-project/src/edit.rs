@@ -299,6 +299,11 @@ pub enum Command {
         edge: TrimEdge,
         beat: crate::BeatTime,
     },
+    /// Split a finite MIDI Arrangement clip at an absolute musical beat.
+    SplitMidiClip {
+        clip: ClipId,
+        beat: crate::BeatTime,
+    },
     /// Atomically replace the finite source and arrangement region for a MIDI clip.
     SetMidiClipSource {
         clip: ClipId,
@@ -842,6 +847,7 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::SetMidiClipSource { .. }
             | Command::TrimMidiClipEdge { .. }
+            | Command::SplitMidiClip { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }

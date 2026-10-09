@@ -220,6 +220,7 @@ impl EditorView {
                     ),
             );
         }
+        content = content.children(self.edit_cursor_layer(viewport, window));
         content = self.arrangement_body(content, cx);
         div()
             .flex()

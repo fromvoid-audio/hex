@@ -505,7 +505,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SplitClip, _, cx| {
-                view.split_selected_at_playhead();
+                view.split_at_edit_cursor();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ExportProject, _, cx| {

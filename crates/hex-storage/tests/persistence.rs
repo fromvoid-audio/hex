@@ -935,6 +935,16 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
             velocity: 100,
         })
         .expect("note");
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(6),
+            duration: beat(2),
+            pitch: 67,
+            channel: 0,
+            velocity: 90,
+        })
+        .expect("sustained note");
     let notes = editor
         .project()
         .midi_clip(clip)
@@ -955,12 +965,31 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
             beat: beat(15),
         })
         .expect("right resize");
+    let Created::Clip(right_id) = editor
+        .execute(Command::SplitMidiClip {
+            clip,
+            beat: beat(11),
+        })
+        .expect("split")
+    else {
+        panic!("right clip")
+    };
     let restored = decode(&encode(editor.project()).expect("encode")).expect("decode");
     assert_eq!(restored.snapshot(), editor.project().snapshot());
     let resized = restored.midi_clip(clip).expect("retained clip");
     assert_eq!(resized.notes(), notes);
     assert_eq!(resized.start(), beat(7));
-    assert_eq!(resized.length(), beat(8));
+    assert_eq!(resized.length(), beat(4));
     assert_eq!(resized.source_start(), beat(3));
     assert_eq!(resized.source_length(), beat(8));
+    let right = restored.midi_clip(right_id).expect("split right clip");
+    assert_eq!(right.start(), beat(11));
+    assert_eq!(right.length(), beat(4));
+    assert_eq!(right.source_start(), BeatTime::ZERO);
+    assert_eq!(right.source_length(), beat(4));
+    assert!(!right.looping());
+    assert_eq!(right.notes().len(), 1);
+    assert_eq!(right.notes()[0].start(), BeatTime::ZERO);
+    assert_eq!(right.notes()[0].duration(), beat(1));
+    assert_ne!(right.notes()[0].id(), resized.notes()[1].id());
 }

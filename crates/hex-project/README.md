@@ -108,8 +108,20 @@ are shared by both clip collections. One global ID allocator covers assets,
 tracks, Arrangement and Session clip kinds, scenes and notes. The project bounds
 combined clips at 16,384, notes at 65,536, scenes at 256 and sparse Session cells
 at 65,536. Scene and cell maxima are format-safety caps, not performance promises.
-MIDI trim and split remain unsupported until their source
-semantics are specified. `SetMidiClipSource` replaces all source and arrangement
+`SplitMidiClip` divides one finite Arrangement region while retaining the left
+clip and source identity. The right region receives a fresh clip ID and an
+finite one-shot source whose notes materialize the original playback occurrences
+inside that region. Gates crossing the cut are clipped at the cut and resume at
+the right region's start; later loop occurrences are expanded explicitly, so a
+carry note is not repeated at each loop seam. The right fragment receives fresh
+IDs for its generated notes and resets source/loop markers to its finite region.
+The left retains the original authored source, notes and loop settings. This
+keeps the finite note timeline while making the right region independently
+editable; changes to its source or loop settings no longer affect the left.
+The split refuses occurrence expansion beyond the project note cap. As with
+overwrite fragments, a carried note is retriggered at the boundary, so this does
+not claim seamless instrument-envelope equivalence.
+`SetMidiClipSource` replaces all source and arrangement
 fields atomically and refuses to shrink a source past any authored note, even if
 that note is hidden by the current playback offset or loop.
 

@@ -37,7 +37,8 @@ and no-ops preserve redo. Moves preserve local note timing. Duplicates begin at
 the source clip's exclusive end and allocate a new clip ID and new IDs for every
 note, retaining source settings. `SetMidiClipSource` validates all source/loop/
 Arrangement fields and authored notes together before mutation. Source shrink
-that invalidates a note is refused. MIDI Arrangement edge resizing uses the policy below; MIDI split remains deferred.
+that invalidates a note is refused. MIDI Arrangement edge resizing uses the policy below; MIDI splitting is implemented with bounded right-region materialization; see
+[edit cursor and split](edit-cursor.md) for carry-note and loop-setting limits.
 
 ## persistence and prepared events
 

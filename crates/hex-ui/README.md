@@ -213,3 +213,7 @@ and drag appearance still require the user's click-through review.
 Reusable context-menu presentation lives in `src/context_menu.rs`; the editor
 track menu dispatches canonical hybrid insertion commands. See
 [context menus](../../docs/context-menus.md).
+
+Arrangement edit-cursor state and overlay live in `editor/edit_cursor.rs`.
+Command-E dispatches canonical audio/MIDI split commands using the clicked
+position independently of playback. See [edit cursor](../../docs/edit-cursor.md).

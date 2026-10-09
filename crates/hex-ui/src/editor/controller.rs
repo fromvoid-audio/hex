@@ -80,6 +80,7 @@ impl EditorView {
                 }
             }
         }
+        visible_change |= self.tick_edit_cursor(Instant::now());
         let project_edit_pending = self.edit_pending();
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
@@ -370,6 +371,7 @@ impl EditorView {
             self.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
             self.project_generation = self.project_generation.wrapping_add(1);
+            self.edit_cursor = None;
             self.applied_revisions.clear();
             self.applied_project_revision = None;
             self.playback_candidates.clear();
@@ -744,31 +746,6 @@ impl EditorView {
             Ok(Press::Queued | Press::NoSelection) => {}
             Err(reason) => self.error = Some(reason.into()),
         }
-    }
-
-    pub(super) fn split_selected_at_playhead(&mut self) {
-        if self.selected_midi_clip_data().is_some() {
-            self.error = Some("midi clip splitting is not supported yet".into());
-            return;
-        }
-        if self.seek_pending() {
-            self.error = Some("seek pending · wait for the cursor before splitting".into());
-            return;
-        }
-        let Some(clip) = self.selected_clip else {
-            self.error = Some("select a clip to split".into());
-            return;
-        };
-        let Some(status) = self.audio_status() else {
-            self.error = Some("audio output is unavailable · cannot read playback cursor".into());
-            return;
-        };
-        let frame = status.position.load(Relaxed);
-        self.cancel_duplicate_chain();
-        self.enqueue(Request::Edit(hex_project::Command::SplitClip {
-            clip,
-            frame,
-        }));
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
