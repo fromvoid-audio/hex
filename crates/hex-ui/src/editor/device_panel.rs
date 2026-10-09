@@ -16,6 +16,19 @@ use hex_widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
+const DEVICE_PANEL_HEIGHT: f32 = 188.0;
+const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
+const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
+const DEVICE_CHAIN_PADDING: f32 = 3.0;
+const DEVICE_FRAME_WIDTH: f32 = 286.0;
+const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
+    - DEVICE_PANEL_BORDER_WIDTH
+    - DEVICE_PANEL_HEADER_HEIGHT
+    - (DEVICE_CHAIN_PADDING * 2.0);
+const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
+    - hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
+    - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct ParameterKey {
     device: DeviceId,
@@ -362,11 +375,12 @@ fn render_track(
     let mut root = div()
         .id("device-panel")
         .debug_selector(|| "device-panel".into())
-        .h(px(188.0))
+        .h(px(DEVICE_PANEL_HEIGHT))
         .w_full()
         .flex_shrink_0()
         .flex()
         .flex_col()
+        .relative()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -377,8 +391,8 @@ fn render_track(
         .flex_1()
         .min_h_0()
         .flex()
-        .gap(px(3.0))
-        .p(px(3.0))
+        .gap(px(DEVICE_CHAIN_PADDING))
+        .p(px(DEVICE_CHAIN_PADDING))
         .overflow_x_scroll()
         .overflow_y_hidden();
 
@@ -404,9 +418,14 @@ fn render_track(
         let rendered = match &device_view {
             Ok(device_view) => {
                 let mut body = div()
-                    .w(px(286.0))
-                    .h(px(162.0))
-                    .flex_shrink_0()
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .w_full()
+                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .flex()
                     .flex_wrap()
                     .content_start()
@@ -434,9 +453,14 @@ fn render_track(
             }
             Err(error) => {
                 let body = div()
-                    .w(px(286.0))
-                    .h(px(162.0))
-                    .flex_shrink_0()
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .w_full()
+                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .p(px(5.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
@@ -468,6 +492,9 @@ fn render_track(
             div()
                 .id(ElementId::Name(selector.clone().into()))
                 .debug_selector(move || selector.clone())
+                .w(px(DEVICE_FRAME_WIDTH))
+                .h(px(DEVICE_FRAME_HEIGHT))
+                .flex_shrink_0()
                 .child(rendered),
         );
     }
@@ -501,7 +528,7 @@ fn render_track(
     let mut header = div()
         .id("device-panel-header")
         .debug_selector(|| "device-panel-header".into())
-        .h(px(22.0))
+        .h(px(DEVICE_PANEL_HEADER_HEIGHT))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -561,9 +588,14 @@ fn render_instrument(
     let rendered = match &device_view {
         Ok(device_view) => {
             let mut body = div()
-                .w(px(286.0))
-                .h(px(162.0))
-                .flex_shrink_0()
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .w_full()
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .min_h_0()
+                .overflow_y_scroll()
                 .flex()
                 .flex_wrap()
                 .content_start()
@@ -593,9 +625,14 @@ fn render_instrument(
         }
         Err(error) => {
             let body = div()
-                .w(px(286.0))
-                .h(px(162.0))
-                .flex_shrink_0()
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .w_full()
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .min_h_0()
+                .overflow_y_scroll()
                 .p(px(5.0))
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
@@ -628,6 +665,9 @@ fn render_instrument(
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
+        .w(px(DEVICE_FRAME_WIDTH))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex_shrink_0()
         .child(rendered)
 }
 
@@ -698,8 +738,10 @@ fn render_add_menu(
     let mut menu = div()
         .id("device-add-menu")
         .debug_selector(|| "device-add-menu".into())
+        .absolute()
+        .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .right(px(4.0))
         .h(px(23.0))
-        .flex_shrink_0()
         .flex()
         .items_center()
         .gap(px(3.0))

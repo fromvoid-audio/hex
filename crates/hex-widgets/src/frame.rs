@@ -1,6 +1,10 @@
 use crate::ControlStyle;
 use gpui::{IntoElement, div, prelude::*, px, rgb};
 
+/// Fixed vertical geometry shared by compact native device frames.
+pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 18.0;
+pub const DEVICE_FRAME_BORDER_WIDTH: f32 = 1.0;
+
 /// Compact device header and body frame. Header actions remain caller-owned.
 pub fn device_frame(
     title: impl Into<gpui::SharedString>,
@@ -19,7 +23,7 @@ pub fn device_frame(
         .child(
             div()
                 .flex()
-                .h(px(18.0))
+                .h(px(DEVICE_FRAME_HEADER_HEIGHT))
                 .px(px(4.0))
                 .gap(px(4.0))
                 .items_center()

@@ -277,6 +277,11 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
 - [ ] **bottom device panel** — compact horizontal device chain for the focused
   track, real parameters/bypass/reordering and clip/device view toggles. Build on
   the canonical device model; preserve editor selection and useful track space.
+  Pulse2141 keeps the panel at 188 px, derives frame/body heights from shared
+  geometry, overlays the add menu without resizing the chain, and scrolls excess
+  Utility controls inside their frame. Rendered checks pass for fixed panel/frame
+  bounds, menu stability, and reaching the last control; native scroll feel and
+  integrated full local CI remain open.
 - [ ] **native utility** — independently implement Utility's channel selection,
   polarity, gain, width/M/S, mono, balance, mute, DC and bass-mono controls.
   Separate stateful filtering from the linear core when needed. Test DSP/history/

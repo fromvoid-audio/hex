@@ -1,5 +1,5 @@
 use super::{EditorMode, clip_drag_ui_test};
-use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::Command;
 use hex_session::{CachedPeak, CachedWaveform, service::ViewState};
 use std::{collections::BTreeMap, sync::Arc};
@@ -341,9 +341,12 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert!(f32::from(panel.size.height) >= 188.0);
+    assert_eq!(panel.size.height, px(188.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
+    let chain = visual
+        .debug_bounds("device-chain-scroll")
+        .expect("device chain viewport");
     let instrument_card = visual
         .debug_bounds(Box::leak(
             format!("instrument-device-{}", instrument_id.value()).into_boxed_str(),
@@ -354,6 +357,10 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             format!("effect-device-{}", device_id.value()).into_boxed_str(),
         ))
         .expect("effect card");
+    assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
+    assert_eq!(effect_card.size.height, instrument_card.size.height);
+    assert_eq!(instrument_card.size.width, px(286.0));
+    assert_eq!(effect_card.size.width, px(286.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -399,6 +406,51 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         "generic parameter control should render"
     );
 
+    let last_parameter = entry.parameters.last().expect("utility parameters");
+    let last_parameter_selector = Box::leak(
+        format!(
+            "device-{}-parameter-{}",
+            device_id.value(),
+            last_parameter.id.value()
+        )
+        .into_boxed_str(),
+    );
+    let device_body = visual
+        .debug_bounds(Box::leak(
+            format!("device-body-{}", device_id.value()).into_boxed_str(),
+        ))
+        .expect("bounded device controls viewport");
+    let before_scroll_last = visual
+        .debug_bounds(last_parameter_selector)
+        .expect("last utility control is rendered");
+    let scroll_point = point(
+        device_body.origin.x + device_body.size.width / 2.0,
+        device_body.origin.y + device_body.size.height / 2.0,
+    );
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll_point,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-900.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let scrolled_last = visual
+        .debug_bounds(last_parameter_selector)
+        .expect("last utility control remains rendered after scrolling");
+    assert_ne!(
+        before_scroll_last.origin.y, scrolled_last.origin.y,
+        "the internal device body scrolls its overflow controls"
+    );
+    assert!(
+        scrolled_last.origin.y >= device_body.origin.y
+            && scrolled_last.origin.y + scrolled_last.size.height
+                <= device_body.origin.y + device_body.size.height,
+        "the final utility parameter can be scrolled fully into the fixed body viewport"
+    );
+
+    let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");
+    let chain_before_menu = visual
+        .debug_bounds("device-chain-scroll")
+        .expect("device chain viewport");
     let add = visual
         .debug_bounds("device-add-toggle")
         .expect("add device toggle");
@@ -407,6 +459,24 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_some());
+    let panel_with_menu = visual.debug_bounds("device-panel").expect("device panel");
+    let chain_with_menu = visual
+        .debug_bounds("device-chain-scroll")
+        .expect("device chain viewport");
+    let instrument_with_menu = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("instrument frame with menu");
+    let effect_with_menu = visual
+        .debug_bounds(Box::leak(
+            format!("effect-device-{}", device_id.value()).into_boxed_str(),
+        ))
+        .expect("effect frame with menu");
+    assert_eq!(panel_before_menu, panel_with_menu);
+    assert_eq!(chain_before_menu, chain_with_menu);
+    assert_eq!(instrument_card, instrument_with_menu);
+    assert_eq!(effect_card, effect_with_menu);
     let add_utility_selector = Box::leak(
         format!("add-native-effect-{}", entry.type_id.as_str().unwrap()).into_boxed_str(),
     );

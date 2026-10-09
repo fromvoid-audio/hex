@@ -117,6 +117,16 @@ close protection, refused admission retry, deleted targets and optimistic
 acknowledgement ordering. Full clean-commit local CI and native review remain
 separate acceptance gates.
 
+### fixed-height chain geometry
+
+The bottom device panel is fixed at 188 px. Its header, top border and 3 px chain
+padding define the usable chain height; each 286 px device frame fills that height
+and derives its body height from the shared frame header and border tokens. The
+add-device menu overlays the chain, so opening it does not resize the panel or
+device cards. Parameter bodies scroll vertically inside their frames when the
+current Utility layout has more controls than fit at once; the chain itself keeps
+its horizontal scroll. Native wheel and touchpad feel still requires review.
+
 
 ## panel native review checklist
 
