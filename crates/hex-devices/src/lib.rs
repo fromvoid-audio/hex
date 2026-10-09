@@ -1,4 +1,6 @@
 //! Prepared stateless tone generation for the original Hex sine instrument.
+pub mod utility;
+
 use std::fmt;
 
 const TABLE_BITS: u32 = 11;

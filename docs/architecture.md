@@ -2,6 +2,10 @@
 
 ## Implemented
 
+The native device DSP system is named **lattice**. Its staged implementation,
+canonical model boundary and mutable-state dependencies are specified in
+[lattice](lattice.md); desktop device chains are not yet implemented.
+
 `hex-engine` owns immutable compiled `Project -> Track -> Clip -> Audio` playback data.
 `hex-project` owns canonical editable Arrangement and Session metadata. Audio uses
 shared immutable stereo f32 buffers. Each clip holds a start frame and exclusive
@@ -81,7 +85,8 @@ of these substitutes for the others.
 
 | Crate | Owns | Depends on |
 | --- | --- | --- |
-| hex-devices | Prepared original sine/envelope DSP | std |
+| hex-lattice | Validated memoryless stereo matrix DSP and ordered composition | std |
+| hex-devices | Prepared original sine/envelope and linear Utility DSP | hex-lattice, std |
 | hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | std |
 | hex-media | Bounded control-side WAV decode and cached waveform peaks | hex-engine, std |
 | hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, std |
