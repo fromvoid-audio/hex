@@ -214,9 +214,10 @@ inferring acknowledgment from a moving playback position.
 
 The optional project-frame region [start,end) and enabled flag are canonical,
 undoable schema-4 metadata. Legacy projects migrate to no region. Cmd-L uses
-selected clip bounds; L toggles the stored region. The compact transport indicator
-and ruler band show canonical state; the existing revision status reports when
-audio has applied it. Region changes compile on the session worker.
+selected audio clip bounds; MIDI Cmd-L region setup remains deferred. The compact
+transport indicator and loop rail show canonical state; the existing revision
+status reports when audio has applied it. Region changes compile on the session
+worker.
 
 Prepared Playback renders an intro before start, wraps at end, and normalizes
 playing seeks beyond end into the region. Empty outputs do not normalize; Pause
@@ -225,6 +226,19 @@ transport before applying new bounds on render. Linear Renderer/CLI export ignor
 loop repetition. A complete stateless source period can be repeated from the
 caller output buffer with no allocation; stateful devices/events/fades need separate
 contracts. This is Hex behavior, with no measured Live loop-parity claim.
+
+### Native Arrangement loop rail
+
+The compact rail below the ruler is a GPUI view over this same canonical loop
+region. A drag paints a local preview and dispatches one `SetLoopRegion` on
+release; newly painted ranges start disabled. Command bypasses the active
+adaptive snap grid for both anchor and endpoint. Resizing either visible edge
+preserves the region's enabled flag. Clicking a disabled range enables it, while
+L and the toolbar continue to toggle playback looping. The tooltip documents
+these gestures and Command's free-placement modifier. Pointer capture remains
+owned by the rail through release outside its bounds. Generation, project
+revision or canonical loop-region changes discard the preview. No per-move
+project edits or audio-thread state are introduced.
 
 The canonical mixer adds validated per-track balance (-1..=1) and master gain
 (0..=2). Center balance is unity; this original Hex linear law attenuates only

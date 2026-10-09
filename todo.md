@@ -362,3 +362,14 @@ targeted UI, Session keyboard navigation and worker-reconciliation checks pass.
 The pane's open state stays independent from user-driven clip/track content focus;
 an empty clip context retains its last valid body height. Focused local CI remains
 for integration, and native acceptance remains with the user.
+
+Arrangement loop rail2120: source implementation adds a compact timeline-width
+rail below the ruler, snapped drag preview, Command free placement, visible-edge
+resize, click-to-enable, and the existing L/toolbar toggle. It uses the canonical
+loop command; captured previews cancel if project generation, revision or the
+canonical loop range changes. Five targeted GPUI pointer tests, three existing
+canonical loop tests, strict UI Clippy, formatting, architecture/style guards and
+diff checks pass. Coverage includes snap/free placement, zoom/pan mapping,
+outside-rail release, lane-selection ownership, resize, activation, toggle and
+stale-state protection. Clean full local CI and native acceptance remain open;
+this stays a separate focused PR.
