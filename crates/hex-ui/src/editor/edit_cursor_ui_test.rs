@@ -1149,6 +1149,11 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         created: None,
         duplicate_complete: false,
         restore_complete: None,
+        device_preview: None,
+        gesture_ack: None,
+        gesture_protocol_ack: false,
+        gesture_request: false,
+        active_device_gesture: None,
     });
     editor.update(cx, |view, cx| {
         view.move_time_selection_complete(&failed);

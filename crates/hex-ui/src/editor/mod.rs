@@ -11,6 +11,7 @@ mod clip_view_ui_test;
 mod close;
 mod context_menu;
 mod controller;
+mod device_gesture;
 mod dialogs;
 mod drag;
 mod duplicate;
@@ -102,12 +103,14 @@ struct PendingPlayback {
     state: Arc<ViewState>,
     playback: Playback,
     install_fresh_runtime: bool,
+    device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
 }
 
 struct PlaybackCandidate {
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
+    device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -384,6 +387,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) piano_pitch_low: u8,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
+    device_gesture: hex_session::device_gesture::GestureClient,
+    device_gesture_barriers: VecDeque<Request>,
     worker_requests_pending: usize,
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
@@ -584,6 +589,8 @@ impl EditorView {
             piano_pitch_low: 48,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),
+            device_gesture: hex_session::device_gesture::GestureClient::default(),
+            device_gesture_barriers: VecDeque::new(),
             worker_requests_pending: 0,
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),

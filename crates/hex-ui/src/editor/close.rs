@@ -8,6 +8,7 @@ pub(super) fn requires_close_confirmation(
     duplicate_pending: bool,
     opening_project: bool,
     export_pending: bool,
+    device_gesture_pending: bool,
 ) -> bool {
     unsaved
         || worker_requests_pending > 0
@@ -15,6 +16,7 @@ pub(super) fn requires_close_confirmation(
         || duplicate_pending
         || opening_project
         || export_pending
+        || device_gesture_pending
 }
 
 impl EditorView {
@@ -26,6 +28,7 @@ impl EditorView {
         if self.close_prompt_open {
             return false;
         }
+        self.finalize_device_gesture_for_close();
         if self.requires_close_confirmation() {
             self.show_close_prompt(window, cx, false);
             false
@@ -39,6 +42,7 @@ impl EditorView {
         if self.close_prompt_open {
             return;
         }
+        self.finalize_device_gesture_for_close();
         if self.requires_close_confirmation() {
             self.show_close_prompt(window, cx, true);
         } else {
@@ -55,7 +59,19 @@ impl EditorView {
             self.duplicate_intent.is_pending(),
             self.opening_project,
             self.export_pending,
+            self.device_gesture_pending(),
         )
+    }
+
+    fn finalize_device_gesture_for_close(&mut self) {
+        if self.device_gesture.has_pending_terminal() {
+            return;
+        }
+        if let Some(snapshot) = self.device_gesture.snapshot()
+            && let Err(error) = self.finish_device_gesture(snapshot.value)
+        {
+            self.error = Some(error.into());
+        }
     }
 
     fn show_close_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>, quit: bool) {
@@ -111,19 +127,30 @@ mod tests {
 
     #[test]
     fn close_confirmation_covers_dirty_and_pending_work() {
-        assert!(requires_close_confirmation(false, 0, 0, false, false, true));
+        assert!(requires_close_confirmation(
+            false, 0, 0, false, false, true, false
+        ));
         assert!(!requires_close_confirmation(
-            false, 0, 0, false, false, false
-        ));
-        assert!(requires_close_confirmation(true, 0, 0, false, false, false));
-        assert!(requires_close_confirmation(
-            false, 1, 0, false, false, false
+            false, 0, 0, false, false, false, false
         ));
         assert!(requires_close_confirmation(
-            false, 0, 1, false, false, false
+            true, 0, 0, false, false, false, false
         ));
-        assert!(requires_close_confirmation(false, 0, 0, true, false, false));
-        assert!(requires_close_confirmation(false, 0, 0, false, true, false));
+        assert!(requires_close_confirmation(
+            false, 1, 0, false, false, false, false
+        ));
+        assert!(requires_close_confirmation(
+            false, 0, 1, false, false, false, false
+        ));
+        assert!(requires_close_confirmation(
+            false, 0, 0, true, false, false, false
+        ));
+        assert!(requires_close_confirmation(
+            false, 0, 0, false, true, false, false
+        ));
+        assert!(requires_close_confirmation(
+            false, 0, 0, false, false, false, true
+        ));
     }
 }
 
@@ -136,8 +163,39 @@ mod window_tests {
         AnyWindowHandle, Empty, Entity, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext,
         VisualTestContext, point,
     };
-    use hex_session::service::{Service, ViewState};
+    use hex_session::service::{Event, Request, Service, ViewState};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn next_service_event(service: &Service) -> Event {
+        let start = Instant::now();
+        loop {
+            match service.try_event() {
+                Ok(event) => return event,
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                    if start.elapsed() < Duration::from_secs(2) =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("project worker event unavailable: {error}"),
+            }
+        }
+    }
+
+    fn next_editor_service_event(editor: &Entity<EditorView>, cx: &mut TestAppContext) -> Event {
+        let start = Instant::now();
+        loop {
+            match editor.read_with(cx, |view, _| view.service.try_event()) {
+                Ok(event) => return event,
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                    if start.elapsed() < Duration::from_secs(3) =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("project worker event unavailable: {error}"),
+            }
+        }
+    }
 
     fn dirty_replaced_window(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<EditorView>) {
         let bootstrap = cx.add_window(|_, _| Empty);
@@ -301,5 +359,244 @@ mod window_tests {
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
         assert!(cx.windows().is_empty());
+    }
+
+    #[gpui::test]
+    fn clean_base_device_draft_is_committed_before_cancel_and_discard_prompt(
+        cx: &mut TestAppContext,
+    ) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
+            .expect("disposable service");
+        let _ = next_service_event(&service);
+        service
+            .submit(Request::Edit(hex_project::Command::AddTrack {
+                name: "device draft".into(),
+            }))
+            .expect("add track");
+        let track = next_service_event(&service).state.project.tracks()[0].id();
+        let type_id =
+            hex_session::device_gesture::DeviceTypeId::new("hex.utility").expect("type id");
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let device_event = next_service_event(&service);
+        let device = device_event.state.project.tracks()[0].devices()[0].id();
+        let path =
+            std::env::temp_dir().join(format!("hex-clean-device-draft-{}.hex", std::process::id()));
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save clean base");
+        let device_event = next_service_event(&service);
+        assert!(!device_event.state.unsaved);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("test offline output".into()))
+                });
+                super::super::install_close_guard(window, cx, editor.downgrade());
+                editor.update(cx, |view, cx| {
+                    let state = &device_event.state;
+                    view.state = Some(Arc::new(ViewState {
+                        project: Arc::clone(&state.project),
+                        waveforms: state.waveforms.clone(),
+                        midi_preview: Arc::clone(&state.midi_preview),
+                        timeline_frames: state.timeline_frames,
+                        can_undo: false,
+                        can_redo: false,
+                        revision: state.revision,
+                        unsaved: false,
+                        document_path: None,
+                    }));
+                    view.begin_device_gesture(
+                        hex_session::device_gesture::GestureTarget {
+                            device,
+                            parameter: hex_session::device_gesture::ParameterId::new(1)
+                                .expect("gain parameter"),
+                        },
+                        hex_session::device_gesture::ParameterValue::Float(1.0),
+                    )
+                    .expect("begin clean-base gesture");
+                    view.change_device_gesture(hex_session::device_gesture::ParameterValue::Float(
+                        2.0,
+                    ))
+                    .expect("draft parameter change");
+                    cx.notify();
+                });
+                editor
+            })
+            .expect("device editor window");
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                assert!(!view.request_window_close(window, cx));
+            });
+        })
+        .expect("close with draft");
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        assert_eq!(cx.windows().len(), 1);
+        editor.read_with(cx, |view, _| {
+            assert!(view.state.as_ref().is_some_and(|state| !state.unsaved));
+            let draft = view.device_gesture.snapshot().expect("cancel keeps draft");
+            assert_eq!(draft.target.device, device);
+            assert_eq!(
+                draft.value,
+                hex_session::device_gesture::ParameterValue::Float(2.0)
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                assert!(!view.request_window_close(window, cx));
+            });
+        })
+        .expect("second close");
+        cx.simulate_prompt_answer("discard");
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[gpui::test]
+    fn failed_gesture_compile_refuses_deferred_save_and_export(cx: &mut TestAppContext) {
+        let service = Service::new(48_000, 64, super::super::MAX_RESIDENT_FRAMES)
+            .expect("disposable service");
+        let _ = next_service_event(&service);
+        service
+            .submit(Request::Edit(hex_project::Command::AddTrack {
+                name: "compile-limited chain".into(),
+            }))
+            .expect("add track");
+        let mut state = next_service_event(&service).state;
+        let track = state.project.tracks()[0].id();
+        let type_id =
+            hex_session::device_gesture::DeviceTypeId::new("hex.utility").expect("type id");
+        let mut devices = Vec::new();
+        for _ in 0..24 {
+            service
+                .submit(Request::AddNativeDevice {
+                    track,
+                    type_id: Box::new(type_id),
+                    before: None,
+                })
+                .expect("add utility");
+            let event = next_service_event(&service);
+            devices.push(
+                event.state.project.tracks()[0]
+                    .devices()
+                    .last()
+                    .unwrap()
+                    .id(),
+            );
+            state = event.state;
+        }
+        let gain = hex_session::device_gesture::ParameterId::new(1).expect("gain parameter");
+        let invalid_value = hex_session::device_gesture::ParameterValue::Float(56.234_13);
+        let mut rejected_device = None;
+        for device in devices {
+            service
+                .submit(Request::SetDeviceParameter {
+                    device,
+                    parameter: gain,
+                    value: invalid_value,
+                })
+                .expect("probe device capacity");
+            let event = next_service_event(&service);
+            if event.error.is_some() {
+                rejected_device = Some(device);
+                state = event.state;
+                break;
+            }
+            state = event.state;
+        }
+        let device = rejected_device.expect("dense chain rejects one candidate");
+        let save_path =
+            std::env::temp_dir().join(format!("hex-refused-gesture-{}.hex", std::process::id()));
+        let export_path =
+            std::env::temp_dir().join(format!("hex-refused-gesture-{}.wav", std::process::id()));
+        let _ = std::fs::remove_file(&save_path);
+        let _ = std::fs::remove_file(&export_path);
+
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                let editor = window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("test offline output".into()))
+                });
+                editor.update(cx, |view, cx| {
+                    view.state = Some(Arc::clone(&state));
+                    view.begin_device_gesture(
+                        hex_session::device_gesture::GestureTarget {
+                            device,
+                            parameter: gain,
+                        },
+                        hex_session::device_gesture::ParameterValue::Float(1.0),
+                    )
+                    .expect("begin parameter gesture");
+                    cx.notify();
+                });
+                editor
+            })
+            .expect("device editor window");
+
+        editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+        let begin = next_editor_service_event(&editor, cx);
+        let begin_ack = begin.gesture_ack.expect("begin acknowledgement");
+        assert!(begin_ack.accepted);
+        editor.update(cx, |view, _| {
+            assert!(view.acknowledge_device_gesture(&begin_ack))
+        });
+
+        editor.update(cx, |view, _| {
+            view.change_device_gesture(invalid_value)
+                .expect("stage invalid final value");
+            assert!(view.pump_device_gesture());
+        });
+        let preview = next_editor_service_event(&editor, cx);
+        let preview_ack = preview.gesture_ack.expect("preview acknowledgement");
+        assert!(!preview_ack.accepted);
+        editor.update(cx, |view, _| {
+            assert!(view.acknowledge_device_gesture(&preview_ack))
+        });
+
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue_device_barrier(Request::SaveNew(save_path.clone())));
+            assert!(view.enqueue_device_barrier(Request::Export(export_path.clone())));
+            view.saving_project = true;
+            view.export_pending = true;
+            assert!(view.pump_device_gesture());
+        });
+        let commit = next_editor_service_event(&editor, cx);
+        let commit_ack = commit.gesture_ack.expect("commit acknowledgement");
+        assert!(!commit_ack.accepted);
+        editor.update(cx, |view, _| {
+            assert!(view.acknowledge_device_gesture(&commit_ack));
+            assert!(!view.saving_project);
+            assert!(!view.export_pending);
+            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.pending_requests.is_empty());
+            assert!(view.error.is_some());
+        });
+
+        assert!(
+            !save_path.exists(),
+            "failed gesture must not save old value"
+        );
+        assert!(
+            !export_path.exists(),
+            "failed gesture must not export old value"
+        );
+        assert!(matches!(
+            editor.read_with(cx, |view, _| view.service.try_export_event()),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .expect("remove test window");
     }
 }

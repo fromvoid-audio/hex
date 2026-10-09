@@ -475,6 +475,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
+            || self.device_gesture_pending()
     }
 
     pub(super) fn midi_clip(&self) -> Option<&MidiSource> {

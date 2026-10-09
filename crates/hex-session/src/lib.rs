@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+pub mod device_gesture;
 pub mod service;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
 
@@ -476,6 +477,56 @@ impl Session {
             .map(Arc::new)
             .map_err(SessionError::from)
         })
+    }
+
+    /// Prepare a typed native parameter overlay without changing canonical
+    /// metadata, dirty state or history. All construction stays on control.
+    pub fn preview_device_parameter(
+        &self,
+        device: hex_project::DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        value: hex_lattice_contract::ParameterValue,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let current = self
+            .project()
+            .device(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        let state = hex_engine::patch_native_device_parameter(current.state(), parameter, value)?;
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared(
+            Command::ReplaceDeviceState { device, state },
+            |candidate| {
+                hex_engine::PreparedRevision::prepare(
+                    candidate,
+                    &media,
+                    Arc::clone(&table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
+    /// Commit only this parameter onto the latest authored device state.
+    pub fn commit_device_parameter(
+        &mut self,
+        device: hex_project::DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        value: hex_lattice_contract::ParameterValue,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        let current = self
+            .project()
+            .device(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        let state = hex_engine::patch_native_device_parameter(current.state(), parameter, value)?;
+        self.command_prepared_revision(Command::ReplaceDeviceState { device, state }, previous)
+            .map(|(_, prepared)| prepared)
     }
 
     /// Commit one prepared import. All resource checks and fallible reservations
