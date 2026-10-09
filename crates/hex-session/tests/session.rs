@@ -810,3 +810,70 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
             .is_err()
     );
 }
+
+#[test]
+fn unsupported_chain_order_rejects_prepared_candidate_without_history_change() {
+    let mut session = Session::new(48_000, 16, 0).expect("session");
+    let (track, _) = match session
+        .command(Command::AddTrack {
+            name: "chain".into(),
+        })
+        .expect("track")
+    {
+        Created::Track(track) => (track, ()),
+        _ => panic!("track result"),
+    };
+    let utility = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .expect("utility default");
+    let effect = match session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility.clone(),
+        })
+        .expect("first effect")
+    {
+        Created::Device(id) => id,
+        _ => panic!("effect result"),
+    };
+    let second_effect = match session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility,
+        })
+        .expect("second effect")
+    {
+        Created::Device(id) => id,
+        _ => panic!("effect result"),
+    };
+    let prepared = session
+        .undo_prepared_revision(None)
+        .expect("prepared undo")
+        .expect("undo exists");
+    assert!(session.can_redo());
+    assert!(session.project().device(effect).is_some());
+    assert!(session.project().device(second_effect).is_none());
+    let before = session.project().snapshot();
+    let can_undo = session.can_undo();
+    let rejected = session.command_prepared_revision(
+        Command::MoveTrackDevice {
+            device: session
+                .project()
+                .track(track)
+                .expect("track remains")
+                .instrument()
+                .expect("instrument")
+                .id(),
+            track,
+            before: None,
+        },
+        Some(&prepared),
+    );
+    assert!(rejected.is_err());
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(session.can_undo(), can_undo);
+    assert!(session.can_redo());
+}

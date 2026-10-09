@@ -51,6 +51,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
             }),
+            instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip,
                 start_raw: 0,

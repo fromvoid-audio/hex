@@ -164,6 +164,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Audio(
                 (0..MAX_CLIPS)
                     .map(|index| ClipSnapshot {
@@ -243,6 +244,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                 id: 3,
                 asset: 1,

@@ -6,19 +6,23 @@ plugin instruments, event queues and general chase/tail contracts remain deferre
 
 ## Model and persistence
 
-Each hybrid track has one optional instrument slot, separate from its ordered
-serial effects. The slot has a globally unique DeviceId, bypass flag and the same
-bounded opaque NativeDeviceState envelope as effects. Generic state replacement
-and bypass commands address it by ID; InsertInstrument and RemoveInstrument
-change slot ownership transactionally with normal history/Undo.
+Each hybrid track has one optional instrument node in its ordered chain. The
+canonical model retains the effect vector plus a gap index: the number of effects
+before the instrument. Its globally unique DeviceId, bypass flag and bounded
+opaque NativeDeviceState envelope use the same contracts as effects. A borrowed
+ordered-chain iterator exposes explicit instrument/effect node references without
+duplicating editable state. Stable-ID moves can target either node class; effect
+insert/remove updates the gap atomically, and history/snapshots retain it.
 
 New tracks, MIDI tracks and import-created tracks receive an explicit
 hex.instrument.sine version1 empty envelope. A model-owned neutral helper defines
-this default without depending on DSP. Storage schema15 requires the nullable
-instrument field. Strict schemas1–14 install that same envelope once, using fresh
-IDs above the existing high-water mark. Migration refuses exhausted ID space;
-original saved data is not overwritten by decode. Explicit schema15 null means
-silence and must not be migrated back to sine.
+this default without depending on DSP. Storage schema16 requires both the
+nullable instrument field and nullable gap. Strict schemas1–14 install that same
+envelope once at the front, using fresh IDs above the existing high-water mark;
+schema15 instruments migrate to the front because that format had no position.
+Migration refuses exhausted ID space; original saved data is not overwritten by
+decode. Explicit schema15/16 null means silence and must not be migrated back to
+sine.
 
 Storage serializes the generic envelope, never a per-instrument DTO. Unknown
 namespaced types and future state versions round-trip unchanged; control-side
@@ -35,7 +39,11 @@ inventory resolve the canonical slot through this registry. A second independent
 stereo definition is exercised through both paths without engine/storage type
 branches. No implicit engine sine fallback is allowed.
 
-Control prepares an immutable sample-rate-specific configuration. Its prepared
+Control prepares an immutable sample-rate-specific configuration. The current
+Arrangement and Session compilers explicitly refuse a non-front instrument
+position before committing a candidate; silently ignoring a persisted order
+would produce incorrect audio. Engine processing of arbitrary instrument/effect
+ordering is a separate follow-up. Its prepared
 note is a Copy value containing 41 u64 payload words, release duration and a safe
 stereo sample function pointer: 344 bytes on 64-bit targets. The first three
 words retain the sine phase step, amplitude and attack representation; the

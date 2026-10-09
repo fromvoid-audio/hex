@@ -49,6 +49,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                     })
                     .collect(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     id: 200 + track as u64,
                     asset: 1,

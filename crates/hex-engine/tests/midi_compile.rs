@@ -4,6 +4,7 @@ use hex_engine::{
     midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
     playback::{Playback, PlaybackCommand},
 };
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{
     BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
@@ -508,6 +509,47 @@ fn session_bank_ignores_notes_outside_the_emitted_source_window() {
         PreparedSessionInventory::prepare(emitted.project(), Arc::new(SineTable::new()), None,)
             .is_err()
     );
+}
+
+#[test]
+fn arrangement_and_session_compilers_refuse_non_front_instrument_order() {
+    let (mut editor, track) = setup();
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let effect = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: NativeDeviceState::new(DeviceTypeId::new("test.effect").unwrap(), 1, Vec::new())
+                .unwrap(),
+        })
+        .unwrap()
+    {
+        Created::Device(id) => id,
+        _ => panic!("effect"),
+    };
+    editor
+        .execute(Command::MoveTrackDevice {
+            device: instrument,
+            track,
+            before: None,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().track(track).unwrap().instrument_position(),
+        Some(1)
+    );
+    assert!(compile::project(editor.project(), &BTreeMap::new()).is_err());
+    assert!(
+        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None,)
+            .is_err()
+    );
+    assert!(editor.project().device(effect).is_some());
 }
 
 #[test]
