@@ -3560,3 +3560,25 @@ cursor. Dragging below it starts a replacement selection, including over selecte
 clips. Outside the selection, ordinary clip dragging/resizing keeps its priority.
 Acceptance: focused color/gesture/hover regression tests, strict UI checks, fresh
 release review bundle and user native animation/handle checks.
+
+## current request queue — 9 October 2026
+
+The active work order is consolidated in [todo.md](../todo.md). Earlier status
+entries below/above are historical milestones, not competing current priorities.
+Completed chronology is preserved in [the archived todo](history/todo-2026-10-09.md).
+Every new request has its own focused PR; larger DSP/hosting requests need staged
+PRs with finite acceptance gates. Review and merge remain separate from source
+checks and user native acceptance.
+
+Finish time-chunk landing previews and selected-track ripple insertion as separate
+changes. Then deliver independent header composition, custom window controls,
+pinned main/return track layout and persistent four-color settings requests.
+Return tracks require real sends/routing, history and persistence. Main and returns
+stay below the scrolling regular-track/empty-space region and above the bottom
+detail panel. Theme settings expose four primary roles with derived states; role
+mapping and contrast checks precede replacing existing palette constants.
+
+Native device model/runtime is a prerequisite for the real bottom device chain,
+Utility and Operator. CLAP and VST3 are separate adapters, not the native DSP
+model. Stateful runtime, latency, safe native boundaries, persistence and retirement
+need explicit acceptance before claiming full device or plugin support.
