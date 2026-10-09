@@ -322,6 +322,31 @@ known starting content. Preserve unrelated work. Update the owning docs and
 states what changed, why, what passed, and what remains open. Keep the workspace
 building at coherent milestones.
 
+## Pull request workflow
+
+As requested on 9 October 2026, all future repository changes go through pull
+requests. Never commit or push implementation changes directly to `main`, and
+never bypass this workflow without an explicit user instruction.
+
+- Use a dedicated branch for each PR. Each PR must contain one targeted change
+  with a clear purpose and finite acceptance criteria. Keep related tests and
+  documentation with that change; split unrelated features, fixes and refactors
+  into separate PRs. Do not bundle accumulated work into a broad catch-all PR.
+- Inspect the diff and run checks appropriate to the change before requesting
+  review. The PR description explains the resulting behavior, validation and
+  remaining limitations. Record native UI/listening acceptance separately from
+  automated checks.
+- Review the final PR diff and resolve meaningful findings before merging. Merge
+  only after required checks pass and the user authorizes the merge; a request to
+  implement, commit, push or open a PR is not by itself merge authorization.
+  Never force-push `main`, skip required checks or weaken branch protection.
+- Attach every created PR to the current Codex task. Confirm the actual merge
+  result before reporting completion, then update the local checkout without
+  overwriting unrelated or unsaved work.
+
+This is a repository workflow rule; it does not claim that GitHub branch
+protection or automated review enforcement is configured.
+
 ## 6. Parallel agents
 
 Delegation is optional. Use one coherent executor per deliverable and one
