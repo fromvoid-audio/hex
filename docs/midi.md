@@ -37,7 +37,7 @@ and no-ops preserve redo. Moves preserve local note timing. Duplicates begin at
 the source clip's exclusive end and allocate a new clip ID and new IDs for every
 note, retaining source settings. `SetMidiClipSource` validates all source/loop/
 Arrangement fields and authored notes together before mutation. Source shrink
-that invalidates a note is refused. MIDI trim/split still need an explicit policy.
+that invalidates a note is refused. MIDI Arrangement edge resizing uses the policy below; MIDI split remains deferred.
 
 ## persistence and prepared events
 
@@ -393,3 +393,27 @@ Prepared Session inventory and exact precommit revision publication are source
 accepted, including all inactive cells and componentwise per-track maxima.
 Mixed-route physical admission, quantized launches/phase/releases and UI remain
 required. Existing finite Arrangement render/export stays unchanged.
+
+
+## arrangement edge resize — 9 October 2026
+
+`TrimMidiClipEdge` is a beat-anchored, atomic edit;
+`MidiClip::preview_edge_trim` returns O(1) metadata through `MidiClipTrim`,
+without copying or expanding notes. IDs, authored notes, source length and
+loop markers remain unchanged. Right resizing preserves the timeline start
+and source marker and clamps to a positive length; one-shot extension beyond
+the source exposes silence, retaining notes for later editing. Left resizing
+preserves the exclusive timeline end and changes the source start marker.
+One-shots clamp to available source data and allow reversing a prior trim.
+Loop intro positions can rewind to source zero; forward edits pass through
+the intro then wrap the loop. Once starting inside the loop, left edits advance
+or rewind modulo the loop interval. This original policy does not persist an
+extra unwrapped phase or restore a previous intro automatically. Existing
+playback does not chase notes beginning before the source start.
+
+No-op edits preserve source identity and redo. Source marker changes copy the
+shared source only on canonical commit, not every preview frame. Existing
+schema-12 fields persist the result without a schema change. Audio trim and
+MIDI resize preserve their current neighboring-overlap behavior; overwrite
+editing remains specific to drop commands. Native resize acceptance is pending;
+see clip-resizing.md. Exact Live source-boundary parity remains unverified.

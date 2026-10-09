@@ -11,6 +11,11 @@ pub enum Command {
     AddTrack {
         name: String,
     },
+    /// Insert an empty hybrid track before a stable anchor, or append with None.
+    InsertTrack {
+        name: String,
+        before_track: Option<TrackId>,
+    },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
     ImportAudioTrack {
         name: String,
@@ -287,6 +292,12 @@ pub enum Command {
         track: TrackId,
         start: crate::BeatTime,
         length: crate::BeatTime,
+    },
+    /// Resize a MIDI Arrangement edge without deleting authored source notes.
+    TrimMidiClipEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        beat: crate::BeatTime,
     },
     /// Atomically replace the finite source and arrangement region for a MIDI clip.
     SetMidiClipSource {
@@ -830,6 +841,7 @@ impl Project {
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::TrimMidiClipEdge { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }
@@ -1016,22 +1028,13 @@ impl Project {
                 self.apply(Command::Mute { track, muted })
             }
             Command::AddTrack { name } => {
-                name_valid(&name)?;
-                if self.tracks.len() >= MAX_TRACKS {
-                    return Err(Invalid("track limit reached"));
-                }
-                let id = TrackId(self.allocate_id()?);
-                self.tracks.push(Track {
-                    id,
-                    name,
-                    gain: 1.0,
-                    balance: 0.0,
-                    muted: false,
-                    soloed: false,
-                    content: TrackContent::default(),
-                });
-                Ok(Created::Track(id))
+                Ok(Created::Track(insert_track_before(self, name, None)?))
             }
+            Command::InsertTrack { name, before_track } => Ok(Created::Track(insert_track_before(
+                self,
+                name,
+                before_track,
+            )?)),
             Command::ImportAudioTrack {
                 name,
                 path,

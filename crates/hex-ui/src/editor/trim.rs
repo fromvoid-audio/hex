@@ -1,18 +1,19 @@
 //! Native pointer trim gesture state and bounded canonical dispatch.
 use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
-use crate::theme::Palette;
-use gpui::{Context, CursorStyle, Div, MouseButton, Stateful, Window, div, prelude::*, px, rgb};
-use hex_project::{Clip, Command, TrackId, TrimEdge};
+use gpui::{Context, CursorStyle, Div, MouseButton, Stateful, Window, div, prelude::*, px};
+use hex_project::{BeatTime, Clip, Command, MidiClip, MidiClipTrim, Project, TrackId, TrimEdge};
 use hex_session::service::Request;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
-const HANDLE_WIDTH: f32 = 8.0;
-const MIN_CLIP_WIDTH_FOR_HANDLES: f32 = 20.0;
+const HANDLE_WIDTH: f32 = 4.0;
+const MIN_MOVE_WIDTH: f32 = 1.0;
 
 #[derive(Clone, Debug)]
 pub(super) struct TrimPreviewState {
     pub(super) clip: Clip,
-    edge: TrimEdge,
 }
 
 /// Bounded metadata-only payload; the model helper builds previews without project or PCM copies.
@@ -21,14 +22,36 @@ pub(super) struct TrimDrag {
     project_generation: u64,
     revision: u64,
     pub(super) source_track: TrackId,
-    clip: Clip,
+    pub(super) clip: Clip,
     asset_playback_frames: u64,
     edge: TrimEdge,
     source_lane: LaneBounds,
     viewport_start: u64,
     viewport_length: u64,
+    snap_grid: super::musical_time::SnapGrid,
+    pub(super) snap_modifier: Rc<Cell<bool>>,
+    pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
+    pub(super) grab_delta: Rc<RefCell<Option<i128>>>,
+    pub(super) preview: Rc<RefCell<Option<TrimPreviewState>>>,
+}
+
+/// Metadata-only Arrangement MIDI edge gesture. The authored notes are shared
+/// through one `Rc`; pointer updates and previews never clone the note list.
+#[derive(Clone, Debug)]
+pub(super) struct MidiTrimDrag {
+    pub(super) project_generation: u64,
+    pub(super) revision: u64,
+    pub(super) source_track: TrackId,
+    pub(super) clip: Rc<MidiClip>,
+    edge: TrimEdge,
+    source_lane: LaneBounds,
+    viewport_start: u64,
+    viewport_length: u64,
+    snap_grid: super::musical_time::SnapGrid,
+    pub(super) snap_modifier: Rc<Cell<bool>>,
+    pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
     grab_delta: Rc<RefCell<Option<i128>>>,
-    preview: Rc<RefCell<Option<TrimPreviewState>>>,
+    pub(super) preview: Rc<RefCell<Option<MidiClipTrim>>>,
 }
 
 fn frame_at_x(x: f32, lane: LaneBounds, viewport: Viewport) -> Option<u64> {
@@ -104,8 +127,139 @@ fn payload_is_current(
             .is_some_and(|asset| asset.playback_frames() == drag.asset_playback_frames)
 }
 
+fn midi_payload_is_current(
+    drag: &MidiTrimDrag,
+    generation: u64,
+    state: &ViewState,
+    viewport: Viewport,
+    source_lane: Option<LaneBounds>,
+) -> bool {
+    drag.project_generation == generation
+        && drag.revision == state.revision
+        && drag.viewport_start == viewport.start
+        && drag.viewport_length == viewport.length
+        && source_lane.is_some_and(|lane| {
+            lane.left == drag.source_lane.left && lane.width == drag.source_lane.width
+        })
+        && state
+            .project
+            .track(drag.source_track)
+            .and_then(|track| {
+                track
+                    .midi_clips()
+                    .iter()
+                    .find(|clip| clip.id() == drag.clip.id())
+            })
+            .is_some_and(|clip| clip == drag.clip.as_ref())
+}
+
 fn preview_is_noop(original: &Clip, preview: &Clip) -> bool {
     original == preview
+}
+
+pub(super) fn handle_width(clip_width: f32) -> f32 {
+    if !clip_width.is_finite() || clip_width <= 0.0 {
+        return 0.0;
+    }
+    HANDLE_WIDTH.min((clip_width - MIN_MOVE_WIDTH).max(0.0) / 2.0)
+}
+
+fn bracket_cursor(edge: TrimEdge) -> CursorStyle {
+    match edge {
+        TrimEdge::Left => CursorStyle::ResizeLeftBracket,
+        TrimEdge::Right => CursorStyle::ResizeRightBracket,
+    }
+}
+
+pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64, minimum: f32) -> f32 {
+    let width = lane_width * width_fraction as f32;
+    if !width.is_finite() || width <= 0.0 || !minimum.is_finite() || minimum <= 0.0 {
+        return 0.0;
+    }
+    width.max(minimum)
+}
+
+fn snapped_edge_frame(
+    drag: &TrimDrag,
+    project: &hex_project::Project,
+    pointer_x: f32,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<u64> {
+    let pointer_frame = frame_at_x(pointer_x, lane, viewport)?;
+    let delta = (*drag.grab_delta.borrow())?;
+    let edge = corrected_edge_frame(pointer_frame, delta);
+    drag.snap_grid
+        .with_platform_modifier(drag.snap_modifier.get())
+        .snap_frame(project, edge, viewport, lane.width)
+}
+
+fn preview_for_pointer(
+    drag: &TrimDrag,
+    project: &hex_project::Project,
+    pointer_x: f32,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<TrimPreviewState> {
+    let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
+    let clip = drag
+        .clip
+        .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
+        .ok()?;
+    Some(TrimPreviewState { clip })
+}
+
+fn midi_edge_beat(clip: &MidiClip, edge: TrimEdge) -> Option<BeatTime> {
+    match edge {
+        TrimEdge::Left => Some(clip.start()),
+        TrimEdge::Right => clip
+            .start()
+            .raw()
+            .checked_add(clip.length().raw())
+            .map(BeatTime::from_raw),
+    }
+}
+
+fn midi_pointer_beat(
+    project: &Project,
+    pointer_x: f32,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<BeatTime> {
+    let frame = frame_at_x(pointer_x, lane, viewport)?;
+    project.tempo_map().frame_to_beat(frame).ok()
+}
+
+fn snapped_midi_edge_beat(
+    drag: &MidiTrimDrag,
+    project: &Project,
+    pointer_x: f32,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<BeatTime> {
+    let pointer = midi_pointer_beat(project, pointer_x, lane, viewport)?;
+    let delta = (*drag.grab_delta.borrow())?;
+    let candidate = BeatTime::from_raw(
+        (i128::from(pointer.raw()) - delta).clamp(0, i128::from(u64::MAX)) as u64,
+    );
+    drag.snap_grid
+        .with_platform_modifier(drag.snap_modifier.get())
+        .snap_beat(project, candidate, viewport, lane.width)
+}
+
+fn midi_preview_for_pointer(
+    drag: &MidiTrimDrag,
+    project: &Project,
+    pointer_x: f32,
+    lane: LaneBounds,
+    viewport: Viewport,
+) -> Option<MidiClipTrim> {
+    drag.clip
+        .preview_edge_trim(
+            drag.edge,
+            snapped_midi_edge_beat(drag, project, pointer_x, lane, viewport)?,
+        )
+        .ok()
 }
 
 impl EditorView {
@@ -121,7 +275,7 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
-        if !drag_admitted(self) || clip_width < MIN_CLIP_WIDTH_FOR_HANDLES {
+        if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
             return Vec::new();
         }
         let Some(lane) = self.drag_lanes.get(&track).copied() else {
@@ -138,6 +292,7 @@ impl EditorView {
                 clip,
                 TrimEdge::Left,
                 lane,
+                clip_width,
                 viewport,
                 asset.playback_frames(),
                 cx,
@@ -152,12 +307,194 @@ impl EditorView {
                 clip,
                 TrimEdge::Right,
                 lane,
+                clip_width,
                 viewport,
                 asset.playback_frames(),
                 cx,
             ));
         }
         handles
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn midi_trim_handles(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: &MidiClip,
+        clip_start_frame: u64,
+        clip_end_frame: u64,
+        visible_start: u64,
+        visible_end: u64,
+        clip_width: f32,
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Vec<Stateful<Div>> {
+        if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
+            return Vec::new();
+        }
+        let Some(lane) = self.drag_lanes.get(&track).copied() else {
+            return Vec::new();
+        };
+        let drag = MidiTrimDrag {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            source_track: track,
+            clip: Rc::new(clip.clone()),
+            edge: TrimEdge::Left,
+            source_lane: lane,
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            last_pointer_x: Rc::new(Cell::new(None)),
+            grab_delta: Rc::new(RefCell::new(None)),
+            preview: Rc::new(RefCell::new(None)),
+        };
+        let mut handles = Vec::with_capacity(2);
+        if visible_start == clip_start_frame {
+            handles.push(self.midi_trim_handle(
+                state,
+                drag.clone(),
+                TrimEdge::Left,
+                clip_width,
+                lane,
+                viewport,
+                cx,
+            ));
+        }
+        if visible_end == clip_end_frame {
+            let mut drag = drag;
+            drag.edge = TrimEdge::Right;
+            handles.push(self.midi_trim_handle(
+                state,
+                drag,
+                TrimEdge::Right,
+                clip_width,
+                lane,
+                viewport,
+                cx,
+            ));
+        }
+        handles
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn midi_trim_handle(
+        &self,
+        state: &ViewState,
+        payload: MidiTrimDrag,
+        edge: TrimEdge,
+        clip_width: f32,
+        lane: LaneBounds,
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let clip_id = payload.clip.id();
+        let clip_generation = payload.project_generation;
+        let preview_entity = cx.entity();
+        let drag_entity = cx.entity();
+        let preview_owner_entity = drag_entity.clone();
+        let mouse_down_entity = drag_entity.clone();
+        let drag_start_entity = drag_entity.clone();
+        let pointer_payload = payload.clone();
+        let clear_entity = drag_entity.clone();
+        let project = Rc::clone(&payload.clip);
+        let project_tempo = state.project.clone();
+        div()
+            .id((
+                match edge {
+                    TrimEdge::Left => "midi-trim-left",
+                    TrimEdge::Right => "midi-trim-right",
+                },
+                clip_id.value(),
+            ))
+            .debug_selector(|| {
+                format!(
+                    "midi-clip-trim-{}-{}",
+                    match edge {
+                        TrimEdge::Left => "left",
+                        TrimEdge::Right => "right",
+                    },
+                    clip_id.value()
+                )
+            })
+            .absolute()
+            .top(px(-1.0))
+            .bottom(px(-1.0))
+            .w(px(handle_width(clip_width)))
+            .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
+            .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
+            .cursor(bracket_cursor(edge))
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                mouse_down_entity.update(cx, |view, _| {
+                    if view.midi_trim_drag_current(&pointer_payload) {
+                        view.remember_pointer_down(
+                            clip_generation,
+                            clip_id,
+                            Some(edge),
+                            f32::from(event.position.x),
+                        );
+                    } else {
+                        view.clear_pointer_down(clip_generation, clip_id, Some(edge));
+                    }
+                });
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                clear_entity.update(cx, |view, _| {
+                    view.clear_pointer_down(clip_generation, clip_id, Some(edge));
+                });
+            })
+            .on_drag(payload, move |payload, _, window, cx| {
+                let original_down_x = drag_start_entity.update(cx, |view, _| {
+                    if view.midi_trim_drag_current(payload) {
+                        view.take_pointer_down(clip_generation, clip_id, Some(edge))
+                    } else {
+                        view.clear_pointer_down(clip_generation, clip_id, Some(edge));
+                        None
+                    }
+                });
+                let pointer_beat = original_down_x
+                    .and_then(|x| midi_pointer_beat(&project_tempo, x, lane, viewport));
+                let delta =
+                    pointer_beat
+                        .zip(midi_edge_beat(&project, edge))
+                        .map(|(pointer, edge_beat)| {
+                            i128::from(pointer.raw()) - i128::from(edge_beat.raw())
+                        });
+                *payload.grab_delta.borrow_mut() = delta;
+                let pointer_x = f32::from(window.mouse_position().x);
+                payload.last_pointer_x.set(Some(pointer_x));
+                payload.snap_modifier.set(window.modifiers().platform);
+                preview_owner_entity.update(cx, |view, cx| {
+                    view.begin_midi_trim_drag(payload);
+                    view.update_midi_trim_preview(payload, pointer_x, cx);
+                });
+                cx.new(|_| TrimPreview {
+                    data: Rc::new(RefCell::new(None)),
+                })
+            })
+            .on_drag_move::<MidiTrimDrag>(move |event, _, cx| {
+                let Some(drag) = event.dragged_item().downcast_ref::<MidiTrimDrag>() else {
+                    return;
+                };
+                let current = drag_entity.update(cx, |view, _| view.midi_trim_drag_current(drag));
+                if !current {
+                    drag.preview.borrow_mut().take();
+                    drag_entity.update(cx, |view, cx| {
+                        view.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+                    });
+                    preview_entity.update(cx, |_, cx| cx.notify());
+                    return;
+                }
+                let pointer_x = f32::from(event.event.position.x);
+                drag.last_pointer_x.set(Some(pointer_x));
+                drag.snap_modifier.set(event.event.modifiers.platform);
+                drag_entity.update(cx, |view, cx| {
+                    view.update_midi_trim_preview(drag, pointer_x, cx)
+                });
+                preview_entity.update(cx, |_, cx| cx.notify());
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -168,6 +505,7 @@ impl EditorView {
         clip: &Clip,
         edge: TrimEdge,
         lane: LaneBounds,
+        clip_width: f32,
         viewport: Viewport,
         asset_playback_frames: u64,
         cx: &mut Context<Self>,
@@ -183,11 +521,15 @@ impl EditorView {
             source_lane: lane,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            snap_grid: self.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            last_pointer_x: Rc::new(Cell::new(None)),
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
         };
         let preview_entity = cx.entity();
         let drag_entity = cx.entity();
+        let preview_owner_entity = drag_entity.clone();
         let mouse_down_entity = drag_entity.clone();
         let drag_start_entity = drag_entity.clone();
         let pointer_payload = payload.clone();
@@ -201,15 +543,23 @@ impl EditorView {
                 },
                 clip_id.value(),
             ))
+            .debug_selector(|| {
+                format!(
+                    "clip-trim-{}-{}",
+                    match edge {
+                        TrimEdge::Left => "left",
+                        TrimEdge::Right => "right",
+                    },
+                    clip_id.value()
+                )
+            })
             .absolute()
-            .top_0()
-            .bottom_0()
-            .w(px(HANDLE_WIDTH))
-            .when(edge == TrimEdge::Left, |this| this.left_0())
-            .when(edge == TrimEdge::Right, |this| this.right_0())
-            .cursor(CursorStyle::ResizeLeftRight)
-            .bg(rgb(Palette::CORAL))
-            .opacity(0.85)
+            .top(px(-1.0))
+            .bottom(px(-1.0))
+            .w(px(handle_width(clip_width)))
+            .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
+            .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
+            .cursor(bracket_cursor(edge))
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.trim_drag_current(&pointer_payload) {
@@ -233,7 +583,7 @@ impl EditorView {
                     view.clear_pointer_down(clear_payload.project_generation, clip_id, Some(edge));
                 });
             })
-            .on_drag(payload, move |payload, _cursor_offset, _, cx| {
+            .on_drag(payload, move |payload, _cursor_offset, window, cx| {
                 let original_down_x = drag_start_entity.update(cx, |view, _| {
                     if view.trim_drag_current(payload) {
                         view.take_pointer_down(
@@ -255,11 +605,13 @@ impl EditorView {
                     .zip(edge_frame(&payload.clip, payload.edge))
                     .map(|(pointer, edge)| i128::from(pointer) - i128::from(edge));
                 *payload.grab_delta.borrow_mut() = delta;
-                if let Some(pointer) = pointer_frame
-                    && let Some(delta) = delta
-                {
-                    update_preview(payload, corrected_edge_frame(pointer, delta));
-                }
+                let pointer_x = f32::from(window.mouse_position().x);
+                payload.last_pointer_x.set(Some(pointer_x));
+                payload.snap_modifier.set(window.modifiers().platform);
+                preview_owner_entity.update(cx, |view, cx| {
+                    view.begin_trim_drag(payload);
+                    view.update_trim_preview(payload, pointer_x, cx);
+                });
                 cx.new(|_| TrimPreview {
                     data: payload.preview.clone(),
                 })
@@ -271,20 +623,182 @@ impl EditorView {
                 let current = drag_entity.update(cx, |view, _| view.trim_drag_current(drag));
                 if !current {
                     *drag.preview.borrow_mut() = None;
+                    drag_entity.update(cx, |view, cx| {
+                        view.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+                    });
                     preview_entity.update(cx, |_, cx| cx.notify());
                     return;
                 }
-                let Some(pointer) = frame_at_x(f32::from(event.event.position.x), lane, viewport)
-                else {
-                    return;
-                };
-                let Some(delta) = *drag.grab_delta.borrow() else {
-                    return;
-                };
-                let frame = corrected_edge_frame(pointer, delta);
-                update_preview(drag, frame);
+                let pointer_x = f32::from(event.event.position.x);
+                drag.last_pointer_x.set(Some(pointer_x));
+                drag.snap_modifier.set(event.event.modifiers.platform);
+                drag_entity.update(cx, |view, cx| view.update_trim_preview(drag, pointer_x, cx));
                 preview_entity.update(cx, |_, cx| cx.notify());
             })
+    }
+
+    pub(super) fn begin_trim_drag(&mut self, drag: &TrimDrag) {
+        self.active_trim_drag = Some(drag.clone());
+    }
+
+    pub(super) fn clear_trim_drag(
+        &mut self,
+        generation: u64,
+        clip: hex_project::ClipId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_trim_drag.as_ref().is_some_and(|active| {
+            active.project_generation == generation && active.clip.id() == clip
+        }) {
+            self.active_trim_drag = None;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn update_trim_preview(
+        &mut self,
+        drag: &TrimDrag,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            return;
+        };
+        if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        *drag.preview.borrow_mut() =
+            preview_for_pointer(drag, &state.project, pointer_x, lane, viewport);
+        self.active_trim_drag = Some(drag.clone());
+        cx.notify();
+    }
+
+    pub(super) fn refresh_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
+        if let Some(drag) = self.active_trim_drag.clone()
+            && drag.snap_modifier.replace(held) != held
+            && let Some(pointer_x) = drag.last_pointer_x.get()
+        {
+            self.update_trim_preview(&drag, pointer_x, cx);
+        }
+    }
+
+    pub(super) fn begin_midi_trim_drag(&mut self, drag: &MidiTrimDrag) {
+        self.active_midi_trim_drag = Some(drag.clone());
+    }
+
+    pub(super) fn clear_midi_trim_drag(
+        &mut self,
+        generation: u64,
+        clip: hex_project::ClipId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_midi_trim_drag.as_ref().is_some_and(|active| {
+            active.project_generation == generation && active.clip.id() == clip
+        }) {
+            self.active_midi_trim_drag = None;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn update_midi_trim_preview(
+        &mut self,
+        drag: &MidiTrimDrag,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            return;
+        };
+        if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        *drag.preview.borrow_mut() =
+            midi_preview_for_pointer(drag, &state.project, pointer_x, lane, viewport);
+        self.active_midi_trim_drag = Some(drag.clone());
+        cx.notify();
+    }
+
+    pub(super) fn refresh_midi_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
+        if let Some(drag) = self.active_midi_trim_drag.clone()
+            && drag.snap_modifier.replace(held) != held
+            && let Some(pointer_x) = drag.last_pointer_x.get()
+        {
+            self.update_midi_trim_preview(&drag, pointer_x, cx);
+        }
+    }
+
+    pub(super) fn midi_trim_drag_current(&self, drag: &MidiTrimDrag) -> bool {
+        if !drag_admitted(self) {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        midi_payload_is_current(
+            drag,
+            self.project_generation,
+            state,
+            self.visible_viewport(state.timeline_frames),
+            self.drag_lanes.get(&drag.source_track).copied(),
+        )
+    }
+
+    pub(super) fn drop_midi_trim(
+        &mut self,
+        drag: &MidiTrimDrag,
+        target_track: TrackId,
+        cx: &mut Context<Self>,
+    ) {
+        if target_track != drag.source_track || !drag_admitted(self) {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let viewport = self.visible_viewport(state.timeline_frames);
+        let Some(lane) = self.drag_lanes.get(&target_track).copied() else {
+            return;
+        };
+        if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+            self.error = Some("midi clip trim canceled · project changed".into());
+            cx.notify();
+            return;
+        }
+        let Some(pointer_x) = drag.last_pointer_x.get() else {
+            return;
+        };
+        let Some(beat) = snapped_midi_edge_beat(drag, &state.project, pointer_x, lane, viewport)
+        else {
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        };
+        let Ok(preview) = drag.clip.preview_edge_trim(drag.edge, beat) else {
+            return;
+        };
+        if preview.start() == drag.clip.start()
+            && preview.length() == drag.clip.length()
+            && preview.source_start() == drag.clip.source_start()
+        {
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        self.enqueue(Request::Edit(Command::TrimMidiClipEdge {
+            clip: drag.clip.id(),
+            edge: drag.edge,
+            beat,
+        }));
+        self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+        cx.notify();
     }
 
     pub(super) fn trim_drag_current(&self, drag: &TrimDrag) -> bool {
@@ -325,13 +839,22 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let Some(pointer) = frame_at_x(f32::from(window.mouse_position().x), lane, viewport) else {
+        // GPUI's MouseUpEvent carries the authoritative release point. Window's
+        // cached pointer can still be the previous move-event location.
+        let pointer_x = drag
+            .last_pointer_x
+            .get()
+            .unwrap_or_else(|| f32::from(window.mouse_position().x));
+        drag.last_pointer_x.set(Some(pointer_x));
+        #[cfg(test)]
+        {
+            self.last_trim_release_snap = Some(drag.snap_modifier.get());
+        }
+        let Some(frame) = snapped_edge_frame(drag, &state.project, pointer_x, lane, viewport)
+        else {
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Some(delta) = *drag.grab_delta.borrow() else {
-            return;
-        };
-        let frame = corrected_edge_frame(pointer, delta);
         let Ok(preview) = drag
             .clip
             .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
@@ -339,6 +862,7 @@ impl EditorView {
             return;
         };
         if preview_is_noop(&drag.clip, &preview) {
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
         self.enqueue(Request::Edit(Command::TrimClipEdge {
@@ -346,20 +870,9 @@ impl EditorView {
             edge: drag.edge,
             frame,
         }));
+        self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
         cx.notify();
     }
-}
-
-fn update_preview(drag: &TrimDrag, frame: u64) {
-    let preview = drag
-        .clip
-        .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
-        .ok()
-        .map(|clip| TrimPreviewState {
-            clip,
-            edge: drag.edge,
-        });
-    *drag.preview.borrow_mut() = preview;
 }
 
 struct TrimPreview {
@@ -368,43 +881,26 @@ struct TrimPreview {
 
 impl gpui::Render for TrimPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
-        let bounds = self.data.borrow().as_ref().map(|preview| {
-            let start = preview.clip.start();
-            let end = start.saturating_add(preview.clip.duration());
-            let edge = match preview.edge {
-                TrimEdge::Left => "←",
-                TrimEdge::Right => "→",
-            };
-            format!("{edge} {start}–{end}f")
-        });
-        div()
-            .px_1()
-            .py_0p5()
-            .border_1()
-            .border_color(rgb(if bounds.is_some() {
-                Palette::CYAN
-            } else {
-                Palette::CORAL
-            }))
-            .bg(rgb(Palette::SURFACE))
-            .text_xs()
-            .text_color(rgb(Palette::TEXT))
-            .child(crate::theme::text(
-                bounds.unwrap_or_else(|| "trim unavailable".into()),
-            ))
+        let _ = &self.data;
+        div().w(px(0.0)).h(px(0.0))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        TrimDrag, corrected_edge_frame, edge_frame, frame_at_x, payload_is_current,
-        preview_is_noop, trim_drag_admitted,
+        TrimDrag, corrected_edge_frame, edge_frame, frame_at_x, handle_width, payload_is_current,
+        preview_is_noop, rendered_clip_width, trim_drag_admitted,
     };
     use crate::editor::{drag::LaneBounds, viewport::Viewport};
     use hex_project::{Clip, Command, Created, Editor, Project, TrackId, TrimEdge};
     use hex_session::service::ViewState;
-    use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+        rc::Rc,
+        sync::Arc,
+    };
 
     #[test]
     fn pointer_mapping_preserves_handle_offset_and_clamps_before_frame_zero() {
@@ -435,6 +931,27 @@ mod tests {
             .preview_edge_trim(TrimEdge::Right, 200, 300)
             .expect("unchanged preview");
         assert!(preview_is_noop(&clip, &unchanged));
+    }
+
+    #[test]
+    fn resize_hit_width_stays_inside_clip_and_move_body_remains_available_at_small_sizes() {
+        for (clip_width, expected) in [(3.0, 1.0), (10.0, 4.0), (20.0, 4.0), (240.0, 4.0)] {
+            let left = handle_width(clip_width);
+            let right = handle_width(clip_width);
+            assert_eq!(left, expected);
+            assert_eq!(right, expected);
+            assert!(left + right <= clip_width);
+            // Full-height edges must leave the central body available for moves.
+            assert!(clip_width - left - right >= 1.0);
+        }
+        let narrow_audio = rendered_clip_width(720.0, 0.0005, 3.0);
+        let narrow_midi = rendered_clip_width(720.0, 0.0005, 4.0);
+        assert_eq!(narrow_audio, 3.0);
+        assert_eq!(handle_width(narrow_audio), 1.0);
+        assert_eq!(narrow_midi, 4.0);
+        assert_eq!(handle_width(narrow_midi), 1.5);
+        assert_eq!(handle_width(f32::NAN), 0.0);
+        assert_eq!(handle_width(0.0), 0.0);
     }
 
     #[test]
@@ -647,6 +1164,9 @@ mod tests {
             },
             viewport_start: 0,
             viewport_length: 500,
+            snap_grid: super::super::musical_time::SnapGrid::Off,
+            snap_modifier: Rc::new(Cell::new(false)),
+            last_pointer_x: Rc::new(Cell::new(None)),
             grab_delta: Rc::new(RefCell::new(None)),
             preview: Rc::new(RefCell::new(None)),
         }

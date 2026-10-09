@@ -34,6 +34,24 @@ Canonical timeline controls include bounded zoom/pan/fit, track keyboard selecti
 solo and selected-clip loop-region commands. Compact widgets share one constructor
 and stable descriptive IDs; viewport/loop controls call view handlers directly.
 The view displays the loop interval but never implements audio wrap scheduling.
+The Arrangement draws a bounded musical grid using the project tempo and meter
+maps behind clips and across empty space, with subtle alternating bands every
+four adaptive grid units anchored to meter origins. The 24 px overview above the
+ruler caches a 128×16 occupancy raster per project revision; audio and
+tempo-converted MIDI clips share bins when they overlap, and track density is
+aggregated into 16 vertical bands. Its outlined viewport can be repositioned by
+clicking the overview. Clip moves snap to the same adaptive landmarks by default;
+the snap control cycles adaptive, fixed quarter, eighth and sixteenth grids, then
+off. Holding Command changes effective snapping without hiding the selected visual
+grid, and bypasses an active grid or temporarily enables adaptive snapping when
+the base grid is off. Vertical wheel gestures over the ruler or timeline zoom
+around the pointer after a small bounded pixel accumulation, with physical wheel
+up zooming in regardless of macOS natural-scrolling preference; wheel input
+outside the Arrangement is left to its panel.
+Middle-button dragging pans the horizontal frame viewport and the virtualized
+track-list scroll handle, with capture through release and cancellation on Escape
+or project/mode changes. Grid visibility is adaptive and separate from explicit
+clip-edit snap settings.
 
 The editor now has a canonical Arrangement/Session view toggle. Session scenes are
 vertically virtualized; track columns are paged from the measured window width so
@@ -124,19 +142,19 @@ drops do not import. See ../../docs/browser-drag.md for the contract and native
 acceptance notes.
 Browser WAV drops near a painted Arrangement row boundary show a full-width
 track insertion line; blank space below the painted final row and an empty
-Arrangement target an appended track. The cursor waveform and clip-shaped
-landing preview are hidden during track insertion. Only Arrangement body
+Arrangement target an appended track with a locked landing preview. Between-row
+insertion stays line-only. Only Arrangement body
 geometry accepts these targets. Ruler, browser, mixer and outside release remain
 non-targets. The worker receives a stable before-track ID or end anchor plus the
 snapped start; it never receives a guessed row index.
-Opt-in pointer-move snap grids use the canonical map; automatic timeline/track
+Adaptive and fixed pointer-move snap grids use the canonical map; automatic timeline/track
 scrolling remains deferred.
 
-Visible, uncropped clip edges expose compact horizontal trim handles. GPUI drag previews use canonical metadata-only edge-trim previews and dispatch one `TrimClipEdge` command on a valid same-track drop; canceled, stale, no-op and off-track gestures create no edit. Loop waveform summaries include the canonical source phase, so left trims keep displayed peaks aligned with playback.
+Visible, uncropped audio and MIDI clip edges expose 4 px-wide, 6 px-high bottom-corner trim handles; on clips narrower than 8 px each handle uses at most half the clip width. The remaining upper body stays available for moving clips, including at narrow zoom. During an active trim the original clip's painted contents are transparent while its stable hit geometry remains in place, and one in-track preview shows the candidate extents, waveform or bounded MIDI note marks. Default adaptive/fixed/off snap behavior and the platform modifier are resolved again for stationary modifier changes and release. Audio previews use metadata-only canonical trim and commit one `TrimClipEdge`; MIDI previews use `MidiClip::preview_edge_trim` without cloning authored notes and commit one `TrimMidiClipEdge`. Canceled, stale, no-op and off-track gestures create no edit. Loop waveform summaries include canonical source phase, so left audio trims keep displayed peaks aligned with playback. See ../../docs/clip-resizing.md for the detailed contract and native acceptance checklist.
 
 The existing compact mixer strip includes selected-clip fade-in/fade-out controls in 5 ms steps with rounded project-frame increments. Clicks dispatch one canonical `SetClipFades` command and wait for the worker view before changing the readout or envelope. Split clips show a `split` marker while fade values remain on their inherited original span; the tooltip explains that editing reanchors and clamps both fades to the current clip duration. Visible nonneutral envelopes use the canonical model gain law, are clipped to the viewport and current clip segment, and use at most 32 regular samples plus four exact breakpoints.
 
-The arrangement ruler and compact transport controls read the canonical tempo and meter maps. Tempo changes by 1 bpm at the cursor's nearest quarter-note point; the meter control cycles 4/4, 3/4, 6/8 and 5/4 at that same point. Ruler labels follow each visible meter section's denominator-beat and bar landmarks, converted through the canonical tempo map; meter markers retain priority, with spacing and a 64-tick cap. Frame viewport, seeking and playback remain frame-based. Clip-move snapping is opt-in (off, quarter, eighth or sixteenth); pointer preview and drop use the same canonical frame/beat resolver and cancel when snap state or the captured revision/view changes. Keyboard moves and trims remain frame-based.
+The arrangement ruler and compact transport controls read the canonical tempo and meter maps. Tempo changes by 1 bpm at the cursor's nearest quarter-note point; the meter control cycles 4/4, 3/4, 6/8 and 5/4 at that same point. Ruler labels follow each visible meter section's denominator-beat and bar landmarks, converted through the canonical tempo map; meter markers retain priority, with spacing and a 64-tick cap. Frame viewport, seeking and playback remain frame-based. Clip-move snapping defaults to adaptive and also offers fixed quarter, eighth, sixteenth and off modes; Command temporarily toggles snapping for the current drag, including at mouse-up. Preview and drop use the same canonical frame/beat resolver and cancel when the base snap setting or captured revision/view changes. Keyboard moves and trims remain frame-based. This implements the documented grid/modifier subset; edge magnetism and exact Live shortcut parity remain unverified.
 
 The MIDI editor separates canonical command helpers from cached Canvas painting/
 input and pure selection/group geometry. Normal mode uses marker/marquee and
@@ -172,3 +190,26 @@ occurrences per clip, and the Arrangement painter draws at most 128 note shapes
 per track row, showing a sampled-count badge when content is denser. Native sparse
 clip fit/crop and badge checks pass; source-control interaction, minimum-window
 layout and dense-content visual acceptance remain open.
+
+
+## Arrangement clip visuals and edge cursors — 9 October 2026
+
+Audio and MIDI clips fill the full 44 px lane with a 1 px black border and a
+warm coral fill that keeps the black waveform and musical grid legible. Trim
+previews and landing previews use the same row bounds and border. Cached stereo
+signed extrema are painted as two bounded, filled waveform bands at device-pixel
+density (capped at 4,096 columns); each column queries both channels once, and
+deep zoom reads only the session's bounded source window. Looping and trim source
+phase use the canonical clip timeline mapping. Drag ghosts with prepared peaks
+reuse that painter; pending imports show only a neutral marker.
+
+Thin invisible left/right edge targets remain full-height, with the central body
+kept available for clip movement at minimum widths. They request distinct bracket
+cursors. macOS retains two original high-contrast AppKit cursor images for the
+platform lifetime; other platforms use directional resize cursors. Rendered
+GPUI tests verify which edge requests each bracket. Native macOS cursor artwork
+and drag appearance still require the user's click-through review.
+
+Reusable context-menu presentation lives in `src/context_menu.rs`; the editor
+track menu dispatches canonical hybrid insertion commands. See
+[context menus](../../docs/context-menus.md).

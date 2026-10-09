@@ -861,6 +861,50 @@ impl EditorView {
         };
     }
 
+    pub(super) fn zoom_timeline_wheel_at(
+        &mut self,
+        pointer_x: gpui::Pixels,
+        timeline_left: f32,
+        timeline_width: f32,
+        delta_y: f32,
+    ) -> bool {
+        const PIXELS_PER_STEP: f32 = 80.0;
+        const MAX_ACCUMULATED_PIXELS: f32 = PIXELS_PER_STEP * 4.0;
+        if !delta_y.is_finite() || delta_y == 0.0 {
+            return false;
+        }
+        self.zoom_wheel_accum = (self.zoom_wheel_accum + delta_y)
+            .clamp(-MAX_ACCUMULATED_PIXELS, MAX_ACCUMULATED_PIXELS);
+        let steps = (self.zoom_wheel_accum / PIXELS_PER_STEP).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.zoom_wheel_accum -= f32::from(steps) * PIXELS_PER_STEP;
+
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let horizon = state.timeline_frames;
+        let current = self.visible_viewport(horizon);
+        let Some(anchor) = super::seek::pointer_to_frame(
+            f32::from(pointer_x),
+            timeline_left,
+            timeline_width,
+            current,
+        ) else {
+            return false;
+        };
+        let mut next = current;
+        for _ in 0..steps.unsigned_abs() {
+            next = next.zoom_at(horizon, anchor, steps < 0);
+        }
+        if next == current {
+            return false;
+        }
+        self.viewport = (next != Viewport::fit(horizon)).then_some(next);
+        true
+    }
+
     pub(super) fn fit_timeline(&mut self) {
         self.viewport = None;
     }

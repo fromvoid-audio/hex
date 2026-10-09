@@ -77,7 +77,99 @@ pub struct MidiClip {
     pub(crate) length: BeatTime,
     pub(crate) source: Arc<MidiSource>,
 }
+/// Metadata-only edge candidate. Notes, IDs and source/loop bounds are retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiClipTrim {
+    start: BeatTime,
+    length: BeatTime,
+    source_start: BeatTime,
+}
+impl MidiClipTrim {
+    pub fn start(self) -> BeatTime {
+        self.start
+    }
+    pub fn length(self) -> BeatTime {
+        self.length
+    }
+    pub fn source_start(self) -> BeatTime {
+        self.source_start
+    }
+}
+
 impl MidiClip {
+    /// Preview an edge edit in O(1) metadata work without copying authored notes.
+    /// Right extension may expose silence for a one-shot. Left edits preserve the
+    /// exclusive end and advance/rewind the source marker; loop-phase rewinds
+    /// remain in the loop, while an intro can only rewind to source zero.
+    pub fn preview_edge_trim(
+        &self,
+        edge: crate::TrimEdge,
+        beat: BeatTime,
+    ) -> Result<MidiClipTrim, Invalid> {
+        validate_clip(self.start, self.length)?;
+        self.source_playback()?;
+        let start = self.start.raw();
+        let end = start
+            .checked_add(self.length.raw())
+            .ok_or(Invalid("midi timeline end overflow"))?;
+        let source_start = self.source_start().raw();
+        let (new_start, new_end, new_source) = match edge {
+            crate::TrimEdge::Right => (start, beat.raw().clamp(start + 1, u64::MAX), source_start),
+            crate::TrimEdge::Left => {
+                let in_loop = self.looping() && source_start >= self.loop_start().raw();
+                let min_start = if in_loop {
+                    0
+                } else {
+                    start.saturating_sub(source_start)
+                };
+                let max_start = if self.looping() {
+                    end - 1
+                } else {
+                    let remaining = self.source_length().raw() - source_start - 1;
+                    start
+                        .checked_add(remaining.min(self.length.raw() - 1))
+                        .ok_or(Invalid("midi timeline overflow"))?
+                };
+                let new_start = beat.raw().clamp(min_start, max_start);
+                let source = if new_start == start {
+                    source_start
+                } else if in_loop {
+                    let loop_start = self.loop_start().raw();
+                    let period = self.loop_end().raw() - loop_start;
+                    let phase = i128::from(source_start - loop_start) + i128::from(new_start)
+                        - i128::from(start);
+                    loop_start + phase.rem_euclid(i128::from(period)) as u64
+                } else if new_start < start {
+                    source_start - (start - new_start)
+                } else {
+                    let advanced = u128::from(source_start) + u128::from(new_start - start);
+                    if self.looping() && advanced >= u128::from(self.loop_end().raw()) {
+                        let period = self.loop_end().raw() - self.loop_start().raw();
+                        self.loop_start().raw()
+                            + ((advanced - u128::from(self.loop_end().raw())) % u128::from(period))
+                                as u64
+                    } else {
+                        advanced as u64
+                    }
+                };
+                (new_start, end, source)
+            }
+        };
+        let preview = MidiClipTrim {
+            start: BeatTime::from_raw(new_start),
+            length: BeatTime::from_raw(new_end - new_start),
+            source_start: BeatTime::from_raw(new_source),
+        };
+        validate_clip(preview.start, preview.length)?;
+        validate_source(
+            self.source_length(),
+            preview.source_start,
+            self.loop_start(),
+            self.loop_end(),
+            self.looping(),
+        )?;
+        Ok(preview)
+    }
     pub fn id(&self) -> ClipId {
         self.id
     }
@@ -296,6 +388,29 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 }),
             });
             Ok(Created::Clip(id))
+        }
+        Command::TrimMidiClipEdge { clip, edge, beat } => {
+            let original = project
+                .midi_clip(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let preview = original.preview_edge_trim(edge, beat)?;
+            if preview.start == original.start
+                && preview.length == original.length
+                && preview.source_start == original.source_start()
+            {
+                return Ok(Created::None);
+            }
+            let target = project
+                .midi_clips_mut(clip)?
+                .iter_mut()
+                .find(|item| item.id == clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            target.start = preview.start;
+            target.length = preview.length;
+            if target.source_start() != preview.source_start {
+                target.source_start = preview.source_start;
+            }
+            Ok(Created::None)
         }
         Command::SetMidiClipSource {
             clip,

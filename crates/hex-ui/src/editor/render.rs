@@ -7,7 +7,7 @@ use super::{
     ZoomIn, ZoomOut,
 };
 use crate::theme::{self, Palette};
-use gpui::{Context, MouseButton, Window, div, prelude::*, px, rgb};
+use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
@@ -171,6 +171,7 @@ impl Render for EditorView {
             .flex()
             .child(self.browser_view(window, cx))
             .child(workspace_content.flex_1().min_w_0());
+        let modifier_entity = cx.entity();
         div()
             .size_full()
             .relative()
@@ -180,11 +181,47 @@ impl Render for EditorView {
             .text_color(rgb(Palette::TEXT))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
-            .key_context(self.browser_key_context(window, cx))
+            .key_context(if self.context_menu.is_some() {
+                "hex_context_menu"
+            } else {
+                self.browser_key_context(window, cx)
+            })
+            .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
+                if event.button == MouseButton::Left
+                    && let Some(drag) = view.active_trim_drag.clone()
+                {
+                    drag.snap_modifier.set(event.modifiers.platform);
+                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
+                    view.update_trim_preview(&drag, f32::from(event.position.x), cx);
+                }
+                if event.button == MouseButton::Left
+                    && let Some(drag) = view.active_midi_trim_drag.clone()
+                {
+                    drag.snap_modifier.set(event.modifiers.platform);
+                    drag.last_pointer_x.set(Some(f32::from(event.position.x)));
+                    view.update_midi_trim_preview(&drag, f32::from(event.position.x), cx);
+                }
+            }))
+            .on_modifiers_changed(move |event, window, cx| {
+                modifier_entity.update(cx, |view, cx| {
+                    view.refresh_drag_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
+                });
+                window.refresh();
+            })
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| {
                     if view.active_clip_drag.take().is_some() {
+                        cx.notify();
+                    }
+                    if let Some(drag) = view.active_trim_drag.take() {
+                        drag.preview.borrow_mut().take();
+                        cx.notify();
+                    }
+                    if let Some(drag) = view.active_midi_trim_drag.take() {
+                        drag.preview.borrow_mut().take();
                         cx.notify();
                     }
                 }),
@@ -211,6 +248,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.active_clip_drag = None;
+                view.cancel_arrangement_pan();
                 view.stop();
                 cx.notify();
             }))
@@ -223,10 +261,11 @@ impl Render for EditorView {
                     false
                 };
                 let drag_stopped = cx.stop_active_drag(window);
+                let pan_canceled = view.cancel_arrangement_pan();
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled && !selection_cleared && !drag_stopped {
+                if !midi_canceled && !selection_cleared && !drag_stopped && !pan_canceled {
                     view.stop();
                 }
                 cx.notify();
@@ -583,5 +622,6 @@ impl Render for EditorView {
             .child(self.status_bar())
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
+            .children(self.context_menu_overlay(window, cx))
     }
 }

@@ -34,6 +34,7 @@ bundle=artifacts/hex.app/Contents
 mkdir -p "$bundle/MacOS" "$bundle/Resources/licenses"
 cp target/debug/hex-desktop "$bundle/MacOS/hex"
 cp assets/fonts/ioskeley-mono/OFL.txt "$bundle/Resources/licenses/ioskeley-mono-OFL.txt"
+cp third_party/gpui/LICENSE-APACHE "$bundle/Resources/licenses/gpui-LICENSE-APACHE"
 cat > "$bundle/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

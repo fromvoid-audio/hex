@@ -175,6 +175,11 @@ full disks with a useful error and a defined recovery path.
 - **No unsafe workspace code.** `unsafe_code = "forbid"` is configured. Native
   dependencies may implement FFI internally. An unsafe boundary in Hex itself
   requires a separate explicit architecture decision; there is no current exception.
+  The documented external GPUI 0.2.2 input/cursor patch at `third_party/gpui` stays
+  excluded from Hex workspace membership. Its native access remains inside the
+  existing dependency boundary; it does not permit unsafe Hex code. Preserve
+  its license/provenance and narrow delta; see `docs/native-input.md` and run
+  `python3 scripts/check-gpui-patch.py` for dependency/input changes.
 - **Validate input-derived numbers.** Guard indices, offsets, frame/byte counts,
   rates, channels, tempo, gain, NaN/infinity, and zero denominators. Use checked
   arithmetic and bounds-checked access for external values. Cap allocation sizes
@@ -269,6 +274,7 @@ For Rust changes, run the checks that cover the affected behavior:
 
 ```sh
 python3 scripts/check-architecture.py
+python3 scripts/check-gpui-patch.py
 python3 scripts/check-ui-style.py
 cargo fmt --all --check
 cargo test --workspace

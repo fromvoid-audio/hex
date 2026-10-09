@@ -5,6 +5,7 @@ mod browser_input;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod close;
+mod context_menu;
 mod controller;
 mod dialogs;
 mod drag;
@@ -24,6 +25,7 @@ mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
 mod musical_time;
+mod overview;
 mod play_intent;
 mod recovery;
 mod recovery_state;
@@ -56,7 +58,7 @@ use hex_project::{ClipId, Command, SceneId, TrackId};
 use hex_session::service::{Request, Service, ViewState};
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
 use viewport::Viewport;
 
 const MAX_RESIDENT_FRAMES: u64 = 8_000_000;
@@ -389,19 +391,27 @@ pub(super) struct EditorView {
     arrangement_bounds: Option<drag::LaneBounds>,
     arrangement_bounds_epoch: u64,
     drag_layout_generation: u64,
+    arrangement_pan: Option<ArrangementPan>,
+    zoom_wheel_accum: f32,
+    overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
+    active_trim_drag: Option<trim::TrimDrag>,
+    active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
     drag_move_event_count: usize,
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
     #[cfg(test)]
+    last_trim_release_snap: Option<bool>,
+    #[cfg(test)]
     last_enqueued_import_to_track: Option<(std::path::PathBuf, TrackId, u64, bool)>,
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
+    context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
 }
 
 impl EditorView {
@@ -556,19 +566,27 @@ impl EditorView {
             arrangement_bounds: None,
             arrangement_bounds_epoch: 0,
             drag_layout_generation: 0,
+            arrangement_pan: None,
+            zoom_wheel_accum: 0.0,
+            overview_cache: std::cell::RefCell::new(None),
             active_clip_drag: None,
             active_browser_audio_drag: None,
+            active_trim_drag: None,
+            active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
             drag_move_event_count: 0,
             #[cfg(test)]
             last_enqueued_edit: None,
             #[cfg(test)]
+            last_trim_release_snap: None,
+            #[cfg(test)]
             last_enqueued_import_to_track: None,
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
             browser,
+            context_menu: None,
         };
         view.browser_scan_initial(cx);
         view
@@ -729,6 +747,15 @@ impl EditorView {
     pub(super) fn audio_label(&self) -> Option<&str> {
         self.audio.as_ref().map(|audio| audio.label.as_str())
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ArrangementPan {
+    generation: u64,
+    revision: u64,
+    last_x: f32,
+    last_y: f32,
+    timeline_width: f32,
 }
 
 #[cfg(test)]

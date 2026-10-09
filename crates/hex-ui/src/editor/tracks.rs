@@ -1,78 +1,204 @@
 use super::drag::{self, ClipDrag, ClipPosition, LaneBounds};
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
-use super::waveform::{ClipTooltip, button, fade_envelope_samples, waveform_view};
+use super::waveform::{
+    ClipTooltip, button, fade_envelope_samples, waveform_source_segment_view,
+    waveform_summary_view, waveform_view, waveform_view_at,
+};
 use super::{EditorView, ViewState};
 use crate::theme::{self, Palette};
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
 };
-use hex_project::{BeatTime, Clip, MidiClip, Track};
+use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, MidiSourcePlayback, Track};
 
-fn clip_drag_ghost(payload: &ClipDrag, left: f32, top: f32) -> Div {
-    let accent = match payload.position {
-        ClipPosition::Audio { .. } => Palette::CYAN,
-        ClipPosition::Midi { .. } => Palette::CORAL,
-    };
-    let mut bars = div()
-        .absolute()
-        .left(px(4.0))
-        .right(px(4.0))
-        .top(px(9.0))
-        .bottom(px(4.0))
-        .flex()
-        .items_center()
-        .gap(px(1.0));
-    if let Some(waveform) = &payload.ghost_waveform {
-        let count = waveform.bins.len().min(36);
-        for index in 0..count {
-            let bin_index = index * waveform.bins.len() / count.max(1);
-            let amplitude = waveform.bins[bin_index]
-                .iter()
-                .map(|peak| peak.min.abs().max(peak.max.abs()))
-                .fold(0.0_f32, f32::max)
-                .clamp(0.08, 1.0);
-            bars = bars.child(
-                div().flex_1().h_full().flex().items_center().child(
-                    div()
-                        .w_full()
-                        .h(px(amplitude * 18.0))
-                        .bg(rgb(Palette::WAVEFORM)),
-                ),
-            );
-        }
-    } else {
-        bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(accent)));
-    }
-    div()
-        .debug_selector(|| "clip-drag-floating-preview".to_owned())
+struct ClipGhostGeometry {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+struct ClipGhostDecor {
+    selector: &'static str,
+    grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
+    waveform_visual: Option<Div>,
+}
+
+fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
+    let ClipGhostGeometry {
+        left,
+        top,
+        width,
+        height,
+    } = geometry;
+    let ClipGhostDecor {
+        selector,
+        grid,
+        waveform_visual,
+    } = decor;
+    let mut ghost = div()
+        .debug_selector(move || selector.to_owned())
         .absolute()
         .left(px(left))
         .top(px(top))
-        .w(px(164.0))
-        .h(px(32.0))
+        .w(px(width.max(3.0)))
+        .h(px(height.max(3.0)))
         .overflow_hidden()
         .border_1()
-        .border_color(rgb(accent))
-        .bg(rgb(Palette::RAISED))
-        .opacity(0.88)
-        .child(
+        .border_color(rgb(0x000000))
+        .bg(rgb(Palette::CLIP_FILL))
+        .opacity(0.88);
+    if let Some((lines, start, end)) = grid {
+        ghost = ghost.children([clip_grid_layer(&lines, start, end)]);
+    }
+    if let Some(waveform) = waveform_visual {
+        ghost = ghost.children([waveform]);
+    } else if let Some(waveform) = &payload.ghost_waveform {
+        ghost = ghost.children([waveform_summary_view(std::sync::Arc::clone(waveform))]);
+    } else {
+        ghost = ghost.child(
             div()
                 .absolute()
+                .top(relative(0.5))
                 .left(px(4.0))
-                .top_0()
-                .right(px(3.0))
-                .h(px(10.0))
-                .text_xs()
-                .text_color(rgb(Palette::TEXT))
-                .line_clamp(1)
-                .child(theme::text(payload.ghost_label.clone())),
-        )
-        .child(bars)
+                .right(px(4.0))
+                .h(px(1.0))
+                .bg(rgb(Palette::CLIP_TEXT)),
+        );
+    }
+    ghost.child(
+        div()
+            .absolute()
+            .left(px(4.0))
+            .top_0()
+            .right(px(3.0))
+            .h(px(10.0))
+            .text_xs()
+            .text_color(rgb(Palette::CLIP_TEXT))
+            .line_clamp(1)
+            .child(theme::text(payload.ghost_label.clone())),
+    )
+}
+
+fn midi_trim_note_shapes(
+    project: &hex_project::Project,
+    clip: &MidiClip,
+    trim: MidiClipTrim,
+    visible_start: u64,
+    visible_end: u64,
+) -> Vec<(f32, f32, u8)> {
+    let playback = MidiSourcePlayback::new(
+        clip.source_length(),
+        trim.source_start(),
+        clip.looping()
+            .then_some((clip.loop_start(), clip.loop_end())),
+        trim.length(),
+    );
+    let Ok(playback) = playback else {
+        return Vec::new();
+    };
+    let plans: Vec<_> = clip
+        .notes()
+        .iter()
+        .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+        .filter_map(|note| {
+            playback
+                .note_occurrences(note.start(), note.duration())
+                .ok()
+                .map(|plan| (note.pitch(), plan))
+        })
+        .collect();
+    let mut shapes = Vec::with_capacity(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP);
+    for ordinal in 0..hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP {
+        for (pitch, plan) in &plans {
+            let Some(occurrence) = plan.iter().nth(ordinal) else {
+                continue;
+            };
+            let Some(start_raw) = trim
+                .start()
+                .raw()
+                .checked_add(occurrence.timeline_start().raw())
+            else {
+                continue;
+            };
+            let Some(end_raw) = start_raw.checked_add(occurrence.gate_duration().raw()) else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (
+                project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(start_raw)),
+                project
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_raw(end_raw)),
+            ) else {
+                continue;
+            };
+            if let Some(shape) =
+                super::midi_thumbnail::note_shape(start, end, *pitch, visible_start, visible_end)
+            {
+                shapes.push(shape);
+                if shapes.len() >= hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP {
+                    return shapes;
+                }
+            }
+        }
+    }
+    shapes
 }
 
 const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
+
+pub(super) fn clip_grid_layer(
+    lines: &[super::musical_time::GridLine],
+    start: u64,
+    end: u64,
+) -> Div {
+    if start >= end {
+        return div().absolute().inset_0();
+    }
+    let width = end - start;
+    let children = lines
+        .iter()
+        .filter_map(|line| {
+            let offset = line.frame.checked_sub(start)?;
+            if offset == 0 || offset >= width {
+                return None;
+            }
+            Some(
+                div()
+                    .debug_selector(|| format!("clip-grid-line-{}", line.frame))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative((offset as f64 / width as f64) as f32))
+                    .w(px(if line.meter_marker { 1.5 } else { 1.0 }))
+                    .bg(rgb(if line.meter_marker {
+                        Palette::CORAL
+                    } else {
+                        Palette::GRID
+                    }))
+                    .opacity(if line.meter_marker || line.bar_start {
+                        0.42
+                    } else {
+                        0.24
+                    }),
+            )
+        })
+        .collect::<Vec<_>>();
+    div()
+        .debug_selector(|| "clip-musical-grid".to_owned())
+        .absolute()
+        .inset_0()
+        .children(children)
+}
+
+struct ClipViewTimeline<'a> {
+    viewport: Viewport,
+    grid: &'a [super::musical_time::GridLine],
+}
 
 impl EditorView {
     pub(super) fn track_row(
@@ -81,6 +207,7 @@ impl EditorView {
         track: &Track,
         selected: bool,
         viewport: Viewport,
+        grid: &[super::musical_time::GridLine],
         cx: &mut Context<Self>,
     ) -> Div {
         let track_id = track.id();
@@ -96,7 +223,6 @@ impl EditorView {
             .h(px(TRACK_ROW_HEIGHT))
             .overflow_hidden()
             .border_r_1()
-            .border_b_1()
             .border_color(rgb(Palette::BORDER));
         for clip in track.clips() {
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -106,8 +232,14 @@ impl EditorView {
                 continue;
             }
             let selected_clip = self.selected_clip() == Some(clip.id());
-            clip_area =
-                clip_area.child(self.clip_view(state, track_id, clip, selected_clip, viewport, cx));
+            clip_area = clip_area.child(self.clip_view(
+                state,
+                track_id,
+                clip,
+                selected_clip,
+                ClipViewTimeline { viewport, grid },
+                cx,
+            ));
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
@@ -131,6 +263,32 @@ impl EditorView {
             let midi_clip_id = clip.id();
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
+            let trim_preview = self
+                .active_midi_trim_drag
+                .as_ref()
+                .filter(|drag| {
+                    drag.source_track == track_id
+                        && drag.clip.id() == clip.id()
+                        && self.midi_trim_drag_current(drag)
+                })
+                .and_then(|drag| *drag.preview.borrow());
+            let pixel_width = self
+                .drag_lanes
+                .get(&track_id)
+                .map(|lane| super::trim::rendered_clip_width(lane.width, width, 4.0))
+                .unwrap_or(0.0);
+            let trim_handles = self.midi_trim_handles(
+                state,
+                track_id,
+                clip,
+                start,
+                end,
+                visible_start,
+                visible_end,
+                pixel_width,
+                viewport,
+                cx,
+            );
             let midi_drag_payload =
                 self.midi_drag_payload(state, track_id, clip, start, end, viewport);
             let note_shapes = preview
@@ -153,30 +311,34 @@ impl EditorView {
             );
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
+                .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
                 .absolute()
-                .top(px(4.0))
-                .bottom(px(4.0))
+                .top_0()
+                .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .min_w(px(4.0))
                 .overflow_hidden()
                 .cursor_pointer()
-                .opacity(if selected_clip { 0.92 } else { 0.68 })
+                .opacity(if trim_preview.is_some() {
+                    0.0
+                } else if selected_clip {
+                    0.92
+                } else {
+                    0.68
+                })
                 .bg(rgb(if selected_clip {
-                    Palette::CORAL_DARK
+                    Palette::CLIP_SELECTED
                 } else {
-                    Palette::CLIP
+                    Palette::CLIP_FILL
                 }))
-                .border_l_2()
-                .border_color(rgb(if selected_clip {
-                    Palette::CORAL
-                } else {
-                    Palette::CYAN
-                }))
+                .border_1()
+                .border_color(rgb(0x000000))
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.set_selected_clip(track_id, midi_clip_id);
                     cx.notify();
                 }));
+            midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
             midi = midi.tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: description.clone(),
@@ -212,19 +374,136 @@ impl EditorView {
                 );
             }
             if let Some((payload, lane)) = midi_drag_payload {
-                midi = midi.children([self.clip_drag_surface(
-                    payload,
-                    lane,
-                    visible_start,
-                    visible_end,
-                    start,
-                    Some(clip.start()),
-                    viewport,
-                    clip.id(),
-                    cx,
-                )]);
+                let move_surface = self
+                    .clip_drag_surface(
+                        payload,
+                        lane,
+                        visible_start,
+                        visible_end,
+                        start,
+                        Some(clip.start()),
+                        viewport,
+                        clip.id(),
+                        cx,
+                    )
+                    .left(px(if !trim_handles.is_empty() && visible_start == start {
+                        super::trim::handle_width(pixel_width)
+                    } else {
+                        0.0
+                    }))
+                    .right(px(if !trim_handles.is_empty() && visible_end == end {
+                        super::trim::handle_width(pixel_width)
+                    } else {
+                        0.0
+                    }));
+                midi = midi.children([move_surface]).children(trim_handles);
             }
             clip_area = clip_area.children([midi]);
+        }
+        let live_midi_trim_preview = self
+            .active_midi_trim_drag
+            .as_ref()
+            .filter(|drag| drag.source_track == track_id && self.midi_trim_drag_current(drag))
+            .and_then(|drag| {
+                (*drag.preview.borrow()).map(|preview| (std::rc::Rc::clone(&drag.clip), preview))
+            });
+        if let Some((clip, preview)) = live_midi_trim_preview {
+            let start_beat = preview.start();
+            if let Some(end_beat) = start_beat
+                .raw()
+                .checked_add(preview.length().raw())
+                .map(BeatTime::from_raw)
+                && let (Ok(start), Ok(end)) = (
+                    state.project.tempo_map().beat_to_frame(start_beat),
+                    state.project.tempo_map().beat_to_frame(end_beat),
+                )
+            {
+                let visible_start = start.max(viewport.start);
+                let visible_end = end.min(viewport_end);
+                if visible_start < visible_end {
+                    let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
+                    let width = (visible_end - visible_start) as f64 / viewport.length as f64;
+                    let mut overlay = div()
+                        .id(("midi-trim-live-preview", track_id.value()))
+                        .debug_selector(|| "midi-trim-live-preview".to_owned())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(left as f32))
+                        .w(relative(width as f32))
+                        .min_w(px(4.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(rgb(0x000000))
+                        .bg(rgb(Palette::CLIP_FILL))
+                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                    let shapes = midi_trim_note_shapes(
+                        &state.project,
+                        &clip,
+                        preview,
+                        visible_start,
+                        visible_end,
+                    );
+                    for (x, shape_width, pitch) in shapes {
+                        let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
+                        overlay = overlay.child(
+                            div()
+                                .debug_selector(|| format!("midi-trim-preview-note-{pitch}"))
+                                .absolute()
+                                .left(relative(x))
+                                .top(relative(top))
+                                .w(relative(shape_width))
+                                .h(px(2.0))
+                                .bg(rgb(Palette::CYAN)),
+                        );
+                    }
+                    clip_area = clip_area.children([overlay]);
+                }
+            }
+        }
+        let live_trim_preview = self
+            .active_trim_drag
+            .as_ref()
+            .filter(|drag| drag.source_track == track_id && self.trim_drag_current(drag))
+            .and_then(|drag| {
+                drag.preview
+                    .borrow()
+                    .as_ref()
+                    .map(|preview| (drag.clip.asset(), preview.clip.clone()))
+            });
+        if let Some((asset, preview_clip)) = live_trim_preview {
+            let preview_start = preview_clip.start();
+            if let Some(preview_end) = preview_start.checked_add(preview_clip.duration()) {
+                let visible_start = preview_start.max(viewport.start);
+                let visible_end = preview_end.min(viewport_end);
+                if visible_start < visible_end {
+                    let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
+                    let width = (visible_end - visible_start) as f64 / viewport.length as f64;
+                    let mut preview = div()
+                        .id(("trim-live-preview", track_id.value()))
+                        .debug_selector(|| "trim-live-preview".to_owned())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(left as f32))
+                        .w(relative(width as f32))
+                        .min_w(px(3.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(rgb(0x000000))
+                        .bg(rgb(Palette::CLIP_FILL))
+                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                    if let Some(waveform) = state.waveforms.get(&asset) {
+                        preview = preview.child(waveform_view(
+                            waveform,
+                            &preview_clip,
+                            visible_start,
+                            visible_end,
+                        ));
+                    }
+                    clip_area = clip_area.children([preview]);
+                }
+            }
         }
         let clip_preview = self
             .active_clip_drag
@@ -244,21 +523,54 @@ impl EditorView {
             if visible_start < visible_end {
                 let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                 let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                clip_area = clip_area.child(
-                    div()
-                        .id(("clip-drop-preview", track_id.value()))
-                        .debug_selector(|| "clip-drop-preview".to_owned())
-                        .absolute()
-                        .top(px(3.0))
-                        .bottom(px(3.0))
-                        .left(relative(left as f32))
-                        .w(relative(width as f32))
-                        .min_w(px(3.0))
-                        .border_1()
-                        .border_color(rgb(Palette::CYAN))
-                        .bg(rgb(Palette::CYAN))
-                        .opacity(0.28),
-                );
+                let mut drop_preview = div()
+                    .id(("clip-drop-preview", track_id.value()))
+                    .debug_selector(|| "clip-drop-preview".to_owned())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(left as f32))
+                    .w(relative(width as f32))
+                    .min_w(px(3.0))
+                    .border_1()
+                    .border_color(rgb(0x000000))
+                    .bg(rgb(Palette::CLIP_FILL))
+                    .opacity(0.88)
+                    .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                if let ClipPosition::Audio { .. } = preview.position
+                    && let Some(drag) = self
+                        .active_clip_drag
+                        .as_ref()
+                        .filter(|drag| self.drag_start_is_current(drag))
+                    && let Some(source_clip) = state.project.clip(drag.clip)
+                    && let Some(waveform) = state.waveforms.get(&source_clip.asset())
+                {
+                    drop_preview = drop_preview.children([waveform_view_at(
+                        waveform,
+                        source_clip,
+                        preview.start_frame,
+                        visible_start,
+                        visible_end,
+                    )]);
+                } else if let Some(drag) = self
+                    .active_browser_audio_drag
+                    .as_ref()
+                    .filter(|drag| self.browser_audio_drag_is_current(drag))
+                    && let Some(waveform) = drag
+                        .metadata
+                        .borrow()
+                        .as_ref()
+                        .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                        .map(|metadata| std::sync::Arc::clone(&metadata.waveform))
+                {
+                    drop_preview = drop_preview.children([waveform_source_segment_view(
+                        waveform,
+                        preview.start_frame,
+                        visible_start,
+                        visible_end,
+                    )]);
+                }
+                clip_area = clip_area.children([drop_preview]);
             }
         } else if let Some((pending_track, start)) = self
             .active_browser_audio_drag
@@ -288,6 +600,16 @@ impl EditorView {
                 );
             }
         }
+        clip_area = clip_area.child(
+            div()
+                .debug_selector(|| format!("lane-separator-{}", track_id.value()))
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.0))
+                .bg(rgb(Palette::BORDER)),
+        );
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
             |_, _, _| (),
@@ -331,7 +653,12 @@ impl EditorView {
             })
             .on_drop(cx.listener(move |view, drag: &TrimDrag, window, cx| {
                 view.drop_trim(drag, track_id, window, cx);
-            }));
+            }))
+            .on_drop(
+                cx.listener(move |view, drag: &super::trim::MidiTrimDrag, _, cx| {
+                    view.drop_midi_trim(drag, track_id, cx);
+                }),
+            );
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
@@ -446,9 +773,15 @@ impl EditorView {
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
             .flex()
-            .bg(rgb(Palette::BACKGROUND))
             .child(clip_area)
             .child(header)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_track_context_menu(event.position, Some(track_id), window, cx);
+                }),
+            )
     }
 
     fn clip_view(
@@ -457,11 +790,27 @@ impl EditorView {
         track: hex_project::TrackId,
         clip: &Clip,
         selected: bool,
-        viewport: Viewport,
+        timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
+        let ClipViewTimeline { viewport, grid } = timeline;
         let clip_id = clip.id();
         let clip_duration = clip.duration();
+        let trim_preview_clip = self
+            .active_trim_drag
+            .as_ref()
+            .filter(|drag| {
+                drag.source_track == track
+                    && drag.clip.id() == clip_id
+                    && self.trim_drag_current(drag)
+            })
+            .and_then(|drag| {
+                drag.preview
+                    .borrow()
+                    .as_ref()
+                    .map(|preview| preview.clip.clone())
+            });
+        let active_trim_preview = trim_preview_clip.is_some();
         let Some(viewport_end) = viewport.end() else {
             return div().id(("clip", clip_id.value()));
         };
@@ -476,7 +825,6 @@ impl EditorView {
         let visible_frames = visible_end - visible_start;
         let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
         let width = visible_frames as f64 / viewport.length as f64;
-        let clipped_left = visible_start > clip.start();
         let drag_payload = self
             .drag_available()
             .then(|| self.drag_lanes.get(&track).copied())
@@ -497,6 +845,7 @@ impl EditorView {
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
                         snap_grid: self.snap_grid,
+                        snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                         preview: std::rc::Rc::new(std::cell::Cell::new(None)),
                         destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                         insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -511,31 +860,26 @@ impl EditorView {
         let waveform = state.waveforms.get(&clip.asset());
         let mut content = div()
             .absolute()
-            .top(px(4.0))
-            .bottom(px(4.0))
+            .top_0()
+            .bottom_0()
             .left(relative(left as f32))
             .w(relative(width as f32))
             .min_w(px(3.0))
             .overflow_hidden()
             .cursor_pointer()
+            .opacity(if active_trim_preview { 0.0 } else { 1.0 })
             .bg(rgb(if selected {
-                Palette::CORAL_DARK
+                Palette::CLIP_SELECTED
             } else {
-                Palette::CLIP
+                Palette::CLIP_FILL
             }))
-            .hover(|style| style.bg(rgb(Palette::HOVER)));
-        if !clipped_left {
-            content = content.border_l_2().border_color(rgb(if selected {
-                Palette::CORAL
-            } else {
-                Palette::CYAN
-            }));
-        }
+            .hover(|style| style.bg(rgb(Palette::CLIP_HOVER)));
+        content = content.border_1().border_color(rgb(0x000000));
+        content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
         match waveform {
-            Some(waveform) if width >= 0.035 => {
+            Some(waveform) => {
                 content = content.child(waveform_view(waveform, clip, visible_start, visible_end));
             }
-            Some(_) => {}
             None => {
                 content = content.child(
                     div()
@@ -588,7 +932,7 @@ impl EditorView {
         let clip_pixel_width = self
             .drag_lanes
             .get(&track)
-            .map(|lane| lane.width * width as f32)
+            .map(|lane| super::trim::rendered_clip_width(lane.width, width, 3.0))
             .unwrap_or(0.0);
         let trim_handles = self.trim_handles(
             state,
@@ -602,6 +946,7 @@ impl EditorView {
         );
         let mut content = content
             .id(("clip", clip_id.value()))
+            .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: format!("clip {} · {} frames", clip_id.value(), clip_duration),
@@ -613,11 +958,6 @@ impl EditorView {
                 cx.notify();
             }));
         if let Some((payload, lane)) = drag_payload {
-            let has_left_handle = clip_pixel_width >= 20.0 && visible_start == clip.start();
-            let has_right_handle = clip_pixel_width >= 20.0
-                && clip.start().checked_add(clip.duration()) == Some(visible_end);
-            let left_inset = if has_left_handle { 8.0 } else { 0.0 };
-            let right_inset = if has_right_handle { 8.0 } else { 0.0 };
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -630,8 +970,20 @@ impl EditorView {
                     clip_id,
                     cx,
                 )
-                .left(px(left_inset))
-                .right(px(right_inset));
+                // Full-height edge strips reserve only a narrow horizontal inset;
+                // the central body remains the move target at every zoom.
+                .left(px(
+                    if !trim_handles.is_empty() && visible_start == clip.start() {
+                        super::trim::handle_width(clip_pixel_width)
+                    } else {
+                        0.0
+                    },
+                ))
+                .right(px(if !trim_handles.is_empty() && visible_end == clip_end {
+                    super::trim::handle_width(clip_pixel_width)
+                } else {
+                    0.0
+                }));
             content = content.children([move_surface]).children(trim_handles);
         }
         content
@@ -649,6 +1001,82 @@ impl EditorView {
             .active_clip_drag
             .as_ref()
             .filter(|drag| self.drag_start_is_current(drag))?;
+        if let Some(drag::ClipDropDestination::NewTrack {
+            before_track: None,
+            position,
+        }) = payload.destination.get()
+        {
+            let state = self.state.as_ref()?;
+            let body = self.arrangement_bounds?;
+            let viewport = self.visible_viewport(state.timeline_frames);
+            let preview = drag::preview_for(&state.project, payload.source_track, position)?;
+            let visible_start = preview.start_frame.max(viewport.start);
+            let visible_end = preview.end_frame.min(viewport.end()?);
+            if visible_start >= visible_end {
+                return None;
+            }
+            let timeline_width = body.width - TRACK_HEADER_WIDTH;
+            if !timeline_width.is_finite() || timeline_width <= 0.0 {
+                return None;
+            }
+            let left = body.left
+                + ((visible_start - viewport.start) as f64 / viewport.length as f64
+                    * f64::from(timeline_width)) as f32;
+            let width = (visible_end - visible_start) as f64 / viewport.length as f64
+                * f64::from(timeline_width);
+            let top = if state.project.tracks().is_empty() {
+                body.top
+            } else {
+                payload
+                    .insertion_line_y
+                    .get()
+                    .unwrap_or(body.top)
+                    .max(body.top)
+                    + 1.0
+            };
+            let height = (body.top + body.height - top).clamp(0.0, 44.0);
+            if height <= 0.0 {
+                return None;
+            }
+            return Some(clip_drag_ghost(
+                payload,
+                ClipGhostGeometry {
+                    left,
+                    top,
+                    width: width as f32,
+                    height,
+                },
+                ClipGhostDecor {
+                    selector: "clip-drag-append-preview",
+                    grid: Some((
+                        super::musical_time::grid_lines(
+                            &state.project,
+                            viewport,
+                            timeline_width,
+                            self.snap_grid,
+                        ),
+                        visible_start,
+                        visible_end,
+                    )),
+                    waveform_visual: match payload.position {
+                        ClipPosition::Audio { .. } => {
+                            state.project.clip(payload.clip).and_then(|clip| {
+                                state.waveforms.get(&clip.asset()).map(|waveform| {
+                                    waveform_view_at(
+                                        waveform,
+                                        clip,
+                                        preview.start_frame,
+                                        visible_start,
+                                        visible_end,
+                                    )
+                                })
+                            })
+                        }
+                        ClipPosition::Midi { .. } => None,
+                    },
+                },
+            ));
+        }
         if payload.lane_hovered.get() {
             return Some(
                 div()
@@ -661,7 +1089,20 @@ impl EditorView {
             );
         }
         let (pointer_x, pointer_y) = payload.last_pointer.get()?;
-        Some(clip_drag_ghost(payload, pointer_x + 12.0, pointer_y + 12.0))
+        Some(clip_drag_ghost(
+            payload,
+            ClipGhostGeometry {
+                left: pointer_x + 12.0,
+                top: pointer_y + 12.0,
+                width: 164.0,
+                height: 32.0,
+            },
+            ClipGhostDecor {
+                selector: "clip-drag-floating-preview",
+                grid: None,
+                waveform_visual: None,
+            },
+        ))
     }
 
     fn midi_drag_payload(
@@ -692,6 +1133,7 @@ impl EditorView {
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
                 snap_grid: self.snap_grid,
+                snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                 preview: std::rc::Rc::new(std::cell::Cell::new(None)),
                 destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                 insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -733,7 +1175,10 @@ impl EditorView {
             .id(("clip-move", clip_id.value()))
             .debug_selector(|| format!("clip-drag-surface-{}", clip_id.value()))
             .absolute()
-            .inset_0()
+            .top(px(-1.0))
+            .left_0()
+            .right_0()
+            .bottom(px(-1.0))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
@@ -806,6 +1251,7 @@ impl EditorView {
                     _ => None,
                 };
                 payload.grab_offset.set(offset);
+                payload.snap_modifier.set(window.modifiers().platform);
                 let pointer = window.mouse_position();
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
@@ -829,6 +1275,7 @@ impl EditorView {
                 let pointer = event.event.position;
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
+                payload.snap_modifier.set(event.event.modifiers.platform);
                 let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
                     view.clip_drag_drop_position(payload, pointer.0, pointer.1)
                 });

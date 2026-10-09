@@ -210,3 +210,54 @@ user-selected browser-drag update restores a floating cursor preview outside
 lanes; inside lanes, only the locked landing preview is shown. Keep
 source kinds in their canonical frame/beat units. See clip-drag.md for the
 interaction contract and remaining native user checks.
+
+
+## arrangement grid and navigation
+
+The adaptive grid is a subtle continuous timeline background, excluding track
+headers and aligned to musical ruler positions. Stronger bar/meter boundaries
+provide context; subdivisions should remain legible without competing with
+clips and waveforms. Keep zoom/navigation directly on the timeline rather than
+adding large controls or extra panels. See `arrangement-navigation.md`.
+
+
+The Arrangement overview now fits all tracks and audio/MIDI clips above the
+ruler, with cached compact drawing, viewport outline and click navigation.
+See [arrangement-overview.md](arrangement-overview.md). Command preserves grid visibility; alternating
+four-unit bands and the native input repair are in this review milestone.
+Native visual and physical-input acceptance remain pending.
+
+
+## minimal append feedback — 9 October 2026
+
+The user superseded empty-area background highlighting after accepting clip
+snapping. Remove the full-area tint for browser samples and existing audio/MIDI
+clips. Retain the bottom line of the last track and the snapped clip preview.
+With no tracks, show only the prospective clip preview; there is no last-track
+line. Preserve grid shading, snapping and drop destinations. Native review
+remains the user's responsibility.
+
+
+Audio and MIDI Arrangement clips now use compact bottom-corner resize targets
+while retaining the upper clip body for movement. Resizing paints the proposed
+clip and waveform/note geometry immediately, uses the selected grid and allows
+Command free movement. One canonical edit is submitted at release. See
+[clip-resizing.md](clip-resizing.md); native acceptance remains pending.
+
+
+## invisible full-height clip edges — 9 October 2026
+
+The user superseded bottom-corner resize handles. Audio and MIDI clips now use
+invisible full-height left/right edge strips with the native horizontal resize
+cursor. Remove orange rectangles; derive narrow hit widths from rendered clip
+width while preserving a central full-height move region. Live previews, grid
+snapping, Command override and canonical release semantics remain unchanged.
+Native top/middle/bottom edge hover and resizing acceptance remains pending.
+
+
+The latest Arrangement style follows the supplied Live screenshot: flush
+full-track clip height, a one-pixel black border, warm fills with dark signed
+channel waveforms, and aligned grid lines through the clip. macOS resize edges
+use original bracket cursors retained by the existing external GPUI boundary.
+Waveform cache/query fidelity and open native timing checks are recorded in
+[waveform-display.md](waveform-display.md).

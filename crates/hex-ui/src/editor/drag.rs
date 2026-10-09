@@ -1,4 +1,5 @@
 use super::musical_time::SnapGrid;
+use super::viewport::Viewport;
 use gpui::{Context, Window};
 use hex_project::Command;
 use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
@@ -19,6 +20,7 @@ pub(super) struct ClipDrag {
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
+    pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) preview: Rc<Cell<Option<DropPreview>>>,
     pub(super) destination: Rc<Cell<Option<ClipDropDestination>>>,
     pub(super) insertion_line_y: Rc<Cell<Option<f32>>>,
@@ -40,6 +42,7 @@ pub(super) struct BrowserAudioDrag {
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) snap_grid: SnapGrid,
+    pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) metadata: Rc<std::cell::RefCell<Option<Rc<AudioPreview>>>>,
     pub(super) metadata_error: Rc<std::cell::RefCell<Option<String>>>,
     pub(super) preview: Rc<Cell<Option<DropPreview>>>,
@@ -217,7 +220,18 @@ fn candidate_position(
                 drag.viewport_length,
                 drag.grab_offset.get()?,
             )?;
-            let start = drag.snap_grid.snap_frame(project, pointer_frame)?;
+            let start = drag
+                .snap_grid
+                .with_platform_modifier(drag.snap_modifier.get())
+                .snap_frame(
+                    project,
+                    pointer_frame,
+                    Viewport {
+                        start: drag.viewport_start,
+                        length: drag.viewport_length,
+                    },
+                    lane.width,
+                )?;
             start.checked_add(duration)?;
             Some(ClipPosition::Audio { start, duration })
         }
@@ -240,7 +254,18 @@ fn candidate_position(
             let pointer_beat = project.tempo_map().frame_to_beat(pointer_frame).ok()?;
             let offset = drag.grab_offset.get()?;
             let start = BeatTime::from_raw(pointer_beat.raw().saturating_sub(offset));
-            let start = drag.snap_grid.snap_beat(project, start)?;
+            let start = drag
+                .snap_grid
+                .with_platform_modifier(drag.snap_modifier.get())
+                .snap_beat(
+                    project,
+                    start,
+                    Viewport {
+                        start: drag.viewport_start,
+                        length: drag.viewport_length,
+                    },
+                    lane.width,
+                )?;
             let end = start.raw().checked_add(length.raw())?;
             project.tempo_map().beat_to_frame(start).ok()?;
             project
@@ -257,6 +282,7 @@ pub(super) struct BrowserDropCandidate<'a> {
     pub viewport_start: u64,
     pub viewport_length: u64,
     pub snap_grid: SnapGrid,
+    pub snap_modifier: bool,
     pub pointer_x: f32,
     pub lane: LaneBounds,
     pub duration: u64,
@@ -268,7 +294,9 @@ pub(super) fn browser_candidate(candidate: BrowserDropCandidate<'_>) -> Option<D
         candidate.project,
         candidate.viewport_start,
         candidate.viewport_length,
-        candidate.snap_grid,
+        candidate
+            .snap_grid
+            .with_platform_modifier(candidate.snap_modifier),
         candidate.pointer_x,
         candidate.lane,
     )?;
@@ -291,7 +319,15 @@ pub(super) fn browser_start(
     lane: LaneBounds,
 ) -> Option<u64> {
     let pointer_frame = drop_start(pointer_x, lane, viewport_start, viewport_length, 0)?;
-    snap_grid.snap_frame(project, pointer_frame)
+    snap_grid.snap_frame(
+        project,
+        pointer_frame,
+        Viewport {
+            start: viewport_start,
+            length: viewport_length,
+        },
+        lane.width,
+    )
 }
 
 pub(super) fn preview_for(
@@ -512,7 +548,7 @@ impl super::EditorView {
                 position,
             }));
             drag.insertion_line_y.set(Some(line_y));
-            return (None, before_track.is_some());
+            return (None, true);
         }
         if let Some((track, lane)) = self.hovered_drag_target(pointer_x, pointer_y) {
             let preview = self.drag_candidate(drag, track, pointer_x, lane);
@@ -567,6 +603,7 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        drag.snap_modifier.set(window.modifiers().platform);
         let owns_gesture = self.active_clip_drag.as_ref().is_some_and(|active| {
             active.project_generation == drag.project_generation
                 && active.clip == drag.clip
@@ -719,7 +756,8 @@ impl super::EditorView {
                 &state.project,
                 drag.viewport_start,
                 drag.viewport_length,
-                drag.snap_grid,
+                drag.snap_grid
+                    .with_platform_modifier(drag.snap_modifier.get()),
                 pointer_x,
                 timeline,
             ) else {
@@ -732,14 +770,15 @@ impl super::EditorView {
                 start,
             }));
             drag.insertion_line_y.set(Some(line_y));
-            return (None, before_track.is_some());
+            return (None, true);
         }
         if let Some((target, lane)) = self.hovered_drag_target(pointer_x, pointer_y) {
             let Some(start) = browser_start(
                 &state.project,
                 drag.viewport_start,
                 drag.viewport_length,
-                drag.snap_grid,
+                drag.snap_grid
+                    .with_platform_modifier(drag.snap_modifier.get()),
                 pointer_x,
                 lane,
             ) else {
@@ -764,6 +803,7 @@ impl super::EditorView {
                         viewport_start: drag.viewport_start,
                         viewport_length: drag.viewport_length,
                         snap_grid: drag.snap_grid,
+                        snap_modifier: drag.snap_modifier.get(),
                         pointer_x,
                         lane,
                         duration: metadata.playback_frames,
@@ -817,6 +857,7 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        drag.snap_modifier.set(window.modifiers().platform);
         let current = self.browser_audio_drag_is_current(drag);
         let (preview, lane_hovered) = self.browser_audio_drop_position(
             drag,
@@ -888,6 +929,7 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        drag.snap_modifier.set(window.modifiers().platform);
         let clear = |view: &mut Self| view.clear_clip_drag(drag.project_generation, drag.clip);
         if self.opening_project || self.close_prompt_open {
             clear(self);
@@ -960,6 +1002,29 @@ impl super::EditorView {
         clear(self);
         self.enqueue(Request::Edit(command));
         cx.notify();
+    }
+}
+
+impl super::EditorView {
+    pub(super) fn refresh_drag_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
+        if let Some(drag) = self.active_clip_drag.clone()
+            && drag.snap_modifier.replace(held) != held
+            && let Some((x, y)) = drag.last_pointer.get()
+        {
+            let (preview, lane_hovered) = self.clip_drag_drop_position(&drag, x, y);
+            drag.preview.set(preview);
+            drag.lane_hovered.set(lane_hovered);
+            cx.notify();
+        }
+        if let Some(drag) = self.active_browser_audio_drag.clone()
+            && drag.snap_modifier.replace(held) != held
+            && let Some((x, y)) = drag.last_pointer.get()
+        {
+            let (preview, lane_hovered) = self.browser_audio_drop_position(&drag, x, y);
+            drag.preview.set(preview);
+            drag.lane_hovered.set(lane_hovered);
+            cx.notify();
+        }
     }
 }
 
@@ -1070,6 +1135,7 @@ mod tests {
             viewport_start: 0,
             viewport_length: 1_000,
             snap_grid: SnapGrid::Off,
+            snap_modifier: Rc::new(Cell::new(false)),
             preview: Rc::new(Cell::new(None)),
             destination: Rc::new(Cell::new(None)),
             insertion_line_y: Rc::new(Cell::new(None)),
@@ -1095,6 +1161,7 @@ mod tests {
             viewport_start: 0,
             viewport_length: 288_000,
             snap_grid: SnapGrid::Quarter,
+            snap_modifier: Rc::new(Cell::new(false)),
             preview: Rc::new(Cell::new(None)),
             destination: Rc::new(Cell::new(None)),
             insertion_line_y: Rc::new(Cell::new(None)),

@@ -1338,6 +1338,66 @@ mod service_tests {
     }
 
     #[test]
+    fn midi_edge_resize_compiles_before_commit_and_undo_restores_source_marker() {
+        let service = Service::new(48_000, 8, 0).expect("service");
+        let _initial = next_event(&service);
+        let beat = |n| hex_project::BeatTime::from_quarters(n).expect("small beat");
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "keys".into(),
+            }))
+            .expect("track");
+        let added = next_event(&service);
+        let track = added.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: beat(4),
+                length: beat(8),
+            }))
+            .expect("clip");
+        let placed = next_event(&service);
+        let clip = placed.state.project.tracks()[0].midi_clips()[0].id();
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: beat(4),
+                duration: beat(1),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }))
+            .expect("note");
+        let before = next_event(&service);
+        let original = before.state.project.midi_clip(clip).expect("clip").clone();
+        service
+            .submit(Request::Edit(Command::TrimMidiClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                beat: beat(7),
+            }))
+            .expect("resize");
+        let resized = next_event(&service);
+        assert!(resized.error.is_none());
+        assert!(resized.state.revision > before.state.revision);
+        assert!(
+            resized
+                .playback
+                .as_ref()
+                .and_then(Playback::prepared_revision)
+                .is_some()
+        );
+        let result = resized.state.project.midi_clip(clip).expect("clip");
+        assert_eq!(result.start(), beat(7));
+        assert_eq!(result.source_start(), beat(3));
+        assert_eq!(result.notes(), original.notes());
+        service.submit(Request::Undo).expect("undo");
+        let undone = next_event(&service);
+        assert!(undone.error.is_none());
+        assert_eq!(undone.state.project.midi_clip(clip), Some(&original));
+    }
+
+    #[test]
     fn rejected_loop_expansion_preserves_committed_graph_revision_dirty_state_and_redo() {
         let service = Service::new(48_000, 8, 0).expect("service");
         let initial = next_event(&service);

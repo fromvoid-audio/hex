@@ -3254,3 +3254,245 @@ All three new rendered divider assertions failed before the fix; the fixed
 full UI suite passes 209 tests (one existing ignored). Strict UI Clippy, desktop
 build, guards/fmt/diff pass. Review: `artifacts/hex-divider-highlight-20261009.app`;
 native retest remains pending. No project/audio model or overwrite behavior change.
+
+
+## arrangement grid and pointer navigation — active, 9 October 2026
+
+User-selected next workflow: adaptive musical grid in Arrangement, wheel zoom
+in/out anchored at the pointer, middle-button drag pan horizontally and
+vertically. Arrangement only; retain browser/editor scroll behavior and clip
+gestures. Grid should remain compact, visible behind clips, aligned with ruler
+through tempo/meter changes, and bounded to visible content. Reuse virtualized
+track scrolling and window-level gesture capture; no audio/schema changes.
+
+Acceptance: useful adaptive density at zoom extremes; stable cursor anchor and
+clamped time/scroll limits; both pan axes and release outside the workspace;
+meaningful maths/rendered event tests, strict UI lint/build and style guards.
+Native interaction acceptance belongs to the user. New work follows published
+checkpoint `b873931930fef57f49b60cfc5005faa406b555f2`; keep it uncommitted for review.
+
+Arrangement navigation source milestone complete: continuous 256-line bounded
+adaptive grid, cursor-anchored wheel zoom (line/pixel input), captured middle pan
+with virtualized vertical scroll and cancellation. 216 UI tests pass/one ignored;
+strict UI lint/build and guards/fmt/diff pass. Native review remains pending in
+`artifacts/hex-arrangement-navigation-20261009.app`; see navigation checklist.
+
+
+## adaptive snapping and prospective track preview — active, 9 October
+
+Latest user correction keeps grid in blank space and zero-track Arrangement,
+enables matching snapping there, and requests a locked clip preview on the
+prospective appended row. Command temporarily inverts snap per official Live12
+manual; dynamic preview/release modifiers must agree. Track-only rendering is
+superseded. Finite scope, reference confidence and native checklist are in
+`docs/grid-snapping.md`. New source remains uncommitted for native review.
+
+Adaptive snapping/append preview source milestone complete: shared visual/snap
+policy defaults to Adaptive, Command temporarily inverts it, stationary changes
+refresh previews, and actual release modifiers determine the committed edit.
+Browser/audio/MIDI append previews lock to the prospective row and clip to the
+body. Grid stays in blank/zero-track space per latest correction; dividers remain
+line-only. 220 UI tests pass/one ignored; strict UI lint/build and guards/fmt/diff
+pass. Review `artifacts/hex-grid-snapping-20261009.app`; checklist/reference limits
+in `docs/grid-snapping.md`. Native acceptance open; no commit/push.
+
+
+## grid appearance, native input and overview — active, 9 October 2026
+
+User reports snapping functionality looks good, but Command hides the grid,
+wheel zoom direction is inverted and native middle-button pan fails. Keep
+grid painting independent of temporary snap modifiers; add alternating subtle
+bands every four adaptive units anchored to musical time. User cancelled the
+scrollbar/handle and instead requested an always-fit overview above the ruler.
+Use a bounded cached 128×16 audio/MIDI occupancy thumbnail, aggregating dense
+tracks, with viewport outline and click-to-center. Preserve compact layout.
+
+Pinned GPUI0.2.2 lacks native otherMouseDragged callback and scroll inversion
+metadata. Primary accepted a narrow external dependency repair, after readonly
+architecture review: native callbacks/flag inside excluded upstream GPUI only,
+no unsafe Hex or registry-cache edit. Provenance/license/check policy is in
+`docs/native-input.md`. Physical positive-Y up zooms in, negative down zooms out;
+browser/panel raw scrolling retains OS preference behavior.
+
+Acceptance: Command grid remains visible while movement is free; band phase
+remains stable under pan/zoom/tempo/meter; cached overview includes every track
+and both clip kinds without whole-project per-paint scans; click/view geometry
+and bounds; wheel Lines/Pixels both inversion states; native target compiles;
+prior snapping/preview/navigation regressions pass. User owns native input
+and visual verdict. No scrollbar, audio/schema change, commit or push.
+
+
+## overview and native-input review milestone — 9 October 2026
+
+Implemented the compact always-fit Arrangement overview above the ruler,
+revision-cached audio/MIDI raster, viewport outline and click-to-center. Details
+and native checklist: `docs/arrangement-overview.md`. Command no longer hides
+the grid; four adaptive-unit alternating bands stay anchored to musical time.
+Physical wheel deltas are normalized independently of macOS Natural Scrolling.
+The pinned external GPUI patch registers native middle-drag delivery; source
+and simulated event tests cannot establish actual physical delivery.
+
+Review build: `artifacts/hex-overview-input-20261009.app`. Source/binary identity:
+`artifacts/overview-input-manifest.json`. Native visual, physical wheel (both
+Natural Scrolling settings) and middle-button pan acceptance remain open.
+No scrollbar, audio/schema change, commit or push. Broader roadmap stays paused.
+
+Verification: 228 UI tests pass, one existing ignored. Strict UI Clippy, desktop
+build, formatting, architecture/UI-style/GPUI-patch guards and diff checks pass.
+The final band candidate budget is bounded even when conversions yield no
+painted bands. Existing upstream dependency compiler warnings remain; no Hex
+warning or check failure. Native interaction/appearance verdict remains open.
+
+
+## minimal append feedback — 9 October 2026
+
+The user superseded empty-area background highlighting after accepting clip
+snapping. Remove the full-area tint for browser samples and existing audio/MIDI
+clips. Retain the bottom line of the last track and the snapped clip preview.
+With no tracks, show only the prospective clip preview; there is no last-track
+line. Preserve grid shading, snapping and drop destinations. Native review
+remains the user's responsibility.
+
+Source complete: 228 UI tests pass, one ignored; strict UI Clippy, desktop
+build, format and architecture/style/GPUI patch guards pass. Rendered tests
+verify no empty-area tint while the bottom line and clip remain. Review build:
+`artifacts/hex-minimal-append-20261009.app`. Native verdict pending; uncommitted.
+
+
+## live clip resize — active, 9 October 2026
+
+Finite scope: thin edge handles at all meaningful zoom levels, a preserved
+clip-body move target with detection priority, actual in-track geometry/waveform
+preview during trimming, existing adaptive/fixed snapping and Command inversion
+including stationary modifier/release changes. Commit one validated canonical
+edit at release; cancellation/stale/no-op gestures preserve project/history.
+Audio trim source/fade limits remain canonical. MIDI Arrangement trim policy
+requires source-contract review before extending this work.
+
+Acceptance: both edges at narrow and wide rendered clip widths; move versus
+resize hit targets; live preview with unchanged project before release; grid/
+free candidate and final edit agreement; cancellation and stale state; source
+tests, strict UI lint and native build. User owns native UI checks. No schema,
+audio callback, commit or push; broader roadmap stays paused.
+
+The user explicitly included MIDI on 9 October 2026. Added the canonical
+beat-based `TrimMidiClipEdge` and O(1) `MidiClipTrim` preview: retain authored
+notes/IDs/source bounds, adjust source marker for left edits, preserve loop
+phase by the documented original policy. Right extension can expose silence
+for a one-shot. No schema fields changed. Source policy: docs/midi.md; visual
+contract/checklist: docs/clip-resizing.md. UI integration and native verdict
+remain pending. This supersedes the MIDI deferral in this work-unit heading.
+
+
+## audio/midi resize source milestone complete — 9 October 2026
+
+Thin bottom-corner handles (up to 4×6px; narrow widths derived from the rendered
+3px audio/4px MIDI minimum) preserve the upper move target. In-lane previews
+redraw waveform/note geometry immediately; original hit geometry remains fixed
+and transparent. Existing grid/Command inversion updates during motion,
+stationary modifier changes and authoritative mouse-up. Release commits one
+validated edit; cancellation/no-op/stale state preserves canonical data.
+MIDI metadata-only previews retain authored notes and source/loop markers.
+
+233 UI tests pass, one ignored after the final narrow-width repair. Workspace
+integration: 695 tests pass, one ignored before that UI-only repair. Project/
+storage/session/UI strict lint, desktop build, fmt and architecture/UI-style/
+GPUI-patch guards pass. Logs and source/binary identity are in
+`artifacts/clip-resize-manifest.json`. Existing upstream compiler warnings remain.
+
+Review `artifacts/hex-clip-resize-20261009.app`; native audio/MIDI left/right
+corner usability, real-time appearance, Command release agreement and Undo
+acceptance remain open. Checklist: docs/clip-resizing.md. No commit/push or
+automated native interaction; broader roadmap stays paused.
+
+
+## invisible full-height clip edges — 9 October 2026
+
+The user superseded bottom-corner resize handles. Audio and MIDI clips now use
+invisible full-height left/right edge strips with the native horizontal resize
+cursor. Remove orange rectangles; derive narrow hit widths from rendered clip
+width while preserving a central full-height move region. Live previews, grid
+snapping, Command override and canonical release semantics remain unchanged.
+Native top/middle/bottom edge hover and resizing acceptance remains pending.
+
+Full-height edge source checks pass: 233 UI tests/one ignored, strict UI lint,
+desktop build, fmt and architecture/style/GPUI patch guards. Review build:
+`artifacts/hex-clip-edges-20261009.app`; identity in
+`artifacts/clip-edges-manifest.json`. User native cursor/edge usability check
+pending. Uncommitted; prior apps and unsaved work preserved.
+
+
+## bracket cursors and flush clips — active, 9 October 2026
+
+User accepts full-height resize behavior; requests distinct bracket cursors,
+flush full-track clip height and a one-pixel black border replacing the left
+accent stripe. Finite scope: original left/right bracket shapes using the
+existing external native cursor boundary; cache/retain native objects, preserve
+edge hotspots/body movement, no per-hover allocation. Apply flush clip geometry
+and border consistently to audio/MIDI, live resize and landing previews.
+No project/audio/schema changes. Source checks/rendered geometry and native
+build first; user owns physical cursor/appearance acceptance.
+
+Waveform scope added by the user: replace 48 blue amplitude bars with black
+filled signed per-channel silhouettes and zoom-dependent detail; paint the
+existing musical grid through clips. Control-worker peak caches now use up to
+65,536 leaves, a bounded extrema hierarchy and shared immutable PCM for exact
+small-range queries. Accounting includes hierarchy bins. Media/session tests
+and strict lint pass; UI integration/native appearance pending. Contract:
+`docs/waveform-display.md`. No callback/schema changes or broader roadmap work.
+
+
+## bracket/clip/waveform source milestone complete — 9 October 2026
+
+Original bracket cursor variants, two retained macOS cursor objects, directional
+fallbacks elsewhere, and a narrow test-only rendered-cursor request readout.
+Verified original GPUI baseline and exact 12-file input/cursor delta; no unsafe
+Hex code, proprietary assets or registry changes. Cursor delivery/scaling/hotspot
+appearance remains native acceptance.
+
+Audio/MIDI clips and prepared previews fill their 44px rows with a one-pixel
+black border and warm fills. Shared black signed stereo waveform paths draw
+zoom-adaptive detail from one query per column, with a bounded 4,096-column cap
+and real sample traces at deep zoom. Grid lines remain aligned through fills
+and beneath the waveform; empty-area feedback remains line/clip only.
+
+235 UI tests pass, one ignored; workspace tests 700 pass, 1 ignored.
+Media/session/UI strict lint, desktop build, formatting, architecture/style and
+pinned GPUI provenance guards pass. Native paint timing remains unmeasured.
+Review: `artifacts/hex-clip-visuals-20261009.app`; source/binary/log identity in
+`artifacts/clip-visuals-manifest.json`. Check both bracket hovers, waveform zoom
+and source detail, flush borders/grid continuity, and resize/drop previews.
+User owns native checks; prior running apps/unsaved projects preserved.
+No commit/push; broader roadmap remains paused.
+
+## waveform paint correction and track context menu — 9 October 2026
+
+The user reported a blank waveform in the clip-visuals review build. The shared
+canvas had no intrinsic height, so its paint callback received zero-height
+bounds and returned. Pinning the canvas to its parent fixes that layout path.
+Removed the old 3.5-percent viewport-width waveform cutoff for normal and
+resize-preview clips, and removed a crossing closure segment in the silhouette.
+A rendered-layout regression checks full canvas bounds on 8px and 260px clips.
+Native waveform appearance must be rechecked by the user; previous source checks
+did not establish visible rendering.
+
+Added a reusable compact rectangular popup with a fine border/drop shadow,
+lowercase text, keyboard navigation/Enter, Escape/outside-click dismissal and
+window-edge clamping. Arrangement row right-click offers only `insert track`,
+inserting a hybrid track below the clicked row; empty-area right-click appends.
+The new canonical `InsertTrack` command uses a stable optional insertion anchor
+and one undo step. Generation/anchor checks refuse stale menu edits. Popup focus
+restores on dismissal and timeline wheel/pan/seek capture respects the popup.
+No submenus, extra track types, or broader roadmap work were added.
+
+Tests cover rendered selection/dismissal/keyboard routing, popup clamping,
+track order, append, missing-anchor rejection and undo/redo. Native rendering,
+menu appearance and user workflow acceptance remain pending. No commit/push.
+
+Verification: 747 workspace tests passed, 1 ignored; 239 UI tests
+passed, 1 ignored. Strict UI/project lint, desktop build, formatting and
+architecture/UI-style/GPUI guards passed. Separate review bundle:
+`artifacts/hex-waveform-menu-20261009.app`; source/binary/check identity:
+`artifacts/waveform-menu-manifest.json`. User checks: visible waveform while
+zooming/resizing; right-click track/empty space; insert position; Undo/Redo;
+Escape and outside-click dismissal. Running apps and unsaved work preserved.

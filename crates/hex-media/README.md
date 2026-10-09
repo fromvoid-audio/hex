@@ -109,3 +109,9 @@ nearest-rank p95 equals the observed maximum.
 These are single-machine microbenchmark observations, not comparative speed,
 real-time deadline, or whole-application performance claims. CPU load and thermal
 state can affect results; rerun the command for a current local measurement.
+
+Waveform summaries retain up to 65,536 signed stereo leaf peaks and a pairwise
+extrema hierarchy. `peaks_for_frames` performs bounded allocation-free cache
+queries; sample ranges of at most 64 frames inspect shared immutable PCM for
+exact deep-zoom detail. `cached_bin_count` includes hierarchy bins for resident
+accounting. Source data is not copied into a second PCM allocation.

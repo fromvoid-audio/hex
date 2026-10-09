@@ -1,0 +1,344 @@
+--- a/src/app/test_context.rs
++++ b/src/app/test_context.rs
+@@ -675,6 +675,12 @@
+ }
+ 
+ impl VisualTestContext {
++    /// Returns the cursor request selected by the current rendered hitbox.
++    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
++    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
++        self.update(|window, _| window.rendered_frame.cursor_style(window))
++    }
++
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx
+--- a/src/interactive.rs
++++ b/src/interactive.rs
+@@ -361,6 +361,10 @@
+ /// A mouse wheel event from the platform
+ #[derive(Clone, Debug, Default)]
+ pub struct ScrollWheelEvent {
++    /// True when the platform inverted device scroll direction for user preferences.
++    /// Raw `delta` remains suitable for ordinary content scrolling.
++    pub direction_inverted_from_device: bool,
++
+     /// The position of the mouse on the window.
+     pub position: Point<Pixels>,
+ 
+@@ -372,6 +376,20 @@
+ 
+     /// The phase of the touch event.
+     pub touch_phase: TouchPhase,
++}
++
++impl ScrollWheelEvent {
++    /// Device-direction delta before the platform's user-preference inversion.
++    /// This is opt-in: ordinary scrolling should continue using `delta`.
++    pub fn physical_delta(&self) -> ScrollDelta {
++        if !self.direction_inverted_from_device {
++            return self.delta;
++        }
++        match self.delta {
++            ScrollDelta::Pixels(delta) => ScrollDelta::Pixels(point(-delta.x, -delta.y)),
++            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
++        }
++    }
+ }
+ 
+ impl Sealed for ScrollWheelEvent {}
+--- a/src/platform/linux/platform.rs
++++ b/src/platform/linux/platform.rs
+@@ -710,6 +710,8 @@
+             CursorStyle::PointingHand => &["pointer", "hand", "hand2"],
+             CursorStyle::ResizeLeft => &["w-resize", "left_side"],
+             CursorStyle::ResizeRight => &["e-resize", "right_side"],
++            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
++            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
+             CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
+             CursorStyle::ResizeUp => &["n-resize", "top_side"],
+             CursorStyle::ResizeDown => &["s-resize", "bottom_side"],
+--- a/src/platform/linux/wayland/client.rs
++++ b/src/platform/linux/wayland/client.rs
+@@ -1788,6 +1788,7 @@
+                     if let Some(continuous) = continuous {
+                         if let Some(window) = state.mouse_focused_window.clone() {
+                             let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
++                                direction_inverted_from_device: false,
+                                 position: state.mouse_location.unwrap(),
+                                 delta: ScrollDelta::Pixels(continuous),
+                                 modifiers: state.modifiers,
+@@ -1800,6 +1801,7 @@
+                         && let Some(window) = state.mouse_focused_window.clone()
+                     {
+                         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
++                            direction_inverted_from_device: false,
+                             position: state.mouse_location.unwrap(),
+                             delta: ScrollDelta::Lines(discrete),
+                             modifiers: state.modifiers,
+--- a/src/platform/linux/wayland.rs
++++ b/src/platform/linux/wayland.rs
+@@ -22,6 +22,8 @@
+             CursorStyle::PointingHand => Shape::Pointer,
+             CursorStyle::ResizeLeft => Shape::WResize,
+             CursorStyle::ResizeRight => Shape::EResize,
++            CursorStyle::ResizeLeftBracket => Shape::WResize,
++            CursorStyle::ResizeRightBracket => Shape::EResize,
+             CursorStyle::ResizeLeftRight => Shape::EwResize,
+             CursorStyle::ResizeUp => Shape::NResize,
+             CursorStyle::ResizeDown => Shape::SResize,
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -2215,6 +2215,7 @@
+         scroll_delta
+     };
+     crate::ScrollWheelEvent {
++        direction_inverted_from_device: false,
+         position,
+         delta: ScrollDelta::Lines(delta),
+         modifiers,
+--- a/src/platform/mac/events.rs
++++ b/src/platform/mac/events.rs
+@@ -233,7 +233,10 @@
+                         ScrollDelta::Lines(raw_data)
+                     };
+ 
++                    let direction_inverted: cocoa::base::BOOL =
++                        msg_send![native_event, isDirectionInvertedFromDevice];
+                     Self::ScrollWheel(ScrollWheelEvent {
++                        direction_inverted_from_device: direction_inverted == YES,
+                         position: point(
+                             px(native_event.locationInWindow().x as f32),
+                             window_height - px(native_event.locationInWindow().y as f32),
+--- a/src/platform/mac/platform.rs
++++ b/src/platform/mac/platform.rs
+@@ -19,12 +19,12 @@
+         NSApplication, NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
+         NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponse, NSOpenPanel, NSPasteboard,
+         NSPasteboardTypePNG, NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString,
+-        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
++        NSPasteboardTypeTIFF, NSImage, NSSavePanel, NSWindow,
+     },
+     base::{BOOL, NO, YES, id, nil, selector},
+     foundation::{
+-        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
+-        NSUInteger, NSURL,
++        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange,
++        NSSize, NSString, NSUInteger, NSURL,
+     },
+ };
+ use core_foundation::{
+@@ -43,6 +43,7 @@
+     declare::ClassDecl,
+     msg_send,
+     runtime::{Class, Object, Sel},
++    rc::StrongPtr,
+     sel, sel_impl,
+ };
+ use parking_lot::Mutex;
+@@ -68,6 +69,73 @@
+ const MAC_PLATFORM_IVAR: &str = "platform";
+ static mut APP_CLASS: *const Class = ptr::null();
+ static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
++
++/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
++fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let path: id = msg_send![class!(NSBezierPath), bezierPath];
++        if path == nil {
++            let _: () = msg_send![*image, unlockFocus];
++            return None;
++        }
++
++        let center_x = 12.0;
++        let toward = if points_left { -1.0 } else { 1.0 };
++        let bracket = if points_left { 1.0 } else { -1.0 };
++        let segments = [
++            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
++            (
++                NSPoint::new(center_x, 4.0),
++                NSPoint::new(center_x + bracket * 5.0, 4.0),
++            ),
++            (
++                NSPoint::new(center_x, 20.0),
++                NSPoint::new(center_x + bracket * 5.0, 20.0),
++            ),
++            (
++                NSPoint::new(center_x, 12.0),
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++            ),
++            (
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++                NSPoint::new(center_x + toward * 4.0, 15.0),
++            ),
++            (
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++                NSPoint::new(center_x + toward * 4.0, 9.0),
++            ),
++        ];
++        for (start, end) in segments {
++            let _: () = msg_send![path, moveToPoint: start];
++            let _: () = msg_send![path, lineToPoint: end];
++        }
++
++        let white: id = msg_send![class!(NSColor), whiteColor];
++        let _: () = msg_send![white, setStroke];
++        let _: () = msg_send![path, setLineWidth: 4.0_f64];
++        let _: () = msg_send![path, setLineCapStyle: 1_isize];
++        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
++        let _: () = msg_send![path, stroke];
++        let black: id = msg_send![class!(NSColor), blackColor];
++        let _: () = msg_send![black, setStroke];
++        let _: () = msg_send![path, setLineWidth: 1.75_f64];
++        let _: () = msg_send![path, stroke];
++        let _: () = msg_send![*image, unlockFocus];
++
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
+ 
+ #[ctor]
+ unsafe fn build_classes() {
+@@ -177,6 +245,8 @@
+     dock_menu: Option<id>,
+     menus: Option<Vec<OwnedMenu>>,
+     keyboard_mapper: Rc<MacKeyboardMapper>,
++    resize_left_bracket_cursor: Option<StrongPtr>,
++    resize_right_bracket_cursor: Option<StrongPtr>,
+ }
+ 
+ impl Default for MacPlatform {
+@@ -197,6 +267,11 @@
+ 
+         let keyboard_layout = MacKeyboardLayout::new();
+         let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
++        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
++            (None, None)
++        } else {
++            (make_bracket_cursor(true), make_bracket_cursor(false))
++        };
+ 
+         Self(Mutex::new(MacPlatformState {
+             headless,
+@@ -219,6 +294,8 @@
+             on_keyboard_layout_change: None,
+             menus: None,
+             keyboard_mapper,
++            resize_left_bracket_cursor,
++            resize_right_bracket_cursor,
+         }))
+     }
+ 
+@@ -970,7 +1047,21 @@
+                 return;
+             }
+ 
+-            let new_cursor: id = match style {
++            let bracket_cursor = {
++                let state = self.0.lock();
++                match style {
++                    CursorStyle::ResizeLeftBracket => state
++                        .resize_left_bracket_cursor
++                        .as_ref()
++                        .map(|cursor| **cursor),
++                    CursorStyle::ResizeRightBracket => state
++                        .resize_right_bracket_cursor
++                        .as_ref()
++                        .map(|cursor| **cursor),
++                    _ => None,
++                }
++            };
++            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
+                 CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
+                 CursorStyle::IBeam => msg_send![class!(NSCursor), IBeamCursor],
+                 CursorStyle::Crosshair => msg_send![class!(NSCursor), crosshairCursor],
+@@ -981,6 +1072,8 @@
+                 CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
+                 CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
+                 CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],
++                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
++                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
+                 CursorStyle::ResizeColumn => msg_send![class!(NSCursor), resizeLeftRightCursor],
+                 CursorStyle::ResizeRow => msg_send![class!(NSCursor), resizeUpDownCursor],
+                 CursorStyle::ResizeUp => msg_send![class!(NSCursor), resizeUpCursor],
+@@ -1005,7 +1098,7 @@
+                 CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
+                 CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
+                 CursorStyle::None => unreachable!(),
+-            };
++            });
+ 
+             let old_cursor: id = msg_send![class!(NSCursor), currentCursor];
+             if new_cursor != old_cursor {
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -159,6 +159,14 @@
+                 );
+                 decl.add_method(
+                     sel!(mouseDragged:),
++                    handle_view_event as extern "C" fn(&Object, Sel, id),
++                );
++                decl.add_method(
++                    sel!(rightMouseDragged:),
++                    handle_view_event as extern "C" fn(&Object, Sel, id),
++                );
++                decl.add_method(
++                    sel!(otherMouseDragged:),
+                     handle_view_event as extern "C" fn(&Object, Sel, id),
+                 );
+                 decl.add_method(
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -553,6 +553,7 @@
+         };
+         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
+         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
++            direction_inverted_from_device: false,
+             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
+             delta: ScrollDelta::Lines(match modifiers.shift {
+                 true => Point {
+@@ -599,6 +600,7 @@
+         };
+         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
+         let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
++            direction_inverted_from_device: false,
+             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
+             delta: ScrollDelta::Lines(Point {
+                 x: wheel_distance,
+--- a/src/platform/windows/util.rs
++++ b/src/platform/windows/util.rs
+@@ -124,6 +124,8 @@
+         CursorStyle::PointingHand | CursorStyle::DragLink => (&HAND, IDC_HAND),
+         CursorStyle::ResizeLeft
+         | CursorStyle::ResizeRight
++        | CursorStyle::ResizeLeftBracket
++        | CursorStyle::ResizeRightBracket
+         | CursorStyle::ResizeLeftRight
+         | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
+         CursorStyle::ResizeUp
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1437,6 +1437,12 @@
+     /// corresponds to the CSS cursor value `e-resize`
+     ResizeRight,
+ 
++    /// A bracket cursor for trimming an item from its left edge.
++    ResizeLeftBracket,
++
++    /// A bracket cursor for trimming an item from its right edge.
++    ResizeRightBracket,
++
+     /// A resize cursor to the left and right
+     /// corresponds to the CSS cursor value `ew-resize`
+     ResizeLeftRight,

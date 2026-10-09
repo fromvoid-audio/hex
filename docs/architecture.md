@@ -520,3 +520,19 @@ It has no workspace dependency and owns no project edits, GPUI, enumeration or
 audio. UI coordinates background load/save with bounded serialized/coalesced
 work. hex-storage remains project-only and hex-library remains listings-only.
 See browser-places.md for persistence/error and restart acceptance.
+
+
+## pinned external GPUI input and cursor repair
+
+The 9 October primary boundary decision uses an excluded `third_party/gpui`
+copy of verified published GPUI 0.2.2 with a pinned native input/cursor delta.
+`[patch.crates-io]` and the lockfile resolve it reproducibly. It preserves
+Apache-2.0/license headers and remains the existing external GPUI/AppKit boundary;
+Hex workspace unsafe prohibition is unchanged. No new framework/app FFI.
+See `native-input.md` and `scripts/check-gpui-patch.py` for scope and checks.
+
+The next 9 October cursor decision extends only this existing boundary with
+original left/right bracket cursor variants, cached NSCursor images on macOS
+and directional native fallbacks elsewhere. Native cursor creation/retention
+remains GPUI-owned, never Hex FFI or per-hover image construction. No reference
+assets are extracted. Exact changed files remain pinned by the provenance guard.

@@ -424,6 +424,88 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
 }
 
 #[gpui::test]
+fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAppContext) {
+    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual.debug_bounds("browser-entry-0").expect("wav row");
+    let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(lane_selector).expect("target lane");
+    let command = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, command);
+    visual.simulate_mouse_move(point(down.x + px(12.0), down.y), MouseButton::Left, command);
+    visual.run_until_parked();
+    assert!(cx.update(|app| app.has_active_drag()));
+    let target = point(
+        lane.origin.x + lane.size.width * 0.573,
+        lane.origin.y + lane.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, command);
+    visual.run_until_parked();
+    for _ in 0..8 {
+        if editor.read_with(cx, |view, _| {
+            view.active_browser_audio_drag
+                .as_ref()
+                .is_some_and(|drag| drag.preview.get().is_some())
+        }) {
+            break;
+        }
+        visual.run_until_parked();
+    }
+    let pointer_start = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("active browser drag");
+        assert!(drag.snap_modifier.get());
+        let painted_lane = view.drag_lanes.get(&track).expect("painted drop lane");
+        let fraction = ((f64::from(target.x) - f64::from(painted_lane.left))
+            / f64::from(painted_lane.width))
+        .clamp(0.0, 1.0);
+        let expected_pointer_start = (fraction * drag.viewport_length as f64).floor() as u64;
+        assert_eq!(
+            drag.destination.get(),
+            Some(BrowserDropDestination::ExistingTrack {
+                track,
+                start: expected_pointer_start,
+            }),
+            "held command bypasses adaptive snapping from initial drag through destination"
+        );
+        expected_pointer_start
+    });
+    visual.simulate_modifiers_change(Modifiers::default());
+    visual.run_until_parked();
+    let snapped_start = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("active browser drag");
+        assert!(!drag.snap_modifier.get());
+        match drag.destination.get() {
+            Some(BrowserDropDestination::ExistingTrack { start, .. }) => start,
+            _ => panic!("browser drag remains over target lane"),
+        }
+    });
+    assert_ne!(snapped_start, pointer_start);
+    visual.simulate_mouse_up(target, MouseButton::Left, command);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_track,
+            Some((path.clone(), track, pointer_start, true)),
+            "mouse-up modifiers are authoritative even without a final pointer move"
+        );
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
 fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snapped_start(
     cx: &mut TestAppContext,
 ) {
@@ -467,10 +549,20 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
         first.size.width,
         body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH)
     );
-    let expected_pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
+    let pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
         / f32::from(first.size.width))
         * 384_000.0)
         .floor() as u64;
+    let expected_pointer_start = editor.read_with(cx, |view, _| {
+        view.snap_grid
+            .snap_frame(
+                view.state.as_ref().expect("project").project.as_ref(),
+                pointer_start,
+                view.visible_viewport(384_000),
+                f32::from(first.size.width),
+            )
+            .expect("adaptive insertion start")
+    });
     assert!((f32::from(target.y) - f32::from(second.origin.y)).abs() <= 1.0);
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -523,7 +615,7 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
 }
 
 #[gpui::test]
-fn browser_sample_drop_below_last_track_appends_with_line_and_floating_ghost(
+fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
@@ -579,7 +671,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_floating_ghost(
             .active_browser_audio_drag
             .as_ref()
             .expect("browser drag active");
-        assert!(!drag.lane_hovered.get());
+        assert!(drag.lane_hovered.get());
         assert!(drag.preview.get().is_none());
         let Some(BrowserDropDestination::NewTrack {
             before_track: None,
@@ -589,7 +681,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_floating_ghost(
             panic!("blank area under the final track should append");
         };
         assert!(view.browser_audio_drag_is_current(drag));
-        assert!(!drag.lane_hovered.get());
+        assert!(drag.lane_hovered.get());
         start
     });
     let line = visual
@@ -638,20 +730,39 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_floating_ghost(
         );
         assert_eq!(drag.insertion_line_y.get(), Some(lane.top + lane.height));
     });
-    let highlight = visual
-        .debug_bounds("append-track-drop-highlight")
-        .expect("blank append area is highlighted");
-    assert_eq!(highlight.origin.x, body.origin.x);
-    assert_eq!(highlight.size.width, body.size.width);
-    assert!((highlight.origin.y - (lane.origin.y + lane.size.height)).abs() <= px(1.0));
-    assert!(
-        (highlight.origin.y + highlight.size.height - (body.origin.y + body.size.height)).abs()
-            <= px(1.0)
-    );
+    assert!(visual.debug_bounds("append-track-drop-highlight").is_none());
+    let line = visual
+        .debug_bounds("track-insert-preview")
+        .expect("bottom insertion line");
+    assert!((line.origin.y - (lane.origin.y + lane.size.height - px(1.0))).abs() <= px(1.0));
     let ghost = visual
-        .debug_bounds("browser-audio-floating-preview")
-        .expect("blank-space append keeps cursor ghost");
-    assert!(ghost.size.width > px(100.0));
+        .debug_bounds("browser-audio-append-preview")
+        .expect("blank-space append locks the sample ghost to the new row");
+    assert!(ghost.size.width > px(3.0));
+    let (expected_left, expected_width, expected_top) = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("active drag");
+        let metadata = drag
+            .metadata
+            .borrow()
+            .clone()
+            .expect("prepared sample duration");
+        let viewport = view.visible_viewport(384_000);
+        let timeline_width = body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH);
+        let left = body.origin.x
+            + px(
+                (start.saturating_sub(viewport.start) as f64 / viewport.length as f64
+                    * f64::from(timeline_width)) as f32,
+            );
+        let width = px((metadata.playback_frames as f64 / viewport.length as f64
+            * f64::from(timeline_width)) as f32);
+        (left, width, lane.origin.y + lane.size.height)
+    });
+    assert!((ghost.origin.x - expected_left).abs() <= px(1.0));
+    assert!((ghost.size.width - expected_width).abs() <= px(1.0));
+    assert!((ghost.origin.y - expected_top).abs() <= px(1.0));
     let body_after = visual
         .debug_bounds("arrangement-content")
         .expect("Arrangement body remains mounted");
@@ -707,7 +818,7 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
             .active_browser_audio_drag
             .as_ref()
             .expect("browser drag active");
-        assert!(!drag.lane_hovered.get());
+        assert!(drag.lane_hovered.get());
         assert!(drag.preview.get().is_none());
         let Some(BrowserDropDestination::NewTrack {
             before_track: None,
@@ -720,17 +831,21 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     });
     assert!(
         visual.debug_bounds("track-insert-preview").is_none(),
-        "empty Arrangement feedback highlights the section without a cursor-following line"
+        "empty Arrangement shows the clip without a cursor-following line"
     );
-    let highlight = visual
-        .debug_bounds("empty-track-drop-highlight")
-        .expect("empty Arrangement section is highlighted");
-    assert_eq!(highlight.origin, body.origin);
-    assert_eq!(highlight.size, body.size);
+    assert!(visual.debug_bounds("empty-track-drop-highlight").is_none());
     let ghost = visual
-        .debug_bounds("browser-audio-floating-preview")
-        .expect("empty Arrangement keeps cursor ghost while showing insertion line");
-    assert!(ghost.size.width > px(100.0));
+        .debug_bounds("browser-audio-append-preview")
+        .expect("empty Arrangement locks the sample ghost to the first row");
+    assert!(ghost.size.width > px(3.0));
+    assert!(
+        (ghost.origin.x
+            - body.origin.x
+            - px((start as f64 / 384_000.0 * f64::from(body.size.width - px(176.0))) as f32))
+        .abs()
+            <= px(1.0)
+    );
+    assert!((ghost.origin.y - body.origin.y).abs() <= px(1.0));
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -752,11 +867,24 @@ fn browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll(
     let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &name_refs);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_event(gpui::ScrollWheelEvent {
-        position: point(px(500.0), px(250.0)),
-        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-1100.0))),
-        ..Default::default()
-    });
+    let arrangement = visual
+        .debug_bounds("arrangement-content")
+        .expect("painted arrangement body");
+    let pan_start = point(
+        arrangement.origin.x + px(500.0),
+        arrangement.origin.y + px(250.0),
+    );
+    visual.simulate_mouse_down(pan_start, MouseButton::Middle, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(pan_start.x, pan_start.y - px(1_100.0)),
+        MouseButton::Middle,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(pan_start.x, pan_start.y - px(1_100.0)),
+        MouseButton::Middle,
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let (first_track, second_track, target) = editor.update(cx, |view, _| {
         let generation = view.drag_layout_generation;
@@ -824,6 +952,446 @@ fn browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll(
 }
 
 #[gpui::test]
+fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
+    cx: &mut TestAppContext,
+) {
+    let names = (0..24)
+        .map(|index| format!("track {index}"))
+        .collect::<Vec<_>>();
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let (handle, editor, _, _directory, _) = browser_drag_fixture_with_tracks(cx, &name_refs);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let ruler = visual
+        .debug_bounds("timeline-ruler")
+        .expect("painted arrangement ruler");
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("painted arrangement body");
+    let grid = visual
+        .debug_bounds("arrangement-grid")
+        .expect("painted Arrangement grid");
+    let first_grid_line = visual
+        .debug_bounds("arrangement-grid-line-0")
+        .expect("grid starts at the visible timeline origin");
+    assert_eq!(grid.origin.x, body.origin.x);
+    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(first_grid_line.origin.x, ruler.origin.x);
+    let pointer = point(
+        ruler.origin.x + ruler.size.width * 0.37,
+        ruler.origin.y + ruler.size.height / 2.0,
+    );
+    let before = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    let anchor = super::super::seek::pointer_to_frame(
+        f32::from(pointer.x),
+        f32::from(ruler.origin.x),
+        f32::from(ruler.size.width),
+        before,
+    )
+    .expect("anchor inside ruler");
+    assert_eq!(after, before.zoom_at(384_000, anchor, true));
+    let old_fraction = (anchor - before.start) as f64 / before.length as f64;
+    let new_fraction = (anchor - after.start) as f64 / after.length as f64;
+    assert!((old_fraction - new_fraction).abs() < 0.002);
+
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        direction_inverted_from_device: true,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let natural_down = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(
+        natural_down.length, before.length,
+        "physical wheel down zooms out"
+    );
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        direction_inverted_from_device: true,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let natural_up = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(
+        natural_up, after,
+        "physical wheel up zooms in with inversion enabled"
+    );
+
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        delta: gpui::ScrollDelta::Lines(point(0.0, -1.0)),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let line_out = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(
+        line_out.length, 384_000,
+        "one physical wheel-down line zooms out once"
+    );
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        delta: gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let line_in = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(
+        line_in.length, after.length,
+        "one reverse wheel line zooms in once"
+    );
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: pointer,
+        delta: gpui::ScrollDelta::Pixels(point(px(160.0), px(0.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let horizontal_only = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(
+        horizontal_only, line_in,
+        "horizontal-only wheel input does not zoom"
+    );
+
+    let (list_before, scroll_before) = editor.read_with(cx, |view, _| {
+        (
+            view.track_scroll.logical_scroll_top_index(),
+            view.track_scroll.0.borrow().base_handle.offset(),
+        )
+    });
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(body.origin.x + px(100.0), body.origin.y + px(80.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-12.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let (list_after, scroll_after) = editor.read_with(cx, |view, _| {
+        (
+            view.track_scroll.logical_scroll_top_index(),
+            view.track_scroll.0.borrow().base_handle.offset(),
+        )
+    });
+    assert_eq!(
+        list_after, list_before,
+        "small timeline wheel does not scroll track rows"
+    );
+    assert_eq!(
+        scroll_after, scroll_before,
+        "partial wheel deltas are consumed"
+    );
+
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 1,
+        });
+    });
+    visual.run_until_parked();
+    let at_zoom_limit = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        (
+            view.visible_viewport(state.timeline_frames),
+            view.track_scroll.0.borrow().base_handle.offset(),
+        )
+    });
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(body.origin.x + px(100.0), body.origin.y + px(80.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after_limit_wheel = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        (
+            view.visible_viewport(state.timeline_frames),
+            view.track_scroll.0.borrow().base_handle.offset(),
+        )
+    });
+    assert_eq!(after_limit_wheel, at_zoom_limit);
+
+    let browser_handle = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("visible browser");
+    let browser_pointer = point(
+        browser_handle.origin.x - px(60.0),
+        browser_handle.origin.y + browser_handle.size.height / 2.0,
+    );
+    let before_browser_wheel = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: browser_pointer,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-160.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after_browser_wheel = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(after_browser_wheel, before_browser_wheel);
+}
+
+#[test]
+fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
+    let cases = [
+        (
+            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+            false,
+            (12.0, 24.0),
+        ),
+        (
+            gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+            true,
+            (-12.0, -24.0),
+        ),
+        (
+            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+            false,
+            (2.0, -3.0),
+        ),
+        (
+            gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+            true,
+            (-2.0, 3.0),
+        ),
+    ];
+    for (raw, inverted, (expected_x, expected_y)) in cases {
+        let event = gpui::ScrollWheelEvent {
+            delta: raw,
+            direction_inverted_from_device: inverted,
+            ..Default::default()
+        };
+        match event.physical_delta() {
+            gpui::ScrollDelta::Pixels(delta) => {
+                assert_eq!(f32::from(delta.x), expected_x);
+                assert_eq!(f32::from(delta.y), expected_y);
+            }
+            gpui::ScrollDelta::Lines(delta) => {
+                assert_eq!(delta.x, expected_x);
+                assert_eq!(delta.y, expected_y);
+            }
+        }
+        match (raw, event.delta) {
+            (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
+                assert_eq!(before, after);
+            }
+            (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
+                assert_eq!(before.x, after.x);
+                assert_eq!(before.y, after.y);
+            }
+            _ => panic!("raw scroll delta variant changed"),
+        }
+    }
+}
+
+#[gpui::test]
+fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
+    let (handle, _editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
+    assert!(tracks.is_empty());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("empty Arrangement body");
+    let ruler = visual
+        .debug_bounds("timeline-ruler")
+        .expect("empty Arrangement ruler");
+    let grid = visual
+        .debug_bounds("arrangement-grid")
+        .expect("empty Arrangement grid");
+    let line = visual
+        .debug_bounds("arrangement-grid-line-0")
+        .expect("empty Arrangement first grid line");
+    assert!(
+        visual.debug_bounds("arrangement-grid-band-0").is_some(),
+        "four-adaptive-unit shading spans the empty Arrangement timeline"
+    );
+    assert_eq!(grid.origin.x, body.origin.x);
+    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(line.origin.x, ruler.origin.x);
+}
+
+#[gpui::test]
+fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 96_000,
+        });
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let overview = visual
+        .debug_bounds("arrangement-overview-map")
+        .expect("compact project overview above the ruler");
+    let ruler = visual
+        .debug_bounds("timeline-ruler")
+        .expect("Arrangement ruler");
+    assert_eq!(overview.origin.x, ruler.origin.x);
+    assert_eq!(overview.size.width, ruler.size.width);
+    assert!(overview.size.height >= px(20.0));
+    let before = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(before.start, 0);
+    let click = point(
+        overview.origin.x + overview.size.width * 0.99,
+        overview.origin.y + overview.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let after = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    assert_eq!(after.length, 96_000);
+    assert_eq!(after.end(), Some(384_000));
+    assert!(after.start > before.start);
+}
+
+#[gpui::test]
+fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext) {
+    let names = (0..32)
+        .map(|index| format!("track {index}"))
+        .collect::<Vec<_>>();
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let (handle, editor, _, _directory, _) = browser_drag_fixture_with_tracks(cx, &name_refs);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 96_000,
+            length: 192_000,
+        });
+    });
+    visual.run_until_parked();
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("painted arrangement body");
+    let start = point(body.origin.x + px(400.0), body.origin.y + px(100.0));
+    let initial = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        view.visible_viewport(state.timeline_frames)
+    });
+    visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x - px(90.0), start.y - px(180.0)),
+        MouseButton::Middle,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let (panned, active, scroll_offset, scroll_max) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        (
+            view.visible_viewport(state.timeline_frames),
+            view.arrangement_pan.is_some(),
+            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.0.borrow().base_handle.max_offset(),
+        )
+    });
+    let timeline_width = f32::from(body.size.width - px(176.0));
+    let expected_delta = (90.0 * initial.length as f64 / f64::from(timeline_width)).round() as i128;
+    assert_eq!(
+        panned,
+        initial.pan_by_frames(384_000, expected_delta),
+        "the held move outside Arrangement pans by the measured timeline width"
+    );
+    assert!(
+        scroll_offset.y < px(0.0),
+        "vertical drag updates the list scroll handle; max={scroll_max:?}"
+    );
+    assert!(active);
+
+    let outside = point(start.x - px(90.0), px(-18.0));
+    visual.simulate_mouse_move(
+        point(outside.x, outside.y - px(10_000.0)),
+        MouseButton::Middle,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let bottom_offset = editor.read_with(cx, |view, _| {
+        let handle = view.track_scroll.0.borrow().base_handle.clone();
+        (handle.offset().y, handle.max_offset().height)
+    });
+    assert_eq!(
+        bottom_offset.0, -bottom_offset.1,
+        "vertical pan clamps at the last row"
+    );
+    visual.simulate_mouse_move(outside, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let top_offset = editor.read_with(cx, |view, _| {
+        view.track_scroll.0.borrow().base_handle.offset().y
+    });
+    assert_eq!(top_offset, px(0.0), "vertical pan clamps at the first row");
+    visual.simulate_mouse_up(outside, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let after_release = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        (
+            view.visible_viewport(state.timeline_frames),
+            view.track_scroll.0.borrow().base_handle.offset(),
+            view.arrangement_pan.is_some(),
+        )
+    });
+    assert_eq!(
+        after_release,
+        (panned, point(scroll_offset.x, top_offset), false)
+    );
+    visual.simulate_mouse_move(
+        point(outside.x - px(30.0), outside.y - px(30.0)),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let after_unpressed_move = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project");
+        (
+            view.visible_viewport(state.timeline_frames),
+            view.track_scroll.0.borrow().base_handle.offset(),
+        )
+    });
+    assert_eq!(
+        after_unpressed_move,
+        (panned, point(scroll_offset.x, top_offset))
+    );
+}
+
+#[gpui::test]
 fn browser_audio_drag_release_outside_arrangement_cancels_import(cx: &mut TestAppContext) {
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -870,6 +1438,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             snap_grid: view.snap_grid,
+            snap_modifier: Rc::new(std::cell::Cell::new(false)),
             metadata: Rc::new(RefCell::new(None)),
             metadata_error: Rc::new(RefCell::new(None)),
             preview: Rc::new(std::cell::Cell::new(None)),

@@ -17,7 +17,7 @@ pub use session::{
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate};
 pub use history::Editor;
-pub use midi::{MidiClip, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };

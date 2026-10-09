@@ -10,6 +10,10 @@ impl Palette {
     pub const SURFACE: u32 = 0x2f2d2d;
     pub const RAISED: u32 = 0x242222;
     pub const CLIP: u32 = 0x454c49;
+    pub const CLIP_FILL: u32 = 0xcf7362;
+    pub const CLIP_SELECTED: u32 = 0xf18c73;
+    pub const CLIP_HOVER: u32 = 0xdb8570;
+    pub const CLIP_TEXT: u32 = 0x1b1412;
     pub const HOVER: u32 = 0x363333;
     pub const BORDER: u32 = 0x191717;
     pub const GRID: u32 = 0x363333;

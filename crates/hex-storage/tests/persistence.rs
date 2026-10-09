@@ -902,3 +902,65 @@ fn non_utf8_path_refused_without_lossy_rewrite() {
         .unwrap();
     assert!(encode(editor.project()).is_err());
 }
+
+#[test]
+fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
+    let beat = |n| BeatTime::from_quarters(n).expect("small beat");
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 12).expect("editor");
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "hybrid".into(),
+        })
+        .expect("track")
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(4),
+            length: beat(8),
+        })
+        .expect("clip")
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1),
+            duration: beat(2),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .expect("note");
+    let notes = editor
+        .project()
+        .midi_clip(clip)
+        .expect("clip")
+        .notes()
+        .to_vec();
+    editor
+        .execute(Command::TrimMidiClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            beat: beat(7),
+        })
+        .expect("left resize");
+    editor
+        .execute(Command::TrimMidiClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            beat: beat(15),
+        })
+        .expect("right resize");
+    let restored = decode(&encode(editor.project()).expect("encode")).expect("decode");
+    assert_eq!(restored.snapshot(), editor.project().snapshot());
+    let resized = restored.midi_clip(clip).expect("retained clip");
+    assert_eq!(resized.notes(), notes);
+    assert_eq!(resized.start(), beat(7));
+    assert_eq!(resized.length(), beat(8));
+    assert_eq!(resized.source_start(), beat(3));
+    assert_eq!(resized.source_length(), beat(8));
+}

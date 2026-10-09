@@ -103,7 +103,7 @@ impl PreparedImport {
         let source_frames = u64::try_from(decoded.frames())
             .map_err(|_| SessionError::Invalid("source frame count exceeds project range"))?;
         let audio = resample(decoded.audio(), project_rate, limits)?;
-        let waveform = waveform::summarize(&audio, 1_024)?;
+        let waveform = waveform::summarize(&audio, waveform::MAX_BINS)?;
         Ok(Self {
             path: decoded.path().to_path_buf(),
             source_sample_rate,
@@ -275,7 +275,7 @@ impl Session {
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let audio = prepared.audio;
             let waveform = prepared.waveform;
-            let bins = waveform.bins.len();
+            let bins = waveform.cached_bin_count();
             let bytes = bins
                 .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
@@ -330,7 +330,7 @@ impl Session {
         &self,
         waveform: &Waveform,
     ) -> Result<(usize, usize), SessionError> {
-        let bins = waveform.bins.len();
+        let bins = waveform.cached_bin_count();
         let bytes = bins
             .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
@@ -541,7 +541,7 @@ impl Session {
         if self.media.try_reserve(1).is_err() {
             return Err(SessionError::Allocation);
         }
-        let bins = prepared.waveform.bins.len();
+        let bins = prepared.waveform.cached_bin_count();
         let waveform_bytes = bins
             .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;

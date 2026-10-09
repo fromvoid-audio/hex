@@ -10,7 +10,7 @@ is a separate versioned reference gate, not implied by implementing the feature.
 | Native desktop | GPUI shell, scrollable workspace | Resize, focus, accessible keyboard and controls |
 | Audio output | CPAL default output, visible error, source-integrated restart of the default output with stopped graph/cursor restore | Native failure/restart acceptance, device selection, disconnect recovery and long stress run |
 | Transport/tempo | Canonical Play/pause/Stop, ruler seek, persisted loop region and bounded tempo/meter maps; frame audio unchanged by tempo edits | Playable musical clips, beat-anchored audio, tempo ramps, scrub, drag loop handles, metronome |
-| Arrangement | Native imported clips, nudge/trim/delete/duplicate/split, linear fades with split continuity, audio/MIDI same/cross-track pointer moves with exact in-track landing previews, and audio edge trim with loop phase, cached peaks; viewport zoom/pan/fit | Escape/resize/dense native acceptance, snap for trims/nudges, drag autoscroll, adjustable fade curves and measured Live fade comparison |
+| Arrangement | Native imported clips, nudge/trim/delete/duplicate/split, linear fades with split continuity, audio/MIDI same/cross-track pointer moves with exact in-track landing previews, and audio/MIDI edge resizing with live previews, grid/Command modifiers and thin corner handles, cached peaks; viewport zoom/pan/fit | Native thin-handle/live-resize acceptance, dense interaction acceptance, snap for nudges, drag autoscroll, adjustable fade curves and measured Live fade comparison |
 | Session | Canonical stable-ID scenes, sparse independent MIDI/audio one-shot/explicit-stop cells, copy/move/edit/history, schema-13 persistence, immutable prepared inventory, structural per-track maxima and exact precommit revision publication; headless mixed-route launch/stop/return kernel with bounded outgoing releases, transactional rendering, periodic loop-aware tempo and accepted phase-preserving revision handoff; source-accepted native prepared action/publication queues with dual clocks, capability fallback and off-callback reclamation; compact paged canonical grid, atomic clip/scene launch-and-play, ticketed rapid toggle intent, ordered priority Stop, shared Session MIDI editor and compact cached-waveform audio source controls; accepted-revision current/queued route markers, including same-cell retriggers; fixed demo playback remains separate | Native audio source/import/edit/save/launch interaction, warped audio loops and source envelopes, global/per-clip quantization controls beyond the kernel's immediate/four-quarter modes, mixed-route physical admission, natural horizontal scroll, follow behavior and recording to Arrangement |
 | Mixer | Canonical gain, original Hex linear balance, mute, exclusive/additive solo, master gain and output peaks | Native empty-audio control changes accepted; listening, sends/returns, calibrated meters and measured Live pan-law comparison |
 | Audio recording | Planned | Arm input, monitor, record, stop, recover on disk failure |
@@ -86,3 +86,22 @@ clips with one compiled history edit. Blank append/empty sections highlight
 subtly. MIDI right fragments use finite one-shot projection, with boundary-held
 notes retriggered; see `clip-overwrite.md`. Source tests pass; native acceptance
 is pending in `artifacts/hex-overwrite-drop-20261009.app`.
+
+Arrangement has an adaptive musical grid and view-only pointer navigation:
+mouse wheel zooms at pointer; middle drag pans time and virtualized track rows.
+Source-tested (216 UI tests/one ignored), native review pending; see
+`arrangement-navigation.md`. Explicit edit snap is unchanged.
+
+Subsequent snapping extension enables adaptive clip snapping by default, sharing
+paint and placement spacing. Command temporarily inverts snap during moves and
+sample imports, including stationary changes and mouse-up. Blank/zero-track
+drops preview a prospective appended row; dividers stay line-only. Source checks
+pass (220 UI tests/one ignored); native acceptance remains pending. This is the
+documented grid/modifier subset, not full Live magnetic-target parity.
+
+
+The Arrangement overview now fits all tracks and audio/MIDI clips above the
+ruler, with cached compact drawing, viewport outline and click navigation.
+See [arrangement-overview.md](arrangement-overview.md). Command preserves grid visibility; alternating
+four-unit bands and the native input repair are in this review milestone.
+Native visual and physical-input acceptance remain pending.

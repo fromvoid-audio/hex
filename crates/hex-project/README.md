@@ -147,3 +147,11 @@ notes slated for removal and does not publish a replacement playback graph.
 snapshot before moving either stack. A failed compiler or validator leaves the
 current project, allocator high-water and undo/redo order unchanged; successful
 preparation returns its artifact with the committed history transition.
+
+Arrangement MIDI edge resizing uses `TrimMidiClipEdge` with beat units and a
+metadata-only `MidiClip::preview_edge_trim` / `MidiClipTrim` candidate. Authored
+notes and IDs remain intact; only timeline bounds and the playback start marker
+change. The original one-shot/intro/loop phase policy is in `docs/midi.md`.
+
+`InsertTrack` creates an empty hybrid track before an optional stable anchor
+(or appends), with existing validation/history and no schema change.

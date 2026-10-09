@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-audio", "crates/hex-preferences"]
+exclude = ["third_party/gpui"]
 resolver = "3"
 
 [workspace.package]
@@ -13,3 +14,7 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Pinned external GPUI native-input repair; see docs/native-input.md.
+[patch.crates-io]
+gpui = { path = "third_party/gpui" }

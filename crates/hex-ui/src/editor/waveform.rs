@@ -1,10 +1,10 @@
 use crate::theme::{self, Palette};
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
 use std::{ops::Range, sync::Arc};
 
-const WAVEFORM_BINS_PER_CLIP: usize = 48;
+const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 4;
 
@@ -14,46 +14,177 @@ pub(super) fn waveform_view(
     visible_start: u64,
     visible_end: u64,
 ) -> Div {
-    let visible_frames = visible_end.saturating_sub(visible_start);
-    let bar_count = usize::try_from(visible_frames.min(WAVEFORM_BINS_PER_CLIP as u64))
-        .unwrap_or(WAVEFORM_BINS_PER_CLIP)
-        .max(1);
-    let mut bars = div()
-        .absolute()
-        .top(px(2.0))
-        .bottom(px(2.0))
-        .left(px(4.0))
-        .right(px(2.0))
-        .flex()
-        .items_center()
-        .gap(px(1.0));
-    for bar in 0..bar_count {
-        let timeline_start =
-            visible_start.saturating_add(fraction_u64(visible_frames, bar, bar_count));
-        let timeline_end =
-            visible_start.saturating_add(fraction_u64(visible_frames, bar + 1, bar_count));
-        let ranges =
-            timeline_source_ranges(clip, timeline_start..timeline_end, waveform.source_frames);
-        let amplitude = aggregate_ranges(waveform, ranges.as_slice())
-            .map(|peaks| {
-                peaks
+    waveform_view_at(waveform, clip, clip.start(), visible_start, visible_end)
+}
+
+pub(super) fn waveform_view_at(
+    waveform: &Arc<CachedWaveform>,
+    clip: &Clip,
+    timeline_origin: u64,
+    visible_start: u64,
+    visible_end: u64,
+) -> Div {
+    waveform_canvas(
+        Arc::clone(waveform),
+        WaveformMapping::Clip {
+            clip: clip.clone(),
+            timeline_origin,
+        },
+        visible_start,
+        visible_end,
+    )
+}
+
+pub(super) fn waveform_source_segment_view(
+    waveform: Arc<CachedWaveform>,
+    timeline_origin: u64,
+    visible_start: u64,
+    visible_end: u64,
+) -> Div {
+    waveform_canvas(
+        waveform,
+        WaveformMapping::Source { timeline_origin },
+        visible_start,
+        visible_end,
+    )
+}
+
+pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
+    let end = u64::try_from(waveform.source_frames).unwrap_or(u64::MAX);
+    waveform_source_segment_view(waveform, 0, 0, end)
+}
+
+#[derive(Clone)]
+enum WaveformMapping {
+    Clip { clip: Clip, timeline_origin: u64 },
+    Source { timeline_origin: u64 },
+}
+
+fn waveform_canvas(
+    waveform: Arc<CachedWaveform>,
+    mapping: WaveformMapping,
+    visible_start: u64,
+    visible_end: u64,
+) -> Div {
+    let mapping = mapping.clone();
+    waveform_surface(canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
+            if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
+                return;
+            }
+            let columns = waveform_column_count(width, window.scale_factor());
+            let frames = visible_end - visible_start;
+            let mut stereo_peaks = Vec::with_capacity(columns);
+            for column in 0..columns {
+                let start = visible_start.saturating_add(fraction_u64(frames, column, columns));
+                let end = visible_start
+                    .saturating_add(fraction_u64(frames, column + 1, columns))
+                    .max(start.saturating_add(1));
+                let peaks = match &mapping {
+                    WaveformMapping::Clip {
+                        clip,
+                        timeline_origin,
+                    } => {
+                        let ranges = timeline_source_ranges_at(
+                            clip,
+                            *timeline_origin,
+                            start..end,
+                            waveform.source_frames,
+                        );
+                        aggregate_ranges(&waveform, ranges.as_slice())
+                    }
+                    WaveformMapping::Source { timeline_origin } => start
+                        .checked_sub(*timeline_origin)
+                        .zip(end.checked_sub(*timeline_origin))
+                        .and_then(|(start, end)| {
+                            usize::try_from(start).ok().zip(usize::try_from(end).ok())
+                        })
+                        .and_then(|(start, end)| aggregate_peaks(&waveform, start, end)),
+                };
+                stereo_peaks.push(peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]));
+            }
+            for channel in 0..2 {
+                let band_top = height * channel as f32 * 0.5;
+                let band_height = height * 0.5;
+                let center = band_top + band_height * 0.5;
+                let amplitude = (band_height * 0.44).max(0.5);
+
+                let mut maxima = Vec::with_capacity(columns);
+                let mut minima = Vec::with_capacity(columns);
+                for (column, peaks) in stereo_peaks.iter().enumerate() {
+                    let x = (column as f32 + 0.5) * width / columns as f32;
+                    let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
+                    maxima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(top)));
+                    minima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(bottom)));
+                }
+
+                let mut centerline = PathBuilder::stroke(px(0.5));
+                centerline.move_to(point(bounds.origin.x, bounds.origin.y + px(center)));
+                centerline.line_to(point(
+                    bounds.origin.x + bounds.size.width,
+                    bounds.origin.y + px(center),
+                ));
+                if let Ok(path) = centerline.build() {
+                    window.paint_path(path, rgb(Palette::BORDER));
+                }
+
+                let has_area = maxima
                     .iter()
-                    .map(|peak| peak.min.abs().max(peak.max.abs()))
-                    .fold(0.0_f32, f32::max)
-                    .clamp(0.0, 1.0)
-            })
-            .unwrap_or(0.0);
-        let height = px((amplitude * 28.0).max(1.0));
-        bars = bars.child(
-            div()
-                .flex_1()
-                .h(px(30.0))
-                .flex()
-                .items_center()
-                .child(div().w_full().h(height).bg(rgb(Palette::WAVEFORM))),
-        );
+                    .zip(&minima)
+                    .any(|(maximum, minimum)| (f32::from(maximum.y - minimum.y)).abs() >= 0.5);
+                if has_area && let Some(first) = maxima.first().copied() {
+                    let mut silhouette = PathBuilder::fill();
+                    silhouette.move_to(first);
+                    for point in maxima.iter().skip(1) {
+                        silhouette.line_to(*point);
+                    }
+                    for point in minima.iter().rev() {
+                        silhouette.line_to(*point);
+                    }
+                    silhouette.close();
+                    if let Ok(path) = silhouette.build() {
+                        window.paint_path(path, rgb(0x000000));
+                    }
+                } else if let Some(first) = maxima.first().copied() {
+                    // A constant sample has zero fill area; stroke its real level so
+                    // deep zoom never turns a non-silent signal into empty space.
+                    let mut trace = PathBuilder::stroke(px(1.0));
+                    trace.move_to(first);
+                    for point in maxima.iter().skip(1) {
+                        trace.line_to(*point);
+                    }
+                    if let Ok(path) = trace.build() {
+                        window.paint_path(path, rgb(0x000000));
+                    }
+                }
+            }
+        },
+    ))
+}
+
+// The canvas has no intrinsic size. Pin it to all four edges so its paint
+// bounds cover the clip, rather than collapsing to a zero-height child.
+fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .children([canvas.absolute().inset_0()])
+}
+
+fn waveform_column_count(width: f32, scale: f32) -> usize {
+    if !width.is_finite() || width <= 0.0 || !scale.is_finite() || scale <= 0.0 {
+        return 1;
     }
-    div().absolute().inset_0().child(bars)
+    ((width * scale).ceil() as usize).clamp(1, MAX_WAVEFORM_COLUMNS)
+}
+
+fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32) -> (f32, f32) {
+    let top = center - peak.max.clamp(-1.0, 1.0) * amplitude;
+    let bottom = center - peak.min.clamp(-1.0, 1.0) * amplitude;
+    (top.min(bottom), top.max(bottom))
 }
 
 /// Return a viewport-clipped, bounded preview of the canonical fade gain law.
@@ -151,12 +282,22 @@ impl SourceRanges {
 }
 
 /// Map a visible timeline interval to its active source region, splitting at a loop wrap.
+#[cfg(test)]
 fn timeline_source_ranges(
     clip: &Clip,
     visible: Range<u64>,
     available_frames: usize,
 ) -> SourceRanges {
-    let Some(clip_end) = clip.start().checked_add(clip.duration()) else {
+    timeline_source_ranges_at(clip, clip.start(), visible, available_frames)
+}
+
+fn timeline_source_ranges_at(
+    clip: &Clip,
+    timeline_origin: u64,
+    visible: Range<u64>,
+    available_frames: usize,
+) -> SourceRanges {
+    let Some(clip_end) = timeline_origin.checked_add(clip.duration()) else {
         return SourceRanges::default();
     };
     let Some(source_end) = clip.source_offset().checked_add(clip.source_length()) else {
@@ -168,12 +309,12 @@ fn timeline_source_ranges(
     {
         return SourceRanges::default();
     }
-    let start = visible.start.max(clip.start());
+    let start = visible.start.max(timeline_origin);
     let end = visible.end.min(clip_end);
     if start >= end {
         return SourceRanges::default();
     }
-    let relative_start = start - clip.start();
+    let relative_start = start - timeline_origin;
     let span = end - start;
     let mut ranges = SourceRanges::default();
     if !clip.looping() {
@@ -239,43 +380,8 @@ fn push_source_range(ranges: &mut SourceRanges, start: u64, end: u64, available_
     }
 }
 
-/// Find summary bins intersecting a half-open source-frame interval.
-fn summary_bin_range(
-    waveform: &CachedWaveform,
-    start: usize,
-    end: usize,
-) -> std::ops::Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    if start == end || waveform.bins.is_empty() || waveform.source_frames == 0 {
-        return 0..0;
-    }
-    let count = waveform.bins.len();
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
-    let wide_frames = (width + 1).saturating_mul(extra);
-    let bin_at = |frame: usize| {
-        if frame < wide_frames {
-            frame / (width + 1)
-        } else {
-            extra + (frame - wide_frames) / width
-        }
-    };
-    bin_at(start).min(count)..(bin_at(end - 1) + 1).min(count)
-}
-
-/// Merge every summary bin touched by one display column, preserving extrema.
 fn aggregate_peaks(waveform: &CachedWaveform, start: usize, end: usize) -> Option<[CachedPeak; 2]> {
-    let range = summary_bin_range(waveform, start, end);
-    let first = waveform.bins.get(range.start)?;
-    let mut merged = *first;
-    for bin in waveform.bins.get(range.start + 1..range.end)? {
-        for channel in 0..2 {
-            merged[channel].min = merged[channel].min.min(bin[channel].min);
-            merged[channel].max = merged[channel].max.max(bin[channel].max);
-        }
-    }
-    Some(merged)
+    waveform.peaks_for_frames(start, end)
 }
 
 fn aggregate_ranges(waveform: &CachedWaveform, ranges: &[Range<usize>]) -> Option<[CachedPeak; 2]> {
@@ -352,6 +458,68 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
+        use gpui::{IntoElement, size};
+        use std::{cell::Cell, rc::Rc};
+
+        let visual = cx.add_empty_window();
+        for width in [8.0, 260.0] {
+            let painted = Rc::new(Cell::new(None));
+            let result = Rc::clone(&painted);
+            visual.draw(
+                point(px(0.0), px(0.0)),
+                size(px(width), px(44.0)),
+                |_, _| {
+                    div()
+                        .w(px(width))
+                        .h(px(44.0))
+                        .relative()
+                        .children([waveform_surface(canvas(
+                            |_, _, _| (),
+                            move |bounds, _, _, _| {
+                                result.set(Some(bounds));
+                            },
+                        ))])
+                        .into_element()
+                },
+            );
+            let bounds = painted.get().expect("waveform paint callback ran");
+            assert_eq!(bounds.size, size(px(width), px(44.0)));
+        }
+    }
+
+    #[test]
+    fn waveform_density_tracks_device_pixels_and_stays_bounded() {
+        assert_eq!(waveform_column_count(120.0, 1.0), 120);
+        assert_eq!(waveform_column_count(120.0, 2.0), 240);
+        assert_eq!(waveform_column_count(100_000.0, 2.0), MAX_WAVEFORM_COLUMNS);
+        assert_eq!(waveform_column_count(f32::NAN, 2.0), 1);
+    }
+
+    #[test]
+    fn waveform_peak_geometry_preserves_signed_channel_extrema() {
+        let positive = peak_vertical_bounds(
+            CachedPeak {
+                min: 0.25,
+                max: 0.75,
+            },
+            10.0,
+            8.0,
+        );
+        assert!(positive.0 < positive.1 && positive.1 < 10.0);
+        let negative = peak_vertical_bounds(
+            CachedPeak {
+                min: -0.75,
+                max: -0.25,
+            },
+            10.0,
+            8.0,
+        );
+        assert!(negative.0 > 10.0 && negative.1 > negative.0);
+    }
+
     fn clip(start: u64, duration: u64, offset: u64, length: u64, looping: bool) -> Clip {
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
         let Created::Imported { track, asset, .. } = editor
@@ -420,26 +588,27 @@ mod tests {
     }
 
     #[test]
-    fn source_ranges_map_to_uneven_summary_bins() {
-        let waveform = CachedWaveform {
-            source_frames: 11,
-            bins: vec![
+    fn cached_queries_preserve_signed_extrema_across_uneven_bins() {
+        let waveform = CachedWaveform::from_peaks(
+            11,
+            vec![
                 [peak(0.0), peak(0.0)],
                 [peak(0.2), peak(0.2)],
                 [peak(0.8), peak(0.8)],
             ],
-        };
-        assert_eq!(summary_bin_range(&waveform, 0, 4), 0..1);
-        assert_eq!(summary_bin_range(&waveform, 4, 8), 1..2);
-        assert_eq!(summary_bin_range(&waveform, 8, 11), 2..3);
-        assert_eq!(summary_bin_range(&waveform, 3, 9), 0..3);
+        )
+        .expect("valid cache");
+        assert_eq!(aggregate_peaks(&waveform, 0, 4).unwrap()[0].max, 0.0);
+        assert_eq!(aggregate_peaks(&waveform, 4, 7).unwrap()[0].max, 0.2);
+        assert_eq!(aggregate_peaks(&waveform, 7, 11).unwrap()[0].max, 0.8);
+        assert_eq!(waveform.cached_bin_count(), 6);
     }
 
     #[test]
     fn display_group_merges_all_bins_to_keep_transient_extrema() {
-        let waveform = CachedWaveform {
-            source_frames: 12,
-            bins: vec![
+        let waveform = CachedWaveform::from_peaks(
+            12,
+            vec![
                 [peak(0.0), peak(0.0)],
                 [
                     CachedPeak {
@@ -450,7 +619,8 @@ mod tests {
                 ],
                 [peak(0.0), peak(0.0)],
             ],
-        };
+        )
+        .expect("valid cache");
         let peaks = aggregate_peaks(&waveform, 0, 12).expect("nonempty group");
         assert_eq!(peaks[0].min, -1.0);
         assert_eq!(peaks[0].max, 0.9);
@@ -486,12 +656,13 @@ mod tests {
         let ranges = timeline_source_ranges(&clip, 103..106, 32);
         assert_eq!(ranges.as_slice(), &[13..14, 10..12]);
 
-        let waveform = CachedWaveform {
-            source_frames: 32,
-            bins: (0..32)
+        let waveform = CachedWaveform::from_peaks(
+            32,
+            (0..32)
                 .map(|frame| [peak(frame as f32 / 32.0), peak(frame as f32 / 32.0)])
                 .collect(),
-        };
+        )
+        .expect("valid cache");
         let peaks = aggregate_ranges(&waveform, ranges.as_slice()).expect("visible loop peaks");
         assert_eq!(peaks[0].max, 13.0 / 32.0);
         assert_eq!(peaks[0].min, 10.0 / 32.0);
@@ -565,14 +736,15 @@ mod tests {
 
     #[test]
     fn loop_waveform_preserves_peaks_across_the_phase_wrap() {
-        let waveform = CachedWaveform {
-            source_frames: 6,
-            bins: vec![
+        let waveform = CachedWaveform::from_peaks(
+            6,
+            vec![
                 [peak(0.1), peak(0.1)],
                 [peak(0.9), peak(0.2)],
                 [peak(0.3), peak(0.3)],
             ],
-        };
+        )
+        .expect("valid cache");
         let ranges = timeline_source_ranges(&clip(0, 8, 1, 4, true), 2..4, 6);
         let peaks = aggregate_ranges(&waveform, ranges.as_slice()).expect("wrapped visible loop");
         assert_eq!(peaks[0].max, 0.9);

@@ -392,9 +392,9 @@ mod tests {
 
     #[test]
     fn source_waveform_is_cropped_to_the_half_open_one_shot_window() {
-        let waveform = CachedWaveform {
-            source_frames: 9,
-            bins: (0..9)
+        let waveform = CachedWaveform::from_peaks(
+            9,
+            (0..9)
                 .map(|index| {
                     let value = if (3..7).contains(&index) { 0.75 } else { 0.0 };
                     [
@@ -406,7 +406,8 @@ mod tests {
                     ]
                 })
                 .collect(),
-        };
+        )
+        .expect("valid waveform fixture");
         let bars = waveform_bars(&waveform, 3, 7);
         assert_eq!(bars.len(), WAVEFORM_COLUMNS);
         assert!(bars.iter().all(|value| *value == 0.75));

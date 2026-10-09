@@ -1311,3 +1311,14 @@ Short runs show timing noise; no speedup or sustained deadline claim is made.
 Logs: `artifacts/hybrid-profile-before.log` and `hybrid-profile-after.log`.
 Independent mixed-source PCM checks pass in debug/release; native listening,
 100-track hybrid stress and physical device deadlines remain separate gates.
+
+
+## waveform cache change — 9 October 2026
+
+Imports now prepare up to 65,536 leaf peaks plus a pairwise hierarchy, replacing
+the old 1,024-bin summary. Wider UI range queries are logarithmic; deep zoom
+scans at most 64 shared PCM frames per query. Resident counters include all peak
+levels, while shared PCM is counted with the existing media bank. This increases
+peak memory/import work for detailed rendering; no new render/input timing
+benchmark is claimed. Measure dense visible clips and 100-track native edits
+before accepting responsiveness. See waveform-display.md.

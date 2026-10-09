@@ -85,10 +85,10 @@ fn prepared_import_compiles_exact_audio_and_waveform_summary() {
     );
     assert_eq!(session.project().clip(clip).expect("clip").asset(), asset);
     assert_eq!(session.resident_frames(), 3);
-    assert_eq!(session.resident_waveform_bins(), 3);
+    assert_eq!(session.resident_waveform_bins(), 6);
     assert_eq!(
         session.resident_waveform_bytes(),
-        3 * std::mem::size_of::<[hex_media::waveform::Peak; 2]>()
+        6 * std::mem::size_of::<[hex_media::waveform::Peak; 2]>()
     );
     let waveform = session.waveform(asset).expect("cached waveform");
     assert_eq!(
@@ -680,11 +680,11 @@ fn waveform_summary_caps_resolution_and_keeps_bucket_extrema() {
             .expect("import"),
     );
     let bins = &session.waveform(asset).expect("waveform").bins;
-    assert_eq!(bins.len(), 1_024);
-    assert_eq!(bins[0][0].max, 0.5);
-    assert_eq!(bins[0][1].min, -0.25);
-    assert_eq!(bins[512][0].min, -0.5);
-    assert_eq!(bins[512][1].max, 0.25);
+    assert_eq!(bins.len(), 2_048);
+    assert_eq!(bins[1][0].max, 0.5);
+    assert_eq!(bins[1][1].min, -0.25);
+    assert_eq!(bins[1_025][0].min, -0.5);
+    assert_eq!(bins[1_025][1].max, 0.25);
 }
 
 #[test]

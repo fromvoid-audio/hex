@@ -297,3 +297,38 @@ line. MIDI right fragments become finite one-shot sources and held notes
 retrigger at the cut boundary. See [overwrite contract](docs/clip-overwrite.md).
 Source checks pass; review app: `artifacts/hex-overwrite-drop-20261009.app`. Native
 acceptance remains pending.
+
+Arrangement navigation work adds an adaptive musical background grid,
+pointer-anchored mouse-wheel zoom and middle-button horizontal/vertical pan.
+Navigation is view-only; the subsequent snapping extension enables adaptive
+clip snapping by default with Command override. Source verification
+and native acceptance are tracked in [Arrangement navigation](docs/arrangement-navigation.md).
+
+Adaptive clip snapping is enabled by default and shares the visible grid's
+spacing. Command temporarily bypasses it (or enables adaptive snap when off).
+Blank Arrangement drops preview clips on the prospective new-track row instead
+of following the cursor freely. Review: `artifacts/hex-grid-snapping-20261009.app`;
+[snapping contract and native checklist](docs/grid-snapping.md). 220 UI tests
+pass/one ignored; native review remains pending.
+
+
+The Arrangement overview now fits all tracks and audio/MIDI clips above the
+ruler, with cached compact drawing, viewport outline and click navigation.
+See [arrangement-overview.md](docs/arrangement-overview.md). Command preserves grid visibility; alternating
+four-unit bands and the native input repair are in this review milestone.
+Native visual and physical-input acceptance remain pending.
+
+
+Audio and MIDI Arrangement clips now use compact bottom-corner resize targets
+while retaining the upper clip body for movement. Resizing paints the proposed
+clip and waveform/note geometry immediately, uses the selected grid and allows
+Command free movement. One canonical edit is submitted at release. See
+[clip-resizing.md](docs/clip-resizing.md); native acceptance remains pending.
+
+
+The latest Arrangement style follows the supplied Live screenshot: flush
+full-track clip height, a one-pixel black border, warm fills with dark signed
+channel waveforms, and aligned grid lines through the clip. macOS resize edges
+use original bracket cursors retained by the existing external GPUI boundary.
+Waveform cache/query fidelity and open native timing checks are recorded in
+[waveform-display.md](docs/waveform-display.md).

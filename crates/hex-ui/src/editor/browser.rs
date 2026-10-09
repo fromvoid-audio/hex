@@ -3,7 +3,7 @@ use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme::{self, Palette};
 use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Window, canvas, div, prelude::*, px, rgb, uniform_list,
+    PathPromptOptions, Window, canvas, div, prelude::*, px, relative, rgb, uniform_list,
 };
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::BrowserPlaces;
@@ -15,6 +15,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
 };
 
 const DEFAULT_WIDTH: f32 = 280.0;
@@ -210,38 +211,36 @@ impl gpui::Render for BrowserAudioDragGhost {
     }
 }
 
-fn browser_audio_drag_ghost(payload: &drag::BrowserAudioDrag, left: f32, top: f32) -> Div {
-    let mut bars = div()
-        .absolute()
-        .left(px(4.0))
-        .right(px(4.0))
-        .top(px(12.0))
-        .bottom(px(4.0))
-        .flex()
-        .items_center()
-        .gap(px(1.0));
+struct BrowserGhostGeometry {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+struct BrowserGhostDecor {
+    selector: &'static str,
+    grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
+    waveform_visual: Option<Div>,
+}
+
+fn browser_audio_drag_ghost(
+    payload: &drag::BrowserAudioDrag,
+    geometry: BrowserGhostGeometry,
+    decor: BrowserGhostDecor,
+) -> Div {
+    let BrowserGhostGeometry {
+        left,
+        top,
+        width,
+        height,
+    } = geometry;
+    let BrowserGhostDecor {
+        selector,
+        grid,
+        waveform_visual,
+    } = decor;
     let metadata = payload.metadata.borrow().clone();
-    if let Some(metadata) = metadata.as_ref() {
-        for [left, right] in &metadata.waveform.bins {
-            let amplitude = left
-                .min
-                .abs()
-                .max(left.max.abs())
-                .max(right.min.abs())
-                .max(right.max.abs())
-                .clamp(0.08, 1.0);
-            bars = bars.child(
-                div().flex_1().h_full().flex().items_center().child(
-                    div()
-                        .w_full()
-                        .h(px(amplitude * 17.0))
-                        .bg(rgb(Palette::WAVEFORM)),
-                ),
-            );
-        }
-    } else {
-        bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(Palette::CYAN)));
-    }
     let status = metadata.as_ref().map_or_else(
         || {
             payload.metadata_error.borrow().clone().map_or_else(
@@ -254,34 +253,53 @@ fn browser_audio_drag_ghost(payload: &drag::BrowserAudioDrag, left: f32, top: f3
             format!("{seconds:.2} s · {} frames", metadata.playback_frames)
         },
     );
-    div()
-        .debug_selector(|| "browser-audio-floating-preview".to_owned())
+    let mut ghost = div()
+        .debug_selector(move || selector.to_owned())
         .absolute()
         .left(px(left))
         .top(px(top))
-        .w(px(184.0))
-        .h(px(36.0))
+        .w(px(width.max(3.0)))
+        .h(px(height.max(3.0)))
         .overflow_hidden()
         .border_1()
-        .border_color(rgb(Palette::CYAN))
-        .bg(rgb(Palette::RAISED))
-        .opacity(0.9)
-        .child(
+        .border_color(rgb(0x000000))
+        .bg(rgb(Palette::CLIP_FILL))
+        .opacity(0.9);
+    if let Some((lines, start, end)) = grid {
+        ghost = ghost.children([super::tracks::clip_grid_layer(&lines, start, end)]);
+    }
+    if let Some(waveform) = waveform_visual {
+        ghost = ghost.children([waveform]);
+    } else if let Some(metadata) = metadata {
+        ghost = ghost.children([super::waveform::waveform_summary_view(Arc::clone(
+            &metadata.waveform,
+        ))]);
+    } else {
+        ghost = ghost.child(
             div()
                 .absolute()
+                .top(relative(0.5))
                 .left(px(4.0))
-                .top_0()
-                .right(px(3.0))
-                .h(px(12.0))
-                .flex()
-                .gap_1()
-                .text_xs()
-                .text_color(rgb(Palette::TEXT))
-                .line_clamp(1)
-                .child(theme::text(payload.label.clone()))
-                .child(theme::text(status)),
-        )
-        .child(bars)
+                .right(px(4.0))
+                .h(px(1.0))
+                .bg(rgb(Palette::CLIP_TEXT)),
+        );
+    }
+    ghost.child(
+        div()
+            .absolute()
+            .left(px(4.0))
+            .top_0()
+            .right(px(3.0))
+            .h(px(12.0))
+            .flex()
+            .gap_1()
+            .text_xs()
+            .text_color(rgb(Palette::CLIP_TEXT))
+            .line_clamp(1)
+            .child(theme::text(payload.label.clone()))
+            .child(theme::text(status)),
+    )
 }
 
 fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
@@ -619,6 +637,108 @@ impl EditorView {
             .active_browser_audio_drag
             .as_ref()
             .filter(|drag| self.browser_audio_drag_is_current(drag))?;
+        if let Some(drag::BrowserDropDestination::NewTrack {
+            before_track: None,
+            start,
+        }) = payload.destination.get()
+        {
+            let state = self.state.as_ref()?;
+            let body = self.arrangement_bounds?;
+            let viewport = self.visible_viewport(state.timeline_frames);
+            let timeline_width = body.width - super::tracks::TRACK_HEADER_WIDTH;
+            if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
+                return None;
+            }
+            let Some(end) = payload
+                .metadata
+                .borrow()
+                .as_ref()
+                .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                .and_then(|metadata| start.checked_add(metadata.playback_frames))
+            else {
+                let left = body.left
+                    + ((start.saturating_sub(viewport.start).min(viewport.length)) as f64
+                        / viewport.length as f64
+                        * f64::from(timeline_width)) as f32;
+                let top = if state.project.tracks().is_empty() {
+                    body.top
+                } else {
+                    payload.insertion_line_y.get().unwrap_or(body.top) + 1.0
+                };
+                let height = (body.top + body.height - top).clamp(0.0, 44.0);
+                if height <= 0.0 {
+                    return None;
+                }
+                return Some(browser_audio_drag_ghost(
+                    payload,
+                    BrowserGhostGeometry {
+                        left,
+                        top,
+                        width: 3.0,
+                        height,
+                    },
+                    BrowserGhostDecor {
+                        selector: "browser-audio-append-preview",
+                        grid: None,
+                        waveform_visual: None,
+                    },
+                ));
+            };
+            let visible_start = start.max(viewport.start);
+            let visible_end = end.min(viewport.end()?);
+            if visible_start >= visible_end {
+                return None;
+            }
+            let left = body.left
+                + ((visible_start - viewport.start) as f64 / viewport.length as f64
+                    * f64::from(timeline_width)) as f32;
+            let width = (visible_end - visible_start) as f64 / viewport.length as f64
+                * f64::from(timeline_width);
+            let top = if state.project.tracks().is_empty() {
+                body.top
+            } else {
+                payload.insertion_line_y.get().unwrap_or(body.top) + 1.0
+            };
+            let height = (body.top + body.height - top).clamp(0.0, 44.0);
+            if height <= 0.0 {
+                return None;
+            }
+            return Some(browser_audio_drag_ghost(
+                payload,
+                BrowserGhostGeometry {
+                    left,
+                    top,
+                    width: width as f32,
+                    height,
+                },
+                BrowserGhostDecor {
+                    selector: "browser-audio-append-preview",
+                    grid: Some((
+                        super::musical_time::grid_lines(
+                            &state.project,
+                            viewport,
+                            timeline_width,
+                            self.snap_grid,
+                        ),
+                        visible_start,
+                        visible_end,
+                    )),
+                    waveform_visual: payload
+                        .metadata
+                        .borrow()
+                        .as_ref()
+                        .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                        .map(|metadata| {
+                            super::waveform::waveform_source_segment_view(
+                                Arc::clone(&metadata.waveform),
+                                start,
+                                visible_start,
+                                visible_end,
+                            )
+                        }),
+                },
+            ));
+        }
         if payload.lane_hovered.get() {
             return Some(
                 div()
@@ -632,7 +752,20 @@ impl EditorView {
         }
         let (pointer_x, pointer_y) = payload.last_pointer.get()?;
         let (left, top) = browser_audio_drag_ghost_position((pointer_x, pointer_y));
-        Some(browser_audio_drag_ghost(payload, left, top))
+        Some(browser_audio_drag_ghost(
+            payload,
+            BrowserGhostGeometry {
+                left,
+                top,
+                width: 184.0,
+                height: 36.0,
+            },
+            BrowserGhostDecor {
+                selector: "browser-audio-floating-preview",
+                grid: None,
+                waveform_visual: None,
+            },
+        ))
     }
 
     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
@@ -1043,6 +1176,7 @@ impl EditorView {
         let entity = cx.entity();
         let mut resize = div()
             .id("browser-resize-handle")
+            .debug_selector(|| "browser-resize-handle".to_owned())
             .h_full()
             .w(px(4.0))
             .flex_shrink_0()
@@ -1156,6 +1290,7 @@ impl EditorView {
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
                         snap_grid,
+                        snap_modifier: Rc::new(Cell::new(false)),
                         metadata: slot.metadata,
                         metadata_error: slot.error,
                         preview: Rc::new(Cell::new(None)),
@@ -1224,6 +1359,7 @@ impl EditorView {
             let drag_entity = cx.entity();
             row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
                 let position = window.mouse_position();
+                payload.snap_modifier.set(window.modifiers().platform);
                 payload
                     .last_pointer
                     .set(Some((f32::from(position.x), f32::from(position.y))));
@@ -1252,6 +1388,7 @@ impl EditorView {
                 let pointer = event.event.position;
                 let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer_xy));
+                payload.snap_modifier.set(event.event.modifiers.platform);
                 let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
                     view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
                 });
