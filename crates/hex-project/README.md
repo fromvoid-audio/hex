@@ -37,9 +37,10 @@ history. No PCM or OS clipboard is owned here. See [time selection](../../docs/t
 
 ## Dependencies
 
-std only. The engine consumes read-only snapshots to compile playback; storage
-owns the versioned native metadata file. The model never depends on playback,
-devices or UI.
+Depends on the standard library and `hex-lattice-contract` for opaque, bounded
+native-device state envelopes. The engine consumes read-only snapshots to
+compile playback; storage owns the versioned native metadata file. Device
+payloads remain opaque here; the model does not depend on DSP or UI.
 
 Prepared browser imports can atomically insert a default hybrid track before a
 stable `TrackId` or append at the end, then create its audio asset and clip at a
@@ -61,7 +62,7 @@ victims, so candidate compilation/history admission stays atomic. See
 ## Does not own
 
 PCM decoding, disk I/O, audio callbacks, render scheduling, GUI state,
-resampling, warp, MIDI synthesis/playback, devices or compatibility import. Undo history is a bounded
+resampling, warp, MIDI synthesis/playback, device DSP or compatibility import. Undo history is a bounded
 control-side snapshot implementation, not a real-time API.
 
 IDs are project-scoped, monotonically allocated and never reused by an Editor

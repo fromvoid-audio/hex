@@ -356,6 +356,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 balance: 0.0,
                 muted: false,
                 soloed: false,
+                devices: Vec::new(),
                 content: TrackContent::default(),
             });
             Ok(Created::Track(id))

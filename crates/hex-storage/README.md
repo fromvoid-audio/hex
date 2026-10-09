@@ -8,13 +8,21 @@ enter or leave this boundary.
 
 ## Dependencies
 
-hex-project for model validation, serde/serde_json for versioned project JSON,
+hex-project for model validation, hex-lattice-contract for bounded device state,
+serde/serde_json for versioned project JSON,
 and std for bounded file access and same-directory publication.
 
 ## Does not own
 
 PCM decoding/streaming, audio callbacks, editing/history, GPUI, Live-set import,
-plugin state or any fields that have not yet been introduced into the model.
+device-specific codecs, plugin hosting or fields not introduced into the model.
+
+Schema 14 adds ordered per-track native device envelopes: stable instance ID,
+bypass, namespaced type ID, state version and bounded opaque bytes. Schemas 1–13
+migrate to empty chains. Storage preserves unknown types and future device-state
+versions without interpreting payloads; registered codecs and playback
+availability belong to control-side compilation. Adding a native device type
+requires no storage branch. Known document fields remain strict.
 
 Schema 12 adds independently owned Session audio one-shots with asset IDs and
 validated half-open project-rate PCM source bounds. Schema 13 makes each track

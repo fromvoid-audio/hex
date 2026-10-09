@@ -12,6 +12,7 @@ use hex_engine::{
     SineTable,
     playback::{Playback, PlaybackCommand},
 };
+use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{
     AssetId, BeatTime, Command, Created, Editor, Project, SceneId, Tempo, TrackContentSnapshot,
     TrackId,
@@ -165,6 +166,18 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     editor.execute(Command::Balance {
         track,
         balance: -0.25,
+    })?;
+    let utility_type = DeviceTypeId::new("hex.utility")?;
+    let utility_state = hex_engine::default_native_device_state(utility_type)?;
+    let utility_state = hex_engine::patch_native_device_parameter(
+        &utility_state,
+        ParameterId::new(6)?,
+        ParameterValue::Bool(true),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: utility_state,
     })?;
     let project = editor.project().clone();
     let media = BTreeMap::from([(

@@ -13,20 +13,49 @@ lowercase text. It does not imply measured Ableton compatibility.
 linear controls alongside the existing sine instrument. Neither crate owns
 project editing, persistence, UI, device I/O or plugin loading.
 
-`hex-project` remains independent of DSP crates. The next integration introduces
-stable device IDs, ordered per-track effects, validated settings and typed
-insert/remove/reorder/update/bypass commands. Canonical snapshots and storage
-must retain every instance; a fused processing matrix is derived data, never the
-saved editable chain. Schema 14 will explicitly migrate older projects to empty
-effect chains. Candidate compilation must succeed before history commits.
+`hex-lattice-contract` owns neutral device metadata and bounded versioned state:
+stable type/parameter identifiers, parameter values/descriptors and opaque state
+payloads. `hex-project` deliberately depends on this shared contract while
+remaining independent of DSP implementations. It owns instance IDs, ordered
+per-track effects and structural envelope/history validation.
+
+Type IDs are bounded lowercase namespace strings such as `hex.utility`;
+parameter IDs are stable within each type. Opaque payloads use immutable shared
+bytes so project/history clones retain state without copying each payload.
+State parsing and replacement allocations belong on control workers.
+
+`hex-lattice` owns the native processing-definition and registry seam;
+`hex-devices` implements and registers Utility. A device definition supplies
+defaults, validation, state migration, parameter access/patching and preparation.
+Its codec interprets its own payload. Adding a device means implementing this
+contract and registering it, without adding a per-device storage DTO or engine
+type switch. The first admitted processing class is memoryless linear audio
+effects; other classes need a real runtime implementation before admission.
+
+Canonical snapshots and storage retain each instance's ID, bypass, stable type
+ID, state version and opaque payload. A fused processing matrix is derived data,
+never the saved editable chain. Schema 14 explicitly migrates older projects to
+empty effect chains. Unknown types and future state versions round-trip without
+payload loss; compilation refuses unavailable/unsupported processing explicitly,
+including bypassed missing devices. Known malformed payloads never default-reset.
+Candidate compilation must succeed before history commits.
+
+Generic project commands insert/remove/reorder/bypass/replace device state.
+Parameter requests resolve the registered definition on the session worker and
+patch its current canonical state before prepared commit, preventing stale whole
+settings from overwriting another edit. Descriptors supply UI control metadata.
+Tests register a second independent definition through the same storage and
+preparation paths to establish the modular seam.
 
 The engine prepares Utility matrices on the control side. Because these effects
 are linear and memoryless, their ordered composition can process each source
 contribution before summation without a track scratch buffer. Effects run before
 track gain/balance/mute and master gain. Arrangement audio/MIDI, Session sources,
 resident and streamed paths must share this transform. Captured Session release
-tails retain the prepared mix belonging to their source revision, consistent
-with the existing release handoff policy. A neutral chain has an exact identity
+tails retain the prepared mix belonging to their source revision. This makes
+the policy consistent for retained and removed tracks: previously only removed
+tracks used the captured mix, while retained-track tails used the current mix.
+A neutral chain has an exact identity
 path; preparation rejects non-finite coefficients or composition overflow.
 
 This first implementation declares zero algorithmic latency. It does not remove
@@ -39,9 +68,14 @@ still overflow, as in the existing renderer.
 Pulse owns the active tickets. The first focused prerequisite is ticket 42:
 lattice stereo primitives and original linear Utility DSP, independently tested.
 It does not yet expose desktop device processing. Ticket 16 owns canonical
-device model/runtime integration; ticket 17 owns the real compact device panel;
+device model/runtime integration, with canonical chains delivered in ticket 43
+and the modular contract tracked by ticket 70. Ticket 44 owns a reusable
+Live-style native device-control toolkit;
+ticket 17 owns the real compact device panel and depends on both;
 ticket 18 owns complete Utility functionality and reference acceptance; ticket
 19 owns Operator. The user prioritized these before main/return-track layout.
+The toolkit supplies knobs, sliders, editable values, toggles, selectors and
+compact device frames without owning canonical device state or DSP.
 
 Source tests cover identity, asymmetric stereo inputs, polarity/channel choices,
 mono/width/M-S behavior, serial order, malformed parameters and sample/block

@@ -2540,6 +2540,7 @@ dependencies = [
  "allocation-counter",
  "cpal",
  "hex-engine",
+ "hex-lattice-contract",
  "hex-project",
  "rtrb",
 ]
@@ -2569,6 +2570,7 @@ name = "hex-devices"
 version = "0.1.0"
 dependencies = [
  "hex-lattice",
+ "hex-lattice-contract",
 ]
 
 [[package]]
@@ -2576,6 +2578,8 @@ name = "hex-engine"
 version = "0.1.0"
 dependencies = [
  "hex-devices",
+ "hex-lattice",
+ "hex-lattice-contract",
  "hex-project",
 ]
 
@@ -2588,6 +2592,13 @@ dependencies = [
 
 [[package]]
 name = "hex-lattice"
+version = "0.1.0"
+dependencies = [
+ "hex-lattice-contract",
+]
+
+[[package]]
+name = "hex-lattice-contract"
 version = "0.1.0"
 
 [[package]]
@@ -2614,6 +2625,9 @@ dependencies = [
 [[package]]
 name = "hex-project"
 version = "0.1.0"
+dependencies = [
+ "hex-lattice-contract",
+]
 
 [[package]]
 name = "hex-session"
@@ -2621,6 +2635,7 @@ version = "0.1.0"
 dependencies = [
  "hex-engine",
  "hex-export",
+ "hex-lattice-contract",
  "hex-media",
  "hex-project",
  "hex-storage",
@@ -2630,6 +2645,7 @@ dependencies = [
 name = "hex-storage"
 version = "0.1.0"
 dependencies = [
+ "hex-lattice-contract",
  "hex-project",
  "serde",
  "serde_json",

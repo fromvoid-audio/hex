@@ -6,9 +6,9 @@ Provide small validated linear transforms for stereo signal processing.
 
 ## Dependencies
 
-This crate uses only the Rust standard library. It defines stereo frames,
+This crate uses the Rust standard library and `hex-lattice-contract`. It defines stereo frames,
 immutable finite 2×2 matrices, ordered composition, and explicit memoryless
-latency metadata.
+latency metadata, plus the borrowed native linear-device definition registry.
 
 ## Does not own
 

@@ -44,6 +44,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             balance: (index % 9) as f32 * 0.1 - 0.4,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip,
                 start_raw: 0,

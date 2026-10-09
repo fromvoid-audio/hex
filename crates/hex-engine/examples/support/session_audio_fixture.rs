@@ -77,6 +77,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             balance: (index as i32 % 5 - 2) as f32 * 0.125,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                 id: arrangement_clip,
                 asset,

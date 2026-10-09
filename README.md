@@ -263,7 +263,20 @@ Workspace tests/lints/build, independent exact-sum rendering and schema/history
 acceptance, GPUI support tests and callback allocation probes pass. User native
 acceptance and the review build are tracked in
 [hybrid tracks](docs/hybrid-tracks.md) and todo.md. Original sine playback remains
-the MIDI instrument; device chains/plugin hosting are separate future work.
+the MIDI instrument; plugin hosting and instrument replacement remain future work.
+
+## Lattice device foundation — 9 October 2026
+
+Schema 14 adds canonical ordered native effect chains with stable instance IDs,
+bypass, history and generic versioned state. Older schemas migrate to empty
+chains. Device definitions own their codecs and register with lattice; storage
+does not contain per-device branches. Unknown/newer device state round-trips,
+and unsupported processing refuses compilation explicitly.
+
+The first processor is original linear Utility, compiled into a shared stereo
+matrix for Arrangement/Session audio and MIDI. This foundation does not yet
+provide the desktop device panel, stateful DC/bass-mono controls, Operator or
+plugin hosting. See [lattice](docs/lattice.md) for contracts and open acceptance.
 
 ## Source repository
 

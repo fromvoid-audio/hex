@@ -1,9 +1,11 @@
+use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
 use hex_engine::playback::{Playback, PlaybackHandoffError};
 use hex_engine::{
     Audio, LaunchQuantization, MidiInstrumentRenderContext, MidiSpanBuffer, PlaybackAction,
     PlaybackActionError, PlaybackCommand, PreparedRevision, SessionCapability, SessionPlayback,
     SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner, SineTable,
 };
+use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{AssetId, BeatTime, Command, Created, Editor, Project, Tempo};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -151,6 +153,136 @@ fn fixture_with_session_note_duration(
         stop_scene,
         session_clip,
     }
+}
+
+#[test]
+fn session_audio_and_midi_routes_use_the_prepared_track_device_matrix() {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
+    let audio_track = match editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .expect("audio track")
+    {
+        Created::Track(id) => id,
+        other => panic!("unexpected audio track: {other:?}"),
+    };
+    let midi_track = match editor
+        .execute(Command::AddTrack {
+            name: "midi".into(),
+        })
+        .expect("midi track")
+    {
+        Created::Track(id) => id,
+        other => panic!("unexpected midi track: {other:?}"),
+    };
+    let scene = match editor
+        .execute(Command::AddScene {
+            name: "both".into(),
+        })
+        .expect("scene")
+    {
+        Created::Scene(id) => id,
+        other => panic!("unexpected scene: {other:?}"),
+    };
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "memory/session-device.wav".into(),
+            sample_rate: 48_000,
+            frames: 256,
+        })
+        .expect("asset")
+    {
+        Created::Asset(id) => id,
+        other => panic!("unexpected asset: {other:?}"),
+    };
+    let audio_clip = match editor
+        .execute(Command::CreateSessionAudioClip {
+            track: audio_track,
+            scene,
+            name: "audio one shot".into(),
+            asset,
+            source_start: 0,
+            source_end: 256,
+        })
+        .expect("session audio")
+    {
+        Created::SessionClip(id) => id,
+        other => panic!("unexpected audio clip: {other:?}"),
+    };
+    let midi_clip = match editor
+        .execute(Command::CreateSessionMidiClip {
+            track: midi_track,
+            scene,
+            name: "midi one shot".into(),
+            source_length: beat(4),
+        })
+        .expect("session midi")
+    {
+        Created::SessionClip(id) => id,
+        other => panic!("unexpected midi clip: {other:?}"),
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi_clip,
+            start: BeatTime::ZERO,
+            duration: beat(4),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .expect("session note");
+    let utility = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().expect("utility default"),
+            utility_parameter::INVERT_RIGHT,
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .expect("utility parameter");
+    editor
+        .execute(Command::InsertDevice {
+            track: audio_track,
+            before: None,
+            state: utility.clone(),
+        })
+        .expect("audio utility");
+    editor
+        .execute(Command::InsertDevice {
+            track: midi_track,
+            before: None,
+            state: utility,
+        })
+        .expect("midi utility");
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![[0.25, 0.25]; 256]).expect("audio source"),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .expect("prepared revision"),
+    );
+    let mut playback = SessionPlayback::new(revision).expect("session playback");
+    playback
+        .apply(SessionPlaybackCommand::LaunchScene {
+            scene,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .expect("launch both sources");
+    playback.apply(SessionPlaybackCommand::Play).expect("play");
+    let mut output = [[0.0; 2]; 128];
+    playback
+        .render(&mut output)
+        .expect("render session sources");
+    assert!(output.iter().any(|frame| frame[0].abs() > 1.0e-5));
+    assert!(output.iter().all(|frame| frame[1] == -frame[0]));
+    assert_eq!(
+        playback.owner(audio_track),
+        Some(SessionPlaybackOwner::Session { clip: audio_clip })
+    );
+    assert_eq!(
+        playback.owner(midi_track),
+        Some(SessionPlaybackOwner::Session { clip: midi_clip })
+    );
 }
 
 fn audible(output: &[[f32; 2]]) -> bool {

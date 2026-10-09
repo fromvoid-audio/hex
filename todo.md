@@ -24,12 +24,22 @@ Completed chronology and superseded work orders are preserved in the
 
 ## current priority — lattice devices
 
+The implementation request covers every currently open Hex ticket in Pulse,
+including work without an existing PR. The priority below orders dependencies;
+it does not narrow that scope. A combined review build follows implementation,
+with native acceptance reported separately.
+
 The user prioritized **lattice**, the device panel and first devices on
 9 October 2026, before the main/return-track layout below. Pulse ticket 42 is
 the first bounded prerequisite: real stereo DSP primitives in `hex-lattice`
 and original linear Utility DSP in `hex-devices`. Canonical integration (16),
 the real panel (17), complete Utility (18) and Operator (19) follow as focused
-PRs. See [the lattice contract](docs/lattice.md); stateful filters and instrument
+PRs. The user also requested a reusable device-control toolkit (44) supplying
+knobs, sliders, editable fields, toggles, selectors and compact device frames.
+It precedes the panel and keeps canonical/DSP state outside the UI toolkit.
+Generic persisted state and device registration (70) accompany canonical chains
+(43); continuous parameter gestures and grouped undo (65) are a separate change.
+See [the lattice contract](docs/lattice.md); stateful filters and instrument
 lifecycle remain explicit dependencies, not completed support.
 
 ## merged PR history and remaining acceptance

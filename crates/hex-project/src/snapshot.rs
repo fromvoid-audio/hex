@@ -1,9 +1,9 @@
 //! Validated, std-only metadata snapshots for storage adapters.
 use crate::edit::{interval_valid, name_valid};
 use crate::{
-    Asset, AssetId, Clip, ClipFade, ClipId, Invalid, LoopRegion, MAX_ASSETS, MAX_CLIPS, MAX_TRACKS,
-    MeterPoint, MidiClip, MidiNote, NoteId, Project, TempoPoint, Track, TrackContent, TrackId,
-    validate_conversion_metadata,
+    Asset, AssetId, Clip, ClipFade, ClipId, Device, DeviceId, Invalid, LoopRegion, MAX_ASSETS,
+    MAX_CLIPS, MAX_DEVICES, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MeterPoint, MidiClip, MidiNote,
+    NoteId, Project, TempoPoint, Track, TrackContent, TrackId, validate_conversion_metadata,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -88,7 +88,15 @@ pub struct TrackSnapshot {
     pub balance: f32,
     pub muted: bool,
     pub soloed: bool,
+    pub devices: Vec<DeviceSnapshot>,
     pub content: TrackContentSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSnapshot {
+    pub id: u64,
+    pub bypassed: bool,
+    pub state: hex_lattice_contract::NativeDeviceState,
 }
 impl TrackSnapshot {
     pub fn audio_clips_mut(&mut self) -> Result<&mut Vec<ClipSnapshot>, Invalid> {
@@ -188,6 +196,15 @@ impl Project {
                     balance: track.balance,
                     muted: track.muted,
                     soloed: track.soloed,
+                    devices: track
+                        .devices
+                        .iter()
+                        .map(|device| DeviceSnapshot {
+                            id: device.id.value(),
+                            bypassed: device.bypassed,
+                            state: device.state.clone(),
+                        })
+                        .collect(),
                     content: TrackContentSnapshot::Hybrid {
                         audio_clips: track
                             .content
@@ -355,6 +372,7 @@ impl Project {
         }
 
         let mut total_clips = 0_usize;
+        let mut total_devices = 0_usize;
         let mut total_notes = 0_usize;
         let mut tracks = Vec::with_capacity(snapshot.tracks.len());
         for track in snapshot.tracks {
@@ -365,6 +383,24 @@ impl Project {
             }
             if !track.balance.is_finite() || !(-1.0..=1.0).contains(&track.balance) {
                 return Err(Invalid("balance must be finite and within -1..1"));
+            }
+            if track.devices.len() > MAX_DEVICES_PER_TRACK {
+                return Err(Invalid("track device limit reached"));
+            }
+            total_devices = total_devices
+                .checked_add(track.devices.len())
+                .ok_or(Invalid("device count overflow"))?;
+            if total_devices > MAX_DEVICES {
+                return Err(Invalid("project device limit reached"));
+            }
+            let mut devices = Vec::with_capacity(track.devices.len());
+            for device in track.devices {
+                insert_id(device.id, &mut ids, &mut max_id)?;
+                devices.push(Device {
+                    id: DeviceId(device.id),
+                    state: device.state,
+                    bypassed: device.bypassed,
+                });
             }
             let (audio_clips, midi_clips) = track.content.into_parts();
             let track_clip_count = audio_clips
@@ -478,6 +514,7 @@ impl Project {
                 balance: track.balance,
                 muted: track.muted,
                 soloed: track.soloed,
+                devices,
                 content,
             });
         }

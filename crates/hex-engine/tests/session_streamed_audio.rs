@@ -1,7 +1,9 @@
+use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
 use hex_engine::{
     Audio, BorrowedMediaPage, Frame, PlaybackAction, PlaybackCommand, PreparedRevision, SineTable,
     StreamSourceKey, StreamedSourceMetadata, compile::PreparedAudioSource, playback::Playback,
 };
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
     AssetId, AssetSnapshot, BeatTime, ClipSnapshot, Command, Created, Editor, LoopRegion, Meter,
     MeterPoint, Project, SceneSnapshot, SessionAudioClipSnapshot, SessionCellContentSnapshot,
@@ -56,6 +58,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(Vec::new()),
             },
             TrackSnapshot {
@@ -65,6 +68,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     id: 8,
                     asset: BED_ASSET,
@@ -340,6 +344,59 @@ fn streamed_session_one_shot_mixes_pages_and_keeps_cold_misses_local() {
     }
     assert_eq!(actual.as_slice(), expected.as_slice());
     assert!(pages.requests.is_empty());
+}
+
+#[test]
+fn streamed_session_audio_uses_registered_native_device_matrix() {
+    let original = project(4_094, 4_102);
+    let mut editor = Editor::new(original, 16).unwrap();
+    let track = editor
+        .project()
+        .tracks()
+        .iter()
+        .find(|track| track.name() == "session audio")
+        .unwrap()
+        .id();
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            utility_parameter::INVERT_RIGHT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let project = editor.project().clone();
+    let revision = prepared(&project, 73, [5; 32]);
+    let source_key = StreamSourceKey::new(
+        73,
+        project
+            .assets()
+            .find(|asset| asset.id().value() == STREAM_ASSET)
+            .unwrap()
+            .id(),
+    );
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    launch_and_play(&mut playback);
+    let mut pages = MemoryPages::with_source(source_key);
+    let mut output = [[0.0; 2]; 12];
+    playback.render_with_pages(&mut output, &mut pages).unwrap();
+    for (index, frame) in output.iter().enumerate() {
+        let bed = sample(index as u64 + 2);
+        let expected = if index < 8 {
+            let source = sample(4_094 + index as u64);
+            [source[0] + bed[0], -source[1] + bed[1]]
+        } else {
+            bed
+        };
+        assert_eq!(*frame, expected);
+    }
 }
 
 #[test]

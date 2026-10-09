@@ -22,11 +22,22 @@ pub fn project(
     snapshot: &hex_project::Project,
     media: &BTreeMap<AssetId, Audio>,
 ) -> Result<Project, Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    project_with_registry(snapshot, media, &registry)
+}
+
+pub fn project_with_registry(
+    snapshot: &hex_project::Project,
+    media: &BTreeMap<AssetId, Audio>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<Project, Invalid> {
     compile_project(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         None,
         None,
+        registry,
     )
     .map(|(project, _)| project)
 }
@@ -44,11 +55,14 @@ pub fn project_with_prepared_audio_sources(
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
     compile_project(
         snapshot,
         |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
         None,
         None,
+        &registry,
     )
     .map(|(project, _)| project)
 }
@@ -64,10 +78,13 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
         sine_table,
+        &registry,
     )
 }
 
@@ -89,10 +106,13 @@ pub fn project_with_midi_preview_and_table(
     media: &BTreeMap<AssetId, Audio>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         sine_table,
+        &registry,
     )
 }
 
@@ -100,6 +120,7 @@ fn compile_with_midi_preview<'a>(
     snapshot: &'a hex_project::Project,
     resolver: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -114,8 +135,13 @@ fn compile_with_midi_preview<'a>(
     previews
         .try_reserve_exact(clip_count)
         .map_err(|_| Invalid("could not reserve midi preview index"))?;
-    let (project, mut compiled_previews) =
-        compile_project(snapshot, resolver, Some(&mut previews), sine_table)?;
+    let (project, mut compiled_previews) = compile_project(
+        snapshot,
+        resolver,
+        Some(&mut previews),
+        sine_table,
+        registry,
+    )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
         project,
@@ -128,6 +154,7 @@ fn compile_project<'a>(
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
     prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
@@ -194,13 +221,15 @@ fn compile_project<'a>(
                 .ok_or(Invalid("instrument content missing after compile"))?,
             )
         };
+        let effects = compile_device_matrix(track, registry)?;
         tracks.push(
-            Track::with_audio_and_instrument(
+            Track::with_audio_instrument_and_effects(
                 clips,
                 track.gain(),
                 muted,
                 track.balance(),
                 instrument,
+                effects,
             )?
             .with_track_id(track.id()),
         );
@@ -212,6 +241,26 @@ fn compile_project<'a>(
         snapshot.master_gain(),
     )?;
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
+}
+
+fn compile_device_matrix(
+    track: &hex_project::Track,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<Option<hex_lattice::StereoMatrix>, Invalid> {
+    let mut matrix = hex_lattice::StereoMatrix::identity();
+    for device in track.devices() {
+        let migrated = registry
+            .migrate_state(device.state())
+            .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
+        if device.bypassed() {
+            continue;
+        }
+        let prepared = registry
+            .prepare_matrix(&migrated)
+            .map_err(|_| Invalid("native device state could not be prepared"))?;
+        matrix = matrix.then(prepared).map_err(|error| Invalid(error.0))?;
+    }
+    Ok((matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix))
 }
 
 pub(crate) enum PreparedAudioSourceRef<'a> {
