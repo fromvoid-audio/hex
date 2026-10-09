@@ -398,3 +398,11 @@ parameters and gestures by canonical slot ownership; UI caches class/type identi
 Sine exposes no fabricated parameters. Full Session tests, rendered panel actions,
 nine gesture tests, strict affected Clippy and source guards pass. Full local CI
 and user native acceptance follow; FM4 admission and full Operator remain open.
+
+Native add-versus-replace contract2148: adding an instrument now refuses an
+occupied slot without changing history or publishing playback. Explicit replace
+requests identify the existing device, class and registered type; replacement
+preserves stable identity, chain position and bypass and remains Undoable. The
+device menu's replace action routes through this request, while add stays add.
+Targeted Session/UI checks pass; clean full local CI remains before review.
+Native interaction acceptance remains with the user.
