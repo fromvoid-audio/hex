@@ -38,6 +38,7 @@ impl SessionPlayback {
         self.arrangement_frame = 0;
         self.anchor = None;
         self.historical_floor = None;
+        self.route_historical_floors.fill(None);
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
@@ -88,6 +89,7 @@ impl SessionPlayback {
         self.releases.clear();
         self.suppressions.clear();
         self.historical_floor = None;
+        self.route_historical_floors.fill(None);
         self.release_order = 0;
         for chain in &mut self.device_chains {
             chain.reset();
@@ -419,7 +421,7 @@ impl SessionPlayback {
                 let timing =
                     timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
                 let template = prepared.instrument_template();
-                if let Some(floor) = self.historical_floor {
+                if let Some(floor) = self.historical_floor_for(index) {
                     template
                         .query_after_onset(
                             launch,

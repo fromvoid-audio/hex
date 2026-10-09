@@ -75,6 +75,25 @@ copied-release banks remain in use. Copied samplers retain their original law an
 payload across revision handoff without Arc churn or final heap drops. Existing
 revision/source owners still retire on control after callback quiescence.
 
+Session route continuity matches stable track identity with MIDI source identity,
+instrument DeviceId, the complete versioned instrument state, and whether that
+slot is enabled. Effect position is not part of sampler identity, so moving a
+slot across an effect keeps compatible processing history and the active note.
+On a changed enabled configuration, held old notes that began before the cut
+continue from copied old samplers and matching candidate occurrences are
+suppressed until those copies end; later onsets use the candidate configuration.
+Notes already in release keep their old gate and sampler. Bypass or removal
+releases eligible old held notes at the cut, emits no candidate notes or
+suppressions while disabled, and re-enabling does not chase onsets from the
+disabled interval. A note beginning exactly at the handoff frame belongs to the
+candidate. A fixed route-local onset floor prevents a later re-enable from
+chasing notes that began while that route was disabled; it follows the stable
+TrackId across graph edits and clears on seek or stop. Source or timing edits keep
+their existing global historical-floor behavior and carry other active Session
+routes across that floor. Instrument-only edits do not advance it or capture
+unrelated routes. The route floor remains through a monotonic Session loop and
+allows later looped source occurrences whose onsets are after the floor.
+
 Prepared Arrangement tracks and Session instrument configurations intern each
 distinct pitch/velocity pair into a track- and configuration-scoped immutable
 note bank. Arrangement spans and Session intro/repeat source spans retain a

@@ -246,7 +246,7 @@ impl SessionPlayback {
                         RouteSourceContext {
                             revision: &self.revision,
                             route: self.route_scratch[index],
-                            historical_floor: self.historical_floor,
+                            historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
                             index,
                             timing: &timing,
@@ -275,7 +275,7 @@ impl SessionPlayback {
                         RouteSourceContext {
                             revision: &self.revision,
                             route: self.route_scratch[index],
-                            historical_floor: self.historical_floor,
+                            historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
                             index,
                             timing: &timing,
@@ -310,7 +310,7 @@ impl SessionPlayback {
                         RouteSourceContext {
                             revision: &self.revision,
                             route: self.route_scratch[index],
-                            historical_floor: self.historical_floor,
+                            historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
                             index,
                             timing: &timing,
@@ -342,7 +342,7 @@ impl SessionPlayback {
                     RouteSourceContext {
                         revision: &self.revision,
                         route: self.route_scratch[index],
-                        historical_floor: self.historical_floor,
+                        historical_floor: self.historical_floor_for(index),
                         suppressions: &self.suppression_scratch,
                         index,
                         timing: &timing,

@@ -229,6 +229,7 @@ pub struct SessionPlayback {
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
     historical_floor: Option<BeatTime>,
+    route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
@@ -265,6 +266,18 @@ impl fmt::Debug for SessionPlayback {
 }
 
 impl SessionPlayback {
+    pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
+        self.historical_floor
+            .into_iter()
+            .chain(
+                self.route_historical_floors
+                    .get(route_index)
+                    .copied()
+                    .flatten(),
+            )
+            .max()
+    }
+
     pub(super) fn advance_route_state_generation(&mut self) {
         self.route_state_generation = self.route_state_generation.wrapping_add(1);
     }
@@ -363,6 +376,7 @@ impl SessionPlayback {
             periodic_tempo,
             anchor: None,
             historical_floor: None,
+            route_historical_floors: [None; MAX_TRACKS],
             routes,
             route_scratch,
             device_chains,

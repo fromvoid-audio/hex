@@ -139,12 +139,28 @@ pub fn project_with_midi_preview_and_table(
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
     let instruments = hex_devices::native_instrument_registry()
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+    project_with_midi_preview_and_table_and_instrument_registry(
+        snapshot,
+        media,
+        sine_table,
+        &registry,
+        &instruments,
+    )
+}
+
+pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
+    snapshot: &hex_project::Project,
+    media: &BTreeMap<AssetId, Audio>,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         sine_table,
-        &registry,
-        &instruments,
+        registry,
+        instruments,
     )
 }
 

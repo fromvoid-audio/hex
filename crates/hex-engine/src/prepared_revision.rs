@@ -2,8 +2,7 @@
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::{
-        PreparedAudioSource, project_with_midi_preview_and_table,
-        project_with_prepared_audio_sources_and_midi_preview_and_table,
+        PreparedAudioSource, project_with_prepared_audio_sources_and_midi_preview_and_table,
     },
 };
 use hex_devices::SineTable;
@@ -35,13 +34,40 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
-        let (arrangement, midi_preview) =
-            project_with_midi_preview_and_table(project, media, Some(Arc::clone(&sine_table)))?;
-        let session = PreparedSessionInventory::prepare_with_media(
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_instrument_registry(
             project,
             media,
             sine_table,
             previous_session,
+            &instruments,
+        )
+    }
+
+    pub(crate) fn prepare_with_instrument_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let (arrangement, midi_preview) =
+            crate::compile::project_with_midi_preview_and_table_and_instrument_registry(
+                project,
+                media,
+                Some(Arc::clone(&sine_table)),
+                &effects,
+                instruments,
+            )?;
+        let session = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            instruments,
         )?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
