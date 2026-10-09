@@ -398,7 +398,9 @@ impl Session {
             Command::AddAsset { .. }
                 | Command::ImportAudioTrack { .. }
                 | Command::ImportPreparedAudioTrack { .. }
+                | Command::ImportPreparedAudioTrackAt { .. }
                 | Command::ImportPreparedAudioClip { .. }
+                | Command::ImportPreparedAudioClipWithOverwrite { .. }
                 | Command::ImportPreparedSessionAudioClip { .. }
         ) {
             return Err(SessionError::Invalid(
@@ -427,7 +429,9 @@ impl Session {
             Command::AddAsset { .. }
                 | Command::ImportAudioTrack { .. }
                 | Command::ImportPreparedAudioTrack { .. }
+                | Command::ImportPreparedAudioTrackAt { .. }
                 | Command::ImportPreparedAudioClip { .. }
+                | Command::ImportPreparedAudioClipWithOverwrite { .. }
         ) {
             return Err(SessionError::Invalid(
                 "audio media must be committed through a prepared import",
@@ -452,7 +456,9 @@ impl Session {
             Command::AddAsset { .. }
                 | Command::ImportAudioTrack { .. }
                 | Command::ImportPreparedAudioTrack { .. }
+                | Command::ImportPreparedAudioTrackAt { .. }
                 | Command::ImportPreparedAudioClip { .. }
+                | Command::ImportPreparedAudioClipWithOverwrite { .. }
         ) {
             return Err(SessionError::Invalid(
                 "audio media must be committed through a prepared import",
@@ -505,6 +511,18 @@ impl Session {
         prepared: PreparedImport,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_audio_track_at_revision(prepared, None, 0, previous)
+    }
+
+    /// Insert a new hybrid track before `before_track`, or append it when absent,
+    /// and import the prepared audio at `start` as one history operation.
+    pub fn import_prepared_audio_track_at_revision(
+        &mut self,
+        prepared: PreparedImport,
+        before_track: Option<hex_project::TrackId>,
+        start: u64,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
         if prepared.audio.sample_rate() != self.project().sample_rate() {
             return Err(SessionError::Invalid(
                 "prepared audio sample rate differs from project",
@@ -540,8 +558,10 @@ impl Session {
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
         let (result, (asset_id, revision)) = self.editor.execute_prepared(
-            Command::ImportPreparedAudioTrack {
+            Command::ImportPreparedAudioTrackAt {
                 name: "imported audio".into(),
+                before_track,
+                start,
                 path: prepared.path,
                 source_sample_rate: prepared.source_sample_rate,
                 source_frames: prepared.source_frames,
@@ -594,6 +614,29 @@ impl Session {
         start: u64,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, false)
+    }
+
+    /// Import prepared media onto a hybrid track, cutting its destination
+    /// interval from overlapping Arrangement clips as one history edit.
+    pub fn import_prepared_audio_clip_with_overwrite_revision(
+        &mut self,
+        prepared: PreparedImport,
+        track: hex_project::TrackId,
+        start: u64,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, true)
+    }
+
+    fn import_prepared_audio_clip_revision_mode(
+        &mut self,
+        prepared: PreparedImport,
+        track: hex_project::TrackId,
+        start: u64,
+        previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
         if prepared.audio.sample_rate() != self.project().sample_rate() {
             return Err(SessionError::Invalid(
                 "prepared audio sample rate differs from project",
@@ -619,14 +662,26 @@ impl Session {
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
         let (created, (asset_id, revision)) = self.editor.execute_prepared(
-            Command::ImportPreparedAudioClip {
-                track,
-                start,
-                path: prepared.path,
-                source_sample_rate: prepared.source_sample_rate,
-                source_frames: prepared.source_frames,
-                playback_frames: frames,
-                conversion_version: prepared.conversion_version,
+            if overwrite {
+                Command::ImportPreparedAudioClipWithOverwrite {
+                    track,
+                    start,
+                    path: prepared.path,
+                    source_sample_rate: prepared.source_sample_rate,
+                    source_frames: prepared.source_frames,
+                    playback_frames: frames,
+                    conversion_version: prepared.conversion_version,
+                }
+            } else {
+                Command::ImportPreparedAudioClip {
+                    track,
+                    start,
+                    path: prepared.path,
+                    source_sample_rate: prepared.source_sample_rate,
+                    source_frames: prepared.source_frames,
+                    playback_frames: frames,
+                    conversion_version: prepared.conversion_version,
+                }
             },
             |candidate| {
                 let mut added = candidate

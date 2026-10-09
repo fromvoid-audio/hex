@@ -122,6 +122,13 @@ inside a valid lane only the exact snapped landing preview appears. A lane drop
 uses the normal import worker and one undoable project edit. Invalid or canceled
 drops do not import. See ../../docs/browser-drag.md for the contract and native
 acceptance notes.
+Browser WAV drops near a painted Arrangement row boundary show a full-width
+track insertion line; blank space below the painted final row and an empty
+Arrangement target an appended track. The cursor waveform and clip-shaped
+landing preview are hidden during track insertion. Only Arrangement body
+geometry accepts these targets. Ruler, browser, mixer and outside release remain
+non-targets. The worker receives a stable before-track ID or end anchor plus the
+snapped start; it never receives a guessed row index.
 Opt-in pointer-move snap grids use the canonical map; automatic timeline/track
 scrolling remains deferred.
 

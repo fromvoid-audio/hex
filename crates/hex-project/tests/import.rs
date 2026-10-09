@@ -182,6 +182,494 @@ fn prepared_import_keeps_source_and_project_frame_domains_in_one_history_step() 
 }
 
 #[test]
+fn prepared_track_drop_inserts_at_stable_anchor_with_clip_start_and_one_history_step() {
+    let mut editor = editor(8);
+    let mut tracks = Vec::new();
+    for name in ["first", "middle", "last"] {
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: name.into() })
+            .expect("create track")
+        else {
+            panic!("expected track");
+        };
+        tracks.push(track);
+    }
+    let before = editor.project().clone();
+    let result = editor
+        .execute(Command::ImportPreparedAudioTrackAt {
+            name: "inserted sample".into(),
+            before_track: Some(tracks[1]),
+            start: 12_345,
+            path: PathBuf::from("samples/Drop.WAV"),
+            source_sample_rate: 48_000,
+            source_frames: 480,
+            playback_frames: 480,
+            conversion_version: 0,
+        })
+        .expect("insert track and import");
+    let Created::Imported { track, asset, clip } = result else {
+        panic!("expected atomic imported result");
+    };
+    let inserted = editor.project().clone();
+    let order: Vec<_> = inserted.tracks().iter().map(|item| item.id()).collect();
+    assert_eq!(order, [tracks[0], track, tracks[1], tracks[2]]);
+    assert_eq!(
+        inserted.track(track).expect("inserted track").clips()[0].id(),
+        clip
+    );
+    assert_eq!(inserted.clip(clip).expect("imported clip").asset(), asset);
+    assert_eq!(inserted.clip(clip).expect("imported clip").start(), 12_345);
+
+    assert!(editor.undo());
+    assert_eq!(editor.project().tracks(), before.tracks());
+    assert_eq!(editor.project().assets().count(), before.assets().count());
+    assert!(editor.can_redo());
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &inserted);
+}
+
+#[test]
+fn prepared_track_drop_appends_and_invalid_anchor_or_overflow_is_atomic() {
+    let mut editor = editor(8);
+    let Created::Track(anchor) = editor
+        .execute(Command::AddTrack {
+            name: "anchor".into(),
+        })
+        .expect("anchor track")
+    else {
+        panic!("expected anchor");
+    };
+    let Created::Track(stale_anchor) = editor
+        .execute(Command::AddTrack {
+            name: "temporary".into(),
+        })
+        .expect("temporary track")
+    else {
+        panic!("expected temporary track");
+    };
+    editor
+        .execute(Command::RemoveTrack(stale_anchor))
+        .expect("remove temporary track");
+    let before = editor.project().clone();
+    let can_undo_before = editor.can_undo();
+    let can_redo_before = editor.can_redo();
+    let make = |before_track, start| Command::ImportPreparedAudioTrackAt {
+        name: "sample".into(),
+        before_track,
+        start,
+        path: PathBuf::from("source.wav"),
+        source_sample_rate: 48_000,
+        source_frames: 1,
+        playback_frames: 1,
+        conversion_version: 0,
+    };
+    assert!(editor.execute(make(Some(stale_anchor), 0)).is_err());
+    assert!(editor.execute(make(None, u64::MAX)).is_err());
+    assert_eq!(editor.project(), &before);
+    assert_eq!(editor.can_undo(), can_undo_before);
+    assert_eq!(editor.can_redo(), can_redo_before);
+
+    let Created::Imported { track, clip, .. } =
+        editor.execute(make(None, 77)).expect("append sample track")
+    else {
+        panic!("expected imported track");
+    };
+    assert_eq!(
+        editor.project().tracks().last().map(|item| item.id()),
+        Some(track)
+    );
+    assert_eq!(editor.project().clip(clip).expect("clip").start(), 77);
+    assert_eq!(editor.project().tracks()[0].id(), anchor);
+}
+
+#[test]
+fn moving_audio_clip_to_new_hybrid_track_preserves_identity_and_is_one_undo_step() {
+    let mut editor = editor(8);
+    let source = match editor
+        .execute(Command::AddTrack {
+            name: "source".into(),
+        })
+        .expect("source")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected source: {other:?}"),
+    };
+    let anchor = match editor
+        .execute(Command::AddTrack {
+            name: "anchor".into(),
+        })
+        .expect("anchor")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected anchor: {other:?}"),
+    };
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "Source/Pad.wav".into(),
+            sample_rate: 48_000,
+            frames: 256,
+        })
+        .expect("asset")
+    {
+        Created::Asset(asset) => asset,
+        other => panic!("unexpected asset: {other:?}"),
+    };
+    let clip = match editor
+        .execute(Command::PlaceClip {
+            track: source,
+            asset,
+            start: 32,
+            duration: 64,
+            source_offset: 16,
+            source_length: 96,
+            looping: true,
+        })
+        .expect("clip")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 8,
+            fade_out: 12,
+        })
+        .expect("clip fades");
+    let original = editor.project().clone();
+    let original_clip = original.clip(clip).expect("original clip").clone();
+
+    let Created::Track(inserted) = editor
+        .execute(Command::MoveClipToNewTrack {
+            clip,
+            name: "track 3".into(),
+            before_track: Some(anchor),
+            start: 80,
+        })
+        .expect("move to inserted track")
+    else {
+        panic!("inserted track expected")
+    };
+    let moved = editor.project().clone();
+    assert_eq!(
+        moved
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>(),
+        [source, inserted, anchor]
+    );
+    assert!(
+        moved
+            .track(source)
+            .expect("source remains")
+            .clips()
+            .is_empty()
+    );
+    let inserted_track = moved.track(inserted).expect("inserted hybrid track");
+    assert!(inserted_track.midi_clips().is_empty());
+    assert_eq!(inserted_track.clips()[0].id(), clip);
+    assert_eq!(inserted_track.clips()[0].asset(), asset);
+    assert_eq!(inserted_track.clips()[0].start(), 80);
+    assert_eq!(inserted_track.clips()[0].source_offset(), 16);
+    assert_eq!(inserted_track.clips()[0].fade(), original_clip.fade());
+    assert_eq!(
+        moved.asset(asset).expect("asset retained").path(),
+        original.asset(asset).expect("original asset").path()
+    );
+    assert_eq!(
+        Project::from_snapshot(moved.snapshot()).expect("snapshot round trip"),
+        moved
+    );
+    assert!(editor.undo(), "insert+move is one history step");
+    assert_eq!(editor.project().tracks(), original.tracks());
+    assert_eq!(editor.project().asset(asset), original.asset(asset));
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &moved);
+}
+
+#[test]
+fn failed_audio_clip_insert_move_preserves_ids_order_and_redo() {
+    let mut editor = editor(8);
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "source".into(),
+        })
+        .expect("source")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected source: {other:?}"),
+    };
+    let missing_anchor = match editor
+        .execute(Command::AddTrack {
+            name: "anchor".into(),
+        })
+        .expect("anchor")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected anchor: {other:?}"),
+    };
+    editor
+        .execute(Command::RemoveTrack(missing_anchor))
+        .expect("remove anchor");
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .expect("asset")
+    {
+        Created::Asset(asset) => asset,
+        other => panic!("unexpected asset: {other:?}"),
+    };
+    let clip = match editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 16,
+            source_offset: 0,
+            source_length: 16,
+            looping: false,
+        })
+        .expect("clip")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    editor
+        .execute(Command::AddTrack {
+            name: "redo branch".into(),
+        })
+        .expect("redo branch");
+    editor.undo();
+    let before = editor.project().clone();
+    let invalid = editor.execute(Command::MoveClipToNewTrack {
+        clip,
+        name: "new".into(),
+        before_track: Some(missing_anchor),
+        start: 1,
+    });
+    assert!(invalid.is_err());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.can_redo());
+}
+
+#[test]
+fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_history() {
+    let mut editor = editor(12);
+    let target = match editor
+        .execute(Command::AddTrack {
+            name: "target".into(),
+        })
+        .expect("target track")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected target: {other:?}"),
+    };
+    let source = match editor
+        .execute(Command::AddTrack {
+            name: "source".into(),
+        })
+        .expect("source track")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected source: {other:?}"),
+    };
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "Audio/overwrite.wav".into(),
+            sample_rate: 48_000,
+            frames: 256,
+        })
+        .expect("asset")
+    {
+        Created::Asset(asset) => asset,
+        other => panic!("unexpected asset: {other:?}"),
+    };
+    let victim = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 10,
+            duration: 100,
+            source_offset: 0,
+            source_length: 20,
+            looping: true,
+        })
+        .expect("looping victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected victim: {other:?}"),
+    };
+    let second_victim = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 30,
+            duration: 40,
+            source_offset: 20,
+            source_length: 10,
+            looping: true,
+        })
+        .expect("second victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected second victim: {other:?}"),
+    };
+    let fully_covered_victim = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 40,
+            duration: 20,
+            source_offset: 40,
+            source_length: 20,
+            looping: false,
+        })
+        .expect("fully covered victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected fully covered victim: {other:?}"),
+    };
+    let touching_start = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 0,
+            duration: 40,
+            source_offset: 0,
+            source_length: 40,
+            looping: false,
+        })
+        .expect("clip touching drop start")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    let touching_end = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 60,
+            duration: 20,
+            source_offset: 0,
+            source_length: 20,
+            looping: false,
+        })
+        .expect("clip touching drop end")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip: victim,
+            fade_in: 20,
+            fade_out: 30,
+        })
+        .expect("victim fades");
+    let incoming = match editor
+        .execute(Command::PlaceClip {
+            track: source,
+            asset,
+            start: 40,
+            duration: 20,
+            source_offset: 100,
+            source_length: 20,
+            looping: false,
+        })
+        .expect("incoming clip")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected incoming: {other:?}"),
+    };
+    let before = editor.project().clone();
+
+    editor
+        .execute(Command::MoveClipWithOverwrite {
+            clip: incoming,
+            track: target,
+            start: 40,
+        })
+        .expect("overwrite destination");
+    let result = editor.project();
+    let target_clips = result.track(target).expect("target").clips();
+    let left = target_clips
+        .iter()
+        .find(|clip| clip.id() == victim)
+        .expect("left victim");
+    assert_eq!((left.start(), left.duration()), (10, 30));
+    assert_eq!(left.source_phase(), 0);
+    assert_eq!(left.fade().span(), 100);
+    assert_eq!(left.fade().offset(), 0);
+    let right = target_clips
+        .iter()
+        .find(|clip| clip.id() != victim && clip.id() != incoming)
+        .expect("right victim fragment");
+    assert_eq!((right.start(), right.duration()), (60, 50));
+    assert_eq!(right.asset(), asset);
+    assert_eq!(right.source_phase(), 10);
+    assert_eq!(right.fade().span(), 100);
+    assert_eq!(right.fade().offset(), 50);
+    let second_left = target_clips
+        .iter()
+        .find(|clip| clip.id() == second_victim)
+        .expect("second left fragment retains ID");
+    assert_eq!((second_left.start(), second_left.duration()), (30, 10));
+    let second_right = target_clips
+        .iter()
+        .find(|clip| {
+            clip.id() != second_victim
+                && clip.id() != incoming
+                && clip.start() == 60
+                && clip.duration() == 10
+        })
+        .expect("second right fragment");
+    assert_eq!(second_right.asset(), asset);
+    assert!(target_clips.iter().any(|clip| clip.id() == touching_start));
+    assert!(target_clips.iter().any(|clip| clip.id() == touching_end));
+    assert!(
+        !target_clips
+            .iter()
+            .any(|clip| clip.id() == fully_covered_victim)
+    );
+    assert!(target_clips.iter().any(|clip| clip.id() == incoming));
+    assert!(result.track(source).expect("source").clips().is_empty());
+    let committed = result.clone();
+    assert_eq!(
+        Project::from_snapshot(committed.snapshot()).expect("overwrite roundtrip"),
+        committed
+    );
+    assert!(editor.undo());
+    let undone = editor.project().snapshot();
+    let mut expected = before.snapshot();
+    // Undo intentionally keeps the allocator high-water mark so stale IDs
+    // cannot be reused after an overwrite creates split fragments.
+    expected.next_id = undone.next_id;
+    assert_eq!(undone, expected);
+    assert!(editor.can_redo(), "overwrite is one history step");
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &committed);
+    let same_position = editor.project().snapshot();
+    let can_undo = editor.can_undo();
+    editor
+        .execute(Command::MoveClipWithOverwrite {
+            clip: incoming,
+            track: target,
+            start: 40,
+        })
+        .expect("same-position drop");
+    assert_eq!(editor.project().snapshot(), same_position);
+    assert_eq!(
+        editor.can_undo(),
+        can_undo,
+        "same-position drop adds no history"
+    );
+}
+
+#[test]
 fn prepared_import_rejects_bad_counts_versions_and_same_rate_conversion_atomically() {
     let mut editor = editor(8);
     for (source_rate, source_frames, playback_frames, version) in [
@@ -271,6 +759,20 @@ fn failed_capacity_check_is_atomic_and_does_not_erase_redo() {
                 48_000,
                 100,
             ))
+            .is_err()
+    );
+    assert!(
+        editor
+            .execute(Command::ImportPreparedAudioTrackAt {
+                name: "overflow".into(),
+                before_track: Some(track),
+                start: 0,
+                path: "Samples/Overflow.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 100,
+                playback_frames: 100,
+                conversion_version: 0,
+            })
             .is_err()
     );
     assert_eq!(editor.project(), &before);

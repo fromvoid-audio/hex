@@ -3161,3 +3161,96 @@ canonical existing-track import dispatch are implemented. 200 UI tests pass
 (one ignored), preferences/session suites and strict affected checks/build pass.
 Review and native checklist in docs/browser-drag.md. Outbound OS file drag and
 held-source pinning are explicitly deferred; broader roadmap paused.
+
+## Browser sample drop creates a track — 9 October 2026
+
+User accepted browser drag and authorized its commit/push; baseline main is
+1d892dc. Next browser WAV workflow: hovering between visible track rows shows
+a full-width insertion line, hiding the floating and clip-shaped landing
+previews. Dropping atomically creates a hybrid track at that position and places
+the sample at the snapped horizontal time. Blank space below the last row or
+an empty Arrangement creates a bottom track. Existing body drop remains import
+onto that track. Browser/ruler/mixer/outside-window are not creation targets.
+
+Canonical stable before-track ID (or end) defines insertion; no competing UI
+track model. New track, media and clip are one prepared history operation;
+failed commands preserve IDs/project/history/media. Existing import semantics
+remain append-at-zero. Track order is already persisted; review save/load and
+undo/redo in the same change. Bound all preview/preparation and stale guards.
+Rendered tests cover gap/full-line suppression, empty and bottom destinations,
+existing-body drop, cancellation and current painted geometry after scroll.
+Model/session tests cover order, timing, atomic refusal and history/persistence.
+User owns native acceptance. Deferred: creating tracks by moving existing clips,
+new autoscroll, OS outbound drag and broader roadmap work.
+
+Track-insertion checkpoint: canonical prepared insert/import and worker request,
+painted divider/end/empty targets, full-line suppression and rendered interactions
+implemented. Full project/session suites and 205 UI tests pass/one ignored;
+affected strict checks/build pass. User checklist and review bundle are in
+docs/browser-drag.md; native acceptance remains open. Earlier accepted milestone
+was pushed as 1d892dc; this feature is uncommitted. Broader roadmap stays paused.
+
+## Track-creation drag acceptance repairs — 9 October 2026
+
+User reports: empty/bottom append should retain cursor ghost alongside the end
+line; hovering bottom UI shifts the workspace; inserted clips land left of the
+pointer; existing clips cannot create inserted tracks. Treat prior insertion
+native acceptance as incomplete. Fix concrete geometry/overlay bugs first.
+Timeline starts at measured body.left; headers are on the right. Distinguish
+between-row boundary (line only) from bottom/empty body (line + floating ghost).
+Keep hover geometry/layout stable near bottom edge. Verify actual rendered
+positions using independent painted lane bounds and root/track body bounds.
+
+Extend Arrangement audio/MIDI dragging to create a hybrid track before a stable
+track ID or at end and move the original clip as one compiled/undoable command.
+Preserve source track, clip/note/asset IDs, source regions, fades, MIDI beat length
+and original grab offset. No copy/import of existing media. Cancellation/failure
+retain IDs/history/project. Test order/history/save-load/refusal and rendered
+new-track destinations, exact time, dual append visual and bottom layout.
+Native UI checks remain with user; no commit/push of these corrections yet.
+
+Acceptance repair source checkpoint: timeline origin and absolute overlay layout
+fixed; append retains line+ghost. Canonical audio/MIDI insertion moves preserve
+IDs/source track/content and pass compiled history/save checks. Actual lane drop
+routes insertion before ordinary move. 209 UI tests pass/one ignored, focused and
+independent core suites, strict affected lint/build/guards/fmt/diff checks pass.
+Native checklist/review in docs/browser-drag.md. Insertion work remains uncommitted.
+
+## Empty-area highlight and Arrangement overwrite drops — 9 October 2026
+
+User requests subtle full empty-section highlight: zero tracks means full drop
+body highlight without cursor-y insertion line; with tracks means highlight below
+last row alongside fixed end line and floating ghost. Dividers stay line-only.
+
+User also requests drop overwrite: incoming clip occupies its destination interval;
+underlying Arrangement clips on that hybrid track are cut into uncovered pieces
+(trim/split/delete across both source kinds). Scope drop-specific commands and
+browser existing-track import, not automatic rewriting of legacy overlaps or
+a renderer sum-policy change. Exclude the mover from same-track victims. Exact
+touch is not overlap; one typed candidate/compile/history operation, preserving
+incoming identity and data and failure rollback. Audio fragments must preserve
+source phase and fixed fade domain. The accepted MIDI source/held-note/loop fragmentation and frame-to-beat
+rounding contract is in `docs/clip-overwrite.md`: finite right one-shot projection,
+boundary-note retrigger, fresh note IDs and bounded pre-counted expansion.
+No callback conversion or unbounded event expansion. Test all cross-kind/cover
+shapes, count/ID limits, history/persistence, source continuity and rendered drop
+dispatch/highlight geometry. User owns native acceptance; no commit/push yet.
+
+Source milestone complete: drop-specific overwrite and full blank-area feedback
+are implemented. 209 UI tests pass/one ignored; independent full project/session
+suites and engine clip-fade PCM 5/5 pass, with strict affected lint/build and
+guards/fmt/diff checks. Separate review app `artifacts/hex-overwrite-drop-20261009.app`;
+native acceptance remains pending. Follow the checklist in `clip-overwrite.md`.
+
+
+## divider highlight correction — 9 October 2026
+
+Native user report: between-track hover highlighted every row below the divider.
+The append overlay was gated only by insertion-line presence; it now also
+requires a current new-track destination with no before-track anchor. Divider
+hover remains line-only for browser samples and existing audio/MIDI clips;
+zero-track and bottom empty-area highlighting retain their prior behavior.
+All three new rendered divider assertions failed before the fix; the fixed
+full UI suite passes 209 tests (one existing ignored). Strict UI Clippy, desktop
+build, guards/fmt/diff pass. Review: `artifacts/hex-divider-highlight-20261009.app`;
+native retest remains pending. No project/audio model or overwrite behavior change.

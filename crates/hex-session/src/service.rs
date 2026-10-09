@@ -113,6 +113,16 @@ pub enum Request {
         track: hex_project::TrackId,
         start: u64,
     },
+    ImportToTrackWithOverwrite {
+        path: PathBuf,
+        track: hex_project::TrackId,
+        start: u64,
+    },
+    ImportToNewTrack {
+        path: PathBuf,
+        before_track: Option<hex_project::TrackId>,
+        start: u64,
+    },
     ImportToSession {
         path: PathBuf,
         track: hex_project::TrackId,
@@ -469,11 +479,45 @@ fn run_worker(
                 track,
                 start,
                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                false,
             ) {
                 Ok(prepared) => {
                     unsaved = true;
                     replacement_revision = Some(prepared);
                     status = Some("audio imported to selected track".into());
+                }
+                Err(reason) => error = Some(reason),
+            },
+            Request::ImportToTrackWithOverwrite { path, track, start } => match import_to_track(
+                &mut session,
+                path,
+                track,
+                start,
+                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                true,
+            ) {
+                Ok(prepared) => {
+                    unsaved = true;
+                    replacement_revision = Some(prepared);
+                    status = Some("audio imported, overlapping clips cut".into());
+                }
+                Err(reason) => error = Some(reason),
+            },
+            Request::ImportToNewTrack {
+                path,
+                before_track,
+                start,
+            } => match import_to_new_track(
+                &mut session,
+                path,
+                before_track,
+                start,
+                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+            ) {
+                Ok(prepared) => {
+                    unsaved = true;
+                    replacement_revision = Some(prepared);
+                    status = Some("audio imported to new track".into());
                 }
                 Err(reason) => error = Some(reason),
             },
@@ -917,6 +961,7 @@ fn import_to_track(
     track: hex_project::TrackId,
     start: u64,
     previous: Option<&PreparedRevision>,
+    overwrite: bool,
 ) -> Result<Arc<PreparedRevision>, String> {
     let remaining_frames = session
         .max_resident_frames()
@@ -944,8 +989,61 @@ fn import_to_track(
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let imported = if overwrite {
+        session.import_prepared_audio_clip_with_overwrite_revision(prepared, track, start, previous)
+    } else {
+        session.import_prepared_audio_clip_revision(prepared, track, start, previous)
+    };
+    imported
+        .map(|(_, revision)| revision)
+        .map_err(|error| error.to_string().to_lowercase())
+}
+
+fn import_to_new_track(
+    session: &mut Session,
+    path: PathBuf,
+    before_track: Option<hex_project::TrackId>,
+    start: u64,
+    previous: Option<&PreparedRevision>,
+) -> Result<Arc<PreparedRevision>, String> {
+    let project = session.project();
+    if project.tracks().len() >= hex_project::MAX_TRACKS {
+        return Err("track limit reached".into());
+    }
+    if before_track.is_some_and(|track| project.track(track).is_none()) {
+        return Err("track insertion anchor no longer exists".into());
+    }
+    if project.assets().count() >= hex_project::MAX_ASSETS {
+        return Err("asset limit reached".into());
+    }
+    let remaining_frames = session
+        .max_resident_frames()
+        .saturating_sub(session.resident_frames());
+    let output_limit = usize::try_from(remaining_frames)
+        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?;
+    if output_limit == 0 {
+        return Err("resident audio frame limit reached".into());
+    }
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string().to_lowercase())?
+            .join(path)
+    };
+    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = PreparedImport::at_rate(
+        decoded,
+        session.project().sample_rate(),
+        ResampleLimits {
+            max_source_frames: IMPORT_FRAME_LIMIT,
+            max_output_frames: output_limit,
+        },
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
     session
-        .import_prepared_audio_clip_revision(prepared, track, start, previous)
+        .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
         .map_err(|error| error.to_string().to_lowercase())
 }

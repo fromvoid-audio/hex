@@ -3,7 +3,7 @@ use crate::{
     MAX_CLIPS, MAX_NAME_BYTES, MAX_TRACKS, MeterPoint, NoteId, Project, TempoPoint, Track,
     TrackContent, TrackId, TrimEdge, converted_frame_count, validate_conversion_metadata,
 };
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
@@ -27,8 +27,31 @@ pub enum Command {
         playback_frames: u64,
         conversion_version: u32,
     },
+    /// Atomically insert a new hybrid track before a stable track id (or at the
+    /// end when `before_track` is `None`) and place the prepared audio at `start`.
+    ImportPreparedAudioTrackAt {
+        name: String,
+        before_track: Option<TrackId>,
+        start: u64,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+    },
     /// Atomically import prepared media and place a full-length clip on an existing hybrid track.
     ImportPreparedAudioClip {
+        track: TrackId,
+        start: u64,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+    },
+    /// Import prepared audio and cut its destination interval from both clip
+    /// collections on the target track as one drop-specific edit.
+    ImportPreparedAudioClipWithOverwrite {
         track: TrackId,
         start: u64,
         path: PathBuf,
@@ -123,6 +146,21 @@ pub enum Command {
     MoveClip {
         clip: ClipId,
         track: TrackId,
+        start: u64,
+    },
+    /// Drop-specific move that carves the destination frame interval out of
+    /// both Arrangement clip collections before placing this audio clip.
+    MoveClipWithOverwrite {
+        clip: ClipId,
+        track: TrackId,
+        start: u64,
+    },
+    /// Atomically insert a hybrid track before a stable anchor/end and move an
+    /// existing audio clip there, preserving its ID and source metadata.
+    MoveClipToNewTrack {
+        clip: ClipId,
+        name: String,
+        before_track: Option<TrackId>,
         start: u64,
     },
     /// Explicit source interval; changing the source interval resets loop phase to zero.
@@ -304,6 +342,21 @@ pub enum Command {
         track: TrackId,
         start: crate::BeatTime,
     },
+    /// Drop-specific MIDI move that carves the destination beat interval out
+    /// of both Arrangement clip collections before placing this MIDI clip.
+    MoveMidiClipWithOverwrite {
+        clip: ClipId,
+        track: TrackId,
+        start: crate::BeatTime,
+    },
+    /// Atomically insert a hybrid track before a stable anchor/end and move an
+    /// existing MIDI clip there, preserving its ID and note/source data.
+    MoveMidiClipToNewTrack {
+        clip: ClipId,
+        name: String,
+        before_track: Option<TrackId>,
+        start: crate::BeatTime,
+    },
     RemoveMidiClip(ClipId),
     DuplicateMidiClip(ClipId),
 }
@@ -360,6 +413,39 @@ pub(crate) fn name_valid(name: &str) -> Result<(), Invalid> {
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn insert_track_before(
+    project: &mut Project,
+    name: String,
+    before_track: Option<TrackId>,
+) -> Result<TrackId, Invalid> {
+    name_valid(&name)?;
+    if project.tracks.len() >= MAX_TRACKS {
+        return Err(Invalid("track limit reached"));
+    }
+    let index = match before_track {
+        Some(track) => project
+            .tracks
+            .iter()
+            .position(|candidate| candidate.id == track)
+            .ok_or(Invalid("track insertion anchor no longer exists"))?,
+        None => project.tracks.len(),
+    };
+    let id = TrackId(project.allocate_id()?);
+    project.tracks.insert(
+        index,
+        Track {
+            id,
+            name,
+            gain: 1.0,
+            balance: 0.0,
+            muted: false,
+            soloed: false,
+            content: TrackContent::default(),
+        },
+    );
+    Ok(id)
 }
 pub(crate) fn interval_valid(
     start: u64,
@@ -539,6 +625,204 @@ pub(crate) fn preview_edge_trim(
         fade,
     })
 }
+
+fn split_clip_at(original: &Clip, frame: u64, right_id: ClipId) -> Result<(Clip, Clip), Invalid> {
+    let end = original
+        .start
+        .checked_add(original.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    if frame <= original.start || frame >= end {
+        return Err(Invalid("split cursor must be inside the clip"));
+    }
+    let left_length = frame - original.start;
+    if !original.looping && left_length >= original.source_length {
+        return Err(Invalid("split cursor is beyond the one-shot source"));
+    }
+    let (right_source_offset, right_source_length, right_phase) = if original.looping {
+        (
+            original.source_offset,
+            original.source_length,
+            ((u128::from(original.source_phase) + u128::from(left_length))
+                % u128::from(original.source_length)) as u64,
+        )
+    } else {
+        (
+            original
+                .source_offset
+                .checked_add(left_length)
+                .ok_or(Invalid("source offset overflow"))?,
+            original
+                .source_length
+                .checked_sub(left_length)
+                .ok_or(Invalid("source length underflow"))?,
+            0,
+        )
+    };
+    let right_duration = end - frame;
+    let right_fade = original.fade.with_offset(
+        original
+            .fade
+            .offset()
+            .checked_add(left_length)
+            .ok_or(Invalid("fade offset overflow"))?,
+        right_duration,
+    )?;
+    let mut left = original.clone();
+    left.duration = left_length;
+    if !left.looping {
+        left.source_length = left_length;
+        left.source_phase = 0;
+    }
+    let right = Clip {
+        id: right_id,
+        asset: original.asset,
+        start: frame,
+        duration: right_duration,
+        source_offset: right_source_offset,
+        source_length: right_source_length,
+        looping: original.looping,
+        source_phase: right_phase,
+        fade: right_fade,
+    };
+    Ok((left, right))
+}
+
+struct AudioOverwriteFragments {
+    left: Option<Clip>,
+    right: Option<Clip>,
+}
+
+fn overwrite_audio_interval(
+    project: &mut Project,
+    track: TrackId,
+    start: u64,
+    end: u64,
+    excluded: ClipId,
+) -> Result<(), Invalid> {
+    if start >= end {
+        return Err(Invalid("overwrite interval must be positive"));
+    }
+    let source_clips = project
+        .track(track)
+        .ok_or(Invalid("destination track no longer exists"))?
+        .clips();
+    let mut snapshot = Vec::new();
+    snapshot
+        .try_reserve_exact(source_clips.len())
+        .map_err(|_| Invalid("could not reserve overwrite planning storage"))?;
+    snapshot.extend(source_clips.iter().cloned());
+    let mut fragments = Vec::new();
+    fragments
+        .try_reserve_exact(snapshot.len())
+        .map_err(|_| Invalid("could not reserve overwrite fragment storage"))?;
+    for victim in snapshot {
+        if victim.id == excluded {
+            continue;
+        }
+        let victim_end = victim
+            .start
+            .checked_add(victim.duration)
+            .ok_or(Invalid("timeline end overflow"))?;
+        if victim.start >= end || start >= victim_end {
+            continue;
+        }
+        let keeps_left = victim.start < start;
+        let keeps_right = victim_end > end;
+        let left = keeps_left
+            .then(|| split_clip_at(&victim, start, victim.id))
+            .transpose()?
+            .map(|parts| parts.0);
+        let right_id = if keeps_left && keeps_right {
+            ClipId(0)
+        } else {
+            victim.id
+        };
+        let right = keeps_right
+            .then(|| split_clip_at(&victim, end, right_id))
+            .transpose()?
+            .map(|parts| parts.1);
+        fragments.push((victim.id, AudioOverwriteFragments { left, right }));
+    }
+    if fragments.is_empty() {
+        return Ok(());
+    }
+
+    let total_clips = project.tracks.iter().try_fold(0_usize, |total, item| {
+        total
+            .checked_add(item.clips().len())
+            .and_then(|value| value.checked_add(item.midi_clips().len()))
+            .ok_or(Invalid("clip count overflow"))
+    })?;
+    let kept_fragments = fragments.iter().try_fold(0_usize, |total, (_, plan)| {
+        total
+            .checked_add(usize::from(plan.left.is_some()))
+            .and_then(|value| value.checked_add(usize::from(plan.right.is_some())))
+            .ok_or(Invalid("clip count overflow"))
+    })?;
+    let final_count = total_clips
+        .checked_sub(fragments.len())
+        .and_then(|value| value.checked_add(kept_fragments))
+        .ok_or(Invalid("clip count overflow"))?;
+    if final_count > MAX_CLIPS {
+        return Err(Invalid("clip limit reached"));
+    }
+    for (_, plan) in &mut fragments {
+        if let Some(right) = plan.right.as_mut().filter(|right| right.id == ClipId(0)) {
+            right.id = ClipId(project.allocate_id()?);
+        }
+    }
+    let fragment_count = fragments.len();
+    let mut by_id = HashMap::new();
+    by_id
+        .try_reserve(fragments.len())
+        .map_err(|_| Invalid("could not reserve overwrite lookup storage"))?;
+    for (id, plan) in fragments {
+        by_id.insert(id, plan);
+    }
+    let old_len = project
+        .track(track)
+        .ok_or(Invalid("destination track no longer exists"))?
+        .clips()
+        .len();
+    let new_len = old_len
+        .checked_sub(fragment_count)
+        .and_then(|value| value.checked_add(kept_fragments))
+        .ok_or(Invalid("clip count overflow"))?;
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(new_len)
+        .map_err(|_| Invalid("could not reserve overwritten clip storage"))?;
+    let old = std::mem::take(project.audio_clips_mut(track)?);
+    for clip in old {
+        if let Some(plan) = by_id.remove(&clip.id) {
+            if let Some(left) = plan.left {
+                replacement.push(left);
+            }
+            if let Some(right) = plan.right {
+                replacement.push(right);
+            }
+        } else {
+            replacement.push(clip);
+        }
+    }
+    *project.audio_clips_mut(track)? = replacement;
+    Ok(())
+}
+
+pub(crate) fn overwrite_audio_in_beats(
+    project: &mut Project,
+    track: TrackId,
+    start: crate::BeatTime,
+    end: crate::BeatTime,
+    excluded: ClipId,
+) -> Result<(), Invalid> {
+    let start_frame = project.tempo_map().beat_to_frame(start)?;
+    let end_frame = project.tempo_map().beat_to_frame(end)?;
+    if start_frame < end_frame {
+        overwrite_audio_interval(project, track, start_frame, end_frame, excluded)?;
+    }
+    Ok(())
+}
 impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
@@ -554,6 +838,8 @@ impl Project {
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
             | Command::MoveMidiClip { .. }
+            | Command::MoveMidiClipWithOverwrite { .. }
+            | Command::MoveMidiClipToNewTrack { .. }
             | Command::RemoveMidiClip(_)
             | Command::DuplicateMidiClip(_)) => crate::midi::apply(self, midi_command),
             session_command @ (Command::AddScene { .. }
@@ -618,17 +904,6 @@ impl Project {
                     })
                     .ok_or(Invalid("clip no longer exists"))?;
                 let original = self.tracks[track_index].clips()[clip_index].clone();
-                let end = original
-                    .start
-                    .checked_add(original.duration)
-                    .ok_or(Invalid("timeline end overflow"))?;
-                if frame <= original.start || frame >= end {
-                    return Err(Invalid("split cursor must be inside the clip"));
-                }
-                let left_length = frame - original.start;
-                if !original.looping && left_length >= original.source_length {
-                    return Err(Invalid("split cursor is beyond the one-shot source"));
-                }
                 if self
                     .tracks
                     .iter()
@@ -638,56 +913,12 @@ impl Project {
                 {
                     return Err(Invalid("clip limit reached"));
                 }
-                let (right_source_offset, right_source_length, right_phase) = if original.looping {
-                    (
-                        original.source_offset,
-                        original.source_length,
-                        ((u128::from(original.source_phase) + u128::from(left_length))
-                            % u128::from(original.source_length)) as u64,
-                    )
-                } else {
-                    (
-                        original
-                            .source_offset
-                            .checked_add(left_length)
-                            .ok_or(Invalid("source offset overflow"))?,
-                        original
-                            .source_length
-                            .checked_sub(left_length)
-                            .ok_or(Invalid("source length underflow"))?,
-                        0,
-                    )
-                };
-                let right_duration = end - frame;
-                let right_fade = original.fade.with_offset(
-                    original
-                        .fade
-                        .offset()
-                        .checked_add(left_length)
-                        .ok_or(Invalid("fade offset overflow"))?,
-                    right_duration,
-                )?;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
-                let right = Clip {
-                    id: right_id,
-                    asset: original.asset,
-                    start: frame,
-                    duration: right_duration,
-                    source_offset: right_source_offset,
-                    source_length: right_source_length,
-                    looping: original.looping,
-                    source_phase: right_phase,
-                    fade: right_fade,
-                };
-                let left = &mut self.audio_clips_mut(self.tracks[track_index].id)?[clip_index];
-                left.duration = left_length;
-                if !left.looping {
-                    left.source_length = left_length;
-                    left.source_phase = 0;
-                }
+                let (left, right) = split_clip_at(&original, frame, right_id)?;
+                self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
                 Ok(Created::Clip(right_id))
@@ -821,6 +1052,25 @@ impl Project {
                 source_frames,
                 playback_frames,
                 conversion_version,
+            } => self.apply(Command::ImportPreparedAudioTrackAt {
+                name,
+                before_track: None,
+                start: 0,
+                path,
+                source_sample_rate,
+                source_frames,
+                playback_frames,
+                conversion_version,
+            }),
+            Command::ImportPreparedAudioTrackAt {
+                name,
+                before_track,
+                start,
+                path,
+                source_sample_rate,
+                source_frames,
+                playback_frames,
+                conversion_version,
             } => {
                 validate_conversion_metadata(
                     source_frames,
@@ -829,10 +1079,7 @@ impl Project {
                     self.sample_rate,
                     conversion_version,
                 )?;
-                let track = match self.apply(Command::AddTrack { name })? {
-                    Created::Track(id) => id,
-                    _ => return Err(Invalid("audio import did not create its track")),
-                };
+                let track = insert_track_before(self, name, before_track)?;
                 let asset = self.add_prepared_asset(
                     path,
                     source_sample_rate,
@@ -843,7 +1090,7 @@ impl Project {
                 let clip = match self.apply(Command::PlaceClip {
                     track,
                     asset,
-                    start: 0,
+                    start,
                     duration: playback_frames,
                     source_offset: 0,
                     source_length: playback_frames,
@@ -888,6 +1135,52 @@ impl Project {
                     looping: false,
                 })? {
                     Created::Clip(id) => id,
+                    _ => return Err(Invalid("audio import did not create its clip")),
+                };
+                Ok(Created::Imported { track, asset, clip })
+            }
+            Command::ImportPreparedAudioClipWithOverwrite {
+                track,
+                start,
+                path,
+                source_sample_rate,
+                source_frames,
+                playback_frames,
+                conversion_version,
+            } => {
+                self.track(track).ok_or(Invalid("track no longer exists"))?;
+                validate_conversion_metadata(
+                    source_frames,
+                    source_sample_rate,
+                    playback_frames,
+                    self.sample_rate,
+                    conversion_version,
+                )?;
+                let end = start
+                    .checked_add(playback_frames)
+                    .ok_or(Invalid("timeline end overflow"))?;
+                let asset = self.add_prepared_asset(
+                    path,
+                    source_sample_rate,
+                    source_frames,
+                    playback_frames,
+                    conversion_version,
+                )?;
+                // Clip IDs are nonzero, so zero is a safe sentinel before the
+                // incoming clip has been allocated. Carve first so a full
+                // project can still replace existing material at MAX_CLIPS.
+                overwrite_audio_interval(self, track, start, end, ClipId(0))?;
+                crate::midi::overwrite_midi_in_frames(self, track, start, end, ClipId(0))?;
+                let clip = match self.apply(Command::PlaceClip {
+                    track,
+                    asset,
+                    start,
+                    duration: playback_frames,
+                    source_offset: 0,
+                    source_length: playback_frames,
+                    looping: false,
+                })? {
+                    Created::Clip(clip) => clip,
                     _ => return Err(Invalid("audio import did not create its clip")),
                 };
                 Ok(Created::Imported { track, asset, clip })
@@ -1104,6 +1397,43 @@ impl Project {
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
+            Command::MoveClipWithOverwrite { clip, track, start } => {
+                let incoming = self
+                    .clip(clip)
+                    .cloned()
+                    .ok_or(Invalid("clip no longer exists"))?;
+                let source_track = self
+                    .tracks
+                    .iter()
+                    .find(|candidate| candidate.clips().iter().any(|item| item.id == clip))
+                    .map(|candidate| candidate.id)
+                    .ok_or(Invalid("clip track missing"))?;
+                if source_track == track && incoming.start == start {
+                    return Ok(Created::None);
+                }
+                let end = start
+                    .checked_add(incoming.duration)
+                    .ok_or(Invalid("timeline end overflow"))?;
+                self.track(track)
+                    .ok_or(Invalid("destination track no longer exists"))?;
+                overwrite_audio_interval(self, track, start, end, clip)?;
+                crate::midi::overwrite_midi_in_frames(self, track, start, end, clip)?;
+                self.apply(Command::MoveClip { clip, track, start })
+            }
+            Command::MoveClipToNewTrack {
+                clip,
+                name,
+                before_track,
+                start,
+            } => {
+                let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                start
+                    .checked_add(original.duration)
+                    .ok_or(Invalid("timeline end overflow"))?;
+                let track = insert_track_before(self, name, before_track)?;
+                self.apply(Command::MoveClip { clip, track, start })?;
+                Ok(Created::Track(track))
+            }
             Command::TrimClip {
                 clip,
                 start,
@@ -1207,5 +1537,157 @@ impl Project {
             },
         );
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod overwrite_tests {
+    use super::{Command, Created, insert_track_before};
+    use crate::{Clip, ClipFade, MAX_CLIPS, Project};
+    use std::path::PathBuf;
+
+    #[test]
+    fn audio_overwrite_clip_limit_failure_preserves_candidate_exactly() {
+        let mut project = Project::new(48_000).expect("project");
+        let target = insert_track_before(&mut project, "target".into(), None).expect("target");
+        let source = insert_track_before(&mut project, "source".into(), None).expect("source");
+        let asset = project
+            .add_prepared_asset(PathBuf::from("fixture.wav"), 48_000, 128, 128, 0)
+            .expect("asset");
+        let _victim = match project
+            .apply(Command::PlaceClip {
+                track: target,
+                asset,
+                start: 0,
+                duration: 10,
+                source_offset: 0,
+                source_length: 10,
+                looping: true,
+            })
+            .expect("victim")
+        {
+            Created::Clip(clip) => clip,
+            other => panic!("unexpected victim: {other:?}"),
+        };
+        let incoming = match project
+            .apply(Command::PlaceClip {
+                track: source,
+                asset,
+                start: 0,
+                duration: 2,
+                source_offset: 20,
+                source_length: 2,
+                looping: false,
+            })
+            .expect("incoming")
+        {
+            Created::Clip(clip) => clip,
+            other => panic!("unexpected incoming: {other:?}"),
+        };
+        let filler_count = MAX_CLIPS - 2;
+        project
+            .audio_clips_mut(target)
+            .expect("target content")
+            .try_reserve_exact(filler_count)
+            .expect("filler capacity");
+        for index in 0..filler_count {
+            let id = crate::ClipId(project.allocate_id().expect("filler id"));
+            let start = 1_000 + (index as u64 * 2);
+            project
+                .audio_clips_mut(target)
+                .expect("target content")
+                .push(Clip {
+                    id,
+                    asset,
+                    start,
+                    duration: 1,
+                    source_offset: 0,
+                    source_length: 1,
+                    looping: false,
+                    source_phase: 0,
+                    fade: ClipFade::neutral(1).expect("neutral fade"),
+                });
+        }
+        let before = project.clone();
+        assert!(
+            project
+                .apply(Command::MoveClipWithOverwrite {
+                    clip: incoming,
+                    track: target,
+                    start: 4,
+                })
+                .is_err()
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn prepared_audio_overwrite_can_replace_fully_covered_clip_at_clip_limit() {
+        let mut project = Project::new(48_000).expect("project");
+        let target = insert_track_before(&mut project, "target".into(), None).expect("target");
+        let asset = project
+            .add_prepared_asset(PathBuf::from("fixture.wav"), 48_000, 128, 128, 0)
+            .expect("asset");
+        let victim = match project
+            .apply(Command::PlaceClip {
+                track: target,
+                asset,
+                start: 0,
+                duration: 4,
+                source_offset: 0,
+                source_length: 4,
+                looping: false,
+            })
+            .expect("victim")
+        {
+            Created::Clip(clip) => clip,
+            other => panic!("unexpected victim: {other:?}"),
+        };
+        let filler_count = MAX_CLIPS - 1;
+        project
+            .audio_clips_mut(target)
+            .expect("target content")
+            .try_reserve_exact(filler_count)
+            .expect("filler capacity");
+        for index in 0..filler_count {
+            let id = crate::ClipId(project.allocate_id().expect("filler id"));
+            let start = 1_000 + (index as u64 * 2);
+            project
+                .audio_clips_mut(target)
+                .expect("target content")
+                .push(Clip {
+                    id,
+                    asset,
+                    start,
+                    duration: 1,
+                    source_offset: 0,
+                    source_length: 1,
+                    looping: false,
+                    source_phase: 0,
+                    fade: ClipFade::neutral(1).expect("neutral fade"),
+                });
+        }
+        assert_eq!(
+            project.track(target).expect("target").clips().len(),
+            MAX_CLIPS
+        );
+        let created = project
+            .apply(Command::ImportPreparedAudioClipWithOverwrite {
+                track: target,
+                start: 0,
+                path: PathBuf::from("replacement.wav"),
+                source_sample_rate: 48_000,
+                source_frames: 4,
+                playback_frames: 4,
+                conversion_version: 0,
+            })
+            .expect("full-cover replacement at the clip limit");
+        let Created::Imported { clip, .. } = created else {
+            panic!("expected imported clip, got {created:?}");
+        };
+        let clips = project.track(target).expect("target").clips();
+        assert_eq!(clips.len(), MAX_CLIPS);
+        assert!(!clips.iter().any(|candidate| candidate.id() == victim));
+        assert!(clips.iter().any(|candidate| candidate.id() == clip));
     }
 }

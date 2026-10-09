@@ -182,7 +182,7 @@ fn drag_source_to_target(
     visual.simulate_mouse_move(outside_lane, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let ghost = visual
-        .debug_bounds("clip-drag-ghost")
+        .debug_bounds("clip-drag-floating-preview")
         .expect("off-lane clip drag shows a floating ghost");
     assert!(f32::from(ghost.size.width) > 100.0);
     editor.read_with(cx, |view, _| {
@@ -223,7 +223,206 @@ fn drag_source_to_target(
     let preview = visual
         .debug_bounds("clip-drop-preview")
         .expect("valid target row shows in-track drop preview");
+    let hidden = visual
+        .debug_bounds("clip-drag-floating-preview-hidden")
+        .expect("in-lane drop suppresses the cursor ghost");
+    assert_eq!(hidden.size.width, px(0.0));
+    assert_eq!(hidden.size.height, px(0.0));
     (preview, point(target_x, lane_y))
+}
+
+fn drag_source_to_inserted_track(
+    cx: &mut TestAppContext,
+    visual: &mut VisualTestContext,
+    editor: &gpui::Entity<EditorView>,
+    project: &Project,
+    clip: hex_project::ClipId,
+    source_track: hex_project::TrackId,
+    anchor: Option<hex_project::TrackId>,
+) -> gpui::Point<gpui::Pixels> {
+    visual.run_until_parked();
+    let source_surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("rendered source clip surface");
+    let source_lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", source_track.value()).into_boxed_str(),
+        ))
+        .expect("rendered source lane");
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("rendered Arrangement body");
+    let target_lane = anchor.map(|track| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+            ))
+            .expect("rendered insertion anchor lane")
+    });
+    assert_eq!(source_lane.origin.x, body.origin.x);
+    assert_eq!(
+        source_lane.size.width,
+        body.size.width - px(super::tracks::TRACK_HEADER_WIDTH)
+    );
+
+    let down = point(
+        source_surface.origin.x + source_surface.size.width / 2.0,
+        source_surface.origin.y + source_surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(cx.update(|app| app.has_active_drag()));
+
+    let target_x = source_lane.origin.x + source_lane.size.width * 0.73;
+    let target_y = match target_lane {
+        Some(lane) => (source_lane.origin.y + source_lane.size.height + lane.origin.y) / 2.0,
+        None => {
+            let bounds =
+                editor.read_with(cx, |view, _| view.arrangement_bounds.expect("painted body"));
+            px(bounds.top + bounds.height - 8.0)
+        }
+    };
+    let target = point(target_x, target_y);
+    if let Some(lane) = target_lane {
+        assert!((f32::from(target_y) - f32::from(lane.origin.y)).abs() <= 1.0);
+    }
+    let target_fraction =
+        (f64::from(target_x) - f64::from(source_lane.origin.x)) / f64::from(source_lane.size.width);
+    let pointer_frame = (target_fraction * TIMELINE_FRAMES as f64).floor() as u64;
+    let expected = match editor.read_with(cx, |view, _| {
+        view.active_clip_drag
+            .as_ref()
+            .expect("active clip drag")
+            .position
+    }) {
+        super::drag::ClipPosition::Audio { .. } => {
+            let grab_offset = editor.read_with(cx, |view, _| {
+                view.active_clip_drag
+                    .as_ref()
+                    .and_then(|drag| drag.grab_offset.get())
+                    .expect("audio grab offset")
+            });
+            super::drag::ClipPosition::Audio {
+                start: pointer_frame.saturating_sub(grab_offset),
+                duration: project.clip(clip).expect("source audio").duration(),
+            }
+        }
+        super::drag::ClipPosition::Midi { length, .. } => {
+            let pointer_beat = project
+                .tempo_map()
+                .frame_to_beat(pointer_frame)
+                .expect("pointer beat");
+            let grab_offset = editor.read_with(cx, |view, _| {
+                view.active_clip_drag
+                    .as_ref()
+                    .and_then(|drag| drag.grab_offset.get())
+                    .expect("midi grab offset")
+            });
+            super::drag::ClipPosition::Midi {
+                start: BeatTime::from_raw(pointer_beat.raw().saturating_sub(grab_offset)),
+                length,
+            }
+        }
+    };
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_clip_drag
+            .as_ref()
+            .expect("clip drag remains active");
+        assert_eq!(
+            drag.destination.get(),
+            Some(super::drag::ClipDropDestination::NewTrack {
+                before_track: anchor,
+                position: expected,
+            })
+        );
+        assert_eq!(drag.lane_hovered.get(), anchor.is_some());
+        assert!(drag.preview.get().is_none());
+    });
+    let line = visual
+        .debug_bounds("track-insert-preview")
+        .expect("new-track target shows insertion line");
+    assert_eq!(line.size.width, body.size.width);
+    if anchor.is_some() {
+        assert!(
+            visual.debug_bounds("append-track-drop-highlight").is_none(),
+            "between-track insertion must not highlight the rows below"
+        );
+        let hidden = visual
+            .debug_bounds("clip-drag-floating-preview-hidden")
+            .expect("between-row insertion hides the cursor ghost");
+        assert_eq!(hidden.size.width, px(0.0));
+        assert_eq!(hidden.size.height, px(0.0));
+    } else {
+        let ghost = visual
+            .debug_bounds("clip-drag-floating-preview")
+            .expect("bottom insertion keeps the cursor ghost");
+        assert!(ghost.size.width > px(100.0));
+        let last_track = project.tracks().last().expect("last project track").id();
+        let last_lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", last_track.value()).into_boxed_str(),
+            ))
+            .expect("painted final track lane");
+        let highlight = visual
+            .debug_bounds("append-track-drop-highlight")
+            .expect("only the blank append region is highlighted");
+        assert_eq!(highlight.origin.x, body.origin.x);
+        assert_eq!(highlight.size.width, body.size.width);
+        assert!(
+            (highlight.origin.y - (last_lane.origin.y + last_lane.size.height)).abs() <= px(1.0)
+        );
+        assert!(
+            (highlight.origin.y + highlight.size.height - (body.origin.y + body.size.height)).abs()
+                <= px(1.0)
+        );
+        let body_after = visual
+            .debug_bounds("arrangement-content")
+            .expect("Arrangement body remains mounted");
+        assert_eq!(body_after.origin, body.origin);
+        assert_eq!(body_after.size, body.size);
+    }
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| match expected {
+        super::drag::ClipPosition::Audio { start, .. } => assert!(
+            matches!(
+                view.last_enqueued_edit.as_ref(),
+                Some(Command::MoveClipToNewTrack {
+                    clip: moved_clip,
+                    before_track,
+                    start: moved_start,
+                    ..
+                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start
+            ),
+            "audio new-track release request={:?}, destination={expected:?}, error={:?}",
+            view.last_enqueued_edit,
+            view.error
+        ),
+        super::drag::ClipPosition::Midi { start, .. } => assert!(
+            matches!(
+                view.last_enqueued_edit.as_ref(),
+                Some(Command::MoveMidiClipToNewTrack {
+                    clip: moved_clip,
+                    before_track,
+                    start: moved_start,
+                    ..
+                }) if *moved_clip == clip && *before_track == anchor && *moved_start == start
+            ),
+            "midi new-track release request={:?}, destination={expected:?}, error={:?}",
+            view.last_enqueued_edit,
+            view.error
+        ),
+    });
+    target
 }
 
 #[gpui::test]
@@ -237,7 +436,7 @@ fn rendered_audio_clip_drag_starts_previews_and_commits_a_move(cx: &mut TestAppC
         assert!(
             matches!(
                 view.last_enqueued_edit.as_ref(),
-                Some(Command::MoveClip {
+                Some(Command::MoveClipWithOverwrite {
                     clip: requested_clip,
                     track: requested_track,
                     ..
@@ -248,6 +447,68 @@ fn rendered_audio_clip_drag_starts_previews_and_commits_a_move(cx: &mut TestAppC
         );
     });
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn rendered_audio_clip_drop_between_tracks_inserts_and_preserves_pointer_grab(
+    cx: &mut TestAppContext,
+) {
+    let (project, source, anchor, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project.clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    drag_source_to_inserted_track(
+        cx,
+        &mut visual,
+        &editor,
+        &project,
+        clip,
+        source,
+        Some(anchor),
+    );
+}
+
+#[gpui::test]
+fn rendered_audio_clip_drop_below_last_track_inserts_without_workspace_jump(
+    cx: &mut TestAppContext,
+) {
+    let (project, source, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project.clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    drag_source_to_inserted_track(cx, &mut visual, &editor, &project, clip, source, None);
+}
+
+#[gpui::test]
+fn rendered_midi_clip_drop_between_tracks_inserts_and_preserves_beat_anchor(
+    cx: &mut TestAppContext,
+) {
+    let (project, source, anchor, clip) = midi_project();
+    let (_, preview) =
+        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+            .expect("compile midi preview");
+    let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    drag_source_to_inserted_track(
+        cx,
+        &mut visual,
+        &editor,
+        &project,
+        clip,
+        source,
+        Some(anchor),
+    );
+}
+
+#[gpui::test]
+fn rendered_midi_clip_drop_below_last_track_inserts_without_workspace_jump(
+    cx: &mut TestAppContext,
+) {
+    let (project, source, _, clip) = midi_project();
+    let (_, preview) =
+        hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+            .expect("compile midi preview");
+    let (handle, editor) = editor_window(cx, project.clone(), Arc::new(preview));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    drag_source_to_inserted_track(cx, &mut visual, &editor, &project, clip, source, None);
 }
 
 #[gpui::test]
@@ -273,7 +534,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
     editor.read_with(cx, |view, _| {
         assert!(matches!(
             view.last_enqueued_edit.as_ref(),
-            Some(Command::MoveMidiClip {
+            Some(Command::MoveMidiClipWithOverwrite {
                 clip: requested_clip,
                 track: requested_track,
                 start,

@@ -202,85 +202,90 @@ impl BrowserState {
     }
 }
 
-struct BrowserAudioDragGhost {
-    payload: drag::BrowserAudioDrag,
-}
+struct BrowserAudioDragGhost;
 
 impl gpui::Render for BrowserAudioDragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl gpui::IntoElement {
-        if self.payload.lane_hovered.get() {
-            return div().w(px(0.0)).h(px(0.0));
-        }
-        let mut bars = div()
-            .absolute()
-            .left(px(4.0))
-            .right(px(4.0))
-            .top(px(12.0))
-            .bottom(px(4.0))
-            .flex()
-            .items_center()
-            .gap(px(1.0));
-        let metadata = self.payload.metadata.borrow().clone();
-        if let Some(metadata) = metadata.as_ref() {
-            for [left, right] in &metadata.waveform.bins {
-                let amplitude = left
-                    .min
-                    .abs()
-                    .max(left.max.abs())
-                    .max(right.min.abs())
-                    .max(right.max.abs())
-                    .clamp(0.08, 1.0);
-                bars = bars.child(
-                    div().flex_1().h_full().flex().items_center().child(
-                        div()
-                            .w_full()
-                            .h(px(amplitude * 17.0))
-                            .bg(rgb(Palette::WAVEFORM)),
-                    ),
-                );
-            }
-        } else {
-            bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(Palette::CYAN)));
-        }
-        let status = metadata.as_ref().map_or_else(
-            || {
-                self.payload.metadata_error.borrow().clone().map_or_else(
-                    || "preparing waveform…".to_owned(),
-                    |_| "preview unavailable".to_owned(),
-                )
-            },
-            |metadata| {
-                let seconds = metadata.playback_frames as f64 / f64::from(metadata.sample_rate);
-                format!("{seconds:.2} s · {} frames", metadata.playback_frames)
-            },
-        );
-        div()
-            .debug_selector(|| "browser-audio-drag-ghost".to_owned())
-            .w(px(184.0))
-            .h(px(36.0))
-            .relative()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(Palette::CYAN))
-            .bg(rgb(Palette::RAISED))
-            .opacity(0.9)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(4.0))
-                    .top_0()
-                    .right(px(3.0))
-                    .h(px(12.0))
-                    .flex()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(rgb(Palette::TEXT))
-                    .line_clamp(1)
-                    .child(theme::text(self.payload.label.clone()))
-                    .child(theme::text(status)),
-            )
-            .child(bars)
+        div().w(px(0.0)).h(px(0.0))
     }
+}
+
+fn browser_audio_drag_ghost(payload: &drag::BrowserAudioDrag, left: f32, top: f32) -> Div {
+    let mut bars = div()
+        .absolute()
+        .left(px(4.0))
+        .right(px(4.0))
+        .top(px(12.0))
+        .bottom(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(1.0));
+    let metadata = payload.metadata.borrow().clone();
+    if let Some(metadata) = metadata.as_ref() {
+        for [left, right] in &metadata.waveform.bins {
+            let amplitude = left
+                .min
+                .abs()
+                .max(left.max.abs())
+                .max(right.min.abs())
+                .max(right.max.abs())
+                .clamp(0.08, 1.0);
+            bars = bars.child(
+                div().flex_1().h_full().flex().items_center().child(
+                    div()
+                        .w_full()
+                        .h(px(amplitude * 17.0))
+                        .bg(rgb(Palette::WAVEFORM)),
+                ),
+            );
+        }
+    } else {
+        bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(Palette::CYAN)));
+    }
+    let status = metadata.as_ref().map_or_else(
+        || {
+            payload.metadata_error.borrow().clone().map_or_else(
+                || "preparing waveform…".to_owned(),
+                |_| "preview unavailable".to_owned(),
+            )
+        },
+        |metadata| {
+            let seconds = metadata.playback_frames as f64 / f64::from(metadata.sample_rate);
+            format!("{seconds:.2} s · {} frames", metadata.playback_frames)
+        },
+    );
+    div()
+        .debug_selector(|| "browser-audio-floating-preview".to_owned())
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(184.0))
+        .h(px(36.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgb(Palette::CYAN))
+        .bg(rgb(Palette::RAISED))
+        .opacity(0.9)
+        .child(
+            div()
+                .absolute()
+                .left(px(4.0))
+                .top_0()
+                .right(px(3.0))
+                .h(px(12.0))
+                .flex()
+                .gap_1()
+                .text_xs()
+                .text_color(rgb(Palette::TEXT))
+                .line_clamp(1)
+                .child(theme::text(payload.label.clone()))
+                .child(theme::text(status)),
+        )
+        .child(bars)
+}
+
+fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
+    (pointer.0 + 12.0, pointer.1 + 12.0)
 }
 
 impl EditorView {
@@ -607,6 +612,27 @@ impl EditorView {
         if let Some(pending) = self.browser.preview_pending.take() {
             self.start_browser_audio_preview(pending, cx);
         }
+    }
+
+    pub(super) fn floating_browser_audio_drag_ghost(&self) -> Option<Div> {
+        let payload = self
+            .active_browser_audio_drag
+            .as_ref()
+            .filter(|drag| self.browser_audio_drag_is_current(drag))?;
+        if payload.lane_hovered.get() {
+            return Some(
+                div()
+                    .debug_selector(|| "browser-audio-floating-preview-hidden".to_owned())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(0.0))
+                    .h(px(0.0)),
+            );
+        }
+        let (pointer_x, pointer_y) = payload.last_pointer.get()?;
+        let (left, top) = browser_audio_drag_ghost_position((pointer_x, pointer_y));
+        Some(browser_audio_drag_ghost(payload, left, top))
     }
 
     fn start_browser_scan(&mut self, request: ScanRequest, cx: &mut Context<Self>) {
@@ -1133,7 +1159,8 @@ impl EditorView {
                         metadata: slot.metadata,
                         metadata_error: slot.error,
                         preview: Rc::new(Cell::new(None)),
-                        pending_start: Rc::new(Cell::new(None)),
+                        destination: Rc::new(Cell::new(None)),
+                        insertion_line_y: Rc::new(Cell::new(None)),
                         lane_hovered: Rc::new(Cell::new(false)),
                         last_pointer: Rc::new(Cell::new(None)),
                     }
@@ -1212,10 +1239,7 @@ impl EditorView {
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
                 drag_entity.update(cx, |_, cx| cx.notify());
-                let ghost_payload = payload.clone();
-                cx.new(|_| BrowserAudioDragGhost {
-                    payload: ghost_payload,
-                })
+                cx.new(|_| BrowserAudioDragGhost)
             });
             let move_entity = cx.entity();
             row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, _, cx| {
@@ -1573,7 +1597,19 @@ impl EditorView {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_WIDTH, PathBuf, ScanCoordinator, clamped_panel_width};
+    use super::{
+        MIN_WIDTH, PathBuf, ScanCoordinator, browser_audio_drag_ghost_position, clamped_panel_width,
+    };
+
+    #[test]
+    fn browser_drag_ghost_position_uses_window_relative_pointer_coordinates() {
+        // Window::bounds().origin is global screen space; it is intentionally not
+        // accepted by this helper because GPUI pointer events are window-relative.
+        assert_eq!(
+            browser_audio_drag_ghost_position((317.0, 129.0)),
+            (329.0, 141.0)
+        );
+    }
 
     #[test]
     fn browser_width_preserves_minimum_workspace_and_panel() {

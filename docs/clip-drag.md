@@ -62,3 +62,46 @@ MIDI cross-row preview/MoveMidiClip dispatch, and second pickup after a simulate
 matching worker completion. A rendered scroll regression excludes stale lane
 bounds. The fixture completion is simulated, so native worker/device and the
 reported post-move pickup still need the user's retest.
+
+
+## New-track move extension — implemented; native retest pending
+
+MoveClipToNewTrack and MoveMidiClipToNewTrack create a default hybrid track
+before a stable track ID or append it, then move the original clip as one
+validated candidate. Source track remains, even if emptied. Clip/asset/note IDs
+and source metadata are preserved; only destination track and clip time change.
+Audio remains frame-anchored; MIDI start is beat-anchored and length is retained.
+One undo restores the move and removes the created track. Existing ordered-track
+persistence requires no schema change.
+
+UI dividers show only an insertion line. Empty/bottom append space shows the end
+line plus a cursor ghost. Both browser samples and existing clips will use the
+same destination geometry, with original grab offset retained for existing clips.
+The timeline excludes the right-hand header; pointer x is never shifted by an
+assumed left header. Floating overlays remain absolute, never layout participants.
+User native checks will confirm existing audio/MIDI insertion/append/undo, sample
+placement under the mouse, and stationary workspace geometry at the bottom.
+
+
+Source acceptance: actual per-lane release routes divider targets into the
+new-track command; an active-gesture identity guard avoids duplicate parent/child
+handling. Rendered tests cover audio/MIDI divider and append targets, captured
+grab offset, regular moves and repeat pickup. Compiled Session editing covers
+undo/redo/save/reopen and ID preservation. 209 UI tests pass/one ignored;
+project/session checks and strict affected lint/build/guards/fmt/diff checks pass.
+Review: `artifacts/hex-track-drag-fix-20261009.app`. Native retest remains open.
+
+
+## overwrite and empty-area feedback — source implemented
+
+Current user-selected work adds a subtle full blank-area drop highlight: an
+empty Arrangement has no cursor-y line; append retains the last-track boundary
+line and floating ghost. Track dividers remain line-only. Rendered regressions
+pass; native acceptance is pending. Existing-track drops use the atomic
+overwrite contract in `clip-overwrite.md`, replacing covered portions of both
+audio and MIDI victims. Earlier overlap-policy deferrals above describe older
+builds; this extension is not yet native-accepted.
+
+209 rendered UI tests pass/one ignored; core/history/persistence/render checks
+and strict affected lint/build pass. Review: `artifacts/hex-overwrite-drop-20261009.app`.
+Native interaction acceptance remains pending.

@@ -6,6 +6,250 @@ use hex_project::{
 fn beat(value: u64) -> BeatTime {
     BeatTime::from_quarters(value).expect("small beat")
 }
+
+#[test]
+fn midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragment() {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 12).expect("editor");
+    let add_track = |editor: &mut Editor, name: &str| match editor
+        .execute(Command::AddTrack { name: name.into() })
+        .expect("track")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected track: {other:?}"),
+    };
+    let target = add_track(&mut editor, "target");
+    let source = add_track(&mut editor, "source");
+    let victim = match editor
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: beat(0),
+            length: beat(8),
+        })
+        .expect("victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "Audio/overwrite.wav".into(),
+            sample_rate: 48_000,
+            frames: 256,
+        })
+        .expect("audio asset")
+    {
+        Created::Asset(asset) => asset,
+        other => panic!("unexpected asset: {other:?}"),
+    };
+    let audio_victim = match editor
+        .execute(Command::PlaceClip {
+            track: target,
+            asset,
+            start: 0,
+            duration: 120_000,
+            source_offset: 0,
+            source_length: 256,
+            looping: true,
+        })
+        .expect("audio victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    let original_note = match editor
+        .execute(Command::AddMidiNote {
+            clip: victim,
+            start: BeatTime::ZERO,
+            duration: beat(8),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .expect("held note")
+    {
+        Created::Note(note) => note,
+        other => panic!("unexpected note: {other:?}"),
+    };
+    let incoming = match editor
+        .execute(Command::PlaceMidiClip {
+            track: source,
+            start: beat(0),
+            length: beat(2),
+        })
+        .expect("incoming")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    let before = editor.project().snapshot();
+    editor
+        .execute(Command::MoveMidiClipWithOverwrite {
+            clip: incoming,
+            track: target,
+            start: beat(2),
+        })
+        .expect("overwrite move");
+
+    let target_track = editor.project().track(target).expect("target track");
+    let victim_left = target_track
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() == victim)
+        .expect("left keeps original clip id");
+    assert_eq!(
+        (victim_left.start(), victim_left.length()),
+        (beat(0), beat(2))
+    );
+    assert_eq!(victim_left.notes()[0].id(), original_note);
+    assert_eq!(victim_left.notes()[0].duration(), beat(8));
+    let victim_right = target_track
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() != victim && clip.id() != incoming)
+        .expect("right fragment");
+    assert_eq!(
+        (victim_right.start(), victim_right.length()),
+        (beat(4), beat(4))
+    );
+    assert_eq!(victim_right.source_start(), BeatTime::ZERO);
+    assert_eq!(victim_right.source_length(), beat(4));
+    assert_eq!(victim_right.loop_start(), BeatTime::ZERO);
+    assert_eq!(victim_right.loop_end(), beat(4));
+    assert!(!victim_right.looping());
+    assert_eq!(victim_right.notes().len(), 1);
+    assert_eq!(victim_right.notes()[0].start(), BeatTime::ZERO);
+    assert_eq!(victim_right.notes()[0].duration(), beat(4));
+    assert_ne!(victim_right.notes()[0].id(), original_note);
+    let target_audio = target_track.clips();
+    let audio_left = target_audio
+        .iter()
+        .find(|clip| clip.id() == audio_victim)
+        .expect("audio left fragment retains ID");
+    assert_eq!((audio_left.start(), audio_left.duration()), (0, 48_000));
+    let audio_right = target_audio
+        .iter()
+        .find(|clip| clip.id() != audio_victim)
+        .expect("audio right fragment");
+    assert_eq!(
+        (audio_right.start(), audio_right.duration()),
+        (96_000, 24_000)
+    );
+    assert_eq!(audio_right.asset(), asset);
+    assert!(
+        editor
+            .project()
+            .track(source)
+            .expect("source")
+            .midi_clips()
+            .is_empty()
+    );
+    let committed = editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(committed.clone())
+            .expect("round trip")
+            .snapshot(),
+        committed
+    );
+
+    assert!(editor.undo());
+    let undone = editor.project().snapshot();
+    let mut expected = before;
+    expected.next_id = undone.next_id;
+    assert_eq!(undone, expected);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), committed);
+    let same_position = editor.project().snapshot();
+    let can_undo = editor.can_undo();
+    editor
+        .execute(Command::MoveMidiClipWithOverwrite {
+            clip: incoming,
+            track: target,
+            start: beat(2),
+        })
+        .expect("same-position drop");
+    assert_eq!(editor.project().snapshot(), same_position);
+    assert_eq!(editor.can_undo(), can_undo);
+}
+
+#[test]
+fn midi_overwrite_rejects_unbounded_loop_expansion_without_mutating_project_or_history() {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 12).expect("editor");
+    let target = match editor
+        .execute(Command::AddTrack {
+            name: "target".into(),
+        })
+        .expect("target")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected track: {other:?}"),
+    };
+    let source = match editor
+        .execute(Command::AddTrack {
+            name: "source".into(),
+        })
+        .expect("source")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected track: {other:?}"),
+    };
+    let victim = match editor
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters((MAX_NOTES as u64) + 4).expect("long clip"),
+        })
+        .expect("long victim")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: victim,
+            source_length: beat(1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: beat(1),
+            looping: true,
+            length: BeatTime::from_quarters((MAX_NOTES as u64) + 4).expect("long clip"),
+        })
+        .expect("loop source");
+    editor
+        .execute(Command::AddMidiNote {
+            clip: victim,
+            start: BeatTime::ZERO,
+            duration: beat(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .expect("looping note");
+    let incoming = match editor
+        .execute(Command::PlaceMidiClip {
+            track: source,
+            start: BeatTime::ZERO,
+            length: beat(1),
+        })
+        .expect("incoming")
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    let before = editor.project().snapshot();
+    let can_undo = editor.can_undo();
+    assert!(
+        editor
+            .execute(Command::MoveMidiClipWithOverwrite {
+                clip: incoming,
+                track: target,
+                start: beat(1),
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!(editor.can_undo(), can_undo);
+    assert!(!editor.can_redo());
+}
 fn editor() -> (Editor, hex_project::TrackId, hex_project::ClipId) {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 12).expect("editor");
     let track = match editor
@@ -141,6 +385,81 @@ fn one_hybrid_track_accepts_both_clip_types_and_cross_type_moves_undo() {
         editor.project().track(first).unwrap().midi_clips()[0].id(),
         midi
     );
+}
+
+#[test]
+fn moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step() {
+    let (mut editor, source, clip) = editor();
+    let anchor = match editor
+        .execute(Command::AddTrack {
+            name: "anchor".into(),
+        })
+        .expect("anchor")
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected anchor: {other:?}"),
+    };
+    let Created::Note(note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1),
+            duration: beat(1),
+            pitch: 64,
+            channel: 2,
+            velocity: 91,
+        })
+        .expect("note")
+    else {
+        panic!("note expected")
+    };
+    let before = editor.project().clone();
+    let source_clip = before.midi_clip(clip).expect("source midi clip");
+    let source_identity = source_clip.source_identity();
+
+    let Created::Track(inserted) = editor
+        .execute(Command::MoveMidiClipToNewTrack {
+            clip,
+            name: "track 3".into(),
+            before_track: Some(anchor),
+            start: beat(7),
+        })
+        .expect("move midi clip to new track")
+    else {
+        panic!("inserted track expected")
+    };
+    let after = editor.project().clone();
+    assert_eq!(
+        after
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>(),
+        [source, inserted, anchor]
+    );
+    assert!(
+        after
+            .track(source)
+            .expect("source remains")
+            .midi_clips()
+            .is_empty()
+    );
+    let inserted_track = after.track(inserted).expect("hybrid track");
+    assert!(inserted_track.clips().is_empty());
+    assert_eq!(inserted_track.midi_clips()[0].id(), clip);
+    assert_eq!(inserted_track.midi_clips()[0].start(), beat(7));
+    assert_eq!(
+        inserted_track.midi_clips()[0].source_identity(),
+        source_identity
+    );
+    assert_eq!(inserted_track.midi_clips()[0].notes()[0].id(), note);
+    assert_eq!(
+        Project::from_snapshot(after.snapshot()).expect("round trip"),
+        after
+    );
+    assert!(editor.undo(), "insert+move is one history step");
+    assert_eq!(editor.project().tracks(), before.tracks());
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
 }
 
 #[test]

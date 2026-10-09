@@ -82,12 +82,23 @@ It uses the same bounded WAV decode and project-rate resampler, then returns onl
 the converted frame count, rate and a 48-bin waveform summary; decoded PCM is
 dropped before returning. The UI calls it through GPUI's background executor,
 keeps at most one preparation active and coalesces pending requests. It does not
-submit a project edit or reserve project history. A valid lane drop still goes
-through the ordinary `Request::ImportToTrack` worker path, which reopens and
-validates the source before committing one undoable import. Browser summaries
+submit a project edit or reserve project history. A browser sample drop onto an
+existing Arrangement track uses `Request::ImportToTrackWithOverwrite`, which
+reopens and validates the source, cuts overlapping audio/MIDI clips, and commits
+one undoable import. Other non-drop imports retain `Request::ImportToTrack`.
+Browser summaries
 refresh on each drag start, but the source is not pinned while the pointer is
 held; a file modified during that interval can differ from the displayed
 preview. Import still reopens and validates the current source.
+
+For a browser sample drop in an Arrangement gap or empty project, the UI submits
+`Request::ImportToNewTrack` with a stable before-track anchor (or `None` for the
+end) and snapped frame start. The worker validates the anchor, track/asset
+limits and resident budget before decoding, then commits the prepared track,
+asset and clip together. A removed anchor, canceled request or failed compile
+leaves the canonical project unchanged. Existing-track sample drops use
+`Request::ImportToTrackWithOverwrite`; new-track drops have no destination
+clips to cut.
 
 The canonical project supports hybrid audio/MIDI tracks, MIDI source offsets,
 retained loop markers, finite arrangement lengths, note editing and schema-13

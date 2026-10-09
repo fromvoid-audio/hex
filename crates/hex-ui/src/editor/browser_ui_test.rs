@@ -1,4 +1,7 @@
-use super::{BrowserSection, EditorView, drag::BrowserAudioDrag};
+use super::{
+    BrowserSection, EditorView,
+    drag::{BrowserAudioDrag, BrowserDropDestination},
+};
 use gpui::{
     AppContext, Empty, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
 };
@@ -61,18 +64,37 @@ fn browser_drag_fixture(
     PreferencesTestDirectory,
     std::path::PathBuf,
 ) {
+    let (handle, editor, tracks, directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["target"]);
+    (handle, editor, tracks[0], directory, path)
+}
+
+fn browser_drag_fixture_with_tracks(
+    cx: &mut TestAppContext,
+    names: &[&str],
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    Vec<TrackId>,
+    PreferencesTestDirectory,
+    std::path::PathBuf,
+) {
     let directory = PreferencesTestDirectory::new();
     let path = directory.0.join("loop.WAV");
     std::fs::write(&path, mono_pcm_wav(4_800)).expect("wav fixture");
     let mut model = Editor::new(Project::new(48_000).expect("project"), 4).expect("editor");
-    let Created::Track(track) = model
-        .execute(Command::AddTrack {
-            name: "target".into(),
-        })
-        .expect("add track")
-    else {
-        panic!("track result")
-    };
+    let mut tracks = Vec::with_capacity(names.len());
+    for name in names {
+        let Created::Track(track) = model
+            .execute(Command::AddTrack {
+                name: (*name).into(),
+            })
+            .expect("add track")
+        else {
+            panic!("track result")
+        };
+        tracks.push(track);
+    }
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -112,7 +134,7 @@ fn browser_drag_fixture(
             editor
         })
         .expect("editor window");
-    (handle, editor, track, directory, path)
+    (handle, editor, tracks, directory, path)
 }
 
 #[gpui::test]
@@ -312,7 +334,7 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     visual.run_until_parked();
     assert!(cx.update(|app| app.has_active_drag()));
     let floating = visual
-        .debug_bounds("browser-audio-drag-ghost")
+        .debug_bounds("browser-audio-floating-preview")
         .expect("outside-lane drag has cursor ghost");
     assert!(f32::from(floating.size.width) > 100.0);
     editor.read_with(cx, |view, _| {
@@ -335,7 +357,6 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
             .active_browser_audio_drag
             .as_ref()
             .expect("drag remains active");
-        assert!(!drag.lane_hovered.get());
         assert!(drag.preview.get().is_none());
     });
 
@@ -367,7 +388,13 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
             .expect("prepared preview is exact on lane");
         assert_eq!(preview.target_track, track);
         assert_eq!(preview.end_frame - preview.start_frame, 4_800);
-        assert_eq!(drag.pending_start.get(), Some((track, preview.start_frame)));
+        assert_eq!(
+            drag.destination.get(),
+            Some(BrowserDropDestination::ExistingTrack {
+                track,
+                start: preview.start_frame,
+            })
+        );
         preview.start_frame
     });
     assert!(visual.debug_bounds("clip-drop-preview").is_some());
@@ -389,11 +416,411 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_enqueued_import_to_track,
-            Some((path.clone(), track, expected)),
-            "release imports the same snapped start shown by the preview"
+            Some((path.clone(), track, expected, true)),
+            "release imports at the previewed start with overwrite semantics"
         );
     });
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snapped_start(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["first", "second"]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-entry-0")
+        .expect("rendered wav browser row");
+    let first_selector =
+        Box::leak(format!("arrangement-lane-{}", tracks[0].value()).into_boxed_str());
+    let second_selector =
+        Box::leak(format!("arrangement-lane-{}", tracks[1].value()).into_boxed_str());
+    let first = visual
+        .debug_bounds(first_selector)
+        .expect("first track lane");
+    let second = visual
+        .debug_bounds(second_selector)
+        .expect("second track lane");
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("arrangement body");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(
+        first.origin.x + first.size.width * 0.73,
+        first.origin.y + first.size.height,
+    );
+    assert_eq!(first.origin.x, body.origin.x);
+    assert_eq!(
+        first.size.width,
+        body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH)
+    );
+    let expected_pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
+        / f32::from(first.size.width))
+        * 384_000.0)
+        .floor() as u64;
+    assert!((f32::from(target.y) - f32::from(second.origin.y)).abs() <= 1.0);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let expected = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag active");
+        assert!(drag.preview.get().is_none());
+        let Some(BrowserDropDestination::NewTrack {
+            before_track,
+            start,
+        }) = drag.destination.get()
+        else {
+            panic!("gap should target a newly inserted track");
+        };
+        assert!(drag.lane_hovered.get());
+        assert_eq!(before_track, Some(tracks[1]));
+        assert_eq!(
+            start, expected_pointer_start,
+            "drop start follows the painted lane's pointer position"
+        );
+        assert!(drag.insertion_line_y.get().is_some());
+        start
+    });
+    let line = visual
+        .debug_bounds("track-insert-preview")
+        .expect("full-width insertion line");
+    assert_eq!(line.size.width, body.size.width);
+    assert!(visual.debug_bounds("clip-drop-preview").is_none());
+    assert!(
+        visual.debug_bounds("append-track-drop-highlight").is_none(),
+        "between-track insertion must not highlight the rows below"
+    );
+    let ghost = visual
+        .debug_bounds("browser-audio-floating-preview-hidden")
+        .expect("drag ghost node remains mounted but collapsed");
+    assert_eq!(ghost.size.width, px(0.0));
+    assert_eq!(ghost.size.height, px(0.0));
+
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_new_track,
+            Some((path.clone(), Some(tracks[1]), expected)),
+            "release uses the same stable anchor and snapped start as the preview"
+        );
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn browser_sample_drop_below_last_track_appends_with_line_and_floating_ghost(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-entry-0")
+        .expect("rendered wav browser row");
+    let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(lane_selector).expect("last track lane");
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("arrangement body");
+    assert!(
+        body.size.height > lane.size.height,
+        "Arrangement has blank space below last row: body={:?}, lane={:?}",
+        body,
+        lane
+    );
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let arrangement = editor.read_with(cx, |view, _| {
+        view.arrangement_bounds.expect("arrangement bounds")
+    });
+    let target = point(
+        lane.origin.x + lane.size.width * 0.62,
+        px(arrangement.top + arrangement.height - 8.0),
+    );
+    assert!(
+        editor.read_with(cx, |view, _| view
+            .painted_track_insertion_target(f32::from(target.x), f32::from(target.y))
+            .is_some()),
+        "last painted track should expose the blank area below it: target={target:?}, body={body:?}, lane={lane:?}, bounds={:?}/{}, lane_epoch={:?}/{}, lanes={:?}",
+        editor.read_with(cx, |view, _| view.arrangement_bounds),
+        editor.read_with(cx, |view, _| view.arrangement_bounds_epoch),
+        editor.read_with(cx, |view, _| view.drag_lane_epochs.get(&track).copied()),
+        editor.read_with(cx, |view, _| view.drag_layout_generation),
+        editor.read_with(cx, |view, _| view.drag_lanes.clone()),
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let start = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag active");
+        assert!(!drag.lane_hovered.get());
+        assert!(drag.preview.get().is_none());
+        let Some(BrowserDropDestination::NewTrack {
+            before_track: None,
+            start,
+        }) = drag.destination.get()
+        else {
+            panic!("blank area under the final track should append");
+        };
+        assert!(view.browser_audio_drag_is_current(drag));
+        assert!(!drag.lane_hovered.get());
+        start
+    });
+    let line = visual
+        .debug_bounds("track-insert-preview")
+        .expect("append insertion line");
+    assert_eq!(line.size.width, body.size.width);
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag active");
+        assert!(matches!(
+            drag.destination.get(),
+            Some(BrowserDropDestination::NewTrack {
+                before_track: None,
+                ..
+            })
+        ));
+        assert!(view.browser_audio_drag_is_current(drag));
+        assert!(
+            view.active_browser_audio_drag
+                .as_ref()
+                .filter(|drag| view.browser_audio_drag_is_current(drag))
+                .is_some_and(|drag| matches!(
+                    drag.destination.get(),
+                    Some(BrowserDropDestination::NewTrack {
+                        before_track: None,
+                        ..
+                    })
+                ))
+        );
+        assert!(
+            view.state()
+                .is_some_and(|state| !state.project.tracks().is_empty())
+        );
+        let last = view.state().unwrap().project.tracks().last().unwrap().id();
+        assert_eq!(
+            view.drag_lane_epochs.get(&last),
+            Some(&view.drag_layout_generation)
+        );
+        let lane = view.drag_lanes[&last];
+        let bounds = view.arrangement_bounds.unwrap();
+        assert!(
+            lane.top + lane.height < bounds.top + bounds.height,
+            "lane={lane:?} body={bounds:?}"
+        );
+        assert_eq!(drag.insertion_line_y.get(), Some(lane.top + lane.height));
+    });
+    let highlight = visual
+        .debug_bounds("append-track-drop-highlight")
+        .expect("blank append area is highlighted");
+    assert_eq!(highlight.origin.x, body.origin.x);
+    assert_eq!(highlight.size.width, body.size.width);
+    assert!((highlight.origin.y - (lane.origin.y + lane.size.height)).abs() <= px(1.0));
+    assert!(
+        (highlight.origin.y + highlight.size.height - (body.origin.y + body.size.height)).abs()
+            <= px(1.0)
+    );
+    let ghost = visual
+        .debug_bounds("browser-audio-floating-preview")
+        .expect("blank-space append keeps cursor ghost");
+    assert!(ghost.size.width > px(100.0));
+    let body_after = visual
+        .debug_bounds("arrangement-content")
+        .expect("Arrangement body remains mounted");
+    assert_eq!(
+        body_after.origin, body.origin,
+        "drag must not shift the workspace"
+    );
+    assert_eq!(
+        body_after.size, body.size,
+        "drag must not resize the workspace"
+    );
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_new_track,
+            Some((path.clone(), None, start))
+        );
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAppContext) {
+    let (handle, editor, tracks, _directory, path) = browser_drag_fixture_with_tracks(cx, &[]);
+    assert!(tracks.is_empty());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-entry-0")
+        .expect("rendered wav browser row");
+    let body = visual
+        .debug_bounds("arrangement-content")
+        .expect("empty arrangement body");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(
+        body.origin.x + body.size.width * 0.4,
+        body.origin.y + body.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let start = editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag active");
+        assert!(!drag.lane_hovered.get());
+        assert!(drag.preview.get().is_none());
+        let Some(BrowserDropDestination::NewTrack {
+            before_track: None,
+            start,
+        }) = drag.destination.get()
+        else {
+            panic!("empty Arrangement should target a bottom track");
+        };
+        start
+    });
+    assert!(
+        visual.debug_bounds("track-insert-preview").is_none(),
+        "empty Arrangement feedback highlights the section without a cursor-following line"
+    );
+    let highlight = visual
+        .debug_bounds("empty-track-drop-highlight")
+        .expect("empty Arrangement section is highlighted");
+    assert_eq!(highlight.origin, body.origin);
+    assert_eq!(highlight.size, body.size);
+    let ghost = visual
+        .debug_bounds("browser-audio-floating-preview")
+        .expect("empty Arrangement keeps cursor ghost while showing insertion line");
+    assert!(ghost.size.width > px(100.0));
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_new_track,
+            Some((path.clone(), None, start))
+        );
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn browser_sample_gap_target_uses_only_currently_painted_rows_after_scroll(
+    cx: &mut TestAppContext,
+) {
+    let names = (0..24)
+        .map(|index| format!("track {index}"))
+        .collect::<Vec<_>>();
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &name_refs);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(px(500.0), px(250.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-1100.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let (first_track, second_track, target) = editor.update(cx, |view, _| {
+        let generation = view.drag_layout_generation;
+        let tracks = &view.state.as_ref().expect("project").project.tracks();
+        let pair = tracks.windows(2).find(|pair| {
+            view.drag_lane_epochs.get(&pair[0].id()) == Some(&generation)
+                && view.drag_lane_epochs.get(&pair[1].id()) == Some(&generation)
+        });
+        let pair = pair.expect("at least two adjacent rows are painted");
+        let first_lane = view.drag_lanes[&pair[0].id()];
+        let second_lane = view.drag_lanes[&pair[1].id()];
+        let pointer_x = first_lane.left + first_lane.width * 0.62;
+        let pointer_y = first_lane.top + first_lane.height;
+        assert!(
+            view.drag_lane_epochs[&tracks[0].id()] < generation,
+            "first row should be offscreen after scroll; epochs={:?}, generation={generation}, lanes={:?}, arrangement={:?}",
+            view.drag_lane_epochs,
+            view.drag_lanes,
+            view.arrangement_bounds
+        );
+        view.drag_lanes.insert(tracks[0].id(), second_lane);
+        let insertion = view
+            .painted_track_insertion_target(pointer_x, pointer_y)
+            .expect("visible gap remains a valid insertion target");
+        assert_eq!(insertion.0, Some(pair[1].id()));
+        (
+            pair[0].id(),
+            pair[1].id(),
+            point(px(pointer_x), px(pointer_y)),
+        )
+    });
+    assert_ne!(first_track, tracks[0]);
+
+    let source = visual
+        .debug_bounds("browser-entry-0")
+        .expect("rendered wav browser row");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag active");
+        assert!(matches!(
+            drag.destination.get(),
+            Some(BrowserDropDestination::NewTrack {
+                before_track: Some(track),
+                ..
+            }) if track == second_track
+        ));
+        assert!(drag.insertion_line_y.get().is_some());
+    });
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
 }
 
 #[gpui::test]
@@ -446,7 +873,8 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             metadata: Rc::new(RefCell::new(None)),
             metadata_error: Rc::new(RefCell::new(None)),
             preview: Rc::new(std::cell::Cell::new(None)),
-            pending_start: Rc::new(std::cell::Cell::new(None)),
+            destination: Rc::new(std::cell::Cell::new(None)),
+            insertion_line_y: Rc::new(std::cell::Cell::new(None)),
             lane_hovered: Rc::new(std::cell::Cell::new(false)),
             last_pointer: Rc::new(std::cell::Cell::new(None)),
         };

@@ -4,7 +4,7 @@ use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MAX_TRACKS, MidiSourcePlayback,
     NoteId, Project, Track, TrackId,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,6 +438,48 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         Command::RemoveMidiNotes { clip, notes } => {
             crate::midi_batch::edit(project, clip, notes, Vec::new())
         }
+        Command::MoveMidiClipToNewTrack {
+            clip,
+            name,
+            before_track,
+            start,
+        } => {
+            let length = project
+                .midi_clip(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?
+                .length;
+            validate_clip(start, length)?;
+            let track = super::edit::insert_track_before(project, name, before_track)?;
+            apply(project, Command::MoveMidiClip { clip, track, start })?;
+            Ok(Created::Track(track))
+        }
+        Command::MoveMidiClipWithOverwrite { clip, track, start } => {
+            let (source_track, old_start, length) = project
+                .tracks
+                .iter()
+                .find_map(|candidate| {
+                    candidate
+                        .midi_clips()
+                        .iter()
+                        .find(|item| item.id == clip)
+                        .map(|item| (candidate.id, item.start, item.length))
+                })
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            if source_track == track && old_start == start {
+                return Ok(Created::None);
+            }
+            let end = start
+                .raw()
+                .checked_add(length.raw())
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("midi timeline end overflow"))?;
+            project
+                .track(track)
+                .ok_or(Invalid("destination track no longer exists"))?;
+            crate::edit::overwrite_audio_in_beats(project, track, start, end, clip)?;
+            overwrite_midi_interval(project, track, start, end, clip)?;
+            apply(project, Command::MoveMidiClip { clip, track, start })
+        }
         Command::MoveMidiClip { clip, track, start } => {
             let (source_id, length, old_start) = project
                 .tracks
@@ -634,6 +676,292 @@ pub(crate) fn note_count(project: &Project) -> usize {
                 crate::SessionCellContent::Stop => 0,
             })
             .sum::<usize>()
+}
+
+struct MidiOverwriteFragments {
+    original_id: ClipId,
+    left: Option<MidiClip>,
+    right: Option<MidiClip>,
+    right_id_is_new: bool,
+}
+
+pub(crate) fn overwrite_midi_in_frames(
+    project: &mut Project,
+    track: TrackId,
+    start_frame: u64,
+    end_frame: u64,
+    excluded: ClipId,
+) -> Result<(), Invalid> {
+    if start_frame >= end_frame {
+        return Ok(());
+    }
+    let tempo = project.tempo_map();
+    let start_bound = if start_frame == u64::MAX {
+        crate::TempoMap::BEAT_RANGE_SENTINEL
+    } else {
+        tempo.beat_lower_bound_for_frame(start_frame + 1)?
+    };
+    let left_raw = start_bound.saturating_sub(1).min(u128::from(u64::MAX)) as u64;
+    let right_raw = tempo
+        .beat_lower_bound_for_frame(end_frame)?
+        .min(u128::from(u64::MAX)) as u64;
+    overwrite_midi_interval(
+        project,
+        track,
+        BeatTime::from_raw(left_raw),
+        BeatTime::from_raw(right_raw),
+        excluded,
+    )
+}
+
+pub(crate) fn overwrite_midi_interval(
+    project: &mut Project,
+    track: TrackId,
+    start: BeatTime,
+    end: BeatTime,
+    excluded: ClipId,
+) -> Result<(), Invalid> {
+    if start >= end {
+        return Ok(());
+    }
+    let clips = project
+        .track(track)
+        .ok_or(Invalid("destination track no longer exists"))?
+        .midi_clips();
+    let mut snapshot = Vec::new();
+    snapshot
+        .try_reserve_exact(clips.len())
+        .map_err(|_| Invalid("could not reserve midi overwrite planning storage"))?;
+    snapshot.extend(clips.iter().cloned());
+
+    let mut plans = Vec::new();
+    plans
+        .try_reserve_exact(snapshot.len())
+        .map_err(|_| Invalid("could not reserve midi overwrite fragment storage"))?;
+    let mut occurrence_bound = 0_usize;
+    for clip in snapshot {
+        if clip.id == excluded {
+            continue;
+        }
+        let clip_end_raw = clip
+            .start
+            .raw()
+            .checked_add(clip.length.raw())
+            .ok_or(Invalid("midi timeline end overflow"))?;
+        if clip.start >= end || start.raw() >= clip_end_raw {
+            continue;
+        }
+        let keep_left = clip.start < start;
+        let keep_right = clip_end_raw > end.raw();
+        let left = if keep_left {
+            let clip_start_frame = project.tempo_map().beat_to_frame(clip.start)?;
+            let left_end_frame = project.tempo_map().beat_to_frame(start)?;
+            if clip_start_frame < left_end_frame {
+                let mut left = clip.clone();
+                left.length = BeatTime::from_raw(start.raw() - clip.start.raw());
+                Some(left)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let right_range = if keep_right {
+            let right_start = BeatTime::from_raw(end.raw());
+            let right_end = BeatTime::from_raw(clip_end_raw);
+            let right_start_frame = project.tempo_map().beat_to_frame(right_start)?;
+            let right_end_frame = project.tempo_map().beat_to_frame(right_end)?;
+            (right_start_frame < right_end_frame).then_some((end.raw(), clip_end_raw))
+        } else {
+            None
+        };
+        let mut plan_occurrences = 0_usize;
+        if right_range.is_some() {
+            let playback = clip.source_playback()?;
+            for note in clip.notes() {
+                let plan = playback.note_occurrences(note.start, note.duration)?;
+                let count = usize::try_from(plan.count()).map_err(|_| {
+                    Invalid("midi overwrite occurrence count exceeds addressable range")
+                })?;
+                plan_occurrences = plan_occurrences
+                    .checked_add(count)
+                    .ok_or(Invalid("midi overwrite occurrence count overflow"))?;
+            }
+            occurrence_bound = occurrence_bound
+                .checked_add(plan_occurrences)
+                .ok_or(Invalid("midi overwrite occurrence count overflow"))?;
+            if occurrence_bound > MAX_NOTES {
+                return Err(Invalid(
+                    "midi overwrite note expansion exceeds project limit",
+                ));
+            }
+        }
+        let right_id_is_new = left.is_some() && right_range.is_some();
+        plans.push((
+            clip.clone(),
+            left,
+            right_range,
+            plan_occurrences,
+            right_id_is_new,
+        ));
+    }
+    if plans.is_empty() {
+        return Ok(());
+    }
+
+    let total_clips = project.tracks.iter().try_fold(0_usize, |total, item| {
+        total
+            .checked_add(item.clips().len())
+            .and_then(|value| value.checked_add(item.midi_clips().len()))
+            .ok_or(Invalid("clip count overflow"))
+    })?;
+    let final_clips = plans
+        .iter()
+        .try_fold(total_clips, |count, (_, left, right, _, _)| {
+            let retained = usize::from(left.is_some()) + usize::from(right.is_some());
+            count
+                .checked_sub(1)
+                .and_then(|value| value.checked_add(retained))
+                .ok_or(Invalid("clip count overflow"))
+        })?;
+    if final_clips > MAX_CLIPS {
+        return Err(Invalid("clip limit reached"));
+    }
+
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(plans.len())
+        .map_err(|_| Invalid("could not reserve midi overwrite candidate storage"))?;
+    let mut generated_notes_total = 0_usize;
+    let mut removed_notes_total = 0_usize;
+    for (original, left, right_range, occurrence_count, right_id_is_new) in plans {
+        if left.is_none() {
+            removed_notes_total = removed_notes_total
+                .checked_add(original.notes().len())
+                .ok_or(Invalid("midi note count overflow"))?;
+        }
+        let right = if let Some((right_start, right_end)) = right_range {
+            let playback = original.source_playback()?;
+            let mut notes = Vec::new();
+            notes
+                .try_reserve_exact(occurrence_count)
+                .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
+            for note in original.notes() {
+                let occurrences = playback.note_occurrences(note.start, note.duration)?;
+                for occurrence in occurrences.iter() {
+                    let absolute_start = original
+                        .start
+                        .raw()
+                        .checked_add(occurrence.timeline_start().raw())
+                        .ok_or(Invalid("midi note timeline overflow"))?;
+                    let absolute_end = absolute_start
+                        .checked_add(occurrence.gate_duration().raw())
+                        .ok_or(Invalid("midi note gate overflow"))?;
+                    let kept_start = absolute_start.max(right_start);
+                    let kept_end = absolute_end.min(right_end);
+                    if kept_start < kept_end {
+                        notes.push(MidiNote {
+                            id: NoteId(0),
+                            start: BeatTime::from_raw(kept_start - right_start),
+                            duration: BeatTime::from_raw(kept_end - kept_start),
+                            pitch: note.pitch,
+                            channel: note.channel,
+                            velocity: note.velocity,
+                        });
+                    }
+                }
+            }
+            generated_notes_total = generated_notes_total
+                .checked_add(notes.len())
+                .ok_or(Invalid("midi note count overflow"))?;
+            let length = BeatTime::from_raw(right_end - right_start);
+            Some(MidiClip {
+                id: if right_id_is_new {
+                    ClipId(0)
+                } else {
+                    original.id
+                },
+                start: BeatTime::from_raw(right_start),
+                length,
+                source: Arc::new(MidiSource {
+                    source_length: length,
+                    source_start: BeatTime::ZERO,
+                    loop_start: BeatTime::ZERO,
+                    loop_end: length,
+                    looping: false,
+                    notes,
+                }),
+            })
+        } else {
+            None
+        };
+        prepared.push(MidiOverwriteFragments {
+            original_id: original.id,
+            left,
+            right,
+            right_id_is_new,
+        });
+    }
+    let current_notes = note_count(project);
+    let final_notes = current_notes
+        .checked_sub(removed_notes_total)
+        .and_then(|value| value.checked_add(generated_notes_total))
+        .ok_or(Invalid("midi note count overflow"))?;
+    if final_notes > MAX_NOTES {
+        return Err(Invalid("midi note limit reached"));
+    }
+
+    let old_len = project
+        .track(track)
+        .ok_or(Invalid("destination track no longer exists"))?
+        .midi_clips()
+        .len();
+    let replacement_count = prepared.iter().try_fold(0_usize, |count, plan| {
+        count
+            .checked_add(usize::from(plan.left.is_some()))
+            .and_then(|value| value.checked_add(usize::from(plan.right.is_some())))
+            .ok_or(Invalid("clip count overflow"))
+    })?;
+    let new_len = old_len
+        .checked_sub(prepared.len())
+        .and_then(|value| value.checked_add(replacement_count))
+        .ok_or(Invalid("clip count overflow"))?;
+    let mut replacements = Vec::new();
+    replacements
+        .try_reserve_exact(new_len)
+        .map_err(|_| Invalid("could not reserve overwritten midi clips"))?;
+    let mut by_id = HashMap::new();
+    by_id
+        .try_reserve(prepared.len())
+        .map_err(|_| Invalid("could not reserve midi overwrite lookup"))?;
+    for mut plan in prepared {
+        let right = plan.right.as_mut();
+        if let Some(right) = right {
+            if plan.right_id_is_new {
+                right.id = ClipId(project.allocate_id()?);
+            }
+            let source = Arc::make_mut(&mut right.source);
+            for note in &mut source.notes {
+                note.id = NoteId(project.allocate_id()?);
+            }
+        }
+        by_id.insert(plan.original_id, plan);
+    }
+    let old = std::mem::take(&mut project.track_mut(track)?.content.midi_clips);
+    for clip in old {
+        if let Some(plan) = by_id.remove(&clip.id) {
+            if let Some(left) = plan.left {
+                replacements.push(left);
+            }
+            if let Some(right) = plan.right {
+                replacements.push(right);
+            }
+        } else {
+            replacements.push(clip);
+        }
+    }
+    project.track_mut(track)?.content.midi_clips = replacements;
+    Ok(())
 }
 
 pub(crate) fn find_note_source(project: &Project, note: NoteId) -> Option<(ClipId, BeatTime)> {

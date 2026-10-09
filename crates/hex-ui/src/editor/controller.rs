@@ -378,6 +378,8 @@ impl EditorView {
             self.clear_route_telemetry();
             self.drag_lanes.clear();
             self.drag_lane_epochs.clear();
+            self.arrangement_bounds = None;
+            self.arrangement_bounds_epoch = 0;
             self.active_clip_drag = None;
             self.pointer_down = None;
             self.stop();
@@ -659,8 +661,23 @@ impl EditorView {
             self.last_enqueued_edit = Some(command.clone());
         }
         #[cfg(test)]
-        if let Request::ImportToTrack { path, track, start } = &request {
-            self.last_enqueued_import_to_track = Some((path.clone(), *track, *start));
+        match &request {
+            Request::ImportToTrack { path, track, start } => {
+                self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));
+            }
+            Request::ImportToTrackWithOverwrite { path, track, start } => {
+                self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, true));
+            }
+            _ => {}
+        }
+        #[cfg(test)]
+        if let Request::ImportToNewTrack {
+            path,
+            before_track,
+            start,
+        } = &request
+        {
+            self.last_enqueued_import_to_new_track = Some((path.clone(), *before_track, *start));
         }
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();

@@ -386,6 +386,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) project_generation: u64,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
+    arrangement_bounds: Option<drag::LaneBounds>,
+    arrangement_bounds_epoch: u64,
     drag_layout_generation: u64,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
@@ -395,7 +397,9 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
     #[cfg(test)]
-    last_enqueued_import_to_track: Option<(std::path::PathBuf, TrackId, u64)>,
+    last_enqueued_import_to_track: Option<(std::path::PathBuf, TrackId, u64, bool)>,
+    #[cfg(test)]
+    last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
 }
@@ -549,6 +553,8 @@ impl EditorView {
             project_generation: 0,
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
+            arrangement_bounds: None,
+            arrangement_bounds_epoch: 0,
             drag_layout_generation: 0,
             active_clip_drag: None,
             active_browser_audio_drag: None,
@@ -559,6 +565,8 @@ impl EditorView {
             last_enqueued_edit: None,
             #[cfg(test)]
             last_enqueued_import_to_track: None,
+            #[cfg(test)]
+            last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
             browser,
         };

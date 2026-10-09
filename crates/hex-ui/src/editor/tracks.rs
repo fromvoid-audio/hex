@@ -9,6 +9,68 @@ use gpui::{
 };
 use hex_project::{BeatTime, Clip, MidiClip, Track};
 
+fn clip_drag_ghost(payload: &ClipDrag, left: f32, top: f32) -> Div {
+    let accent = match payload.position {
+        ClipPosition::Audio { .. } => Palette::CYAN,
+        ClipPosition::Midi { .. } => Palette::CORAL,
+    };
+    let mut bars = div()
+        .absolute()
+        .left(px(4.0))
+        .right(px(4.0))
+        .top(px(9.0))
+        .bottom(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(1.0));
+    if let Some(waveform) = &payload.ghost_waveform {
+        let count = waveform.bins.len().min(36);
+        for index in 0..count {
+            let bin_index = index * waveform.bins.len() / count.max(1);
+            let amplitude = waveform.bins[bin_index]
+                .iter()
+                .map(|peak| peak.min.abs().max(peak.max.abs()))
+                .fold(0.0_f32, f32::max)
+                .clamp(0.08, 1.0);
+            bars = bars.child(
+                div().flex_1().h_full().flex().items_center().child(
+                    div()
+                        .w_full()
+                        .h(px(amplitude * 18.0))
+                        .bg(rgb(Palette::WAVEFORM)),
+                ),
+            );
+        }
+    } else {
+        bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(accent)));
+    }
+    div()
+        .debug_selector(|| "clip-drag-floating-preview".to_owned())
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(164.0))
+        .h(px(32.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgb(accent))
+        .bg(rgb(Palette::RAISED))
+        .opacity(0.88)
+        .child(
+            div()
+                .absolute()
+                .left(px(4.0))
+                .top_0()
+                .right(px(3.0))
+                .h(px(10.0))
+                .text_xs()
+                .text_color(rgb(Palette::TEXT))
+                .line_clamp(1)
+                .child(theme::text(payload.ghost_label.clone())),
+        )
+        .child(bars)
+}
+
 const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
 
@@ -202,7 +264,12 @@ impl EditorView {
             .active_browser_audio_drag
             .as_ref()
             .filter(|drag| drag.lane_hovered.get())
-            .and_then(|drag| drag.pending_start.get())
+            .and_then(|drag| match drag.destination.get() {
+                Some(drag::BrowserDropDestination::ExistingTrack { track, start }) => {
+                    Some((track, start))
+                }
+                Some(drag::BrowserDropDestination::NewTrack { .. }) | None => None,
+            })
             .filter(|(pending_track, _)| *pending_track == track_id)
         {
             let _ = pending_track;
@@ -431,9 +498,12 @@ impl EditorView {
                         viewport_length: viewport.length,
                         snap_grid: self.snap_grid,
                         preview: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        destination: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                         ghost_label: format!("audio clip {}", clip_id.value()),
                         ghost_waveform: state.waveforms.get(&clip.asset()).cloned(),
                         lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
+                        last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
                     },
                     lane,
                 )
@@ -574,6 +644,26 @@ impl EditorView {
             && self.pending_requests.is_empty()
     }
 
+    pub(super) fn floating_clip_drag_ghost(&self) -> Option<Div> {
+        let payload = self
+            .active_clip_drag
+            .as_ref()
+            .filter(|drag| self.drag_start_is_current(drag))?;
+        if payload.lane_hovered.get() {
+            return Some(
+                div()
+                    .debug_selector(|| "clip-drag-floating-preview-hidden".to_owned())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(0.0))
+                    .h(px(0.0)),
+            );
+        }
+        let (pointer_x, pointer_y) = payload.last_pointer.get()?;
+        Some(clip_drag_ghost(payload, pointer_x + 12.0, pointer_y + 12.0))
+    }
+
     fn midi_drag_payload(
         &self,
         state: &ViewState,
@@ -603,9 +693,12 @@ impl EditorView {
                 viewport_length: viewport.length,
                 snap_grid: self.snap_grid,
                 preview: std::rc::Rc::new(std::cell::Cell::new(None)),
+                destination: std::rc::Rc::new(std::cell::Cell::new(None)),
+                insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                 ghost_label: format!("midi clip {}", clip.id().value()),
                 ghost_waveform: None,
                 lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
+                last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
             },
             lane,
         ))
@@ -713,29 +806,17 @@ impl EditorView {
                     _ => None,
                 };
                 payload.grab_offset.set(offset);
+                let pointer = window.mouse_position();
+                let pointer = (f32::from(pointer.x), f32::from(pointer.y));
+                payload.last_pointer.set(Some(pointer));
                 let (preview, lane_hovered) = drag_entity.update(cx, |view, _| {
                     view.begin_clip_drag(payload);
-                    let target = view.hovered_drag_target(
-                        f32::from(window.mouse_position().x),
-                        f32::from(window.mouse_position().y),
-                    );
-                    let preview = target.and_then(|(target, lane)| {
-                        view.drag_candidate(
-                            payload,
-                            target,
-                            f32::from(window.mouse_position().x),
-                            lane,
-                        )
-                    });
-                    (preview, target.is_some())
+                    view.clip_drag_drop_position(payload, pointer.0, pointer.1)
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
                 drag_entity.update(cx, |_, cx| cx.notify());
-                let ghost_payload = payload.clone();
-                cx.new(|_| ClipDragGhost {
-                    payload: ghost_payload,
-                })
+                cx.new(|_| ClipDragGhost)
             })
             .on_drag_move::<ClipDrag>(move |event, _, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
@@ -746,13 +827,10 @@ impl EditorView {
                     view.drag_move_event_count = view.drag_move_event_count.saturating_add(1);
                 });
                 let pointer = event.event.position;
+                let pointer = (f32::from(pointer.x), f32::from(pointer.y));
+                payload.last_pointer.set(Some(pointer));
                 let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
-                    let target =
-                        view.hovered_drag_target(f32::from(pointer.x), f32::from(pointer.y));
-                    let preview = target.and_then(|(target, lane)| {
-                        view.drag_candidate(payload, target, f32::from(pointer.x), lane)
-                    });
-                    (preview, target.is_some())
+                    view.clip_drag_drop_position(payload, pointer.0, pointer.1)
                 });
                 payload.preview.set(preview);
                 payload.lane_hovered.set(lane_hovered);
@@ -761,9 +839,7 @@ impl EditorView {
     }
 }
 
-struct ClipDragGhost {
-    payload: ClipDrag,
-}
+struct ClipDragGhost;
 
 impl gpui::Render for ClipDragGhost {
     fn render(
@@ -771,65 +847,9 @@ impl gpui::Render for ClipDragGhost {
         _: &mut gpui::Window,
         _: &mut Context<'_, Self>,
     ) -> impl gpui::IntoElement {
-        if self.payload.lane_hovered.get() {
-            return div().w(px(0.0)).h(px(0.0));
-        }
-        let accent = match self.payload.position {
-            ClipPosition::Audio { .. } => Palette::CYAN,
-            ClipPosition::Midi { .. } => Palette::CORAL,
-        };
-        let mut bars = div()
-            .absolute()
-            .left(px(4.0))
-            .right(px(4.0))
-            .top(px(9.0))
-            .bottom(px(4.0))
-            .flex()
-            .items_center()
-            .gap(px(1.0));
-        if let Some(waveform) = &self.payload.ghost_waveform {
-            let count = waveform.bins.len().min(36);
-            for index in 0..count {
-                let bin_index = index * waveform.bins.len() / count.max(1);
-                let amplitude = waveform.bins[bin_index]
-                    .iter()
-                    .map(|peak| peak.min.abs().max(peak.max.abs()))
-                    .fold(0.0_f32, f32::max)
-                    .clamp(0.08, 1.0);
-                bars = bars.child(
-                    div().flex_1().h_full().flex().items_center().child(
-                        div()
-                            .w_full()
-                            .h(px(amplitude * 18.0))
-                            .bg(rgb(Palette::WAVEFORM)),
-                    ),
-                );
-            }
-        } else {
-            bars = bars.child(div().w_full().h(px(2.0)).bg(rgb(accent)));
-        }
         div()
             .debug_selector(|| "clip-drag-ghost".to_owned())
-            .w(px(164.0))
-            .h(px(32.0))
-            .relative()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(accent))
-            .bg(rgb(Palette::RAISED))
-            .opacity(0.88)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(4.0))
-                    .top_0()
-                    .right(px(3.0))
-                    .h(px(10.0))
-                    .text_xs()
-                    .text_color(rgb(Palette::TEXT))
-                    .line_clamp(1)
-                    .child(theme::text(self.payload.ghost_label.clone())),
-            )
-            .child(bars)
+            .w(px(0.0))
+            .h(px(0.0))
     }
 }

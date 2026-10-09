@@ -1538,7 +1538,8 @@ remain open. Broader roadmap paused; no commit/push for this change.
 - [x] Existing audio/MIDI clip drags show floating preview outside lanes and locked landing inside.
 - [x] Background bounded waveform/duration preparation, cancellation/stale guards and rendered regressions.
 - [x] Establish outbound boundary: pinned GPUI has no native outbound file drag; separate integration deferred.
-- [ ] Checks/build, separate review app and user native acceptance.
+- [x] Affected checks/build and separate review app.
+- [ ] User native interaction/listening acceptance (checklist in `docs/clip-overwrite.md`).
 
 200 UI tests pass (one ignored), preferences/session suites and strict affected
 lints/build/fmt/guards/diff checks pass. Separate review build:
@@ -1547,3 +1548,67 @@ In-window dragging only; no native cross-app file drag or held-source pinning.
 Earlier accepted browser persistence and clip drag remain covered. No commit/push.
 
 User acceptance — 9 October: browser WAV free/locked dragging works. User authorized committing and pushing this completed milestone before track-insertion work.
+
+## Sample drop creates an inserted track — implemented; native acceptance pending
+
+- [x] Canonical atomic prepared import at stable before-track/end destination and clip start.
+- [x] Browser hover between tracks: full-width insertion line, no floating ghost.
+- [x] Empty/bottom Arrangement sample drop creates bottom hybrid track and clip.
+- [x] Preserve existing track-body import, cancellation and stale/painted geometry guards.
+- [x] Model/session order/history/persistence/failure and rendered interaction tests.
+- [x] Affected checks/build and separate review app.
+- [ ] User native interaction/listening acceptance (checklist in `docs/clip-overwrite.md`).
+
+Accepted browser/clip/preferences source was committed and pushed to main as
+1d892dc. New insertion work remains uncommitted until authorized.
+
+Source acceptance: full project/session suites and 205 UI tests pass (one
+existing ignored), strict affected lints, desktop build, fmt, both guards and
+diff check pass. Rendered gap/bottom/empty/scroll cases and ghost suppression
+are covered. Review build: `artifacts/hex-track-insert-20261009.app`. New feature
+remains uncommitted; earlier accepted changes are on origin/main at 1d892dc.
+
+## Track-creation drag follow-up — implemented; native retest pending
+
+- [x] Bottom/empty append keeps floating ghost and end-line; dividers show line only.
+- [x] Fix bottom-hover workspace jump with rendered geometry regression.
+- [x] Fix insertion timeline origin so sample lands under pointer with current snapping.
+- [x] Atomic audio/MIDI move into a newly inserted/appended hybrid track; retain clip contents/IDs/source track.
+- [x] Model/history/persistence/failure and actual rendered pointer regression checks.
+- [ ] Separate repaired build and user native acceptance.
+
+209 UI tests pass (one existing ignored), focused project import/MIDI 30 and
+Session service 18 pass; independent full project/session suites pass. Strict
+affected Clippy, desktop build, fmt, guards and diff checks pass. New review:
+`artifacts/hex-track-drag-fix-20261009.app`. User retest remains open; source
+track is retained and existing clip IDs/contents are moved without copying.
+No commit/push of the insertion feature or these corrections.
+
+## Drop-area highlight and overwrite — source implemented; native review pending
+
+- [x] Zero-track body highlight with ghost and no cursor-following line.
+- [x] Blank append area highlight plus fixed bottom line and floating ghost.
+- [x] Explicit MIDI fragmentation/rounding/source identity contract (`docs/clip-overwrite.md`).
+- [x] Drop-specific atomic overwrite across audio/MIDI collections, browser imports and existing moves.
+- [x] Fragment source/timing, failure bounds, undo/persistence and rendered tests.
+- [x] Affected checks/build and separate review app.
+- [ ] User native interaction/listening acceptance (checklist in `docs/clip-overwrite.md`).
+
+209 UI tests pass/one ignored; independent full project/session suites and five
+audio split PCM regressions pass. Strict affected lint/build, guards/fmt/diff
+checks pass. Review: `artifacts/hex-overwrite-drop-20261009.app`; evidence in
+`overwrite-drop-manifest.json` and associated logs. Native review remains open;
+no commit/push.
+
+
+## divider highlight correction — 9 October 2026
+
+Native user report: between-track hover highlighted every row below the divider.
+The append overlay was gated only by insertion-line presence; it now also
+requires a current new-track destination with no before-track anchor. Divider
+hover remains line-only for browser samples and existing audio/MIDI clips;
+zero-track and bottom empty-area highlighting retain their prior behavior.
+All three new rendered divider assertions failed before the fix; the fixed
+full UI suite passes 209 tests (one existing ignored). Strict UI Clippy, desktop
+build, guards/fmt/diff pass. Review: `artifacts/hex-divider-highlight-20261009.app`;
+native retest remains pending. No project/audio model or overwrite behavior change.

@@ -173,6 +173,7 @@ impl Render for EditorView {
             .child(workspace_content.flex_1().min_w_0());
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(rgb(Palette::BACKGROUND))
@@ -580,5 +581,7 @@ impl Render for EditorView {
             .child(self.transport(cx))
             .child(workspace)
             .child(self.status_bar())
+            .children(self.floating_browser_audio_drag_ghost())
+            .children(self.floating_clip_drag_ghost())
     }
 }

@@ -1856,3 +1856,100 @@ desktop build and guards/fmt/diff checks pass. Review bundle:
 `artifacts/hex-browser-drag-20261009.app`. Native user checks remain open. External
 file drag is unsupported by pinned GPUI; a file externally modified while held
 can differ from preview, and import reopens/validates it. No held-source lease.
+
+
+## Sample drop inserts track — 9 October 2026
+
+New canonical ImportPreparedAudioTrackAt command uses stable before-track ID
+or append plus frame start. Old import delegates append/start-zero. Session
+prepares media/candidate graph before committing track+asset+clip as one history
+operation; worker rejects missing anchors/track/asset/resident limits before
+decode. Track order uses existing schema-13 persistence.
+
+Insertion targets use current-painted adjacent row bounds and real final-row/
+empty-body geometry. Full-width line suppresses floating/clip previews. Tests
+found GPUI payload ghosts did not repaint on shared state changes; the browser
+ghost now uses the editor overlay. A coordinate review removed subtraction of
+global window bounds from window-relative mouse positions. Rendered tests cover
+actual suppression, body/gap/bottom/empty/scroll and invalid/off-lane behavior.
+
+Full project/session suites and final 205 UI tests pass (one ignored); strict
+affected lints/build/guards/fmt/diff checks pass. Evidence:
+`artifacts/track-insertion-core-tests.log`, `track-insertion-ui-tests.log` and
+`track-insertion-review-manifest.json`. Separate review bundle:
+`artifacts/hex-track-insert-20261009.app`. Native insertion/undo/reopen acceptance
+remains assigned to user. Running apps/unsaved projects are preserved. Earlier
+accepted browser/clip/preferences changes committed/pushed at 1d892dc; new
+insertion changes are uncommitted pending acceptance.
+
+
+### Native insertion feedback — 9 October
+
+User asks to keep end-line + cursor ghost in blank append space (divider alone
+still suppresses ghost), reports workspace jumping upward at bottom hover and
+clip placement unexpectedly far left, and requests the same new-track gesture
+for existing audio/MIDI clips. Native acceptance of insertion remains incomplete.
+Concrete insertion origin bug: body.left + header width assumes a left header,
+but row layout is clip lane then right header; use body.left and subtract header
+only from width. Bottom jumping is being reproduced, not yet attributed.
+Existing-clip extension requires canonical atomic insert+move, preserving source
+track/IDs/media/notes/history and original audio-frame/MIDI-beat anchors.
+
+Reproduction checkpoint: insertion origin was 176 px too far right (right-hand
+header misaccounted); a noncentered pointer test now derives expected frame from
+actual painted clip-lane bounds. Bottom append/empty retains ghost+line and uses
+valid destination rather than visual-suppression flag for release. Bottom jump
+was a 36 px Arrangement height shrink: `.relative()` overrode the ghost's
+`.absolute()` and made it a flow item. Removing that override preserves
+Arrangement origin/size in the rendered regression. Existing-clip creation is
+still being implemented.
+
+Final follow-up: typed audio/MIDI insert+move commands keep source track and
+original IDs/metadata, with one compiled history edit and persistence checks.
+Rendered release test found track-lane handler consumed divider drop before the
+parent Arrangement handler; it now routes valid insertion destinations to the
+new-track command and guards gesture identity. Floating browser and existing
+clip overlays remain absolute and use shared free/locked destination geometry.
+
+209 UI tests pass/one ignored, focused project import/MIDI 30 and Session service
+18 pass; independent full project/session suites pass. Strict affected lints/
+build/guards/fmt/diff checks pass. Evidence: `artifacts/track-drag-fix-core-tests.log`
+and `track-drag-fix-manifest.json`. Separate build:
+`artifacts/hex-track-drag-fix-20261009.app`. Native user retest remains pending;
+source remains uncommitted and running app/unsaved work is preserved.
+
+
+### Overwrite drop and empty-area feedback — 9 October
+
+User asks for whole empty-section highlight; no cursor-y line on zero-track
+project, and subtle below-last highlight alongside existing bottom line. Also
+asks drop-on-clip to carve that clip rather than overlap. Scoped to Arrangement
+drops/imports; generic legacy overlap persistence/rendering stays permissive.
+MIDI fragmentation needs a deliberate contract: original source playback rejects
+one-shot source-start at/past end and does not chase notes before source-start,
+so merely advancing a right fragment breaks silent tails and boundary-held notes.
+Independent fragment ownership also needs globally unique note IDs. Read-only
+architecture analysis resolved this with finite right-fragment one-shot
+projection and bounded occurrence preflight. Boundary-held notes retrigger; right
+loops are linearized. Safe mixed frame/beat rounding may leave tiny gaps. See
+`docs/clip-overwrite.md`; implementation and native acceptance remain pending.
+
+Overwrite implementation is source-tested. Review caught zero-frame fragments
+and nondeterministic split-ID allocation; fragments now omit collapsed frame
+intervals and allocate IDs in destination order. Full-cover import can replace
+at the clip cap; failures remain atomic. Source suites/build/lints pass;
+`artifacts/hex-overwrite-drop-20261009.app` awaits native review. No callback or
+storage-schema change.
+
+
+## divider highlight correction — 9 October 2026
+
+Native user report: between-track hover highlighted every row below the divider.
+The append overlay was gated only by insertion-line presence; it now also
+requires a current new-track destination with no before-track anchor. Divider
+hover remains line-only for browser samples and existing audio/MIDI clips;
+zero-track and bottom empty-area highlighting retain their prior behavior.
+All three new rendered divider assertions failed before the fix; the fixed
+full UI suite passes 209 tests (one existing ignored). Strict UI Clippy, desktop
+build, guards/fmt/diff pass. Review: `artifacts/hex-divider-highlight-20261009.app`;
+native retest remains pending. No project/audio model or overwrite behavior change.

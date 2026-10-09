@@ -184,7 +184,7 @@ fn worker_import_to_existing_hybrid_track_keeps_audio_and_midi_through_save_open
     let source = directory.0.join("Sample.WAV");
     fs::write(&source, wav_mono_pcm16(&[10_000, -10_000, 5_000])).expect("write wav fixture");
     service
-        .submit(Request::ImportToTrack {
+        .submit(Request::ImportToTrackWithOverwrite {
             path: source,
             track,
             start: 17,
@@ -203,8 +203,9 @@ fn worker_import_to_existing_hybrid_track_keeps_audio_and_midi_through_save_open
         imported.state.project.tracks()
     );
     assert_eq!(lane.clips()[0].start(), 17);
-    assert_eq!(lane.midi_clips().len(), 1);
-    assert_eq!(lane.midi_clips()[0].notes().len(), 1);
+    assert_eq!(lane.midi_clips().len(), 2, "import cuts the MIDI victim");
+    assert!(lane.midi_clips().iter().all(|clip| clip.notes().len() == 1));
+    assert_ne!(lane.midi_clips()[0].id(), lane.midi_clips()[1].id());
 
     let project_path = directory.0.join("hybrid.hex");
     service
@@ -222,8 +223,8 @@ fn worker_import_to_existing_hybrid_track_keeps_audio_and_midi_through_save_open
     let lane = reopened.state.project.track(track).expect("reopened track");
     assert_eq!(lane.clips().len(), 1);
     assert_eq!(lane.clips()[0].start(), 17);
-    assert_eq!(lane.midi_clips().len(), 1);
-    assert_eq!(lane.midi_clips()[0].notes().len(), 1);
+    assert_eq!(lane.midi_clips().len(), 2);
+    assert!(lane.midi_clips().iter().all(|clip| clip.notes().len() == 1));
     assert_eq!(reopened.state.project, expected_project);
     let mut playback = reopened.playback.expect("reopened playback");
     playback.apply(PlaybackCommand::Play);
@@ -1270,6 +1271,325 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert_eq!(rejected.state.revision, reopened.state.revision);
     assert_eq!(rejected.state.project, reopened.state.project);
     assert!(!rejected.state.unsaved);
+}
+
+#[test]
+fn browser_sample_drop_inserts_track_and_clip_atomically_and_round_trips() {
+    let directory = TempDir::new();
+    let source_path = directory.path().join("Drop.WaV");
+    let project_path = directory.path().join("Inserted.hex");
+    fs::write(
+        &source_path,
+        wav_mono_pcm16(&[1_000, -2_000, 3_000, -4_000]),
+    )
+    .expect("sample fixture");
+    let service = Service::new(48_000, 16, 128).expect("service");
+    let _ = next_event(&service);
+
+    let mut original_tracks = Vec::new();
+    for name in ["first", "second"] {
+        service
+            .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+            .expect("add track");
+        let event = next_event(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let track = event.state.project.tracks().last().expect("track").id();
+        original_tracks.push(track);
+    }
+
+    service
+        .submit(Request::ImportToNewTrack {
+            path: source_path.clone(),
+            before_track: Some(original_tracks[1]),
+            start: 96,
+        })
+        .expect("submit insertion import");
+    let inserted = next_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let project = &inserted.state.project;
+    let new_track = project.tracks()[1].id();
+    assert_eq!(
+        project
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>(),
+        [original_tracks[0], new_track, original_tracks[1]]
+    );
+    assert_eq!(
+        project.track(new_track).expect("new track").clips().len(),
+        1
+    );
+    let clip = &project.track(new_track).expect("new track").clips()[0];
+    assert_eq!(clip.start(), 96);
+    assert_eq!(clip.duration(), 4);
+
+    service.submit(Request::Undo).expect("undo insertion");
+    let undone = next_event(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project.tracks().len(), 2);
+    assert_eq!(undone.state.project.assets().count(), 0);
+    assert!(undone.state.can_redo);
+
+    service.submit(Request::Redo).expect("redo insertion");
+    let redone = next_event(&service);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, inserted.state.project);
+    service
+        .submit(Request::SaveNew(project_path.clone()))
+        .expect("save inserted project");
+    let saved = next_event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    service
+        .submit(Request::Open(project_path))
+        .expect("reopen inserted project");
+    let reopened = next_event(&service);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project, saved.state.project);
+
+    let stale_anchor = original_tracks[0];
+    service
+        .submit(Request::Edit(Command::RemoveTrack(stale_anchor)))
+        .expect("remove future insertion anchor");
+    let removed = next_event(&service);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    service
+        .submit(Request::ImportToNewTrack {
+            path: directory.path().join("missing.wav"),
+            before_track: Some(stale_anchor),
+            start: 0,
+        })
+        .expect("submit stale insertion anchor");
+    let refused = next_event(&service);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| { error.contains("insertion anchor no longer exists") })
+    );
+    assert_eq!(refused.state.project, removed.state.project);
+    assert_eq!(refused.state.revision, removed.state.revision);
+    assert_eq!(refused.state.can_undo, removed.state.can_undo);
+}
+
+#[test]
+fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
+    let directory = TempDir::new();
+    let source_path = directory.path().join("source.wav");
+    let project_path = directory.path().join("moved-clips.hex");
+    fs::write(
+        &source_path,
+        wav_mono_pcm16(&[8_000, -8_000, 4_000, -4_000]),
+    )
+    .expect("sample fixture");
+    let service = Service::new(48_000, 16, 128).expect("service");
+    let _ = next_event(&service);
+
+    let mut original_tracks = Vec::new();
+    for name in ["audio source", "midi source", "anchor"] {
+        service
+            .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+            .expect("add hybrid track");
+        let event = next_event(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        original_tracks.push(match event.created.expect("track identity") {
+            Created::Track(track) => track,
+            other => panic!("unexpected create result: {other:?}"),
+        });
+    }
+
+    service
+        .submit(Request::ImportToTrack {
+            path: source_path,
+            track: original_tracks[0],
+            start: 0,
+        })
+        .expect("import source audio");
+    let imported = next_event(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let audio_clip = imported
+        .state
+        .project
+        .track(original_tracks[0])
+        .unwrap()
+        .clips()[0]
+        .id();
+    let audio_asset = imported
+        .state
+        .project
+        .track(original_tracks[0])
+        .unwrap()
+        .clips()[0]
+        .asset();
+
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track: original_tracks[1],
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        }))
+        .expect("place midi clip");
+    let placed = next_event(&service);
+    assert!(placed.error.is_none(), "{:?}", placed.error);
+    let midi_clip = match placed.created.expect("midi clip identity") {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected create result: {other:?}"),
+    };
+    service
+        .submit(Request::Edit(Command::AddMidiNote {
+            clip: midi_clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }))
+        .expect("add note");
+    let noted = next_event(&service);
+    assert!(noted.error.is_none(), "{:?}", noted.error);
+    let note_id = noted
+        .state
+        .project
+        .track(original_tracks[1])
+        .unwrap()
+        .midi_clips()[0]
+        .notes()[0]
+        .id();
+
+    service
+        .submit(Request::Edit(Command::MoveClipToNewTrack {
+            clip: audio_clip,
+            name: "moved audio".into(),
+            before_track: Some(original_tracks[2]),
+            start: 96,
+        }))
+        .expect("move audio into a new track");
+    let audio_moved = next_event(&service);
+    assert!(audio_moved.error.is_none(), "{:?}", audio_moved.error);
+    let audio_track = match audio_moved.created.expect("inserted audio track") {
+        Created::Track(track) => track,
+        other => panic!("unexpected move result: {other:?}"),
+    };
+    assert_eq!(audio_moved.state.project.tracks()[2].id(), audio_track);
+    let moved_audio = &audio_moved
+        .state
+        .project
+        .track(audio_track)
+        .unwrap()
+        .clips()[0];
+    assert_eq!(moved_audio.id(), audio_clip);
+    assert_eq!(moved_audio.asset(), audio_asset);
+    assert_eq!(moved_audio.start(), 96);
+    assert!(
+        audio_moved
+            .playback
+            .as_ref()
+            .and_then(Playback::prepared_revision)
+            .is_some()
+    );
+
+    service
+        .submit(Request::Edit(Command::MoveMidiClipToNewTrack {
+            clip: midi_clip,
+            name: "moved midi".into(),
+            before_track: None,
+            start: hex_project::BeatTime::from_quarters(2).expect("two beats"),
+        }))
+        .expect("move midi into a new bottom track");
+    let midi_moved = next_event(&service);
+    assert!(midi_moved.error.is_none(), "{:?}", midi_moved.error);
+    let midi_track = match midi_moved.created.expect("inserted midi track") {
+        Created::Track(track) => track,
+        other => panic!("unexpected move result: {other:?}"),
+    };
+    assert_eq!(
+        midi_moved.state.project.tracks().last().unwrap().id(),
+        midi_track
+    );
+    let moved_midi = &midi_moved
+        .state
+        .project
+        .track(midi_track)
+        .unwrap()
+        .midi_clips()[0];
+    assert_eq!(moved_midi.id(), midi_clip);
+    assert_eq!(
+        moved_midi.start(),
+        hex_project::BeatTime::from_quarters(2).expect("two beats")
+    );
+    assert_eq!(moved_midi.notes()[0].id(), note_id);
+    assert!(
+        midi_moved
+            .playback
+            .as_ref()
+            .and_then(Playback::prepared_revision)
+            .is_some()
+    );
+
+    service.submit(Request::Undo).expect("undo midi move");
+    let midi_undone = next_event(&service);
+    assert!(midi_undone.error.is_none(), "{:?}", midi_undone.error);
+    assert!(
+        midi_undone
+            .state
+            .project
+            .track(original_tracks[1])
+            .is_some()
+    );
+    assert!(midi_undone.state.project.track(midi_track).is_none());
+    service.submit(Request::Redo).expect("redo midi move");
+    let midi_redone = next_event(&service);
+    assert!(midi_redone.error.is_none(), "{:?}", midi_redone.error);
+    assert_eq!(midi_redone.state.project, midi_moved.state.project);
+
+    service
+        .submit(Request::Undo)
+        .expect("undo midi move before save");
+    let _ = next_event(&service);
+    service.submit(Request::Undo).expect("undo audio move");
+    let audio_undone = next_event(&service);
+    assert!(audio_undone.error.is_none(), "{:?}", audio_undone.error);
+    assert!(
+        audio_undone
+            .state
+            .project
+            .track(original_tracks[0])
+            .unwrap()
+            .clips()
+            .iter()
+            .any(|clip| clip.id() == audio_clip)
+    );
+    assert!(audio_undone.state.project.track(audio_track).is_none());
+    service.submit(Request::Redo).expect("redo audio move");
+    let audio_redone = next_event(&service);
+    assert!(audio_redone.error.is_none(), "{:?}", audio_redone.error);
+    assert_eq!(
+        audio_redone.state.project.tracks(),
+        audio_moved.state.project.tracks()
+    );
+    assert_eq!(
+        audio_redone.state.project.assets().count(),
+        audio_moved.state.project.assets().count()
+    );
+
+    service
+        .submit(Request::SaveNew(project_path.clone()))
+        .expect("save moved clips");
+    let saved = next_event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    service
+        .submit(Request::Open(project_path))
+        .expect("reopen moved clips");
+    let reopened = next_event(&service);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project, saved.state.project);
+    assert!(
+        reopened
+            .playback
+            .as_ref()
+            .and_then(Playback::prepared_revision)
+            .is_some()
+    );
 }
 
 #[test]

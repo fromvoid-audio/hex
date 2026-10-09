@@ -277,3 +277,23 @@ Ordinary audio/MIDI clip drags use the same free/locked visual modes. Preparatio
 is bounded and background-only. This supports in-window dragging; outbound
 file drag to other apps requires a separate native integration. See
 [browser dragging](docs/browser-drag.md) for pending native checks and limits.
+
+Browser WAV drops on a track divider create a new hybrid track there; drops below
+the final track or into an empty Arrangement append a track. Dividers show an
+insertion line; blank space retains the cursor ghost. New track, asset and clip
+are one undoable prepared edit.
+See [browser dragging](docs/browser-drag.md) for pending native acceptance.
+
+Existing audio and MIDI clips can also create inserted/appended hybrid tracks
+by dragging, preserving clip/source/note IDs and source tracks. Bottom blank
+space shows line plus cursor ghost; dividers show line only. Sample insertion
+uses the actual timeline origin and overlays no longer change workspace height.
+Native retest is pending in the latest review build.
+
+Arrangement drops onto existing tracks overwrite covered portions of audio and
+MIDI clips, retaining uncovered fragments, in one compiled undoable edit. Blank
+drop areas highlight subtly; empty projects have no cursor-height insertion
+line. MIDI right fragments become finite one-shot sources and held notes
+retrigger at the cut boundary. See [overwrite contract](docs/clip-overwrite.md).
+Source checks pass; review app: `artifacts/hex-overwrite-drop-20261009.app`. Native
+acceptance remains pending.

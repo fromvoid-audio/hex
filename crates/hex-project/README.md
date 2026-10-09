@@ -36,6 +36,23 @@ std only. The engine consumes read-only snapshots to compile playback; storage
 owns the versioned native metadata file. The model never depends on playback,
 devices or UI.
 
+Prepared browser imports can atomically insert a default hybrid track before a
+stable `TrackId` or append at the end, then create its audio asset and clip at a
+validated frame start. The legacy prepared-import command remains append-at-end
+at frame zero. Track insertion, media ownership and clip creation share one
+transaction/history step; failed validation leaves order and history unchanged.
+
+Arrangement drag drops use separate overwrite commands and leave generic moves
+unchanged. They carve the incoming half-open destination interval from both
+audio and MIDI clips on the target track, excluding the moved clip itself. Audio
+fragments use the canonical split phase and fixed fade domain. MIDI right
+fragments materialize bounded note occurrences into finite one-shot sources;
+the left fragment retains its original clip/source identity, while split right
+fragments receive fresh IDs. Collapsed frame-domain MIDI fragments are omitted.
+Prepared audio imports use the same operation for the incoming WAV and all
+victims, so candidate compilation/history admission stays atomic. See
+`../../docs/clip-overwrite.md` for interval, rounding and loop-expansion details.
+
 ## Does not own
 
 PCM decoding, disk I/O, audio callbacks, render scheduling, GUI state,
