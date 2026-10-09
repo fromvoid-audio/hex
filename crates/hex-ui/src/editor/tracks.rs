@@ -152,7 +152,7 @@ fn midi_trim_note_shapes(
     shapes
 }
 
-const TRACK_ROW_HEIGHT: f32 = 44.0;
+pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
 
 pub(super) fn clip_grid_layer(

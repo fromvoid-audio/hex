@@ -53,7 +53,10 @@ stateful Utility and Operator remain open. Toolkit 44 is source-complete in
 CI steps passing on `7f0bdea` (163.297 s, unchanged digest, `stale=false`).
 Gesture 65 is source-complete in [PR #25](https://github.com/PORTALSURFER/hex/pull/25),
 all 14 clean-commit CI steps passing on `d48ad24` (172.917 s, unchanged digest,
-`stale=false`). Panel 17 is being implemented in the shared bottom detail slot.
+`stale=false`). Panel 17 is source-complete in [PR26](https://github.com/PORTALSURFER/hex/pull/26),
+all 14 clean CI steps passed on `d955b63` (188.416s, unchanged digest). Original
+Utility filters passed all 14 checks on `ee87e6e` (147.627 s, [PR27](https://github.com/PORTALSURFER/hex/pull/27));
+stateful runtime 16 admission remains active. Native panel/Utility acceptance stays open.
 Native interaction/listening remains open. See
 [device controls](docs/device-controls.md).
 
@@ -210,6 +213,9 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Arrangement track region. Regular tracks and their trailing empty drop space
   scroll above it; the detail/device panel remains below the track region.
   Preserve master controls, scrolling, clipping, selection and drop coordinates.
+  Source now has a fixed 44 px Arrangement row, canonical master gain and regular-region
+  hit testing; 304 UI tests/two existing ignores and strict UI Clippy/guards pass.
+  Clean full CI, native scroll/drop/minimum-layout review and merge remain open.
 - [ ] **return tracks above main** — add/remove return tracks pinned immediately
   above main, below the scrollable regular-track region. Implement canonical
   return routing, sends, history and persistence, not decorative rows. Keep both

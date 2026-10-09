@@ -424,6 +424,59 @@ fn browser_audio_drag_floats_outside_lanes_locks_preview_and_imports_exact_candi
 }
 
 #[gpui::test]
+fn dropping_browser_audio_on_pinned_main_cancels_import_and_track_creation(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _track, _directory, _path) = browser_drag_fixture(cx);
+    let track_count = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.tracks().len()
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-entry-0")
+        .expect("sample browser entry");
+    let main = visual
+        .debug_bounds("pinned-main-track")
+        .expect("pinned main row");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(cx.update(|app| app.has_active_drag()));
+
+    let target = point(main.origin.x + px(20.0), main.center().y);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("browser drag remains captured");
+        assert!(drag.destination.get().is_none());
+        assert!(drag.preview.get().is_none());
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.tracks().len(),
+            track_count
+        );
+        assert!(view.active_browser_audio_drag.is_none());
+        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.last_enqueued_import_to_new_track.is_none());
+    });
+}
+
+#[gpui::test]
 fn browser_audio_drag_uses_command_override_live_and_at_mouse_up(cx: &mut TestAppContext) {
     let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);

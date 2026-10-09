@@ -6,7 +6,7 @@ use gpui::{
     Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
 };
 
-use super::tracks::TRACK_HEADER_WIDTH;
+use super::tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT};
 use super::viewport::Viewport;
 
 impl EditorView {
@@ -97,7 +97,13 @@ impl EditorView {
 
     pub(super) fn arrangement(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let Some(state) = self.state() else {
-            return div().flex_1().min_h_0().bg(rgb(Palette::BACKGROUND));
+            let viewport = Viewport {
+                start: 0,
+                length: 1,
+            };
+            let upper = div().flex_1().min_h_0().bg(rgb(Palette::BACKGROUND));
+            let main = self.main_track_row(viewport, &[], &[], cx);
+            return self.arrangement_surface(upper, main, cx);
         };
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
@@ -121,7 +127,7 @@ impl EditorView {
                 empty_viewport,
                 cx.entity(),
             );
-            return div()
+            let upper = div()
                 .flex_1()
                 .min_h_0()
                 .flex()
@@ -150,6 +156,8 @@ impl EditorView {
                         ),
                     cx,
                 )]);
+            let main = self.main_track_row(empty_viewport, &bands, &grid, cx);
+            return self.arrangement_surface(upper, main, cx);
         }
 
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -226,15 +234,16 @@ impl EditorView {
             );
         }
         content = content.children(self.edit_cursor_layer(viewport));
-        content = self.arrangement_body(content, cx);
-        div()
+        let upper = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .children([overview])
             .child(self.ruler(state, ruler_width, cx))
-            .child(content)
+            .children([self.arrangement_body(content, cx)]);
+        let main = self.main_track_row(viewport, &bands, &grid, cx);
+        self.arrangement_surface(upper, main, cx)
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
@@ -470,46 +479,103 @@ impl EditorView {
                 }
             }
         }
-        let drag_entity = cx.entity();
-        body = body.on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
-            let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
-                return;
-            };
-            let pointer = event.event.position;
-            let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
-            payload.last_pointer.set(Some(pointer_xy));
-            payload.snap_modifier.set(event.event.modifiers.platform);
-            let (preview, lane_hovered) = drag_entity.update(cx, |view, _| {
-                view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
-            });
-            payload.preview.set(preview);
-            payload.lane_hovered.set(lane_hovered);
-            drag_entity.update(cx, |_, cx| cx.notify());
-        });
-        body = body.on_drop(cx.listener(|view, payload: &BrowserAudioDrag, window, cx| {
-            view.drop_browser_audio(payload, window, cx);
-        }));
-        let clip_entity = cx.entity();
-        body = body.on_drag_move::<super::drag::ClipDrag>(move |event, _, cx| {
-            let Some(payload) = event.dragged_item().downcast_ref::<super::drag::ClipDrag>() else {
-                return;
-            };
-            let pointer = event.event.position;
-            let pointer = (f32::from(pointer.x), f32::from(pointer.y));
-            payload.last_pointer.set(Some(pointer));
-            payload.snap_modifier.set(event.event.modifiers.platform);
-            let (preview, lane_hovered) = clip_entity.update(cx, |view, _| {
-                view.clip_drag_drop_position(payload, pointer.0, pointer.1)
-            });
-            payload.preview.set(preview);
-            payload.lane_hovered.set(lane_hovered);
-            clip_entity.update(cx, |_, cx| cx.notify());
-        });
-        body.on_drop(
-            cx.listener(|view, payload: &super::drag::ClipDrag, window, cx| {
-                view.drop_clip_to_new_track(payload, window, cx);
-            }),
-        )
+        body
+    }
+
+    fn arrangement_surface(&self, upper: Div, main: Div, cx: &mut Context<Self>) -> Div {
+        let entity = cx.entity();
+        let clip_entity = entity.clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .children([upper.flex_1().min_h_0(), main])
+            .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
+                let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
+                    return;
+                };
+                let pointer = event.event.position;
+                let pointer = (f32::from(pointer.x), f32::from(pointer.y));
+                payload.last_pointer.set(Some(pointer));
+                payload.snap_modifier.set(event.event.modifiers.platform);
+                let (preview, lane_hovered) = entity.update(cx, |view, _| {
+                    view.browser_audio_drop_position(payload, pointer.0, pointer.1)
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                entity.update(cx, |_, cx| cx.notify());
+            })
+            .on_drop(cx.listener(|view, payload: &BrowserAudioDrag, window, cx| {
+                view.drop_browser_audio(payload, window, cx);
+            }))
+            .on_drag_move::<super::drag::ClipDrag>(move |event, _, cx| {
+                let Some(payload) = event.dragged_item().downcast_ref::<super::drag::ClipDrag>()
+                else {
+                    return;
+                };
+                let pointer = event.event.position;
+                let pointer = (f32::from(pointer.x), f32::from(pointer.y));
+                payload.last_pointer.set(Some(pointer));
+                payload.snap_modifier.set(event.event.modifiers.platform);
+                let (preview, lane_hovered) = clip_entity.update(cx, |view, _| {
+                    view.clip_drag_drop_position(payload, pointer.0, pointer.1)
+                });
+                payload.preview.set(preview);
+                payload.lane_hovered.set(lane_hovered);
+                clip_entity.update(cx, |_, cx| cx.notify());
+            })
+            .on_drop(
+                cx.listener(|view, payload: &super::drag::ClipDrag, window, cx| {
+                    view.drop_clip_to_new_track(payload, window, cx);
+                }),
+            )
+    }
+
+    fn main_track_row(
+        &self,
+        viewport: Viewport,
+        bands: &[super::musical_time::GridBand],
+        lines: &[super::musical_time::GridLine],
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .debug_selector(|| "pinned-main-track".to_owned())
+            .h(px(TRACK_ROW_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .border_t_1()
+            .border_color(rgb(Palette::BORDER))
+            .bg(rgb(Palette::SURFACE))
+            .child(
+                div()
+                    .id("main-track-lane")
+                    .debug_selector(|| "main-track-lane".to_owned())
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .children([main_track_grid_layer(bands, lines, viewport)]),
+            )
+            .child(
+                div()
+                    .id("main-track-header")
+                    .debug_selector(|| "main-track-header".to_owned())
+                    .w(px(TRACK_HEADER_WIDTH))
+                    .h_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .border_l_1()
+                    .border_color(rgb(Palette::BORDER))
+                    .bg(rgb(Palette::RAISED))
+                    .text_xs()
+                    .child(theme::text("main"))
+                    .child(div().flex_1())
+                    .children([self.main_track_controls(cx)]),
+            )
     }
 
     fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {
@@ -702,6 +768,19 @@ fn timeline_grid_layer(
         .bottom_0()
         .left_0()
         .right(px(TRACK_HEADER_WIDTH))
+        .children(timeline_band_elements(bands, viewport))
+        .children(timeline_grid_elements(lines, viewport))
+}
+
+fn main_track_grid_layer(
+    bands: &[super::musical_time::GridBand],
+    lines: &[super::musical_time::GridLine],
+    viewport: Viewport,
+) -> Div {
+    div()
+        .debug_selector(|| "main-track-grid".to_owned())
+        .absolute()
+        .inset_0()
         .children(timeline_band_elements(bands, viewport))
         .children(timeline_grid_elements(lines, viewport))
 }

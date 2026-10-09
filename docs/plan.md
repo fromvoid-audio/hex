@@ -21,9 +21,14 @@ for earlier UI PRs stays open; it does not block independent source work.
 Widget/controller contracts are in [device controls](device-controls.md).
 Toolkit 44 passed all 14 local CI steps on clean `7f0bdea`
 ([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Gesture 65 passed all 14 local CI steps on clean `d48ad24` in 172.917 s
-([PR #25](https://github.com/PORTALSURFER/hex/pull/25)). Panel 17 is being
-implemented with registered catalog and batched parameter views, stable control
-entities and explicit typed-draft finalization. Native acceptance remains open.
+([PR #25](https://github.com/PORTALSURFER/hex/pull/25)). Panel 17 passed all 14 clean CI
+checks on `d955b63` in 188.416 s ([PR26](https://github.com/PORTALSURFER/hex/pull/26));
+registered catalog/views, stable entities and synchronously admitted typed drafts
+are implemented. Original standalone Utility filters passed all 14 clean CI steps
+on `ee87e6e` in 147.627 s ([PR27](https://github.com/PORTALSURFER/hex/pull/27)).
+Generic transactional mutable runtime 16 is active separately. Pinned main 12 is
+source-implemented alongside it with 304 UI tests/two existing ignores, strict UI Clippy
+and guards; clean full CI, native and merge acceptance remain separate gates.
 
 The user's current implementation scope is every open ticket planned for Hex
 in Pulse, rather than only existing PRs. This priority order is a dependency

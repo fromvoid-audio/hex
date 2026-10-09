@@ -1374,6 +1374,56 @@ fn rendered_midi_clip_drop_below_last_track_inserts_without_workspace_jump(
 }
 
 #[gpui::test]
+fn dropping_clip_on_pinned_main_cancels_instead_of_appending_track(cx: &mut TestAppContext) {
+    let (project, source, _, clip) = audio_project();
+    let track_count = project.tracks().len();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source_surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("source clip surface");
+    let main = visual
+        .debug_bounds("pinned-main-track")
+        .expect("pinned main row");
+    let down = point(
+        source_surface.origin.x + source_surface.size.width / 2.0,
+        source_surface.origin.y + source_surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(cx.update(|app| app.has_active_drag()));
+
+    let target = point(main.origin.x + px(20.0), main.center().y);
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view.active_clip_drag.as_ref().expect("drag stays captured");
+        assert!(drag.destination.get().is_none());
+        assert!(drag.preview.get().is_none());
+        assert_eq!(view.arrangement_bounds_epoch, view.drag_layout_generation);
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.tracks().len(),
+            track_count
+        );
+        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.active_clip_drag.is_none());
+        assert!(view.state.as_ref().unwrap().project.track(source).is_some());
+    });
+}
+
+#[gpui::test]
 fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppContext) {
     let (project, source, target, clip) = midi_project();
     let original_project = project.clone();

@@ -1,5 +1,7 @@
 mod arrangement;
 mod arrangement_audio_panel;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrangement_main_track_ui_test;
 mod bootstrap;
 mod browser;
 mod browser_input;
