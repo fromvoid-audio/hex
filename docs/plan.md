@@ -1,8 +1,23 @@
 # Project plan
 
-## active work unit — Option-drag copies, 9 October 2026
+## active work unit — keyboard paste track anchoring, 9 October 2026
 
-One focused PR covers existing Arrangement audio/MIDI clip drags, copies into
+Normal and ripple keyboard paste from a single-track clipboard follow the
+current target track and horizontal position. Multi-track clipboards instead
+retain their original stable track IDs and use only the new horizontal position.
+Visual time-chunk moves/copies continue to allow cross-track placement.
+
+Acceptance: copy and cut retain source-row provenance; inserted intervening tracks
+do not receive unrelated copied rows; missing source tracks refuse the complete
+edit without changing content, clipboard or redo. Both replace and ripple remain
+one prepared Undo operation and use the existing bounded fragment/gap contract.
+Opening a project clears provenance with its clipboard. No schema or callback
+changes. Targeted canonical/worker regressions precede final clean-commit local
+CI and a separate review bundle/PR.
+
+## source-complete work unit — Option-drag copies, 9 October 2026
+
+[PR #12](https://github.com/PORTALSURFER/hex/pull/12) covers existing Arrangement audio/MIDI clip drags, copies into
 inserted/appended tracks, and complete time-rectangle drags. Option switches move
 to copy, with a native plus cursor and the existing snapped landing preview.
 Modifier changes during a drag and at release select the current mode; Command
@@ -17,7 +32,8 @@ clipboard. Each successful drop is one prepared history operation; cancellation,
 same-origin drops and rejected candidates preserve content and redo. Pointer
 updates do not compile projects or copy PCM. Validate canonical overlap, failure,
 Undo and modifier contracts, run local CI on the final clean commit, then provide
-a fresh review app for the user's native cursor/drag acceptance.
+a fresh review app for the user's native cursor/drag acceptance. Full local CI
+passed all 14 steps on clean source `494f641`; native acceptance remains open.
 
 ## Goal and target
 

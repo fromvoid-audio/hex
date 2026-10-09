@@ -6,6 +6,7 @@ use crate::{
 use std::sync::Arc;
 mod insert;
 pub(crate) use insert::insert;
+pub(crate) use insert::insert_on_source_tracks;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeRange {
@@ -70,6 +71,7 @@ pub struct RangeClipboard {
     sample_rate: u32,
     duration: u64,
     rows: usize,
+    source_tracks: Vec<TrackId>,
     assets: Vec<(AssetId, Asset)>,
     audio: Vec<(usize, Clip)>,
     midi: Vec<MidiFragment>,
@@ -112,6 +114,7 @@ impl Project {
             sample_rate: self.sample_rate(),
             duration: range.duration(),
             rows: range.tracks.len(),
+            source_tracks: range.tracks.clone(),
             assets: Vec::new(),
             audio: Vec::new(),
             midi: Vec::new(),
@@ -224,17 +227,102 @@ impl Project {
 
 pub(crate) fn clear(project: &mut Project, range: &TimeRange) -> Result<Created, Invalid> {
     range.validate(project)?;
-    for track in range.tracks.iter().copied() {
-        crate::edit::overwrite_audio_interval(project, track, range.start, range.end, ClipId(0))?;
-        crate::midi::overwrite_midi_in_frames(project, track, range.start, range.end, ClipId(0))?;
-    }
+    clear_rows(project, &range.tracks, range.start, range.end)?;
     Ok(Created::None)
+}
+
+fn clear_rows(
+    project: &mut Project,
+    rows: &[TrackId],
+    start: u64,
+    end: u64,
+) -> Result<(), Invalid> {
+    for track in rows.iter().copied() {
+        crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
+        crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn paste(
     project: &mut Project,
     clipboard: &RangeClipboard,
     track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    let rows = adjacent_rows(project, clipboard, track, "paste")?;
+    paste_rows(project, clipboard, &rows, frame)
+}
+
+/// Keyboard clipboard paste keeps multi-track rows attached to their source IDs.
+/// A single-row clipboard remains free to paste at the requested current track.
+pub(crate) fn paste_on_source_tracks(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    let rows = source_rows_or_single_target(project, clipboard, track, "paste")?;
+    paste_rows(project, clipboard, &rows, frame)
+}
+
+pub(crate) fn adjacent_rows(
+    project: &Project,
+    clipboard: &RangeClipboard,
+    track: TrackId,
+    operation: &str,
+) -> Result<Vec<TrackId>, Invalid> {
+    let first = project
+        .tracks()
+        .iter()
+        .position(|item| item.id() == track)
+        .ok_or(Invalid(if operation == "insert" {
+            "insert track no longer exists"
+        } else {
+            "paste track no longer exists"
+        }))?;
+    let last = first
+        .checked_add(clipboard.rows)
+        .ok_or(Invalid(if operation == "insert" {
+            "insert track range overflow"
+        } else {
+            "paste track range overflow"
+        }))?;
+    project
+        .tracks()
+        .get(first..last)
+        .ok_or(Invalid(if operation == "insert" {
+            "insert needs more existing tracks"
+        } else {
+            "paste needs more existing tracks"
+        }))
+        .map(|rows| rows.iter().map(|item| item.id()).collect())
+}
+
+pub(crate) fn source_rows_or_single_target(
+    project: &Project,
+    clipboard: &RangeClipboard,
+    track: TrackId,
+    operation: &str,
+) -> Result<Vec<TrackId>, Invalid> {
+    if clipboard.rows == 1 {
+        return adjacent_rows(project, clipboard, track, operation);
+    }
+    if clipboard.source_tracks.len() != clipboard.rows {
+        return Err(Invalid("copied source track mapping is invalid"));
+    }
+    for source in &clipboard.source_tracks {
+        if project.track(*source).is_none() {
+            return Err(Invalid("copied source track no longer exists"));
+        }
+    }
+    Ok(clipboard.source_tracks.clone())
+}
+
+pub(crate) fn paste_rows(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    rows: &[TrackId],
     frame: u64,
 ) -> Result<Created, Invalid> {
     if project.sample_rate() != clipboard.sample_rate {
@@ -245,26 +333,14 @@ pub(crate) fn paste(
             return Err(Invalid("copied media no longer matches the project"));
         }
     }
-    let first = project
-        .tracks()
-        .iter()
-        .position(|item| item.id() == track)
-        .ok_or(Invalid("paste track no longer exists"))?;
-    let last = first
-        .checked_add(clipboard.rows)
-        .ok_or(Invalid("paste track range overflow"))?;
-    let rows: Vec<_> = project
-        .tracks()
-        .get(first..last)
-        .ok_or(Invalid("paste needs more existing tracks"))?
-        .iter()
-        .map(|track| track.id())
-        .collect();
+    if rows.len() != clipboard.rows || rows.iter().any(|track| project.track(*track).is_none()) {
+        return Err(Invalid("paste destination track mapping is invalid"));
+    }
     let end = frame
         .checked_add(clipboard.duration)
         .ok_or(Invalid("paste end overflow"))?;
     // A time rectangle includes its empty cells: paste replaces that interval.
-    clear(project, &TimeRange::new(rows.clone(), frame, end)?)?;
+    clear_rows(project, rows, frame, end)?;
     let existing = project
         .tracks()
         .iter()

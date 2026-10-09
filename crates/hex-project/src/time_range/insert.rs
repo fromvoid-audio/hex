@@ -1,5 +1,5 @@
 //! Bounded frame-based gap insertion on exactly the destination clipboard rows.
-use super::{RangeClipboard, paste};
+use super::{RangeClipboard, adjacent_rows, paste_rows, source_rows_or_single_target};
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_NOTES, MidiClip, MidiNote, MidiSource, NoteId, Project,
     TrackId,
@@ -15,6 +15,26 @@ pub(crate) fn insert(
     track: TrackId,
     frame: u64,
 ) -> Result<Created, Invalid> {
+    let rows = adjacent_rows(project, clipboard, track, "insert")?;
+    insert_rows(project, clipboard, &rows, frame)
+}
+
+pub(crate) fn insert_on_source_tracks(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    track: TrackId,
+    frame: u64,
+) -> Result<Created, Invalid> {
+    let rows = source_rows_or_single_target(project, clipboard, track, "insert")?;
+    insert_rows(project, clipboard, &rows, frame)
+}
+
+fn insert_rows(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    rows: &[TrackId],
+    frame: u64,
+) -> Result<Created, Invalid> {
     if project.sample_rate() != clipboard.sample_rate {
         return Err(Invalid("time clipboard belongs to another sample rate"));
     }
@@ -23,30 +43,18 @@ pub(crate) fn insert(
             return Err(Invalid("copied media no longer matches the project"));
         }
     }
-    let first = project
-        .tracks()
-        .iter()
-        .position(|item| item.id() == track)
-        .ok_or(Invalid("insert track no longer exists"))?;
-    let last = first
-        .checked_add(clipboard.rows)
-        .ok_or(Invalid("insert track range overflow"))?;
-    let rows: Vec<_> = project
-        .tracks()
-        .get(first..last)
-        .ok_or(Invalid("insert needs more existing tracks"))?
-        .iter()
-        .map(|item| item.id())
-        .collect();
+    if rows.len() != clipboard.rows || rows.iter().any(|track| project.track(*track).is_none()) {
+        return Err(Invalid("insert destination track mapping is invalid"));
+    }
     frame
         .checked_add(clipboard.duration)
         .ok_or(Invalid("insert end overflow"))?;
 
-    for destination in &rows {
+    for destination in rows {
         open_audio_gap(project, *destination, frame, clipboard.duration)?;
         open_midi_gap(project, *destination, frame, clipboard.duration)?;
     }
-    paste(project, clipboard, track, frame)?;
+    paste_rows(project, clipboard, rows, frame)?;
     // `paste` validates the complete candidate snapshot after shifting and copy.
     Ok(Created::None)
 }

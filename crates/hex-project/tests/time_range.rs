@@ -133,6 +133,256 @@ fn paste_uses_fresh_ids_and_replaces_silence_in_the_whole_rectangle() {
 }
 
 #[test]
+fn keyboard_multitrack_paste_uses_source_ids_across_inserted_rows() {
+    let (mut editor, audio_track, midi_track) = fixture();
+    let clipboard = Arc::new(
+        editor
+            .project()
+            .capture_time_range(
+                &TimeRange::new(vec![audio_track, midi_track], 24_000, 72_000).expect("range"),
+            )
+            .expect("copy"),
+    );
+    let inserted = match editor
+        .execute(Command::InsertTrack {
+            name: "intervening".into(),
+            before_track: Some(midi_track),
+        })
+        .expect("insert track")
+    {
+        Created::Track(track) => track,
+        other => panic!("{other:?}"),
+    };
+    editor
+        .execute(Command::PasteTimeRangeOnSourceTracks {
+            clipboard,
+            track: inserted,
+            frame: 120_000,
+        })
+        .expect("paste to original rows");
+
+    assert!(
+        editor
+            .project()
+            .track(audio_track)
+            .expect("audio source row")
+            .clips()
+            .iter()
+            .any(|clip| clip.start() == 120_000)
+    );
+    assert!(
+        editor
+            .project()
+            .track(midi_track)
+            .expect("midi source row")
+            .midi_clips()
+            .iter()
+            .any(|clip| editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(clip.start())
+                .unwrap()
+                == 120_000)
+    );
+    assert!(
+        editor
+            .project()
+            .track(inserted)
+            .expect("intervening row")
+            .clips()
+            .is_empty()
+    );
+    assert!(
+        editor
+            .project()
+            .track(inserted)
+            .expect("intervening row")
+            .midi_clips()
+            .is_empty()
+    );
+    let after = editor.project().snapshot();
+    assert!(editor.undo());
+    assert!(
+        editor
+            .project()
+            .track(audio_track)
+            .expect("audio source row")
+            .clips()
+            .iter()
+            .all(|clip| clip.start() < 120_000)
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn keyboard_multitrack_ripple_insert_uses_source_ids_across_inserted_rows() {
+    let (mut editor, audio_track, midi_track) = fixture();
+    let source_asset = editor
+        .project()
+        .track(audio_track)
+        .expect("audio row")
+        .clips()[0]
+        .asset();
+    editor
+        .execute(Command::PlaceClip {
+            track: audio_track,
+            asset: source_asset,
+            start: 192_000,
+            duration: 24_000,
+            source_offset: 0,
+            source_length: 24_000,
+            looping: false,
+        })
+        .expect("later audio");
+    editor
+        .execute(Command::PlaceMidiClip {
+            track: midi_track,
+            start: beat(8),
+            length: beat(1),
+        })
+        .expect("later midi");
+    let clipboard = Arc::new(
+        editor
+            .project()
+            .capture_time_range(
+                &TimeRange::new(vec![audio_track, midi_track], 0, 24_000).expect("range"),
+            )
+            .expect("copy"),
+    );
+    editor
+        .execute(Command::InsertTrack {
+            name: "intervening".into(),
+            before_track: Some(midi_track),
+        })
+        .expect("insert track");
+    let inserted = editor.project().tracks()[1].id();
+
+    editor
+        .execute(Command::InsertTimeRangeOnSourceTracks {
+            clipboard,
+            track: inserted,
+            frame: 96_000,
+        })
+        .expect("ripple insert to original rows");
+
+    let audio = editor
+        .project()
+        .track(audio_track)
+        .expect("audio row")
+        .clips();
+    assert!(audio.iter().any(|clip| clip.start() == 96_000));
+    assert!(audio.iter().any(|clip| clip.start() == 216_000));
+    let midi = editor
+        .project()
+        .track(midi_track)
+        .expect("midi row")
+        .midi_clips();
+    assert!(midi.iter().any(|clip| {
+        editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(clip.start())
+            .unwrap()
+            == 96_000
+    }));
+    assert!(midi.iter().any(|clip| {
+        editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(clip.start())
+            .unwrap()
+            == 216_000
+    }));
+    assert!(
+        editor
+            .project()
+            .track(inserted)
+            .expect("intervening row")
+            .clips()
+            .is_empty()
+    );
+    assert!(
+        editor
+            .project()
+            .track(inserted)
+            .expect("intervening row")
+            .midi_clips()
+            .is_empty()
+    );
+}
+
+#[test]
+fn keyboard_one_row_paste_still_uses_the_current_target_track() {
+    let (mut editor, audio_track, midi_track) = fixture();
+    let clipboard = Arc::new(
+        editor
+            .project()
+            .capture_time_range(&TimeRange::new(vec![midi_track], 0, 48_000).expect("range"))
+            .expect("copy"),
+    );
+    editor
+        .execute(Command::PasteTimeRangeOnSourceTracks {
+            clipboard,
+            track: audio_track,
+            frame: 120_000,
+        })
+        .expect("cross-track paste");
+    assert!(
+        editor
+            .project()
+            .track(audio_track)
+            .expect("target")
+            .midi_clips()
+            .iter()
+            .any(|clip| editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(clip.start())
+                .unwrap()
+                == 120_000)
+    );
+}
+
+#[test]
+fn source_anchored_paste_refuses_missing_tracks_without_changing_history() {
+    let (mut editor, audio_track, midi_track) = fixture();
+    let clipboard = Arc::new(
+        editor
+            .project()
+            .capture_time_range(
+                &TimeRange::new(vec![audio_track, midi_track], 24_000, 72_000).expect("range"),
+            )
+            .expect("copy"),
+    );
+    editor
+        .execute(Command::RemoveTrack(midi_track))
+        .expect("remove source row");
+    editor
+        .execute(Command::AddTrack {
+            name: "redo branch".into(),
+        })
+        .expect("create redo branch");
+    assert!(editor.undo());
+    assert!(editor.project().track(midi_track).is_none());
+    let before = editor.project().snapshot();
+    assert!(editor.can_redo());
+    assert!(
+        editor
+            .execute(Command::PasteTimeRangeOnSourceTracks {
+                clipboard,
+                track: audio_track,
+                frame: 120_000,
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.can_redo());
+    assert!(editor.redo(), "failed paste preserves the redo branch");
+    assert!(editor.project().track(midi_track).is_none());
+}
+
+#[test]
 fn copy_time_range_to_copies_fragments_in_one_step_and_replaces_only_the_destination() {
     let (mut editor, audio_track, midi_track) = fixture();
     let source = editor.project().track(audio_track).unwrap().clips()[0].clone();
@@ -164,6 +414,45 @@ fn copy_time_range_to_copies_fragments_in_one_step_and_replaces_only_the_destina
     assert_eq!(
         editor.project().track(audio_track).unwrap().clips()[0],
         source
+    );
+}
+
+#[test]
+fn visual_time_range_copy_keeps_cross_track_destination_mapping() {
+    let (mut editor, source_audio, source_midi) = fixture();
+    let first_destination = track(&mut editor, "destination audio");
+    let second_destination = track(&mut editor, "destination midi");
+
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: TimeRange::new(vec![source_audio, source_midi], 24_000, 72_000).expect("range"),
+            track: first_destination,
+            frame: 120_000,
+        })
+        .expect("visual cross-track copy");
+
+    assert!(
+        editor
+            .project()
+            .track(first_destination)
+            .expect("first destination")
+            .clips()
+            .iter()
+            .any(|clip| clip.start() == 120_000)
+    );
+    assert!(
+        editor
+            .project()
+            .track(second_destination)
+            .expect("second destination")
+            .midi_clips()
+            .iter()
+            .any(|clip| editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(clip.start())
+                .unwrap()
+                == 120_000)
     );
 }
 

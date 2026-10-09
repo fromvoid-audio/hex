@@ -16,7 +16,19 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Keyboard paste that preserves original track IDs for multi-row clipboards.
+    PasteTimeRangeOnSourceTracks {
+        clipboard: std::sync::Arc<crate::RangeClipboard>,
+        track: TrackId,
+        frame: u64,
+    },
     InsertTimeRange {
+        clipboard: std::sync::Arc<crate::RangeClipboard>,
+        track: TrackId,
+        frame: u64,
+    },
+    /// Keyboard ripple paste that preserves original track IDs for multi-row clipboards.
+    InsertTimeRangeOnSourceTracks {
         clipboard: std::sync::Arc<crate::RangeClipboard>,
         track: TrackId,
         frame: u64,
@@ -913,11 +925,21 @@ impl Project {
                 track,
                 frame,
             } => crate::time_range::paste(self, &clipboard, track, frame),
+            Command::PasteTimeRangeOnSourceTracks {
+                clipboard,
+                track,
+                frame,
+            } => crate::time_range::paste_on_source_tracks(self, &clipboard, track, frame),
             Command::InsertTimeRange {
                 clipboard,
                 track,
                 frame,
             } => crate::time_range::insert(self, &clipboard, track, frame),
+            Command::InsertTimeRangeOnSourceTracks {
+                clipboard,
+                track,
+                frame,
+            } => crate::time_range::insert_on_source_tracks(self, &clipboard, track, frame),
             Command::MoveTimeRange {
                 range,
                 track,

@@ -15,7 +15,7 @@ smoothly pulses white/cyan with a 1.2-second cycle. Track dividers remain above 
 transient view state, cleared on project replacement and invalidated track removal.
 
 The selection uses the current adaptive grid and Command snapping override.
-Cmd-C copies, Cmd-X cuts, Cmd-V pastes at the selection’s first row/left boundary
+Cmd-C copies, Cmd-X cuts, Cmd-V pastes at the selection’s left boundary
 (or at a point cursor when no time area is selected), and Delete clears the
 area without closing the gap. These shortcuts apply at Arrangement workspace
 focus; browser text input and MIDI note editor shortcuts keep their own context.
@@ -37,8 +37,12 @@ one prepared history operation. Refused edits preserve the project and redo.
 Undo restores musical content; the existing stable-ID allocator never rewinds.
 
 Paste replaces the **entire destination rectangle**, including copied silence,
-with the same track count and frame duration. It needs enough existing destination
-tracks; it does not create tracks implicitly. Source audio fragments preserve
+with the same track count and frame duration. Keyboard paste of a single copied
+track uses the currently targeted row. Multiple copied tracks retain their
+original stable track IDs, using only the new horizontal position. Intervening
+inserted tracks remain untouched; missing source tracks refuse the entire edit.
+Visual time-chunk dragging still maps to contiguous destination rows. Neither
+path creates tracks implicitly. Source audio fragments preserve
 source phase, offsets and inherited fade domains. New clips receive fresh IDs.
 Overlapping moves capture before erasing either rectangle. Moving to the same
 origin is a no-op that retains redo.
@@ -140,8 +144,8 @@ Native review, 9 October: the user confirmed ripple edit works in the fresh
 on clean source `c7ae2d5`; PR #11 is merged. A follow-up request changes keyboard
 normal/ripple paste of multiple tracks to retain the copied source tracks and use
 only the current horizontal position. Single-track copies still target the
-current row. That policy is queued separately; current shortcuts still
-use the destination selection row. Visual time-chunk drags retain cross-track
+current row. That follow-up is now implemented in a separate feature PR.
+Visual time-chunk drags retain cross-track
 placement. Listening and measured device timing remain separate gates.
 
 ## Option-drag duplication — 9 October 2026
@@ -172,3 +176,20 @@ changes and source-preserving previews. Project tests, 267 UI tests (2 ignored),
 targeted strict Clippy, formatting and source guards passed. The focused PR owns
 final clean-commit local CI evidence; the ignored review manifest records the
 fresh bundle identity. Native cursor/input acceptance remains open.
+
+## keyboard paste track anchoring — 9 October 2026
+
+The worker clipboard retains the original source track IDs with its bounded
+fragment metadata. Both normal and ripple keyboard paste use the source IDs for
+multiple rows, or the current target for a single row. Copy and cut share this
+policy; successful project opening clears the clipboard and its provenance.
+Canonical source-track paste commands validate every row before mutation and
+prepare one history operation. Visual copy/move commands keep adjacent-row mapping.
+
+Project and session tests cover copy/cut, replace/ripple, single-row cross-track
+placement, inserted intervening rows, missing-source refusal with redo retained,
+and visual cross-track copying. Targeted strict Clippy, formatting and architecture
+checks pass; final local CI evidence belongs to the focused PR. Native checklist:
+copy two tracks, click a different row at a later time, and use Cmd-V then
+Cmd-Shift-V; both should affect the original rows. Repeat with a single track and
+confirm it pastes onto the clicked row. Undo each successful operation.
