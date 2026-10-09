@@ -522,13 +522,13 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_enqueued_native_device_add,
+            view.last_enqueued_native_device_replace,
             Some((
-                track,
+                instrument_id,
                 hex_engine::NativeDeviceClass::Instrument,
                 sine.type_id,
             )),
-            "replace action dispatches the instrument class explicitly"
+            "replace action targets the stable instrument ID and its explicit class"
         );
     });
 

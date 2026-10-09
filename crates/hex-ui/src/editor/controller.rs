@@ -794,6 +794,15 @@ impl EditorView {
             self.last_enqueued_native_device_add = Some((*track, *class, **type_id));
         }
         #[cfg(test)]
+        if let Request::ReplaceNativeDevice {
+            device,
+            class,
+            type_id,
+        } = &request
+        {
+            self.last_enqueued_native_device_replace = Some((*device, *class, **type_id));
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));

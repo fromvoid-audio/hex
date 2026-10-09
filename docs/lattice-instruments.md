@@ -164,10 +164,14 @@ FM contracts and Operator remain open work, independent of this source foundatio
 ## Instrument panel and canonical class routing
 
 The focused track's device panel renders its canonical instrument slot before
-serial effects. Registered instruments can be inserted into an empty slot,
-replaced transactionally, removed or bypassed. Replacement preserves the device
-ID and bypass flag; instruments have no effect-chain reorder actions. The admitted
-sine instrument has no parameter descriptors, so the panel invents no controls.
+serial effects. Add requests only fill an empty instrument slot; attempting to
+add while occupied is refused without a project edit or playback publication.
+Replacement is a separate request that names the stable device ID, class and
+registered type. It validates that the target still exists in the requested
+class, then transactionally replaces its authored state while preserving device
+ID, chain position and bypass. Removal remains separate. Instruments have no
+effect-chain reorder actions. The admitted sine instrument has no parameter
+descriptors, so the panel invents no controls.
 An absent instrument leaves no placeholder block in the chain. Settled user
 removals retire controls without a stale-target warning; loss of a target while
 it still owns a draft or pending gesture remains diagnosed. Unavailable or
@@ -181,8 +185,9 @@ registry choice supplied by the UI. Existing effect gesture barriers and history
 remain in use. Adding a registered instrument requires no device-specific storage
 or UI codec.
 
-Session tests cover class refusal, instrument insert/remove Undo/Redo, replacement
-identity and bypass, parameter/gesture refusal for sine, and save/reopen. Rendered
+Session tests cover class refusal, occupied-add atomic refusal, instrument
+insert/remove Undo/Redo, explicit replacement identity/order/bypass and Undo,
+parameter/gesture refusal for sine, and save/reopen. Rendered
 GPUI coverage also exercises settled Utility and sine removal, Undo restoration,
 warning cleanup, and fixed panel geometry; active/draft target-loss diagnostics
 remain covered separately. Full local CI and native acceptance are separate gates.

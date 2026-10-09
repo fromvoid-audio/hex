@@ -438,3 +438,11 @@ scratch growth are derived and documented in [lattice instruments](docs/lattice-
 release timing and Session preparation before/after are recorded in
 [performance](docs/performance.md). Focused source checks remain separate from
 root full local CI and review.
+
+Native add-versus-replace contract2148: adding an instrument now refuses an
+occupied slot without changing history or publishing playback. Explicit replace
+requests identify the existing device, class and registered type; replacement
+preserves stable identity, chain position and bypass and remains Undoable. The
+device menu's replace action routes through this request, while add stays add.
+Targeted Session/UI checks pass; clean full local CI remains before review.
+Native interaction acceptance remains with the user.
