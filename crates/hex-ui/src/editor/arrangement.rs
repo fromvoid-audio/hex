@@ -163,6 +163,7 @@ impl EditorView {
         );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
+        let track_scale_factor = window.scale_factor();
         let playhead = self.cursor_position();
         let track_count = state.project.tracks().len();
         let rows = uniform_list(
@@ -180,8 +181,11 @@ impl EditorView {
                             state,
                             track,
                             selected,
-                            rows_viewport,
-                            &rows_grid,
+                            super::tracks::ClipViewTimeline {
+                                viewport: rows_viewport,
+                                grid: &rows_grid,
+                                scale_factor: track_scale_factor,
+                            },
                             cx,
                         ));
                     }
@@ -220,7 +224,7 @@ impl EditorView {
                     ),
             );
         }
-        content = content.children(self.edit_cursor_layer(viewport, window));
+        content = content.children(self.edit_cursor_layer(viewport));
         content = self.arrangement_body(content, cx);
         div()
             .flex()
@@ -343,6 +347,72 @@ impl EditorView {
                             up_entity.update(cx, |view, _| view.cancel_arrangement_pan());
                         if canceled {
                             cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let cursor_down_entity = measure_entity.clone();
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if !phase.capture() || event.button != MouseButton::Left {
+                            return;
+                        }
+                        let x = f32::from(event.position.x);
+                        let y = f32::from(event.position.y);
+                        let started = cursor_down_entity.update(cx, |view, _| {
+                            let started = view.begin_time_range_move_gesture(x, y)
+                                || view.begin_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                );
+                            if started {
+                                view.focus.focus(window);
+                            }
+                            started
+                        });
+                        if started {
+                            window.refresh();
+                        }
+                    });
+                    let cursor_move_entity = measure_entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.capture() {
+                            return;
+                        }
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            let finished = cursor_move_entity.update(cx, |view, _| {
+                                view.cancel_time_range_move_gesture()
+                                    || view.finish_time_selection_gesture()
+                            });
+                            if finished {
+                                window.refresh();
+                            }
+                            return;
+                        }
+                        let x = f32::from(event.position.x);
+                        let y = f32::from(event.position.y);
+                        let changed = cursor_move_entity.update(cx, |view, _| {
+                            view.update_time_range_move_gesture(x, y, event.modifiers.platform)
+                                || view.update_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                )
+                        });
+                        if changed {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let cursor_up_entity = measure_entity.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if !phase.capture() || event.button != MouseButton::Left {
+                            return;
+                        }
+                        let finished = cursor_up_entity.update(cx, |view, _| {
+                            view.finish_time_range_move_gesture()
+                                || view.finish_time_selection_gesture()
+                        });
+                        if finished {
                             window.refresh();
                         }
                     });

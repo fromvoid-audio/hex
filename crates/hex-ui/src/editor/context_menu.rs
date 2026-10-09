@@ -18,6 +18,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_time_selection_gesture();
         let Some(state) = &self.state else {
             return;
         };

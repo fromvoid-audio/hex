@@ -235,3 +235,11 @@ redraws reuse unchanged geometry; live trims omit invisible original paint
 children and suppress notifications for identical snapped candidates. Pending
 control colors and compact status slot widths remain stable. See
 ../../docs/clip-edit-performance.md for measurement scope and native checks.
+
+## arrangement time selection — 9 October 2026
+
+`editor/edit_cursor.rs` owns the track-scoped point cursor and split action;
+`editor/time_selection.rs` owns transient range gestures, steady overlays,
+endpoint focus and clipboard-request routing. Authoritative range edits stay
+in hex-project and the Session worker. See [time selection](../../docs/time-selection.md)
+for native acceptance and finite MIDI limitations.

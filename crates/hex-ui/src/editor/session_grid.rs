@@ -1393,6 +1393,7 @@ impl EditorView {
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
         if self.mode != mode {
             self.cancel_arrangement_pan();
+            self.cancel_time_selection_gesture();
             self.cancel_scene_duplicate_selection();
         }
         if mode == EditorMode::Session

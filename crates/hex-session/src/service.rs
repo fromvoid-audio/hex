@@ -130,6 +130,12 @@ pub enum Request {
     },
     Open(PathBuf),
     Edit(Command),
+    CopyTimeRange(hex_project::TimeRange),
+    CutTimeRange(hex_project::TimeRange),
+    PasteTimeRange {
+        track: hex_project::TrackId,
+        frame: u64,
+    },
     Undo,
     Redo,
     SaveNew(PathBuf),
@@ -403,6 +409,7 @@ fn run_worker(
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
+    let mut range_clipboard: Option<Arc<hex_project::RangeClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -561,6 +568,55 @@ fn run_worker(
                     Err(reason) => error = Some(reason),
                 }
             }
+            Request::CopyTimeRange(range) => match session.project().capture_time_range(&range) {
+                Ok(captured) => {
+                    range_clipboard = Some(Arc::new(captured));
+                    status = Some("time selection copied".into());
+                }
+                Err(reason) => error = Some(reason.to_string()),
+            },
+            Request::CutTimeRange(range) => match session.project().capture_time_range(&range) {
+                Ok(captured) => {
+                    match session.command_prepared_revision(
+                        Command::DeleteTimeRange { range },
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    ) {
+                        Ok((_, prepared)) => {
+                            range_clipboard = Some(Arc::new(captured));
+                            if session.project() != state.project.as_ref() {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
+                            status = Some("time selection cut".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Err(reason) => error = Some(reason.to_string()),
+            },
+            Request::PasteTimeRange { track, frame } => {
+                if let Some(clipboard) = &range_clipboard {
+                    match session.command_prepared_revision(
+                        Command::PasteTimeRange {
+                            clipboard: Arc::clone(clipboard),
+                            track,
+                            frame,
+                        },
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    ) {
+                        Ok((_, prepared)) => {
+                            if session.project() != state.project.as_ref() {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
+                            status = Some("time selection pasted".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                } else {
+                    error = Some("time clipboard is empty · copy a selection first".into());
+                }
+            }
             Request::Edit(command) => {
                 duplicate_complete = matches!(&command, Command::DuplicateClip(_));
                 let before = session.project().clone();
@@ -716,6 +772,9 @@ fn run_worker(
             }
         }
 
+        if project_replaced {
+            range_clipboard = None;
+        }
         let playback = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
@@ -1141,6 +1200,114 @@ mod service_tests {
         bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&data);
         bytes
+    }
+
+    #[test]
+    fn time_clipboard_is_worker_owned_cut_is_one_revision_and_open_clears_it() {
+        let directory = TestDir::new();
+        let path = directory.0.join("time.hex");
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "hybrid".into(),
+            }))
+            .expect("track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(4).expect("length"),
+            }))
+            .expect("clip");
+        let placed = next_event(&service);
+        let range = hex_project::TimeRange::new(vec![track], 24_000, 72_000).expect("range");
+        service
+            .submit(Request::CopyTimeRange(range.clone()))
+            .expect("copy");
+        let copied = next_event(&service);
+        assert!(copied.error.is_none());
+        assert_eq!(copied.state.revision, placed.state.revision);
+        assert!(copied.playback.is_none());
+        let mut other =
+            hex_project::Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
+        other
+            .execute(Command::AddTrack {
+                name: "first".into(),
+            })
+            .expect("first");
+        let missing = match other
+            .execute(Command::AddTrack {
+                name: "second".into(),
+            })
+            .expect("second")
+        {
+            Created::Track(id) => id,
+            result => panic!("unexpected result {result:?}"),
+        };
+        service
+            .submit(Request::CutTimeRange(
+                hex_project::TimeRange::new(vec![missing], 0, 1).expect("shape"),
+            ))
+            .expect("refused cut");
+        let refused_cut = next_event(&service);
+        assert!(refused_cut.error.is_some());
+        assert_eq!(refused_cut.state.project, copied.state.project);
+        service
+            .submit(Request::Open(directory.0.join("missing.hex")))
+            .expect("refused open");
+        let refused_open = next_event(&service);
+        assert!(refused_open.error.is_some());
+        assert!(!refused_open.project_replaced);
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 120_000,
+            })
+            .expect("retained clipboard");
+        let retained = next_event(&service);
+        assert!(retained.error.is_none());
+        service.submit(Request::Undo).expect("undo retained paste");
+        let restored = next_event(&service);
+        service.submit(Request::CutTimeRange(range)).expect("cut");
+        let cut = next_event(&service);
+        assert!(cut.error.is_none());
+        assert_eq!(cut.state.revision, restored.state.revision + 1);
+        assert_eq!(cut.state.project.tracks()[0].midi_clips().len(), 2);
+        service.submit(Request::Undo).expect("undo");
+        assert_eq!(
+            next_event(&service).state.project.tracks()[0]
+                .midi_clips()
+                .len(),
+            1
+        );
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 96_000,
+            })
+            .expect("paste");
+        let pasted = next_event(&service);
+        assert!(pasted.error.is_none());
+        assert_eq!(pasted.state.project.tracks()[0].midi_clips().len(), 2);
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save");
+        assert!(next_event(&service).error.is_none());
+        service.submit(Request::Open(path)).expect("open");
+        let opened = next_event(&service);
+        assert!(opened.project_replaced);
+        service
+            .submit(Request::PasteTimeRange {
+                track,
+                frame: 192_000,
+            })
+            .expect("empty paste");
+        let refused = next_event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.revision, opened.state.revision);
+        assert_eq!(refused.state.project, opened.state.project);
     }
 
     #[test]

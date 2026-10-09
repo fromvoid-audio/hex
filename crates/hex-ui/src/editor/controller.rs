@@ -351,6 +351,12 @@ impl EditorView {
         };
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
+        if event.project_replaced {
+            self.time_range_move_gesture = None;
+            self.pending_time_range_move = None;
+        } else {
+            self.move_time_selection_complete(&event);
+        }
         if self
             .state
             .as_ref()
@@ -375,6 +381,11 @@ impl EditorView {
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
             self.project_generation = self.project_generation.wrapping_add(1);
             self.edit_cursor = None;
+            self.time_selection = None;
+            self.time_selection_gesture = None;
+            self.time_range_move_gesture = None;
+            self.pending_time_range_move = None;
+            self.suppress_cursor_click = false;
             self.applied_revisions.clear();
             self.applied_project_revision = None;
             self.playback_candidates.clear();
