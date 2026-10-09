@@ -105,3 +105,9 @@ in time; check source and destination tails, silent cells and overlapping moves;
 leave the valid lanes or cancel and confirm the original display returns; release,
 Undo and confirm the preview matches the committed clip positions. Native
 smoothness, detailed waveform appearance and listening remain user acceptance.
+
+Native review, 9 October 2026: the user reported that the separately launched
+`hex-time-chunk-preview-20261009.app` looks good and works as expected. This records
+acceptance of the presented preview behavior, not measured paint/device deadlines
+or sustained-note listening. The bundle manifest identifies clean source commit
+`4181d68` and its release binary. Full local CI passed all 14 steps on that commit.

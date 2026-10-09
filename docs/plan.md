@@ -3582,3 +3582,18 @@ Native device model/runtime is a prerequisite for the real bottom device chain,
 Utility and Operator. CLAP and VST3 are separate adapters, not the native DSP
 model. Stateful runtime, latency, safe native boundaries, persistence and retirement
 need explicit acceptance before claiming full device or plugin support.
+
+## additional time-edit requests — 9 October 2026
+
+Option-drag duplication is its own focused feature PR: retain source material,
+show a plus/copy indicator and landing preview, and copy with fresh IDs in one
+prepared history operation. Check modifier changes mid-gesture, snapping,
+cancellation and rejected drops across supported clip and time-chunk drags.
+
+Time selection on the pinned main/master row is a project-wide editing proxy.
+Copy, cut, replace and ripple insertion address all track rows, including returns
+and supported temporal lanes. It depends on main-row layout and canonical time
+commands; it must not create a second editable model. Define topology changes and
+atomic failure explicitly. Benchmark prompt UI feedback separately from bounded
+background completion for 1 and 100 dense tracks; reuse immutable assets, never
+copy PCM or expand/compile on pointer movement. Queue details are in `todo.md`.
