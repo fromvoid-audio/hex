@@ -40,6 +40,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
             }),
+            instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(Vec::new()),
         });
         for scene in 1..=2 {

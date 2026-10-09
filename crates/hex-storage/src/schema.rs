@@ -170,6 +170,23 @@ pub(crate) struct DocumentV15 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct DocumentV16 {
+    format: String,
+    version: u32,
+    sample_rate: u32,
+    next_id: u64,
+    assets: Vec<AssetV2>,
+    tracks: Vec<TrackV16>,
+    #[serde(deserialize_with = "deserialize_required_loop_region")]
+    loop_region: Option<LoopRegionDto>,
+    master_gain: f32,
+    tempo_points: Vec<TempoPointDto>,
+    meter_points: Vec<MeterPointDto>,
+    session: SessionDtoV12,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrackV15 {
     id: u64,
     name: String,
@@ -182,6 +199,24 @@ struct TrackV15 {
     devices: Vec<DeviceDtoV14>,
     #[serde(deserialize_with = "deserialize_required_instrument")]
     instrument: Option<DeviceDtoV14>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackV16 {
+    id: u64,
+    name: String,
+    gain: f32,
+    balance: f32,
+    muted: bool,
+    soloed: bool,
+    audio_clips: Vec<ClipV7>,
+    midi_clips: Vec<MidiClipDtoV10>,
+    devices: Vec<DeviceDtoV14>,
+    #[serde(deserialize_with = "deserialize_required_instrument")]
+    instrument: Option<DeviceDtoV14>,
+    #[serde(deserialize_with = "deserialize_required_instrument_position")]
+    instrument_position: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -541,6 +576,15 @@ where
     Option::<LoopRegionDto>::deserialize(deserializer)
 }
 
+fn deserialize_required_instrument_position<'de, D>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<usize>::deserialize(deserializer)
+}
+
 fn deserialize_required_instrument<'de, D>(
     deserializer: D,
 ) -> Result<Option<DeviceDtoV14>, D::Error>
@@ -763,6 +807,105 @@ impl DocumentV15 {
                 .iter()
                 .find(|(id, _)| *id == track.id)
                 .and_then(|(_, instrument)| instrument.clone());
+            track.instrument_position = track.instrument.as_ref().map(|_| 0);
+        }
+        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+    }
+}
+
+impl DocumentV16 {
+    pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
+        let base = DocumentV15::from_project(project)?;
+        let DocumentV15 {
+            format,
+            sample_rate,
+            next_id,
+            assets,
+            tracks,
+            loop_region,
+            master_gain,
+            tempo_points,
+            meter_points,
+            session,
+            ..
+        } = base;
+        let tracks = tracks
+            .into_iter()
+            .zip(project.tracks())
+            .map(|(track, authored)| TrackV16 {
+                id: track.id,
+                name: track.name,
+                gain: track.gain,
+                balance: track.balance,
+                muted: track.muted,
+                soloed: track.soloed,
+                audio_clips: track.audio_clips,
+                midi_clips: track.midi_clips,
+                devices: track.devices,
+                instrument: track.instrument,
+                instrument_position: authored.instrument_position(),
+            })
+            .collect();
+        Ok(Self {
+            format,
+            version: 16,
+            sample_rate,
+            next_id,
+            assets,
+            tracks,
+            loop_region,
+            master_gain,
+            tempo_points,
+            meter_points,
+            session,
+        })
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+        let doc: Self = serde_json::from_slice(bytes)?;
+        if doc.format != "hex-project" || doc.version != 16 {
+            return Err(StorageError::Invalid(
+                "unsupported project format or version",
+            ));
+        }
+        let positions = doc
+            .tracks
+            .iter()
+            .map(|track| track.instrument_position)
+            .collect::<Vec<_>>();
+        let legacy = DocumentV15 {
+            format: doc.format,
+            version: 15,
+            sample_rate: doc.sample_rate,
+            next_id: doc.next_id,
+            assets: doc.assets,
+            tracks: doc
+                .tracks
+                .into_iter()
+                .map(|track| TrackV15 {
+                    id: track.id,
+                    name: track.name,
+                    gain: track.gain,
+                    balance: track.balance,
+                    muted: track.muted,
+                    soloed: track.soloed,
+                    audio_clips: track.audio_clips,
+                    midi_clips: track.midi_clips,
+                    devices: track.devices,
+                    instrument: track.instrument,
+                })
+                .collect(),
+            loop_region: doc.loop_region,
+            master_gain: doc.master_gain,
+            tempo_points: doc.tempo_points,
+            meter_points: doc.meter_points,
+            session: doc.session,
+        };
+        let bytes = serde_json::to_vec(&legacy)?;
+        let project = DocumentV15::decode(&bytes)?;
+        let mut snapshot = project.snapshot();
+        for (track, position) in snapshot.tracks.iter_mut().zip(positions) {
+            track.instrument_position = position;
         }
         Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
@@ -1534,6 +1677,7 @@ impl DocumentV13 {
                     soloed: track.soloed,
                     devices: Vec::new(),
                     instrument: None,
+                    instrument_position: None,
                     content: TrackContentSnapshot::Hybrid {
                         audio_clips: clips_v7_into_snapshot(track.audio_clips)?,
                         midi_clips: track
@@ -1578,6 +1722,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 16 {
+            return DocumentV16::decode(bytes);
         }
         if header.version == 15 {
             return DocumentV15::decode(bytes);
@@ -1771,6 +1918,7 @@ impl DocumentV10 {
                             soloed: t.soloed,
                             devices: Vec::new(),
                             instrument: None,
+                            instrument_position: None,
                             content,
                         })
                     })
@@ -1894,6 +2042,7 @@ impl DocumentV9 {
                     soloed: t.soloed,
                     devices: Vec::new(),
                     instrument: None,
+                    instrument_position: None,
                     content,
                 })
             })
@@ -2165,6 +2314,7 @@ fn tracks_legacy_into_snapshot(
                 balance: 0.0,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -2184,6 +2334,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
                 balance: 0.0,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -2203,6 +2354,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
                 soloed: track.soloed,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -2246,6 +2398,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 soloed: track.soloed,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(clips),
             })
         })
@@ -2289,6 +2442,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 soloed: track.soloed,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(clips),
             })
         })

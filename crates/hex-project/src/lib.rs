@@ -315,6 +315,9 @@ pub struct Track {
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
     pub(crate) instrument: Option<Device>,
+    /// Number of serial effects that precede the optional instrument.
+    /// `None` exactly when `instrument` is absent.
+    pub(crate) instrument_position: Option<usize>,
     pub(crate) content: TrackContent,
 }
 impl Track {
@@ -340,10 +343,26 @@ impl Track {
     pub fn devices(&self) -> &[Device] {
         &self.devices
     }
-    /// Optional single native instrument slot, independent of the ordered
-    /// serial effect chain. `None` means MIDI on this track is silent.
+    /// Optional instrument in the track's ordered device chain. `None` means
+    /// MIDI on this track is silent.
     pub fn instrument(&self) -> Option<&Device> {
         self.instrument.as_ref()
+    }
+    /// Number of serial effects before the instrument, if one is present.
+    pub fn instrument_position(&self) -> Option<usize> {
+        self.instrument_position
+    }
+    /// Borrowed device order for clients that need to present the canonical
+    /// chain. `Effect` values remain in `devices()` order; the instrument is
+    /// yielded at its persisted gap.
+    pub fn ordered_device_chain(&self) -> OrderedDeviceChain<'_> {
+        OrderedDeviceChain {
+            effects: &self.devices,
+            instrument: self.instrument.as_ref(),
+            instrument_position: self.instrument_position,
+            effect_index: 0,
+            instrument_yielded: false,
+        }
     }
     /// Beat-anchored audio clips on this hybrid track.
     pub fn clips(&self) -> &[Clip] {
@@ -352,6 +371,38 @@ impl Track {
     /// Beat-anchored MIDI clips on this track.
     pub fn midi_clips(&self) -> &[MidiClip] {
         self.content.midi_clips()
+    }
+}
+
+/// Explicit class/slot reference into a track's canonical ordered device chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDeviceRef<'a> {
+    Instrument(&'a Device),
+    Effect(&'a Device),
+}
+
+/// Allocation-free borrowed iteration over a track's effects and instrument.
+pub struct OrderedDeviceChain<'a> {
+    effects: &'a [Device],
+    instrument: Option<&'a Device>,
+    instrument_position: Option<usize>,
+    effect_index: usize,
+    instrument_yielded: bool,
+}
+impl<'a> Iterator for OrderedDeviceChain<'a> {
+    type Item = TrackDeviceRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.instrument_yielded
+            && self.instrument_position == Some(self.effect_index)
+            && let Some(instrument) = self.instrument
+        {
+            self.instrument_yielded = true;
+            return Some(TrackDeviceRef::Instrument(instrument));
+        }
+        let effect = self.effects.get(self.effect_index)?;
+        self.effect_index += 1;
+        Some(TrackDeviceRef::Effect(effect))
     }
 }
 
@@ -423,6 +474,7 @@ impl Project {
                     state: state.clone(),
                     bypassed: false,
                 });
+                track.instrument_position = Some(0);
                 id = id
                     .checked_add(1)
                     .ok_or(Invalid("project id space exhausted"))?;

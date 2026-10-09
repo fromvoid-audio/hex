@@ -50,11 +50,20 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             if target.instrument.take().is_none() {
                 return Err(Invalid("instrument slot is already empty"));
             }
+            target.instrument_position = None;
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
             let (track, index) = locate_device(project, id)?;
             project.tracks[track].devices.remove(index);
+            if project.tracks[track]
+                .instrument_position
+                .is_some_and(|position| index < position)
+            {
+                project.tracks[track].instrument_position = project.tracks[track]
+                    .instrument_position
+                    .and_then(|position| position.checked_sub(1));
+            }
             Ok(crate::Created::None)
         }
         Command::MoveDevice {
@@ -63,6 +72,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             before,
         } => {
             move_device(project, device, track, before)?;
+            Ok(crate::Created::None)
+        }
+        Command::MoveTrackDevice {
+            device,
+            track,
+            before,
+        } => {
+            move_track_device(project, device, track, before)?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {
@@ -108,6 +125,7 @@ fn insert_instrument(
         state,
         bypassed: false,
     });
+    project.track_mut(track)?.instrument_position = Some(0);
     Ok(id)
 }
 
@@ -117,13 +135,12 @@ fn insert(
     before: Option<DeviceId>,
     state: NativeDeviceState,
 ) -> Result<DeviceId, Invalid> {
-    let devices = &project
+    let target = project
         .tracks
         .iter()
         .find(|candidate| candidate.id == track)
-        .ok_or(Invalid("track no longer exists"))?
-        .devices;
-    if devices.len() >= MAX_DEVICES_PER_TRACK {
+        .ok_or(Invalid("track no longer exists"))?;
+    if target.devices.len() >= MAX_DEVICES_PER_TRACK {
         return Err(Invalid("track device limit reached"));
     }
     let total_devices = project
@@ -138,22 +155,45 @@ fn insert(
     if total_devices >= MAX_DEVICES {
         return Err(Invalid("project device limit reached"));
     }
-    let index = anchor_index(devices, before)?;
+    let before_instrument = before.is_some_and(|id| {
+        target
+            .instrument
+            .as_ref()
+            .is_some_and(|instrument| instrument.id == id)
+    });
+    let index = if before_instrument {
+        target
+            .instrument_position
+            .ok_or(Invalid("instrument position is missing"))?
+    } else {
+        anchor_index(&target.devices, before)?
+    };
     let id = DeviceId(project.allocate_id()?);
-    project
+    let target = project
         .tracks
         .iter_mut()
         .find(|candidate| candidate.id == track)
-        .ok_or(Invalid("track no longer exists"))?
-        .devices
-        .insert(
-            index,
-            Device {
-                id,
-                state,
-                bypassed: false,
-            },
+        .ok_or(Invalid("track no longer exists"))?;
+    target.devices.insert(
+        index,
+        Device {
+            id,
+            state,
+            bypassed: false,
+        },
+    );
+    if before_instrument
+        || target
+            .instrument_position
+            .is_some_and(|position| index < position)
+    {
+        target.instrument_position = Some(
+            target
+                .instrument_position
+                .and_then(|position| position.checked_add(1))
+                .ok_or(Invalid("instrument position overflow"))?,
         );
+    }
     Ok(id)
 }
 
@@ -203,16 +243,199 @@ fn move_device(
         return Err(Invalid("track device limit reached"));
     }
     if source_index == target_index {
-        let devices = &mut project.tracks[source_index].devices;
-        let moving = devices.remove(source_position);
-        let destination = anchor_index(devices, before)?;
-        devices.insert(destination, moving);
+        let devices = &project.tracks[source_index].devices;
+        let destination = match before {
+            Some(anchor) => {
+                let anchor_position = devices
+                    .iter()
+                    .position(|device| device.id == anchor)
+                    .ok_or(Invalid("device insertion anchor no longer exists"))?;
+                if anchor_position == source_position {
+                    return Err(Invalid("device cannot be moved before itself"));
+                }
+                anchor_position - usize::from(anchor_position > source_position)
+            }
+            None => devices
+                .len()
+                .checked_sub(1)
+                .ok_or(Invalid("device count underflow"))?,
+        };
+        let old_gap = project.tracks[source_index].instrument_position;
+        let gap_after_remove = old_gap.map(|gap| if source_position < gap { gap - 1 } else { gap });
+        let gap_after_insert =
+            gap_after_remove.map(|gap| if destination < gap { gap + 1 } else { gap });
+        let moving = project.tracks[source_index].devices.remove(source_position);
+        project.tracks[source_index]
+            .devices
+            .insert(destination, moving);
+        project.tracks[source_index].instrument_position = gap_after_insert;
     } else {
         let destination = anchor_index(&project.tracks[target_index].devices, before)?;
+        let old_gap = project.tracks[source_index].instrument_position;
         let moving = project.tracks[source_index].devices.remove(source_position);
+        if old_gap.is_some_and(|gap| source_position < gap) {
+            project.tracks[source_index].instrument_position =
+                old_gap.and_then(|gap| gap.checked_sub(1));
+        }
         project.tracks[target_index]
             .devices
             .insert(destination, moving);
+        if project.tracks[target_index]
+            .instrument_position
+            .is_some_and(|gap| destination < gap)
+        {
+            let gap = project.tracks[target_index]
+                .instrument_position
+                .and_then(|gap| gap.checked_add(1))
+                .ok_or(Invalid("instrument position overflow"))?;
+            project.tracks[target_index].instrument_position = Some(gap);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum DeviceLocation {
+    Effect { track: usize, index: usize },
+    Instrument { track: usize },
+}
+
+fn locate_chain_device(project: &Project, id: DeviceId) -> Result<DeviceLocation, Invalid> {
+    for (track_index, track) in project.tracks.iter().enumerate() {
+        if let Some(index) = track.devices.iter().position(|device| device.id == id) {
+            return Ok(DeviceLocation::Effect {
+                track: track_index,
+                index,
+            });
+        }
+        if track
+            .instrument
+            .as_ref()
+            .is_some_and(|device| device.id == id)
+        {
+            return Ok(DeviceLocation::Instrument { track: track_index });
+        }
+    }
+    Err(Invalid("device no longer exists"))
+}
+
+fn chain_effect_index_before(
+    track: &crate::Track,
+    before: Option<DeviceId>,
+) -> Result<usize, Invalid> {
+    match before {
+        Some(id) => {
+            if track
+                .instrument
+                .as_ref()
+                .is_some_and(|device| device.id == id)
+            {
+                return track
+                    .instrument_position
+                    .ok_or(Invalid("instrument position is missing"));
+            }
+            track
+                .devices
+                .iter()
+                .position(|device| device.id == id)
+                .ok_or(Invalid("device insertion anchor no longer exists"))
+        }
+        None => Ok(track.devices.len()),
+    }
+}
+
+fn move_track_device(
+    project: &mut Project,
+    id: DeviceId,
+    target_track: TrackId,
+    before: Option<DeviceId>,
+) -> Result<(), Invalid> {
+    let source = locate_chain_device(project, id)?;
+    let target_index = project
+        .tracks
+        .iter()
+        .position(|track| track.id == target_track)
+        .ok_or(Invalid("target track no longer exists"))?;
+    let source_index = match source {
+        DeviceLocation::Effect { track, .. } | DeviceLocation::Instrument { track } => track,
+    };
+    if before == Some(id) && source_index == target_index {
+        return Ok(());
+    }
+    if let Some(anchor) = before {
+        let anchor_location = locate_chain_device(project, anchor)?;
+        let anchor_track = match anchor_location {
+            DeviceLocation::Effect { track, .. } | DeviceLocation::Instrument { track } => track,
+        };
+        if anchor_track != target_index {
+            return Err(Invalid("device insertion anchor belongs to another track"));
+        }
+    }
+    if matches!(source, DeviceLocation::Instrument { .. })
+        && source_index != target_index
+        && project.tracks[target_index].instrument.is_some()
+    {
+        return Err(Invalid("target track already has an instrument"));
+    }
+    let target_effects_after = project.tracks[target_index]
+        .devices
+        .len()
+        .checked_sub(usize::from(
+            source_index == target_index && matches!(source, DeviceLocation::Effect { .. }),
+        ))
+        .ok_or(Invalid("device count underflow"))?;
+    if matches!(source, DeviceLocation::Effect { .. })
+        && source_index != target_index
+        && target_effects_after >= MAX_DEVICES_PER_TRACK
+    {
+        return Err(Invalid("track device limit reached"));
+    }
+
+    let moving = match source {
+        DeviceLocation::Effect { track, index } => {
+            let old_position = project.tracks[track].instrument_position;
+            let device = project.tracks[track].devices.remove(index);
+            if old_position.is_some_and(|position| index < position) {
+                project.tracks[track].instrument_position =
+                    old_position.and_then(|p| p.checked_sub(1));
+            }
+            (device, false)
+        }
+        DeviceLocation::Instrument { track } => {
+            let device = project.tracks[track]
+                .instrument
+                .take()
+                .ok_or(Invalid("instrument slot is already empty"))?;
+            project.tracks[track].instrument_position = None;
+            (device, true)
+        }
+    };
+    let target = &mut project.tracks[target_index];
+    if moving.1 {
+        let position = chain_effect_index_before(target, before)?;
+        target.instrument = Some(moving.0);
+        target.instrument_position = Some(position);
+    } else {
+        let position = chain_effect_index_before(target, before)?;
+        let before_instrument = before.is_some_and(|anchor| {
+            target
+                .instrument
+                .as_ref()
+                .is_some_and(|instrument| instrument.id == anchor)
+        });
+        target.devices.insert(position, moving.0);
+        if before_instrument
+            || target
+                .instrument_position
+                .is_some_and(|instrument_position| position < instrument_position)
+        {
+            target.instrument_position = Some(
+                target
+                    .instrument_position
+                    .and_then(|instrument_position| instrument_position.checked_add(1))
+                    .ok_or(Invalid("instrument position overflow"))?,
+            );
+        }
     }
     Ok(())
 }
@@ -350,6 +573,247 @@ mod tests {
         assert!(editor.project().device(first).is_none());
         assert!(editor.undo());
         assert!(editor.project().device(first).is_some());
+    }
+
+    #[test]
+    fn legacy_move_preflights_same_track_anchor_before_mutating_project() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let track = track_id(&mut editor, "legacy move");
+        let first = device_id(&mut editor, track);
+        let second = device_id(&mut editor, track);
+        let mut candidate = editor.project().clone();
+        let before = candidate.clone();
+
+        assert!(move_device(&mut candidate, second, track, Some(DeviceId(u64::MAX))).is_err());
+        assert_eq!(candidate, before);
+        assert!(move_device(&mut candidate, second, track, Some(second)).is_ok());
+        assert_eq!(candidate, before);
+        assert_eq!(candidate.track(track).unwrap().devices()[0].id(), first);
+    }
+
+    #[test]
+    fn canonical_chain_moves_effects_and_instrument_across_the_persisted_gap() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        let track = track_id(&mut editor, "chain");
+        let instrument = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let first = device_id(&mut editor, track);
+        let second = device_id(&mut editor, track);
+        let move_before = |editor: &mut crate::Editor, device, before| {
+            editor
+                .execute(Command::MoveTrackDevice {
+                    device,
+                    track,
+                    before,
+                })
+                .unwrap();
+        };
+        let chain_ids = |editor: &crate::Editor| {
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .ordered_device_chain()
+                .map(|node| match node {
+                    crate::TrackDeviceRef::Instrument(device)
+                    | crate::TrackDeviceRef::Effect(device) => device.id(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(chain_ids(&editor), [instrument, first, second]);
+        move_before(&mut editor, instrument, Some(second));
+        assert_eq!(chain_ids(&editor), [first, instrument, second]);
+        assert_eq!(
+            editor.project().track(track).unwrap().instrument_position(),
+            Some(1)
+        );
+        move_before(&mut editor, second, Some(instrument));
+        assert_eq!(chain_ids(&editor), [first, second, instrument]);
+        move_before(&mut editor, first, None);
+        assert_eq!(chain_ids(&editor), [second, instrument, first]);
+        assert_eq!(
+            editor.project().track(track).unwrap().instrument_position(),
+            Some(1)
+        );
+        move_before(&mut editor, instrument, Some(second));
+        assert_eq!(chain_ids(&editor), [instrument, second, first]);
+        move_before(&mut editor, first, Some(instrument));
+        assert_eq!(chain_ids(&editor), [first, instrument, second]);
+
+        let before_noop = editor.project().snapshot();
+        let can_undo_before_noop = editor.can_undo();
+        move_before(&mut editor, first, Some(instrument));
+        assert_eq!(editor.project().snapshot(), before_noop);
+        assert_eq!(editor.can_undo(), can_undo_before_noop);
+        assert!(editor.undo());
+        assert_eq!(chain_ids(&editor), [instrument, second, first]);
+
+        let destination = track_id(&mut editor, "destination");
+        let destination_instrument = editor
+            .project()
+            .track(destination)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::MoveTrackDevice {
+                device: first,
+                track: destination,
+                before: Some(destination_instrument),
+            })
+            .unwrap();
+        assert_eq!(
+            editor
+                .project()
+                .track(destination)
+                .unwrap()
+                .instrument_position(),
+            Some(1)
+        );
+        assert!(
+            editor
+                .execute(Command::MoveTrackDevice {
+                    device: instrument,
+                    track: destination,
+                    before: None,
+                })
+                .is_err()
+        );
+        editor
+            .execute(Command::RemoveInstrument { track: destination })
+            .unwrap();
+        let destination_effect = device_id(&mut editor, destination);
+        editor
+            .execute(Command::MoveTrackDevice {
+                device: instrument,
+                track: destination,
+                before: Some(first),
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .is_none()
+        );
+        assert_eq!(
+            editor
+                .project()
+                .track(destination)
+                .unwrap()
+                .instrument_position(),
+            Some(0)
+        );
+        assert_eq!(
+            editor
+                .project()
+                .track(destination)
+                .unwrap()
+                .ordered_device_chain()
+                .map(|node| match node {
+                    crate::TrackDeviceRef::Instrument(device)
+                    | crate::TrackDeviceRef::Effect(device) => device.id(),
+                })
+                .collect::<Vec<_>>(),
+            [instrument, first, destination_effect]
+        );
+        assert!(editor.project().device(destination_instrument).is_none());
+        let before_failure = editor.project().snapshot();
+        assert!(
+            editor
+                .execute(Command::MoveTrackDevice {
+                    device: first,
+                    track: destination,
+                    before: Some(DeviceId(u64::MAX)),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before_failure);
+    }
+
+    #[test]
+    fn effect_insert_remove_and_instrument_recreate_keep_gap_consistent() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "gap edits");
+        let instrument = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let first = match editor
+            .execute(Command::InsertDevice {
+                track,
+                before: Some(instrument),
+                state: state(vec![1]),
+            })
+            .unwrap()
+        {
+            crate::Created::Device(id) => id,
+            _ => panic!("expected first effect"),
+        };
+        let second = match editor
+            .execute(Command::InsertDevice {
+                track,
+                before: Some(instrument),
+                state: state(vec![2]),
+            })
+            .unwrap()
+        {
+            crate::Created::Device(id) => id,
+            _ => panic!("expected second effect"),
+        };
+        let track_view = editor.project().track(track).unwrap();
+        assert_eq!(track_view.instrument_position(), Some(2));
+        assert_eq!(
+            track_view
+                .ordered_device_chain()
+                .map(|node| match node {
+                    crate::TrackDeviceRef::Instrument(device)
+                    | crate::TrackDeviceRef::Effect(device) => device.id(),
+                })
+                .collect::<Vec<_>>(),
+            [first, second, instrument]
+        );
+        editor.execute(Command::RemoveDevice(first)).unwrap();
+        assert_eq!(
+            editor.project().track(track).unwrap().instrument_position(),
+            Some(1)
+        );
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+        assert_eq!(
+            editor.project().track(track).unwrap().instrument_position(),
+            None
+        );
+        let new_instrument = match editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: crate::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        {
+            crate::Created::Device(id) => id,
+            _ => panic!("expected instrument"),
+        };
+        assert_eq!(
+            editor.project().track(track).unwrap().instrument_position(),
+            Some(0)
+        );
+        assert_eq!(
+            editor.project().track(track).unwrap().devices()[0].id(),
+            second
+        );
+        assert_ne!(new_instrument, instrument);
     }
 
     #[test]

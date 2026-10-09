@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: hex_project::TrackContentSnapshot::Audio(clips),
         });
     }

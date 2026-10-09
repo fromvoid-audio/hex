@@ -90,6 +90,8 @@ pub struct TrackSnapshot {
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
     pub instrument: Option<DeviceSnapshot>,
+    /// Number of effects before `instrument`; required exactly when present.
+    pub instrument_position: Option<usize>,
     pub content: TrackContentSnapshot,
 }
 
@@ -211,6 +213,7 @@ impl Project {
                         bypassed: instrument.bypassed,
                         state: instrument.state.clone(),
                     }),
+                    instrument_position: track.instrument_position,
                     content: TrackContentSnapshot::Hybrid {
                         audio_clips: track
                             .content
@@ -393,6 +396,19 @@ impl Project {
             if track.devices.len() > MAX_DEVICES_PER_TRACK {
                 return Err(Invalid("track device limit reached"));
             }
+            match (track.instrument.as_ref(), track.instrument_position) {
+                (Some(_), Some(position)) if position <= track.devices.len() => {}
+                (None, None) => {}
+                (Some(_), Some(_)) => {
+                    return Err(Invalid("instrument position exceeds effect count"));
+                }
+                (Some(_), None) => {
+                    return Err(Invalid("instrument position is missing"));
+                }
+                (None, Some(_)) => {
+                    return Err(Invalid("instrument position exists without instrument"));
+                }
+            }
             total_devices = total_devices
                 .checked_add(track.devices.len())
                 .ok_or(Invalid("device count overflow"))?;
@@ -538,6 +554,7 @@ impl Project {
                 soloed: track.soloed,
                 devices,
                 instrument,
+                instrument_position: track.instrument_position,
                 content,
             });
         }

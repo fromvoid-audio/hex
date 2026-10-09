@@ -119,6 +119,14 @@ asset IDs remain unique across undo/redo branches. Names and paths retain origin
 case; display normalization belongs only to the UI. Referenced assets cannot be
 removed. Limits and known resource costs are in [issues.md](issues.md).
 
+Each track stores up to 64 serial effects and one optional instrument. The
+instrument's canonical chain position is a validated gap in the effect vector,
+persisted in schema16 and changed through stable-ID transactional edits. A
+borrowed ordered-chain view reports explicit node class/slot references. The
+current Arrangement and Session compilers refuse a non-front instrument before
+history commits; execution of arbitrary instrument/effect ordering is deferred
+to the next engine integration stage.
+
 `hex_engine::compile::project` resolves the snapshot's asset IDs through a decoded
 PCM bank, checks exact rate/frame metadata, and produces immutable playback data.
 Clips keep a half-open timeline interval and explicit source offset/length. Looping

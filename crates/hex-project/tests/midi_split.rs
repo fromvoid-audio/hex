@@ -218,6 +218,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: clips,

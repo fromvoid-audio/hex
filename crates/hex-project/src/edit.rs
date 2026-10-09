@@ -27,6 +27,15 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Move any effect or the optional instrument in the canonical ordered
+    /// chain. Effects and an instrument can cross tracks when the destination
+    /// has capacity and, for an instrument, an empty slot. `before` may identify
+    /// either node class on the destination; `None` appends.
+    MoveTrackDevice {
+        device: DeviceId,
+        track: TrackId,
+        before: Option<DeviceId>,
+    },
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -572,6 +581,7 @@ pub(crate) fn insert_track_before(
                 state: instrument_state,
                 bypassed: false,
             }),
+            instrument_position: Some(0),
             content: TrackContent::default(),
         },
     );
@@ -966,6 +976,7 @@ impl Project {
             | Command::RemoveInstrument { .. }
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
+            | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
             Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),

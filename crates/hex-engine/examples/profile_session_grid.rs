@@ -55,6 +55,7 @@ fn fixture(
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
         });
         for (scene_index, scene) in scenes.iter().enumerate() {
