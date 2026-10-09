@@ -1027,6 +1027,7 @@ impl EditorView {
                         viewport_length: viewport.length,
                         snap_grid: self.snap_grid,
                         snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
+                        copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                         preview: std::rc::Rc::new(std::cell::Cell::new(None)),
                         destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                         insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -1326,6 +1327,7 @@ impl EditorView {
                 viewport_length: viewport.length,
                 snap_grid: self.snap_grid,
                 snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
+                copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                 preview: std::rc::Rc::new(std::cell::Cell::new(None)),
                 destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                 insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -1444,6 +1446,11 @@ impl EditorView {
                 };
                 payload.grab_offset.set(offset);
                 payload.snap_modifier.set(window.modifiers().platform);
+                payload.copy_modifier.set(window.modifiers().alt);
+                cx.set_active_drag_cursor_style(
+                    drag::copy_cursor(payload.copy_modifier.get()),
+                    window,
+                );
                 let pointer = window.mouse_position();
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
@@ -1456,7 +1463,7 @@ impl EditorView {
                 drag_entity.update(cx, |_, cx| cx.notify());
                 cx.new(|_| ClipDragGhost)
             })
-            .on_drag_move::<ClipDrag>(move |event, _, cx| {
+            .on_drag_move::<ClipDrag>(move |event, window, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<ClipDrag>() else {
                     return;
                 };
@@ -1468,6 +1475,11 @@ impl EditorView {
                 let pointer = (f32::from(pointer.x), f32::from(pointer.y));
                 payload.last_pointer.set(Some(pointer));
                 payload.snap_modifier.set(event.event.modifiers.platform);
+                payload.copy_modifier.set(event.event.modifiers.alt);
+                cx.set_active_drag_cursor_style(
+                    drag::copy_cursor(payload.copy_modifier.get()),
+                    window,
+                );
                 let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
                     view.clip_drag_drop_position(payload, pointer.0, pointer.1)
                 });

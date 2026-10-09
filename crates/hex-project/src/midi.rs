@@ -731,6 +731,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             overwrite_midi_interval(project, track, start, end, clip)?;
             apply(project, Command::MoveMidiClip { clip, track, start })
         }
+        Command::CopyMidiClipTo { clip, track, start } => {
+            crate::clip_copy::midi_to(project, clip, track, start)
+        }
         Command::MoveMidiClip { clip, track, start } => {
             let (source_id, length, old_start) = project
                 .tracks

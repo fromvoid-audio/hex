@@ -1439,6 +1439,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             viewport_length: viewport.length,
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(std::cell::Cell::new(false)),
+            copy_modifier: Rc::new(std::cell::Cell::new(false)),
             metadata: Rc::new(RefCell::new(None)),
             metadata_error: Rc::new(RefCell::new(None)),
             preview: Rc::new(std::cell::Cell::new(None)),

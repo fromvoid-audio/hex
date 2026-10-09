@@ -319,7 +319,15 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
-                    view.refresh_drag_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_drag_modifiers(
+                        event.modifiers.platform,
+                        event.modifiers.alt,
+                        window,
+                        cx,
+                    );
+                    if view.update_time_range_copy_modifier(event.modifiers.alt) {
+                        cx.notify();
+                    }
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });
@@ -327,8 +335,9 @@ impl Render for EditorView {
             })
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| {
+                cx.listener(|view, _, window, cx| {
                     if view.active_clip_drag.take().is_some() {
+                        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
                     if let Some(drag) = view.active_trim_drag.take() {

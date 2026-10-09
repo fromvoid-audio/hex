@@ -55,7 +55,7 @@ in the original and Undo; exact Live editing parity or envelope continuity at
 carry-note boundaries is not established.
 
 Cmd-E continues to split the clip at the point cursor's anchor track. Splitting
-both edges of a multi-track time area, system clipboard exchange, range duplication,
+both edges of a multi-track time area, system clipboard exchange,
 delete time with gap movement and Session time-area editing are deferred.
 Cmd-Shift-C copies the same time rectangle; Cmd-Shift-V inserts it and shifts
 later content right on only the destination rows. Ordinary paste still replaces.
@@ -134,3 +134,41 @@ insert with Cmd-Shift-V at a point or the left boundary of a reverse selection.
 Only affected destination tracks should shift, including a clip crossing the
 insertion. Compare ordinary Cmd-V, then Undo/Redo. Check browser/note-editor
 focus and saved/reopened metadata; sustained-note listening remains separate.
+
+Native review, 9 October: the user confirmed ripple edit works in the fresh
+`hex-ripple-insert-20261009.app` review build. Full local CI passed all 14 steps
+on clean source `c7ae2d5`; PR #11 is merged. A follow-up request changes keyboard
+normal/ripple paste of multiple tracks to retain the copied source tracks and use
+only the current horizontal position. Single-track copies still target the
+current row. That policy is queued separately; current shortcuts still
+use the destination selection row. Visual time-chunk drags retain cross-track
+placement. Listening and measured device timing remain separate gates.
+
+## Option-drag duplication — 9 October 2026
+
+Option selects copy while dragging an Arrangement clip or a time rectangle's
+upper-third handle. Command's free-placement override remains independent.
+Pressing/releasing Option during the gesture changes the mode and plus cursor;
+release uses the current mode. Existing browser sample drags already import copies.
+Session cells and track ordering do not yet expose equivalent drag gestures.
+
+Copies replace the destination rectangle, including silence in a time selection,
+while retaining source portions outside that replacement. Whole audio/MIDI clip
+copies retain authored source/loop metadata and use fresh clip/note IDs; time
+copies use the bounded fragment contract above. Copying a time rectangle does not
+change the worker clipboard. A drop is one prepared history operation, including
+clip copies into newly inserted/appended tracks. Same-origin drops, cancellation
+and rejected candidates leave content and redo intact. No persistence schema or
+audio callback change is required.
+
+Native checklist after the fresh build: Option-drag audio and MIDI clips on the
+same/across tracks and into new tracks; copy a time rectangle containing gaps;
+press/release Option while stationary, then release in each mode. Confirm the plus
+cursor, source retention and snapped destination. Combine Option with Command,
+try an overlapping destination, cancel a drag, and Undo/Redo each successful drop.
+Source tests cover fresh audio/MIDI IDs and metadata, destination overwrite,
+new-track Undo, time-copy gaps and same-origin redo retention, plus live modifier
+changes and source-preserving previews. Project tests, 267 UI tests (2 ignored),
+targeted strict Clippy, formatting and source guards passed. The focused PR owns
+final clean-commit local CI evidence; the ignored review manifest records the
+fresh bundle identity. Native cursor/input acceptance remains open.

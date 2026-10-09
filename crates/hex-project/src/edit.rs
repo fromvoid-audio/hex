@@ -26,6 +26,12 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Copy a selected time rectangle to a destination in one undoable edit.
+    CopyTimeRangeTo {
+        range: crate::TimeRange,
+        track: TrackId,
+        frame: u64,
+    },
     AddTrack {
         name: String,
     },
@@ -181,6 +187,19 @@ pub enum Command {
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing audio clip there, preserving its ID and source metadata.
     MoveClipToNewTrack {
+        clip: ClipId,
+        name: String,
+        before_track: Option<TrackId>,
+        start: u64,
+    },
+    /// Copy an Arrangement audio clip to a destination, replacing overlap atomically.
+    CopyClipTo {
+        clip: ClipId,
+        track: TrackId,
+        start: u64,
+    },
+    /// Copy an Arrangement audio clip onto a newly inserted hybrid track.
+    CopyClipToNewTrack {
         clip: ClipId,
         name: String,
         before_track: Option<TrackId>,
@@ -396,6 +415,19 @@ pub enum Command {
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing MIDI clip there, preserving its ID and note/source data.
     MoveMidiClipToNewTrack {
+        clip: ClipId,
+        name: String,
+        before_track: Option<TrackId>,
+        start: crate::BeatTime,
+    },
+    /// Copy an Arrangement MIDI clip to a destination, replacing overlap atomically.
+    CopyMidiClipTo {
+        clip: ClipId,
+        track: TrackId,
+        start: crate::BeatTime,
+    },
+    /// Copy an Arrangement MIDI clip onto a newly inserted hybrid track.
+    CopyMidiClipToNewTrack {
         clip: ClipId,
         name: String,
         before_track: Option<TrackId>,
@@ -891,6 +923,11 @@ impl Project {
                 track,
                 frame,
             } => crate::time_range::move_range(self, &range, track, frame),
+            Command::CopyTimeRangeTo {
+                range,
+                track,
+                frame,
+            } => crate::time_range::copy_range(self, &range, track, frame),
             midi_command @ (Command::AddMidiTrack { .. }
             | Command::PlaceMidiClip { .. }
             | Command::SetMidiClipSource { .. }
@@ -906,8 +943,19 @@ impl Project {
             | Command::MoveMidiClip { .. }
             | Command::MoveMidiClipWithOverwrite { .. }
             | Command::MoveMidiClipToNewTrack { .. }
+            | Command::CopyMidiClipTo { .. }
             | Command::RemoveMidiClip(_)
             | Command::DuplicateMidiClip(_)) => crate::midi::apply(self, midi_command),
+            Command::CopyMidiClipToNewTrack {
+                clip,
+                name,
+                before_track,
+                start,
+            } => {
+                let track = insert_track_before(self, name, before_track)?;
+                crate::clip_copy::midi_to(self, clip, track, start)?;
+                Ok(Created::Track(track))
+            }
             session_command @ (Command::AddScene { .. }
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
@@ -1489,6 +1537,19 @@ impl Project {
                     .ok_or(Invalid("timeline end overflow"))?;
                 let track = insert_track_before(self, name, before_track)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
+                Ok(Created::Track(track))
+            }
+            Command::CopyClipTo { clip, track, start } => {
+                crate::clip_copy::audio_to(self, clip, track, start)
+            }
+            Command::CopyClipToNewTrack {
+                clip,
+                name,
+                before_track,
+                start,
+            } => {
+                let track = insert_track_before(self, name, before_track)?;
+                crate::clip_copy::audio_to(self, clip, track, start)?;
                 Ok(Created::Track(track))
             }
             Command::TrimClip {

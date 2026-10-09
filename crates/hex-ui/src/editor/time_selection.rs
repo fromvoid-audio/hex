@@ -32,6 +32,7 @@ pub(super) struct TimeRangeMoveGesture {
     revision: u64,
     grab_frame_offset: u64,
     grab_track_offset: usize,
+    pub(super) copy_modifier: bool,
     preview: Option<TimeRangeMovePreview>,
 }
 
@@ -52,6 +53,7 @@ pub(super) struct TimeRangeMoveDisplay<'a> {
     pub destination_last_index: usize,
     pub destination_start: u64,
     pub destination_end: u64,
+    pub copy_modifier: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,7 @@ pub(super) struct PendingTimeRangeMove {
     pub destination_first_index: usize,
     pub destination_last_index: usize,
     pub source_revision: u64,
+    pub copy_modifier: bool,
 }
 
 impl EditorView {
@@ -195,6 +198,7 @@ impl EditorView {
             revision: state.revision,
             grab_frame_offset,
             grab_track_offset: track_offset,
+            copy_modifier: false,
             preview: None,
         });
         self.suppress_cursor_click = false;
@@ -355,17 +359,27 @@ impl EditorView {
         let target = preview.first_track;
         let source_revision = gesture.revision;
         let source = gesture.range.clone();
-        if self.enqueue(Request::Edit(Command::MoveTimeRange {
-            range: gesture.range,
-            track: target,
-            frame: destination.start(),
-        })) {
+        let command = if gesture.copy_modifier {
+            Command::CopyTimeRangeTo {
+                range: gesture.range,
+                track: target,
+                frame: destination.start(),
+            }
+        } else {
+            Command::MoveTimeRange {
+                range: gesture.range,
+                track: target,
+                frame: destination.start(),
+            }
+        };
+        if self.enqueue(Request::Edit(command)) {
             self.pending_time_range_move = Some(PendingTimeRangeMove {
                 source,
                 range: destination,
                 destination_first_index: first,
                 destination_last_index: last,
                 source_revision,
+                copy_modifier: gesture.copy_modifier,
             });
         }
         true
@@ -552,6 +566,17 @@ impl EditorView {
 
     pub(super) fn cancel_time_range_move_gesture(&mut self) -> bool {
         self.time_range_move_gesture.take().is_some()
+    }
+
+    pub(super) fn update_time_range_copy_modifier(&mut self, held: bool) -> bool {
+        let Some(gesture) = self.time_range_move_gesture.as_mut() else {
+            return false;
+        };
+        if gesture.copy_modifier == held {
+            return false;
+        }
+        gesture.copy_modifier = held;
+        true
     }
 
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
@@ -752,13 +777,18 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(Palette::CYAN))
-                .opacity(0.12),
+                .opacity(0.12)
+                .cursor(if preview.copy_modifier {
+                    CursorStyle::DragCopy
+                } else {
+                    CursorStyle::Arrow
+                }),
         )
     }
 
     pub(super) fn time_range_move_display(&self) -> Option<TimeRangeMoveDisplay<'_>> {
         let state = self.state.as_ref()?;
-        let (source, destination_first_index, destination_last_index, start, end) =
+        let (source, destination_first_index, destination_last_index, start, end, copy_modifier) =
             if let Some(pending) = &self.pending_time_range_move {
                 (
                     &pending.source,
@@ -766,6 +796,7 @@ impl EditorView {
                     pending.destination_last_index,
                     pending.range.start(),
                     pending.range.end(),
+                    pending.copy_modifier,
                 )
             } else {
                 let gesture = self.time_range_move_gesture.as_ref()?;
@@ -787,6 +818,7 @@ impl EditorView {
                     preview.last_index,
                     preview.start_frame,
                     preview.end_frame,
+                    gesture.copy_modifier,
                 )
             };
         let same_rows = state
@@ -807,6 +839,7 @@ impl EditorView {
             destination_last_index,
             destination_start: start,
             destination_end: end,
+            copy_modifier,
         })
     }
 }

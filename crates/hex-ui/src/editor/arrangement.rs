@@ -238,6 +238,13 @@ impl EditorView {
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
+        if self
+            .time_range_move_gesture
+            .as_ref()
+            .is_some_and(|gesture| gesture.copy_modifier)
+        {
+            body = body.cursor(gpui::CursorStyle::DragCopy);
+        }
         body = body
             .debug_selector(|| "arrangement-content".to_owned())
             .on_mouse_down(
@@ -359,12 +366,13 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let started = cursor_down_entity.update(cx, |view, _| {
-                            let started = view.begin_time_range_move_gesture(x, y)
-                                || view.begin_time_selection_gesture(
-                                    x,
-                                    y,
-                                    event.modifiers.platform,
-                                );
+                            let move_started = view.begin_time_range_move_gesture(x, y);
+                            let started = if move_started {
+                                view.update_time_range_copy_modifier(event.modifiers.alt);
+                                true
+                            } else {
+                                view.begin_time_selection_gesture(x, y, event.modifiers.platform)
+                            };
                             if started {
                                 view.focus.focus(window);
                             }
@@ -412,6 +420,7 @@ impl EditorView {
                             return;
                         }
                         let finished = cursor_up_entity.update(cx, |view, _| {
+                            view.update_time_range_copy_modifier(event.modifiers.alt);
                             view.finish_time_range_move_gesture()
                                 || view.finish_time_selection_gesture()
                         });

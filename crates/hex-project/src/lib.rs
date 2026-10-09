@@ -1,5 +1,6 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod clip_copy;
 mod clip_fragment;
 mod conversion;
 mod edit;

@@ -1,5 +1,24 @@
 # Project plan
 
+## active work unit — Option-drag copies, 9 October 2026
+
+One focused PR covers existing Arrangement audio/MIDI clip drags, copies into
+inserted/appended tracks, and complete time-rectangle drags. Option switches move
+to copy, with a native plus cursor and the existing snapped landing preview.
+Modifier changes during a drag and at release select the current mode; Command
+continues to override snapping independently. Browser imports already create new
+clips and retain that behavior. Session cells and track reordering have no native
+drag path in this unit and remain deferred.
+
+Acceptance: source material is retained except where destination replacement
+overlaps it; clip/note IDs are fresh; shared media and authored whole-clip source
+metadata are preserved. Time copies include gaps without changing the internal
+clipboard. Each successful drop is one prepared history operation; cancellation,
+same-origin drops and rejected candidates preserve content and redo. Pointer
+updates do not compile projects or copy PCM. Validate canonical overlap, failure,
+Undo and modifier contracts, run local CI on the final clean commit, then provide
+a fresh review app for the user's native cursor/drag acceptance.
+
 ## Goal and target
 
 Reconstruct the selected Ableton Live workflows in an independently implemented
