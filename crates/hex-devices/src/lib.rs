@@ -1,4 +1,4 @@
-//! Original native DSP: registered sine/Utility and standalone FM4 preparation.
+//! Original native DSP: registered sine/Utility and custom-registry FM4 support.
 pub mod fm4;
 pub mod utility;
 pub mod utility_filters;

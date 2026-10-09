@@ -48,8 +48,10 @@ note is a Copy value containing 41 u64 payload words, release duration and a saf
 stereo sample function pointer: 344 bytes on 64-bit targets. The first three
 words retain the sine phase step, amplitude and attack representation; the
 remaining words are zero. The 41-word capacity can also carry the validated
-standalone FM4 kernel without a heap owner or unsafe conversion. FM4 remains
-unregistered and cannot be selected by a project in this change. Definitions
+standalone FM4 kernel without a heap owner or unsafe conversion. `Fm4Definition`
+is available to an explicitly constructed caller-owned registry with a bounded
+version-1 codec and generic parameters; it remains excluded from the built-in
+registry and cannot be selected by a project yet. Definitions
 validate fields before packing. Sample functions must be deterministic, bounded
 and free of allocation, deallocation, waiting, I/O and mutable shared state.
 This trusted native definition contract is not a sandbox for arbitrary external
