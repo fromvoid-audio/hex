@@ -391,3 +391,10 @@ diff checks pass. Coverage includes snap/free placement, zoom/pan mapping,
 outside-rail release, lane-selection ownership, resize, activation, toggle and
 stale-state protection. Clean full local CI and native acceptance remain open;
 this stays a separate focused PR.
+
+Instrument panel2127: canonical instrument slot now renders before effects, with
+registered add/replace/remove/bypass and no reorder controls. Session routes
+parameters and gestures by canonical slot ownership; UI caches class/type identity.
+Sine exposes no fabricated parameters. Full Session tests, rendered panel actions,
+nine gesture tests, strict affected Clippy and source guards pass. Full local CI
+and user native acceptance follow; FM4 admission and full Operator remain open.

@@ -311,7 +311,12 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         })
         .expect("insert second utility");
     let project = editor.project().clone();
-    let devices = project.track(track).unwrap().devices();
+    let project_track = project.track(track).unwrap();
+    let instrument_id = project_track
+        .instrument()
+        .expect("new track has canonical sine instrument")
+        .id();
+    let devices = project_track.devices();
     let device_id = devices[0].id();
     let second_device_id = devices[1].id();
     let parameter_id = entry.parameters[0].id;
@@ -339,6 +344,48 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert!(f32::from(panel.size.height) >= 188.0);
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
+    let instrument_card = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("instrument card");
+    let effect_card = visual
+        .debug_bounds(Box::leak(
+            format!("effect-device-{}", device_id.value()).into_boxed_str(),
+        ))
+        .expect("effect card");
+    assert!(
+        instrument_card.origin.x < effect_card.origin.x,
+        "instrument is first"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("instrument-replace-{}", instrument_id.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("instrument-remove-{}", instrument_id.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-up-{}", instrument_id.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "instruments do not show serial reorder controls"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.device_panel.has_control_for(instrument_id),
+            "the analytic sine instrument exposes no fabricated parameter controls"
+        );
+    });
     let parameter_selector = Box::leak(
         format!(
             "device-{}-parameter-{}",
@@ -361,7 +408,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_some());
     let add_utility_selector = Box::leak(
-        format!("add-native-device-{}", entry.type_id.as_str().unwrap()).into_boxed_str(),
+        format!("add-native-effect-{}", entry.type_id.as_str().unwrap()).into_boxed_str(),
     );
     let add_utility = visual
         .debug_bounds(add_utility_selector)
@@ -373,8 +420,45 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_enqueued_native_device_add,
-            Some((track, entry.type_id)),
-            "add menu dispatches the registered device type to the selected track"
+            Some((track, hex_engine::NativeDeviceClass::Effect, entry.type_id)),
+            "add menu dispatches the registered class and type to the selected track"
+        );
+    });
+
+    let sine =
+        hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
+            .expect("instrument catalog")
+            .into_iter()
+            .next()
+            .expect("registered sine instrument");
+    let replace =
+        Box::leak(format!("instrument-replace-{}", instrument_id.value()).into_boxed_str());
+    let replace = visual
+        .debug_bounds(replace)
+        .expect("replace instrument action");
+    let click_point = point(replace.center().x, replace.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let add_sine = Box::leak(
+        format!("add-native-instrument-{}", sine.type_id.as_str().unwrap()).into_boxed_str(),
+    );
+    let add_sine = visual
+        .debug_bounds(add_sine)
+        .expect("registered sine replace action");
+    let click_point = point(add_sine.center().x, add_sine.center().y);
+    visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_enqueued_native_device_add,
+            Some((
+                track,
+                hex_engine::NativeDeviceClass::Instrument,
+                sine.type_id,
+            )),
+            "replace action dispatches the instrument class explicitly"
         );
     });
 

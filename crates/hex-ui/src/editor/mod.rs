@@ -463,7 +463,11 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
     #[cfg(test)]
-    last_enqueued_native_device_add: Option<(TrackId, hex_lattice_contract::DeviceTypeId)>,
+    last_enqueued_native_device_add: Option<(
+        TrackId,
+        hex_engine::NativeDeviceClass,
+        hex_lattice_contract::DeviceTypeId,
+    )>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]

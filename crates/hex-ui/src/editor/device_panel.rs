@@ -4,7 +4,7 @@ use crate::theme;
 use gpui::{
     App, Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb,
 };
-use hex_engine::{NativeDeviceParameterView, NativeDeviceView};
+use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterDescriptor, ParameterKind, ParameterValue};
 use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
@@ -22,22 +22,31 @@ struct ParameterKey {
     parameter: hex_lattice_contract::ParameterId,
 }
 
+#[derive(Clone, Copy)]
+struct DeviceControlIdentity {
+    class: NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+}
+
 enum ParameterControl {
     Float {
         entity: Entity<NumericControl>,
         _subscription: Subscription,
+        class: NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         descriptor: &'static ParameterDescriptor,
     },
     Bool {
         entity: Entity<Toggle>,
         _subscription: Subscription,
+        class: NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         descriptor: &'static ParameterDescriptor,
     },
     Choice {
         entity: Entity<Selector>,
         _subscription: Subscription,
+        class: NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         descriptor: &'static ParameterDescriptor,
     },
@@ -48,14 +57,27 @@ pub(super) struct DevicePanelState {
     track: Option<TrackId>,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
-    views: HashMap<DeviceId, (NativeDeviceState, Result<NativeDeviceView, String>)>,
-    catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
+    views: HashMap<
+        DeviceId,
+        (
+            NativeDeviceClass,
+            NativeDeviceState,
+            Result<NativeDeviceView, String>,
+        ),
+    >,
+    effect_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
+    instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pending_values: HashMap<ParameterKey, ParameterValue>,
     add_menu_open: bool,
     message: Option<String>,
 }
 
 impl DevicePanelState {
+    #[cfg(test)]
+    pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
+        self.controls.keys().any(|key| key.device == device)
+    }
+
     pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
         self.controls.values().any(|control| match control {
             ParameterControl::Float { entity, .. } => entity.read_with(cx, |control, _| {
@@ -265,7 +287,12 @@ fn render_track(
         return empty_panel("selected track is no longer available");
     };
     let devices = track.devices().to_vec();
-    let alive: HashSet<_> = devices.iter().map(|device| device.id()).collect();
+    let instrument = track.instrument().cloned();
+    let alive: HashSet<_> = devices
+        .iter()
+        .map(|device| device.id())
+        .chain(instrument.iter().map(|device| device.id()))
+        .collect();
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -289,14 +316,26 @@ fn render_track(
         view.device_panel.message = Some("device target is no longer available".into());
     }
 
-    if view.device_panel.catalog.is_none() {
-        view.device_panel.catalog = Some(
-            hex_engine::native_device_catalog().map_err(|error| error.to_string().to_lowercase()),
+    if view.device_panel.effect_catalog.is_none() {
+        view.device_panel.effect_catalog = Some(
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
+                .map_err(|error| error.to_string().to_lowercase()),
         );
     }
-    let catalog = view
+    if view.device_panel.instrument_catalog.is_none() {
+        view.device_panel.instrument_catalog = Some(
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
+                .map_err(|error| error.to_string().to_lowercase()),
+        );
+    }
+    let effect_catalog = view
         .device_panel
-        .catalog
+        .effect_catalog
+        .clone()
+        .unwrap_or_else(|| Ok(Vec::new()));
+    let instrument_catalog = view
+        .device_panel
+        .instrument_catalog
         .clone()
         .unwrap_or_else(|| Ok(Vec::new()));
 
@@ -323,16 +362,26 @@ fn render_track(
         .overflow_x_scroll()
         .overflow_y_hidden();
 
+    if let Some(device) = instrument.as_ref() {
+        let rendered = render_instrument(view, cx, track_id, device);
+        chain = chain.child(rendered);
+    } else {
+        let rendered = render_empty_instrument(cx);
+        chain = chain.child(rendered);
+    }
+
     for (index, device) in devices.iter().enumerate() {
         let device_id = device.id();
         let cached = view
             .device_panel
             .views
             .remove(&device_id)
-            .filter(|(cached, _)| cached == device.state())
-            .map(|(_, result)| result);
+            .filter(|(class, cached, _)| {
+                *class == NativeDeviceClass::Effect && cached == device.state()
+            })
+            .map(|(_, _, result)| result);
         let device_view = cached.unwrap_or_else(|| {
-            hex_engine::native_device_view(device.state())
+            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
         let rendered = match &device_view {
@@ -351,7 +400,10 @@ fn render_track(
                         view,
                         cx,
                         device_id,
-                        device_view.type_id,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Effect,
+                            type_id: device_view.type_id,
+                        },
                         parameter,
                     ));
                 }
@@ -386,10 +438,21 @@ fn render_track(
                 )
             }
         };
-        view.device_panel
-            .views
-            .insert(device_id, (device.state().clone(), device_view));
-        chain = chain.child(rendered);
+        view.device_panel.views.insert(
+            device_id,
+            (
+                NativeDeviceClass::Effect,
+                device.state().clone(),
+                device_view,
+            ),
+        );
+        let selector = format!("effect-device-{}", device_id.value());
+        chain = chain.child(
+            div()
+                .id(ElementId::Name(selector.clone().into()))
+                .debug_selector(move || selector.clone())
+                .child(rendered),
+        );
     }
 
     let add_open = view.device_panel.add_menu_open;
@@ -442,20 +505,206 @@ fn render_track(
                 .child(theme::text(title)),
         )
         .child(add_button);
-    if catalog.is_err() {
+    if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }
     root = root.child(header).child(chain);
     if add_open {
-        root = root.child(render_add_menu(cx, track_id, catalog));
+        root = root.child(render_add_menu(
+            cx,
+            track_id,
+            instrument.is_some(),
+            effect_catalog,
+            instrument_catalog,
+        ));
     }
     root
+}
+
+fn render_empty_instrument(cx: &mut Context<EditorView>) -> Stateful<Div> {
+    let body = div()
+        .w(px(286.0))
+        .h(px(162.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_xs()
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text("no instrument"));
+    let add = action_button(
+        "instrument-add".into(),
+        "+",
+        "add instrument",
+        theme::color(theme::PaletteRole::SecondaryText),
+    )
+    .on_click(cx.listener(|view, _, _, cx| {
+        view.device_panel.add_menu_open = true;
+        cx.notify();
+    }));
+    let rendered = device_frame(theme::text("instrument"), control_style(), add, body);
+    div()
+        .id("instrument-empty")
+        .debug_selector(|| "instrument-empty".into())
+        .child(rendered)
+}
+
+fn render_instrument(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    track: TrackId,
+    device: &hex_project::Device,
+) -> Stateful<Div> {
+    let device_id = device.id();
+    let cached = view
+        .device_panel
+        .views
+        .remove(&device_id)
+        .filter(|(class, state, _)| {
+            *class == NativeDeviceClass::Instrument && state == device.state()
+        })
+        .map(|(_, _, result)| result);
+    let device_view = cached.unwrap_or_else(|| {
+        hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
+            .map_err(|error| error.to_string().to_lowercase())
+    });
+    let header_actions = instrument_actions(track, device, cx);
+    let rendered = match &device_view {
+        Ok(device_view) => {
+            let mut body = div()
+                .w(px(286.0))
+                .h(px(162.0))
+                .flex_shrink_0()
+                .flex()
+                .flex_wrap()
+                .content_start()
+                .gap(px(2.0))
+                .p(px(3.0));
+            if device_view.parameters.is_empty() {
+                body = body.child(menu_message("no parameters"));
+            }
+            for parameter in &device_view.parameters {
+                body = body.child(parameter_control(
+                    view,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Instrument,
+                        type_id: device_view.type_id,
+                    },
+                    parameter,
+                ));
+            }
+            device_frame(
+                theme::text(device_view.name.clone()),
+                control_style(),
+                header_actions,
+                body,
+            )
+        }
+        Err(error) => {
+            let body = div()
+                .w(px(286.0))
+                .h(px(162.0))
+                .flex_shrink_0()
+                .p(px(5.0))
+                .text_xs()
+                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .child(theme::text(format!(
+                    "unsupported instrument state · {error}"
+                )));
+            device_frame(
+                theme::text(
+                    device
+                        .state()
+                        .type_id()
+                        .as_str()
+                        .unwrap_or("unknown instrument"),
+                ),
+                control_style(),
+                header_actions,
+                body,
+            )
+        }
+    };
+    view.device_panel.views.insert(
+        device_id,
+        (
+            NativeDeviceClass::Instrument,
+            device.state().clone(),
+            device_view,
+        ),
+    );
+    let selector = format!("instrument-device-{}", device_id.value());
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .child(rendered)
+}
+
+fn instrument_actions(
+    track: TrackId,
+    device: &hex_project::Device,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let id = device.id();
+    let bypassed = device.bypassed();
+    let mut actions = div().flex().items_center().gap(px(2.0));
+    actions = actions.child(
+        action_button(
+            format!("device-bypass-{}", id.value()),
+            if bypassed { "⊘" } else { "●" },
+            "toggle instrument bypass",
+            if bypassed {
+                theme::color(theme::PaletteRole::Muted)
+            } else {
+                theme::color(theme::PaletteRole::SecondaryText)
+            },
+        )
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if finalize_controls(view, cx) {
+                view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
+                    device: id,
+                    bypassed: !bypassed,
+                }));
+            }
+            cx.notify();
+        })),
+    );
+    actions = actions.child(
+        action_button(
+            format!("instrument-replace-{}", id.value()),
+            "↻",
+            "replace instrument",
+            theme::color(theme::PaletteRole::Text),
+        )
+        .on_click(cx.listener(|view, _, _, cx| {
+            view.device_panel.add_menu_open = true;
+            cx.notify();
+        })),
+    );
+    actions.child(
+        action_button(
+            format!("instrument-remove-{}", id.value()),
+            "×",
+            "remove instrument",
+            theme::color(theme::PaletteRole::Primary),
+        )
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if finalize_controls(view, cx) {
+                view.enqueue_device_barrier(Request::Edit(Command::RemoveInstrument { track }));
+            }
+            cx.notify();
+        })),
+    )
 }
 
 fn render_add_menu(
     cx: &mut Context<EditorView>,
     track: TrackId,
-    catalog: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
+    instrument_present: bool,
+    effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
+    instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
         .id("device-add-menu")
@@ -467,45 +716,64 @@ fn render_add_menu(
         .gap(px(3.0))
         .px(px(4.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
-    match catalog {
-        Ok(entries) if entries.is_empty() => {
-            menu = menu.child(menu_message("no native devices available"));
-        }
-        Ok(entries) => {
-            for entry in entries {
-                let type_id = entry.type_id;
-                let type_label = type_id.as_str().unwrap_or("invalid device").to_owned();
-                let action_id = format!("add-native-device-{type_label}");
-                menu = menu.child(
-                    div()
-                        .id(ElementId::Name(action_id.clone().into()))
-                        .debug_selector(move || action_id.clone())
-                        .h(px(18.0))
-                        .px(px(5.0))
-                        .flex()
-                        .items_center()
-                        .text_xs()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                        .cursor(gpui::CursorStyle::PointingHand)
-                        .child(theme::text(entry.name))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            if finalize_controls(view, cx)
-                                && view.enqueue_device_barrier(Request::AddNativeDevice {
-                                    track,
-                                    type_id: Box::new(type_id),
-                                    before: None,
-                                })
-                            {
-                                view.device_panel.add_menu_open = false;
-                                view.device_panel.message = None;
-                            }
-                            cx.notify();
-                        })),
-                );
+    let mut any_entry = false;
+    for (class, entries) in [
+        (NativeDeviceClass::Instrument, instruments),
+        (NativeDeviceClass::Effect, effects),
+    ] {
+        match entries {
+            Ok(entries) => {
+                for entry in entries {
+                    any_entry = true;
+                    let type_id = entry.type_id;
+                    let type_label = type_id.as_str().unwrap_or("invalid device").to_owned();
+                    let class_label = match class {
+                        NativeDeviceClass::Effect => "effect",
+                        NativeDeviceClass::Instrument => "instrument",
+                    };
+                    let action_id = format!("add-native-{class_label}-{type_label}");
+                    let label = if class == NativeDeviceClass::Instrument && instrument_present {
+                        format!("replace · {}", entry.name)
+                    } else {
+                        format!("{class_label} · {}", entry.name)
+                    };
+                    menu = menu.child(
+                        div()
+                            .id(ElementId::Name(action_id.clone().into()))
+                            .debug_selector(move || action_id.clone())
+                            .h(px(18.0))
+                            .px(px(5.0))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .child(theme::text(label))
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if finalize_controls(view, cx)
+                                    && view.enqueue_device_barrier(Request::AddNativeDevice {
+                                        track,
+                                        class,
+                                        type_id: Box::new(type_id),
+                                        before: None,
+                                    })
+                                {
+                                    view.device_panel.add_menu_open = false;
+                                    view.device_panel.message = None;
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+            Err(error) => {
+                menu = menu.child(menu_message(&format!("device catalog error · {error}")));
             }
         }
-        Err(error) => menu = menu.child(menu_message(&format!("device catalog error · {error}"))),
+    }
+    if !any_entry {
+        menu = menu.child(menu_message("no native devices available"));
     }
     menu
 }
@@ -628,7 +896,7 @@ fn parameter_control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
-    type_id: hex_lattice_contract::DeviceTypeId,
+    identity: DeviceControlIdentity,
     parameter: &NativeDeviceParameterView,
 ) -> Div {
     let style = control_style();
@@ -673,29 +941,35 @@ fn parameter_control(
     }
     let matching = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float {
+            class: old_class,
             type_id: old_type,
             descriptor: old_descriptor,
             ..
         }) => {
-            *old_type == type_id
+            *old_class == identity.class
+                && *old_type == identity.type_id
                 && *old_descriptor == descriptor
                 && matches!(descriptor.kind, ParameterKind::Float { .. })
         }
         Some(ParameterControl::Bool {
+            class: old_class,
             type_id: old_type,
             descriptor: old_descriptor,
             ..
         }) => {
-            *old_type == type_id
+            *old_class == identity.class
+                && *old_type == identity.type_id
                 && *old_descriptor == descriptor
                 && matches!(descriptor.kind, ParameterKind::Bool)
         }
         Some(ParameterControl::Choice {
+            class: old_class,
             type_id: old_type,
             descriptor: old_descriptor,
             ..
         }) => {
-            *old_type == type_id
+            *old_class == identity.class
+                && *old_type == identity.type_id
                 && *old_descriptor == descriptor
                 && matches!(descriptor.kind, ParameterKind::Choice { .. })
         }
@@ -705,7 +979,7 @@ fn parameter_control(
         if let Some(mut old) = view.device_panel.controls.remove(&key) {
             cancel_control(view, cx, key, &mut old);
         }
-        if create_parameter_control(view, cx, key, type_id, descriptor, value, style).is_none() {
+        if create_parameter_control(view, cx, key, identity, descriptor, value, style).is_none() {
             return unsupported_parameter(descriptor.label);
         }
     }
@@ -757,7 +1031,7 @@ fn create_parameter_control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     key: ParameterKey,
-    type_id: hex_lattice_contract::DeviceTypeId,
+    identity: DeviceControlIdentity,
     descriptor: &'static ParameterDescriptor,
     value: ParameterValue,
     style: ControlStyle,
@@ -833,7 +1107,8 @@ fn create_parameter_control(
                 ParameterControl::Float {
                     entity,
                     _subscription: subscription,
-                    type_id,
+                    class: identity.class,
+                    type_id: identity.type_id,
                     descriptor,
                 },
             );
@@ -860,7 +1135,8 @@ fn create_parameter_control(
                 ParameterControl::Bool {
                     entity,
                     _subscription: subscription,
-                    type_id,
+                    class: identity.class,
+                    type_id: identity.type_id,
                     descriptor,
                 },
             );
@@ -892,7 +1168,8 @@ fn create_parameter_control(
                 ParameterControl::Choice {
                     entity,
                     _subscription: subscription,
-                    type_id,
+                    class: identity.class,
+                    type_id: identity.type_id,
                     descriptor,
                 },
             );

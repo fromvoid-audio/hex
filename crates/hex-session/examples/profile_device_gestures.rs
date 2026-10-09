@@ -84,6 +84,7 @@ fn fixture(track_count: usize) -> Result<Fixture, Box<dyn Error>> {
             &service,
             Request::AddNativeDevice {
                 track,
+                class: hex_engine::NativeDeviceClass::Effect,
                 type_id: Box::new(type_id),
                 before: None,
             },

@@ -784,8 +784,14 @@ impl EditorView {
             self.last_enqueued_edit = Some(command.clone());
         }
         #[cfg(test)]
-        if let Request::AddNativeDevice { track, type_id, .. } = &request {
-            self.last_enqueued_native_device_add = Some((*track, **type_id));
+        if let Request::AddNativeDevice {
+            track,
+            class,
+            type_id,
+            ..
+        } = &request
+        {
+            self.last_enqueued_native_device_add = Some((*track, *class, **type_id));
         }
         #[cfg(test)]
         match &request {
