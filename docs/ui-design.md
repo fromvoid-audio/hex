@@ -296,3 +296,22 @@ Those PRs are merged. This records acceptance of the reviewed editing/menu
 behavior, not physical timing measurements or exhaustive listening. Dragging time
 selections beyond visible lanes/window edges is a separately reported defect and
 the active follow-up.
+
+## compact header composition — active, 9 October 2026
+
+Pulse ticket 10 separates a slim centered project-title row from the dense toolbar
+below. Reserve native traffic-light space on the upper row and balance its right
+side to keep the title centered. Lower-row controls use small icon hitboxes and
+minimal gutters, with lowercase tooltips and visible active states. Long project
+titles ellipsize; display casing must not modify document names or paths. Native
+window controls remain until their separate focused PR (ticket 11). Loading and
+editor headers should agree; confirm actual native clearance and minimum-size
+layout in a fresh review build before accepting the design.
+
+Implemented source uses a 22 px title row, 26 px toolbar and 20 px icon hitboxes
+with 2 px gutters. The two-row header occupies 48 px overall, compared with the
+previous single 38 px row; the requested separate title improves organization
+while smaller controls recover horizontal workspace. Long-title centering and
+left/right toolbar bounds pass at 880×540; title/path and session minimum-width
+regressions, strict UI Clippy, formatting and source guards pass. Full local CI
+evidence belongs to the focused PR; native geometry and dragging remain open.

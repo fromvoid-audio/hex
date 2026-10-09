@@ -3,7 +3,23 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
-## active work unit — persistent recent projects, 9 October 2026
+## active work unit — compact header composition, 9 October 2026
+
+Pulse ticket 10: a slim title row centers `hex` or the current document filename
+stem above a smaller, dense toolbar. Preserve the native traffic-light reservation
+on the title row, balanced spacing for true centering, lowercase display text and
+bundled font. The lower toolbar uses compact icon controls without the leading
+window-chrome inset. Loading and editor headers share the composition; existing
+commands, shortcuts and output status remain. Long titles ellipsize, paths remain
+untouched, and the minimum 880×540 layout stays operable.
+
+Acceptance: title data/fallback tests and focused rendered geometry/action
+regressions, targeted checks and full local CI on one focused PR; user native
+review of title alignment, controls, traffic-light clearance and window dragging.
+Custom traffic lights are the separate next ticket 11; no new native boundary
+or vendor changes in this PR. PR18 recent-projects native acceptance stays open.
+
+## source-complete work unit — persistent recent projects, 9 October 2026
 
 Pulse ticket 39: add native File > recent projects with ten bounded MRU paths.
 Record only successful opens, using the completed document path; failed opens

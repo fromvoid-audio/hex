@@ -1,38 +1,19 @@
 use super::{
     AddMidiClip, AddTrack, EditorMode, EditorView, ImportAudio, Redo, RemoveTrack, SplitClip, Stop,
-    ToggleBrowser, TogglePlay, Undo,
+    ToggleBrowser, TogglePlay, Undo, header,
 };
 use crate::theme::{self, Palette};
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
-    pub(super) fn transport(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn transport(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
         let output_label = self.output_label();
-        let mut row = div()
-            .h(px(38.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap_1()
-            // The transparent macOS titlebar places its traffic lights over this
-            // row. Reserve their leading region without widening other panels.
-            .pl(px(theme::TITLEBAR_LEADING_INSET))
-            .pr_2()
-            .border_b_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE))
-            .child(
-                div()
-                    .w(px(38.0))
-                    .text_sm()
-                    .text_color(rgb(Palette::CORAL))
-                    .child(theme::text("hex")),
-            )
+        let mut row = header::toolbar_row()
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
             .child(self.control_icon(
@@ -159,6 +140,7 @@ impl EditorView {
             .child(
                 div()
                     .id("audio output status")
+                    .debug_selector(|| "audio output status".into())
                     .flex_1()
                     .max_w(px(230.0))
                     .min_w_0()
@@ -191,6 +173,14 @@ impl EditorView {
         row
     }
 
+    pub(super) fn title_bar(&self) -> Stateful<Div> {
+        let title = header::project_title(
+            self.state()
+                .and_then(|state| state.document_path.as_deref()),
+        );
+        header::title_bar(title)
+    }
+
     fn icon(
         &self,
         label: &'static str,
@@ -217,14 +207,15 @@ impl EditorView {
     ) -> gpui::Stateful<Div> {
         div()
             .id(description)
-            .w(px(25.0))
-            .h(px(25.0))
+            .debug_selector(move || description.into())
+            .w(px(header::CONTROL_SIZE))
+            .h(px(header::CONTROL_SIZE))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .text_sm()
+            .text_xs()
             .bg(rgb(Palette::RAISED))
             .text_color(rgb(Palette::TEXT))
             .hover(|style| style.bg(rgb(Palette::HOVER)))
@@ -244,8 +235,8 @@ impl EditorView {
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("clip move snap grid")
-            .w(px(36.0))
-            .h(px(25.0))
+            .w(px(32.0))
+            .h(px(header::CONTROL_SIZE))
             .flex_shrink_0()
             .flex()
             .items_center()
