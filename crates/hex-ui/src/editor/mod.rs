@@ -143,6 +143,7 @@ actions!(
         Stop,
         ImportAudio,
         OpenProject,
+        OpenSettings,
         SaveProject,
         SaveAsProject,
         ExportProject,
@@ -202,6 +203,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 fn bind_editor_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some("hex_editor")),
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
         KeyBinding::new("s", ToggleSolo, Some("hex_editor")),
         KeyBinding::new("shift-s", AdditiveSolo, Some("hex_editor")),

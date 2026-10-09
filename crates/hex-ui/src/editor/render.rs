@@ -368,6 +368,9 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &super::OpenSettings, window, cx| {
+                view.open_theme_settings(window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::BrowserPrevious, window, cx| {
                 view.browser_previous(window, cx);
             }))

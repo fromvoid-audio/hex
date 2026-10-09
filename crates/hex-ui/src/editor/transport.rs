@@ -143,12 +143,6 @@ impl EditorView {
                 |view, _, _| view.recover_audio(),
                 cx,
             ))
-            .child(self.control_icon(
-                "⚙",
-                "theme colors",
-                |view, window, cx| view.toggle_theme_settings(window, cx),
-                cx,
-            ))
             .child(
                 div()
                     .id("audio output status")
