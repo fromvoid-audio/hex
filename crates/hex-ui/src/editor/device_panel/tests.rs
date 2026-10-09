@@ -42,6 +42,7 @@ fn actor_utility_fixture() -> (
     service
         .submit(Request::AddNativeDevice {
             track,
+            class: hex_engine::NativeDeviceClass::Effect,
             type_id: Box::new(entry.type_id),
             before: None,
         })

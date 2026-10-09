@@ -315,6 +315,26 @@ impl Session {
         self.editor.project()
     }
 
+    /// Resolve a canonical device's class from its owning track slot. UI
+    /// requests carry stable IDs, never authority to select a registry.
+    pub(crate) fn native_device_class(
+        &self,
+        device: hex_project::DeviceId,
+    ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
+        for track in self.project().tracks() {
+            if track
+                .instrument()
+                .is_some_and(|instrument| instrument.id() == device)
+            {
+                return Ok(hex_engine::NativeDeviceClass::Instrument);
+            }
+            if track.devices().iter().any(|effect| effect.id() == device) {
+                return Ok(hex_engine::NativeDeviceClass::Effect);
+            }
+        }
+        Err(SessionError::Invalid("device no longer exists"))
+    }
+
     pub fn sine_table(&self) -> Arc<hex_engine::SineTable> {
         Arc::clone(&self.sine_table)
     }
@@ -488,11 +508,17 @@ impl Session {
         value: hex_lattice_contract::ParameterValue,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let class = self.native_device_class(device)?;
         let current = self
             .project()
             .device(device)
             .ok_or(SessionError::Invalid("device no longer exists"))?;
-        let state = hex_engine::patch_native_device_parameter(current.state(), parameter, value)?;
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            current.state(),
+            parameter,
+            value,
+        )?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
         let media = self.media_bank();
         let table = self.sine_table();
@@ -520,11 +546,17 @@ impl Session {
         value: hex_lattice_contract::ParameterValue,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        let class = self.native_device_class(device)?;
         let current = self
             .project()
             .device(device)
             .ok_or(SessionError::Invalid("device no longer exists"))?;
-        let state = hex_engine::patch_native_device_parameter(current.state(), parameter, value)?;
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            current.state(),
+            parameter,
+            value,
+        )?;
         self.command_prepared_revision(Command::ReplaceDeviceState { device, state }, previous)
             .map(|(_, prepared)| prepared)
     }

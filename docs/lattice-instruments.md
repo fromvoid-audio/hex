@@ -77,5 +77,30 @@ the verified silent-slot extent/preview repair and documentation integration.
 
 Release timing methodology and provisional regression are recorded in
 [performance](performance.md). The preexisting mixed Session profile comparison
-failure is separate Pulse2113. Native instrument UI/catalog editing, mutable FM
-contracts and Operator remain open work, independent of this source foundation.
+failure is separate Pulse2113. Native instrument UI/catalog editing is implemented in the follow-up below; mutable
+FM contracts and Operator remain open work, independent of this source foundation.
+
+## Instrument panel and canonical class routing
+
+The focused track's device panel renders its canonical instrument slot before
+serial effects. Registered instruments can be inserted into an empty slot,
+replaced transactionally, removed or bypassed. Replacement preserves the device
+ID and bypass flag; instruments have no effect-chain reorder actions. The admitted
+sine instrument has no parameter descriptors, so the panel invents no controls.
+Unavailable or malformed state remains visible rather than silently resetting.
+
+Session parameter reads, patches and transient gestures resolve processing class
+from canonical track-slot ownership. A gesture retains and revalidates class and
+type identity; the shared UI control cache also includes both identities. New-device
+requests explicitly select a class catalog, while existing IDs never authorize a
+registry choice supplied by the UI. Existing effect gesture barriers and history
+remain in use. Adding a registered instrument requires no device-specific storage
+or UI codec.
+
+Session tests cover class refusal, instrument insert/remove Undo/Redo, replacement
+identity and bypass, parameter/gesture refusal for sine, and save/reopen. Rendered
+GPUI tests cover instrument-first order and routed actions alongside Utility;
+nine existing device-panel gesture tests pass. Full local CI and native acceptance
+are separate gates. This panel does not register FM4 or implement Operator;
+general instrument replacement-tail comparison remains part of the FM4 admission
+work.
