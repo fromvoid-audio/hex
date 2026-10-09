@@ -300,6 +300,20 @@ fn render_track(
         .filter(|key| !alive.contains(&key.device))
         .copied()
         .collect();
+    let active_target = view
+        .device_gesture
+        .snapshot()
+        .map(|snapshot| snapshot.target);
+    let stale_target_has_work = active_target.is_some_and(|target| !alive.contains(&target.device))
+        || stale_keys.iter().any(|key| {
+            matches!(
+                view.device_panel.controls.get(key),
+                Some(ParameterControl::Float { entity, .. })
+                    if entity.read_with(cx, |control, _| {
+                        control.is_interacting() || control.is_editing()
+                    })
+            )
+        });
     if !stale_keys.is_empty() {
         for key in stale_keys {
             if let Some(mut control) = view.device_panel.controls.remove(&key) {
@@ -309,12 +323,18 @@ fn render_track(
         view.device_panel
             .controls
             .retain(|key, _| alive.contains(&key.device));
-        view.device_panel.views.retain(|id, _| alive.contains(id));
-        view.device_panel
-            .pending_values
-            .retain(|key, _| alive.contains(&key.device));
-        view.device_panel.message = Some("device target is no longer available".into());
+        if stale_target_has_work {
+            view.device_panel.message = Some("device target is no longer available".into());
+        } else if view.device_panel.message.as_deref()
+            == Some("device target is no longer available")
+        {
+            view.device_panel.message = None;
+        }
     }
+    view.device_panel.views.retain(|id, _| alive.contains(id));
+    view.device_panel
+        .pending_values
+        .retain(|key, _| alive.contains(&key.device));
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
@@ -364,9 +384,6 @@ fn render_track(
 
     if let Some(device) = instrument.as_ref() {
         let rendered = render_instrument(view, cx, track_id, device);
-        chain = chain.child(rendered);
-    } else {
-        let rendered = render_empty_instrument(cx);
         chain = chain.child(rendered);
     }
 
@@ -519,34 +536,6 @@ fn render_track(
         ));
     }
     root
-}
-
-fn render_empty_instrument(cx: &mut Context<EditorView>) -> Stateful<Div> {
-    let body = div()
-        .w(px(286.0))
-        .h(px(162.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text("no instrument"));
-    let add = action_button(
-        "instrument-add".into(),
-        "+",
-        "add instrument",
-        theme::color(theme::PaletteRole::SecondaryText),
-    )
-    .on_click(cx.listener(|view, _, _, cx| {
-        view.device_panel.add_menu_open = true;
-        cx.notify();
-    }));
-    let rendered = device_frame(theme::text("instrument"), control_style(), add, body);
-    div()
-        .id("instrument-empty")
-        .debug_selector(|| "instrument-empty".into())
-        .child(rendered)
 }
 
 fn render_instrument(

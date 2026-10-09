@@ -59,6 +59,11 @@ Utility filters passed all 14 checks on `ee87e6e` (147.627 s, [PR27](https://git
 stateful runtime 16 admission remains active. Native panel/Utility acceptance stays open.
 Native interaction/listening remains open. See
 [device controls](docs/device-controls.md).
+Device-panel removal UX source follow-up on `codex/device-removal-feedback`:
+settled Utility and sine removal now avoid the stale-target warning and empty
+instrument card; Undo restores both. Eleven targeted device-panel UI tests pass,
+including existing active/draft target-loss coverage. Full local CI and native
+review remain open.
 Pinned main 12 is source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30),
 all 14 clean CI steps passed on `3ee1edd` (270.703 s). Main-project selection 14 is source-complete in
 [PR31](https://github.com/PORTALSURFER/hex/pull/31); all 14 clean CI checks passed
