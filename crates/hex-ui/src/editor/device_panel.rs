@@ -73,7 +73,7 @@ pub(super) struct DevicePanelState {
 }
 
 impl DevicePanelState {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
     }
