@@ -428,6 +428,8 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]
+    last_transport_command: Option<PlaybackCommand>,
+    #[cfg(test)]
     last_trim_release_snap: Option<bool>,
     #[cfg(test)]
     last_enqueued_import_to_track: Option<(std::path::PathBuf, TrackId, u64, bool)>,
@@ -615,6 +617,8 @@ impl EditorView {
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]
+            last_transport_command: None,
+            #[cfg(test)]
             last_trim_release_snap: None,
             #[cfg(test)]
             last_enqueued_import_to_track: None,
@@ -679,11 +683,25 @@ impl EditorView {
                 .load(std::sync::atomic::Ordering::Acquire)
         });
         let playing = self.play_intent.desired_playing(device_playing);
-        self.queue_audio_command(if playing {
+        let command = if playing {
             PlaybackCommand::Pause
         } else {
-            PlaybackCommand::Play
-        });
+            PlaybackCommand::PlayFrom(self.playback_start_frame())
+        };
+        #[cfg(test)]
+        {
+            self.last_transport_command = Some(command);
+        }
+        self.queue_audio_command(command);
+    }
+
+    fn playback_start_frame(&self) -> u64 {
+        if let Some(selection) = self.normalized_time_selection() {
+            return selection.start();
+        }
+        self.edit_cursor
+            .filter(|cursor| cursor.generation == self.project_generation)
+            .map_or(0, |cursor| cursor.frame)
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

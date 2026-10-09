@@ -91,13 +91,17 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   or copy across tracks. Cover worker clipboard lifecycle, Undo and both shortcut
   variants; provide native acceptance checks. Source implemented; project/session
   tests, targeted strict Clippy, formatting and architecture checks pass. Native
-  acceptance and review/merge remain open.
-- [ ] **Space restarts from the edit position** — separate focused transport
+  acceptance and review/merge remain open. [PR #13](https://github.com/PORTALSURFER/hex/pull/13)
+  passed all 14 local CI steps on clean source `d1bcf26`.
+- [x] **Space restarts from the edit position** — separate focused transport
   fix. Space starts at the current Arrangement edit cursor/selection, or project
   start if neither exists. While playing it may pause; the next Space restarts
   from that editing position, never resumes the paused playhead. Preserve text/note
   editor shortcut focus and bounded ordered seek/start delivery, with Stop still
   effective under queue pressure. Verify start position and stop/restart natively.
+  Source implemented with one atomic PlayFrom action; engine/audio/UI and callback
+  allocation regressions plus targeted strict Clippy/guards pass. Final local CI
+  and native acceptance remain separate gates.
 - [x] **preserve zoom when the project grows** — separate focused fix. Moving,
   copying or pasting to the right may expand timeline/project extent, but must
   retain the user's zoom and viewport. Fit/overview navigation remain explicit
@@ -105,7 +109,8 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   preserve valid minimum/maximum coordinate bounds without implicit zoom-out.
   Source implemented; controller worker-event regressions, strict UI Clippy,
   formatting and source guards pass. Final local CI and native acceptance remain
-  distinct; the focused PR records clean-commit evidence.
+  distinct; [PR #14](https://github.com/PORTALSURFER/hex/pull/14) passed all 14 local
+  CI steps on clean source `e04e2ec`.
 - [ ] **project actions in macOS File menu** — separate focused UI PR after
   keyboard paste anchoring. Put Open Project, Save and Save As in the screen-top
   native File menu and remove corresponding toolbar actions. Preserve existing

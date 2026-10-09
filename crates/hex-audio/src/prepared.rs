@@ -1007,6 +1007,46 @@ mod tests {
     }
 
     #[test]
+    fn play_from_uses_one_ticket_and_priority_stop_cuts_it_off_under_full_queue() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        assert!(control.publish(graph().0).is_ok());
+        callback.begin_block();
+
+        let ticket = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(37))
+            .unwrap();
+        assert_eq!(ticket, 1, "seek and start are admitted as one command");
+        callback.begin_block();
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 37);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+
+        control.command(PlaybackCommand::Pause).unwrap();
+        callback.begin_block();
+        for frame in 1..COMMANDS as u64 {
+            control.command(PlaybackCommand::Seek(frame)).unwrap();
+        }
+        let play_from_ticket = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(91))
+            .unwrap();
+        assert_eq!(play_from_ticket, COMMANDS as u64 + 2);
+        assert!(control.command(PlaybackCommand::Play).is_err());
+        control.stop();
+        callback.begin_block();
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 0);
+        assert_eq!(
+            control.status.consumed_command.load(Acquire),
+            play_from_ticket,
+            "priority Stop consumes the queued prefix while suppressing playback"
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
     fn post_cut_admissions_remain_queued_until_the_next_actual_block() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         assert!(control.publish(graph().0).is_ok());

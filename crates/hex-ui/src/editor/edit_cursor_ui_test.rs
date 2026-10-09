@@ -955,3 +955,136 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
     visual.simulate_keystrokes("cmd-shift-v");
     editor.read_with(cx, |view, _| assert!(view.last_time_request.is_none()));
 }
+
+#[gpui::test]
+fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, target, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            window.focus(&view.focus);
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 73_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::Palette::TEXT,
+                pulse_started: std::time::Instant::now(),
+            });
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: target,
+                end_track: source,
+                anchor_frame: 52_000,
+                end_frame: 28_000,
+            });
+        })
+    });
+
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
+            "reverse time selections restart from their normalized start"
+        );
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: source,
+                end_track: source,
+                anchor_frame: 41_000,
+                end_frame: 41_000,
+            });
+            view.last_transport_command = None;
+            window.focus(&view.focus);
+        })
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
+            "a point selection falls back to the edit cursor"
+        );
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            view.edit_cursor = None;
+            view.time_selection = None;
+            view.last_transport_command = None;
+            window.focus(&view.focus);
+        })
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(0)),
+            "no selection or edit cursor starts at project beginning"
+        );
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            let token = view.play_intent.reserve_token().expect("play intent token");
+            view.play_intent.admit(token, true);
+            view.last_transport_command = None;
+            window.focus(&view.focus);
+        })
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::Pause),
+            "Space pauses when the latest pending transport intent is Play"
+        );
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            let token = view
+                .play_intent
+                .reserve_token()
+                .expect("pause intent token");
+            view.play_intent.admit(token, false);
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 73_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::Palette::TEXT,
+                pulse_started: std::time::Instant::now(),
+            });
+            view.last_transport_command = None;
+            window.focus(&view.focus);
+        })
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
+            "Space after Pause restarts from the edit cursor, not the paused playhead"
+        );
+    });
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            view.last_transport_command = None;
+            window.focus(&view.midi_focus);
+        })
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_transport_command.is_none(),
+            "midi focus keeps Space"
+        );
+    });
+}

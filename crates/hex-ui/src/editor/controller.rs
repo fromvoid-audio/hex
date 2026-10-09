@@ -213,7 +213,9 @@ impl EditorView {
                 Ok(ticket) => {
                     if matches!(
                         pending.action,
-                        PlaybackAction::Transport(PlaybackCommand::Seek(_))
+                        PlaybackAction::Transport(
+                            PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+                        )
                     ) {
                         self.pending_seek_ticket = Some(ticket);
                     }
@@ -846,7 +848,7 @@ impl EditorView {
         let queued = self.pending_audio_commands.iter().any(|pending| {
             matches!(
                 pending.action,
-                PlaybackAction::Transport(PlaybackCommand::Seek(_))
+                PlaybackAction::Transport(PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_))
             )
         });
         let consumed = self
@@ -1091,6 +1093,12 @@ impl EditorView {
                     self.admit_play_intent(pending, desired_playing, Some(ticket));
                     if matches!(
                         action,
+                        PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+                    ) {
+                        self.pending_seek_ticket = Some(ticket);
+                    }
+                    if matches!(
+                        action,
                         PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_)
                     ) {
                         self.pending_session_ticket = Some((ticket, self.project_generation));
@@ -1116,6 +1124,12 @@ impl EditorView {
                         self.admit_play_intent(pending, desired_playing, None);
                         if matches!(
                             rejected,
+                            PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+                        ) {
+                            self.pending_seek_ticket = None;
+                        }
+                        if matches!(
+                            rejected,
                             PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_)
                         ) {
                             replace_status(
@@ -1133,6 +1147,12 @@ impl EditorView {
             }
         } else {
             self.pending_audio_commands.push_back(pending);
+            if matches!(
+                action,
+                PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+            ) {
+                self.pending_seek_ticket = None;
+            }
             if matches!(
                 action,
                 PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_)
@@ -1243,9 +1263,8 @@ fn retained_install_fresh_policy(
 
 fn intent_desired_playing(action: PlaybackAction) -> Option<bool> {
     match action {
-        PlaybackAction::Transport(PlaybackCommand::Play) | PlaybackAction::LaunchAndPlay(_) => {
-            Some(true)
-        }
+        PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::PlayFrom(_))
+        | PlaybackAction::LaunchAndPlay(_) => Some(true),
         PlaybackAction::Transport(PlaybackCommand::Pause) => Some(false),
         PlaybackAction::Transport(PlaybackCommand::Stop)
         | PlaybackAction::Transport(PlaybackCommand::Seek(_))

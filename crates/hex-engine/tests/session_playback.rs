@@ -436,6 +436,64 @@ fn pause_empty_render_stop_all_and_seek_have_distinct_transport_effects() {
 }
 
 #[test]
+fn play_from_seeks_and_starts_as_one_transport_action() {
+    let fixture = fixture(None, None);
+    let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision))
+        .expect("prepared session playback");
+
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(24_000)))
+        .expect("play from target");
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 24_000);
+    let mut output = [[0.0; 2]; 13];
+    playback.render(&mut output).expect("render from target");
+    assert_eq!(playback.position(), 24_013);
+
+    playback.apply(PlaybackCommand::Pause);
+    assert!(!playback.playing());
+    assert_eq!(playback.position(), 24_013);
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(48_000)))
+        .expect("restart from target");
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 48_000);
+}
+
+#[test]
+fn play_from_updates_legacy_arrangement_position_before_starting() {
+    let project = Arc::new(hex_engine::Project::new(48_000, Vec::new()).expect("project"));
+    let mut playback = Playback::from_shared(project);
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(7_200)))
+        .expect("legacy play from");
+    assert!(playback.playing());
+    assert_eq!(playback.position(), 7_200);
+    assert_eq!(playback.performance_frame(), 7_200);
+}
+
+#[test]
+fn rejected_play_from_does_not_start_or_partially_seek_session() {
+    let fixture = fixture(None, None);
+    let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&fixture.revision))
+        .expect("prepared session playback");
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Seek(12_000)))
+        .expect("establish position");
+    let previous = playback.position();
+
+    assert!(
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(
+                u64::MAX
+            )))
+            .is_err()
+    );
+    assert!(!playback.playing());
+    assert_eq!(playback.position(), previous);
+}
+
+#[test]
 fn sparse_scene_absence_is_noop_while_an_explicit_stop_cell_silences() {
     let fixture = fixture(None, None);
     let mut playback = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("kernel");
