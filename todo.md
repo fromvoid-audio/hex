@@ -342,6 +342,12 @@ remains the implementation scope; current checkpoints are not the final build.
 
 ## instrument foundation checkpoint
 
+Operator prerequisite Pulse2119: standalone original FM4 kernel with four sine
+operators, validated acyclic phase routing and authored-age/gate ADSR is source
+implemented and targeted-tested. See [contract](docs/fm4.md). Catalog/runtime
+admission, feedback and complete Operator feature/reference acceptance remain
+open. Keep this focused PR separate from panel-focus2117 and loop-rail2120.
+
 Pulse2114: schema15 optional instrument slot, generic registry and copied analytic
 note samplers are implemented in source; targeted tests/strict checks pass.
 Silent-slot MIDI extent/preview repair passes targeted tests; fullCI and focused PR

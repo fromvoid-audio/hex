@@ -5,6 +5,8 @@
 Implement original native device DSP, including a linear stereo Utility processor,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
+Own the standalone original four-operator phase-modulation kernel that precedes
+Operator integration; it is not yet a registered instrument or desktop device.
 
 ## Dependencies
 
@@ -23,3 +25,5 @@ samplers preserve authored age/gate semantics. See [the filter contract](../../d
 
 This crate does not schedule notes, convert musical time, own the audio graph or
 track mixing, manage MIDI state, access audio devices, or host external plugins.
+FM4 does not select Live algorithm numbers, store project state or implement
+feedback/chase/polyphony. See [FM4 contract](../../docs/fm4.md).
