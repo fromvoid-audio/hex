@@ -163,7 +163,7 @@ device cards. The chain itself keeps its horizontal scroll. Native wheel and
 touchpad feel still requires review.
 
 The built-in Utility uses a 144 × 184 px rounded device frame inside that rail,
-with a 2 px clipped corner radius, a 14 px compact header and 12 px header
+with the shared 4 px corner radius, a 14 px compact header and 12 px header
 actions. Its two 64 px columns reproduce Live's compact input/output control
 composition: channel and polarity, width or mid/side, mono and bass mono controls
 on the input side; gain, balance, mute and dc on the output side. Bass mono cutoff
@@ -230,3 +230,22 @@ and clip selection. A drag with no valid track still shows the truthful empty
 device pane and cannot create a track implicitly. Releasing without a target or
 canceling clears the drag but leaves the pane open; ordinary track focus keeps
 its existing visibility behavior.
+
+All native instrument, effect and Return frames use `hex-widgets`' shared
+`DEVICE_CORNER_RADIUS` (4 logical pixels). Compact headers share the same frame
+renderer; no device chooses its own outline radius. Header backgrounds round
+their top corners explicitly because GPUI overflow masks are rectangular.
+Numeric readouts share `CONTROL_CORNER_RADIUS` (3 logical pixels). Frame styling
+belongs to this library; device modules own parameter composition and bindings.
+
+### shared Lattice visual system
+
+Utility is the reference testbed for the native Lattice look and feel. Its
+parameter composition is device-specific; its frames, knobs, sliders, editable
+values, switches, selectors and popup behavior belong to `hex-widgets`. Improve
+those reusable controls rather than introducing Utility-only appearance paths.
+All native devices inherit library styling and interaction improvements; new
+device panels only compose library controls and bind validated descriptors.
+Operator's dedicated layout will use this same library. Reusable density
+variants are permitted; variants must not encode a particular device identity.
+Native visual acceptance of the shared system remains with the user.

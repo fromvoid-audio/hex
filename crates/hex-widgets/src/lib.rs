@@ -16,7 +16,7 @@ pub use discrete::{
 };
 pub use frame::{
     COMPACT_DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT,
-    compact_rounded_device_frame, device_frame, rounded_device_frame,
+    compact_device_frame, device_frame,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
@@ -24,7 +24,7 @@ pub use numeric_control::{
     NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
     bind_numeric_control_keys,
 };
-pub use style::ControlStyle;
+pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS};
 
 #[cfg(test)]
 mod tests;

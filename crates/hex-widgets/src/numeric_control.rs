@@ -1357,7 +1357,7 @@ fn value_field_sized(
         .flex()
         .w(width)
         .h(height)
-        .rounded(px(2.0))
+        .rounded(px(crate::CONTROL_CORNER_RADIUS))
         .px(px(2.0))
         .items_center()
         .justify_center()
@@ -1393,7 +1393,7 @@ fn slider_track(
     let thumb = div()
         .absolute()
         .size(if vertical { px(12.0) } else { px(10.0) })
-        .rounded(px(2.0))
+        .rounded(px(crate::CONTROL_CORNER_RADIUS))
         .border_1()
         .border_color(rgb(style.border))
         .bg(rgb(style.text));

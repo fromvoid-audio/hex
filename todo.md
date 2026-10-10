@@ -1444,6 +1444,29 @@ passes. Targeted UI tests: 368 passed, 2 existing ignored; strict package clippy
 desktop build, fmt and architecture/UI/GPUI guards passed. Full local CI and
 fresh signed combined build follow; native visual/input acceptance remains open.
 
+## 10 October 2026 — review66 Utility UI checkpoint
+
+Focused [PR105](https://github.com/PORTALSURFER/hex/pull/105), source4789861,
+passed all16 local checks20261010T120917Z-6a782e22. Combinedb0fdd82 passed
+all16 checks20261010T120917Z-443d6d1d. Both clean/stale=false. Pulse2232 is
+ready_for_review; native visual/input/listening acceptance remains pending.
+
+Fresh optimized release26.65seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-utility-ui-review-20261010-b0fdd82.app.
+Signed binarySHA256 cd21a38164e8c0f655ca4cb2d086ce1b27b34adb60034b772d838d66f1d58d45.
+Adjacent manifest records68 integrated PR links. Utility uses a rounded184px
+frame at the fixed228px device rail, compact needle dials/switches/selectors,
+UI-only display codecs, vector headphone audition and shared mode popup.
+Mode acknowledgement/Undo/Redo retires pending values correctly.
+
+User checklist: compare regular/Return Utility layout; drag and type gain,
+width and balance; right-click width to switch mode and Undo/Redo; exercise
+polarity/channel/mono/bass/cutoff/audition plus bypass/reorder/remove.
+No agent app launch, automatic merge or DSP parity claim. Earlier review apps
+remain intact. Attachment limit100 prevented attaching PR105; verified link is
+preserved in Pulse and this ledger. Operator panel2233 follows separately;
+live Operator parameter work2229 remains todo.
+
 ## 10 October 2026 — Utility native visual refinement
 
 User reviewed PR105's review66 build: parameter behavior is retained, but the
@@ -1455,3 +1478,37 @@ gestures, pending-value retirement, mode popup and regular/Return consistency.
 The screenshot's logical scale is inferred; exact visual acceptance remains
 with the user. Fresh source checks and a signed combined build follow the
 refinement; Operator UI2233 remains a separate subsequent PR.
+
+## 10 October 2026 — review67 Utility proportions checkpoint
+
+User rejected review66's visual sizing; PR105 now uses a 144×184px Utility
+frame,14px header/12px actions,64px columns,26px rings and14px rounded
+controls/readouts. Explicit header top-corner rounding accounts for GPUI's
+rectangular overflow masks. Theme/font/lowercase and canonical editing remain.
+The device rail is213px. Regular and Return Utility reuse the same body.
+
+Focused source2bc1d7b and combineda814194 passed all16 localCI checks
+(20261010T123840Z-a3aca843 and20261010T123840Z-946d808b), clean/stale=false.
+Earlier drop_non_drop test lint failure was fixed without suppressions;
+superseded runs remain recorded. Optimized release45.19s, independently verified
+strict ad-hoc signature and binarySHA256
+c2e9915d23a3533405e855c57bdfac472dd9781dd69ad1f8acec4ca8142aff7a.
+App: artifacts/hex-lattice-utility-ui-review-20261010-a814194.app.
+Adjacent manifest retains68 integrated PR links. Pulse2232 is ready for review;
+compare sizing/corners with Live and exercise gain/width/mode editing. Native
+acceptance stays open. No app launch or automatic merge; Operator2233 follows
+separately. Previous review apps remain unchanged.
+
+## 10 October 2026 — shared device presentation follow-ups
+
+Pulse2242 centralizes native frame rounding in hex-widgets: every regular
+instrument/effect and Return frame inherits the4px library default, compact
+headers share the renderer, and numeric readouts share a3px token. Device
+composition modules no longer choose per-device outline radii. Preserve the
+accepted fixed rail and Utility proportions. Targeted Utility/Return geometry
+and parameter tests pass; full local validation and native review remain open.
+
+Pulse2243 fixes selector choices painting behind/clipped by device bodies. Move
+them to an anchored foreground overlay, preserving constant field bounds and
+choice/history/focus/keyboard contracts. Separate focused PRs and a combined
+signed test app follow; Pulse owns authoritative acceptance state.

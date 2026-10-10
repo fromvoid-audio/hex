@@ -13,29 +13,17 @@ pub fn device_frame(
     header_actions: impl IntoElement,
     body: impl IntoElement,
 ) -> Div {
-    device_frame_inner(title, style, header_actions, body, None, false)
+    device_frame_inner(title, style, header_actions, body, false)
 }
 
-/// Device frame with a caller-selected rounded outer edge.
-pub fn rounded_device_frame(
+/// Device frame with the shared rounder outline and compact title-bar geometry.
+pub fn compact_device_frame(
     title: impl Into<gpui::SharedString>,
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
-    radius: f32,
 ) -> Div {
-    device_frame_inner(title, style, header_actions, body, Some(radius), false)
-}
-
-/// Rounded device frame with compact, reusable title-bar geometry.
-pub fn compact_rounded_device_frame(
-    title: impl Into<gpui::SharedString>,
-    style: ControlStyle,
-    header_actions: impl IntoElement,
-    body: impl IntoElement,
-    radius: f32,
-) -> Div {
-    device_frame_inner(title, style, header_actions, body, Some(radius), true)
+    device_frame_inner(title, style, header_actions, body, true)
 }
 
 fn device_frame_inner(
@@ -43,10 +31,10 @@ fn device_frame_inner(
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
-    radius: Option<f32>,
     compact_header: bool,
 ) -> Div {
     let title = title.into();
+    let radius = crate::DEVICE_CORNER_RADIUS;
     let header_height = if compact_header {
         COMPACT_DEVICE_FRAME_HEADER_HEIGHT
     } else {
@@ -70,10 +58,8 @@ fn device_frame_inner(
                 .items_center()
                 .bg(rgb(style.raised))
                 // GPUI overflow masks are rectangular; round the header background too.
-                .when_some(radius, |header, radius| {
-                    let inner_radius = px((radius - DEVICE_FRAME_BORDER_WIDTH).max(0.0));
-                    header.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                })
+                .rounded_tl(px(radius - DEVICE_FRAME_BORDER_WIDTH))
+                .rounded_tr(px(radius - DEVICE_FRAME_BORDER_WIDTH))
                 .border_b_1()
                 .border_color(rgb(style.border))
                 .child(div().size(px(7.0)).rounded_full().bg(rgb(style.accent)))
@@ -89,9 +75,5 @@ fn device_frame_inner(
                 .child(header_actions),
         )
         .child(body);
-    if let Some(radius) = radius {
-        frame.rounded(px(radius)).overflow_hidden()
-    } else {
-        frame
-    }
+    frame.rounded(px(radius)).overflow_hidden()
 }
