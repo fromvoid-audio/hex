@@ -481,6 +481,142 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
 }
 
 #[test]
+fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "mutable arrangement".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    let note = match editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })? {
+        Created::Note(note) => note,
+        _ => return Err("expected Arrangement MIDI note".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let initial_project = editor.project().clone();
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let initial_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        &initial_project,
+        &media,
+        Arc::clone(&table),
+        None,
+        &registry,
+    )?);
+    let initial_playback = Playback::try_from_prepared_with_session(Arc::clone(&initial_revision))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(initial_playback)
+        .map_err(|_| "initial mutable Arrangement publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+
+    // Renaming leaves the exact MIDI source, instrument, topology and timing
+    // unchanged, so callback handoff copies the live mutable pair and ledger.
+    editor.execute(Command::RenameTrack {
+        track,
+        name: "renamed mutable Arrangement".into(),
+    })?;
+    let renamed_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(initial_revision.session()),
+        &registry,
+    )?);
+    let renamed_playback = Playback::try_from_prepared_with_session(Arc::clone(&renamed_revision))?;
+    control
+        .publish(renamed_playback)
+        .map_err(|_| "unchanged mutable handoff publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+    assert!(control.status.rejected_revision().is_none());
+
+    let mut reclaimed = 0;
+    let retirement = measure(|| reclaimed = control.reclaim());
+    assert!(reclaimed > 0, "the replaced graph retires on control");
+    assert_eq!(
+        retirement.count_total, 0,
+        "control retirement allocates nothing"
+    );
+    assert!(
+        retirement.count_current < 0,
+        "retirement drops old runtime state on control"
+    );
+    assert!(retirement.bytes_current < 0);
+
+    // A source edit changes the exact descriptor while the old occurrence is
+    // still held. The callback rejects the candidate and continues the old
+    // graph without allocation or a signed-net allocation change.
+    editor.execute(Command::UpdateMidiNote {
+        note,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 61,
+        channel: 0,
+        velocity: 100,
+    })?;
+    let changed_revision = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(renamed_revision.session()),
+        &registry,
+    )?);
+    let changed_playback = Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    control
+        .publish(changed_playback)
+        .map_err(|_| "changed-source candidate publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+    assert!(control.status.rejected_revision().is_some());
+    let rejected = measure(|| reclaimed = control.reclaim());
+    assert!(
+        reclaimed > 0,
+        "rejected candidate returns for control retirement"
+    );
+    assert_eq!(rejected.count_total, 0);
+    assert!(rejected.count_current < 0);
+    assert!(rejected.bytes_current < 0);
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;

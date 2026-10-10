@@ -68,6 +68,90 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
+        if !timing_changed {
+            for (old_index, old_route) in previous.routes.iter().enumerate() {
+                let Some(old_runtime) = previous
+                    .mutable_instruments
+                    .get(old_index)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if old_route.pending.is_some() {
+                    continue;
+                }
+                let Some(new_index) = self
+                    .routes
+                    .iter()
+                    .position(|route| route.id == old_route.id)
+                else {
+                    continue;
+                };
+                if self
+                    .routes
+                    .get(new_index)
+                    .is_none_or(|route| route.pending.is_some())
+                {
+                    continue;
+                }
+                let Some(new_runtime) = self
+                    .mutable_instruments
+                    .get(new_index)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                let source_matches = match old_route.owner {
+                    RouteOwner::Arrangement => previous
+                        .revision
+                        .mutable_arrangement_track_matches(&self.revision, old_route.id),
+                    RouteOwner::Session { clip, .. } => {
+                        let old = previous.revision.session().midi_clip(clip);
+                        let new = self.revision.session().midi_clip(clip);
+                        previous
+                            .revision
+                            .mutable_track_topology_matches(&self.revision, old_route.id)
+                            && old.zip(new).is_some_and(|(old, new)| {
+                                old.id == new.id
+                                    && old.track == old_route.id
+                                    && new.track == old_route.id
+                                    && old.scene == new.scene
+                                    && old.source_content_matches(new)
+                                    && old.instrument_config_matches(new)
+                            })
+                    }
+                    RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+                };
+                if !source_matches {
+                    continue;
+                }
+                // The general chain preflight above can exclude a live
+                // mutable owner's suffix because that suffix may remain with
+                // an outgoing tail. Exact carry keeps the owner in the new
+                // graph, so it will inherit the full chain below. Preflight
+                // that full copy here before any runtime or route is mutated.
+                let new_chain = self
+                    .device_chains
+                    .get(new_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let old_chain = previous
+                    .device_chains
+                    .get(old_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if !new_chain.can_inherit_from(old_chain) {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                if !new_runtime.can_inherit_from(old_runtime) {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                if let Some(target) = mutable_continuity_new_for_old.get_mut(old_index) {
+                    *target = new_index;
+                } else {
+                    return Err(SessionPlaybackError::RevisionTrackMismatch);
+                }
+            }
+        }
         let candidate_anchor = if timing_changed {
             Some(SessionClockAnchor {
                 cut_frame: previous.performance_frame,
@@ -95,10 +179,11 @@ impl SessionPlayback {
         // track, including analytic candidates and tracks represented only by
         // an already-carried mutable tail.
         for (new_index, new_route) in self.routes.iter().enumerate() {
-            let active_old_mutable = previous
+            let old_index = previous
                 .routes
                 .iter()
-                .position(|route| route.id == new_route.id)
+                .position(|route| route.id == new_route.id);
+            let active_old_mutable = old_index
                 .and_then(|old_index| previous.mutable_instruments.get(old_index))
                 .and_then(Option::as_ref)
                 .is_some_and(|runtime| !runtime.committed_is_quiescent());
@@ -110,6 +195,13 @@ impl SessionPlayback {
                     tail.track_id == new_route.id && !tail.runtime.committed_is_quiescent()
                 });
             if !active_old_mutable && !active_old_tail {
+                continue;
+            }
+            if !active_old_tail
+                && old_index.is_some_and(|old_index| {
+                    mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                })
+            {
                 continue;
             }
             let new_track = self
@@ -182,6 +274,11 @@ impl SessionPlayback {
                 .routes
                 .iter()
                 .position(|route| route.id == new_route.id);
+            if old_index.is_some_and(|old_index| {
+                mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+            }) {
+                continue;
+            }
             let candidate_owner = if let Some(old_index) = old_index {
                 let old_route = previous.routes[old_index];
                 if old_route
@@ -1172,6 +1269,12 @@ impl SessionPlayback {
         // deadlines. Reserve one old chain/suffix group for each nonquiescent
         // active runtime before moving any owner out of `previous`.
         for old_index in 0..previous.routes.len() {
+            if mutable_continuity_new_for_old
+                .get(old_index)
+                .is_some_and(|new_index| *new_index != usize::MAX)
+            {
+                continue;
+            }
             let old_route = previous
                 .routes
                 .get(old_index)
@@ -1273,6 +1376,24 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
+            if new_index == usize::MAX {
+                continue;
+            }
+            let old_runtime = previous
+                .mutable_instruments
+                .get(old_index)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let new_runtime = self
+                .mutable_instruments
+                .get_mut(new_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            new_runtime
+                .inherit_from(old_runtime)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
         for (old_index, old_route) in previous.routes.iter().enumerate() {
             if let Some(new_index) = self
                 .routes
