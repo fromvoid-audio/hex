@@ -23,6 +23,16 @@ Analytic instruments may also prepare an immutable shared context and compact
 copyable note payloads; the host enforces per-context and per-revision byte
 bounds, while the engine owns revision and release leases.
 
+`NativeRuntimeChain::declared_storage_preflight_bytes_for_instances` estimates
+the chain header, requested entry storage, and both processor-runtime twins
+from declared fixed payload sizes before runtime factories run. It is not a
+guarantee about allocator-rounded vector capacity. After construction,
+`accounted_storage_bytes` uses the actual entry-vector capacity and charges both
+declared twin payloads. Shared prepared definitions and allocator bookkeeping
+are excluded; processor definitions must keep their runtime byte declaration
+consistent with the fixed payload they construct. Callers must compare actual
+accounting with the preflight estimate and enforce their aggregate cap.
+
 ## Does not own
 
 This crate does not own device algorithms, graph scheduling, project state,

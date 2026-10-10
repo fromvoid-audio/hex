@@ -228,6 +228,42 @@ impl NativeRuntimeChain {
         self.entries.len()
     }
 
+    /// Account the chain's owned control/audio runtime storage, excluding
+    /// allocator bookkeeping and the shared prepared device definitions.
+    /// Stateful payload bytes use each processor's declared fixed storage.
+    pub fn accounted_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.entries
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<RuntimeEntry>())?,
+            )?
+            .checked_add(self.declared_runtime_bytes.checked_mul(2)?)
+    }
+
+    /// Declared payload preflight estimate for building a chain from instances.
+    /// Call before runtime factories to reject an aggregate owner over budget.
+    /// This assumes the requested entry capacity; allocator bookkeeping and
+    /// shared prepared definitions are excluded. Check actual vector capacities
+    /// and fixed runtime payload declarations after construction.
+    pub fn declared_storage_preflight_bytes_for_instances(
+        instances: &[PreparedProcessorInstance],
+    ) -> Option<usize> {
+        let entries = instances
+            .len()
+            .checked_mul(std::mem::size_of::<RuntimeEntry>())?;
+        let twin_payloads = instances.iter().try_fold(0_usize, |total, instance| {
+            let bytes = instance
+                .definition
+                .as_ref()
+                .map_or(0, |definition| definition.declared_runtime_bytes());
+            total.checked_add(bytes.checked_mul(2)?)
+        })?;
+        std::mem::size_of::<Self>()
+            .checked_add(entries)?
+            .checked_add(twin_payloads)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

@@ -360,6 +360,20 @@ impl MutableInstrumentTrackRuntime {
         self.pair.declared_pair_bytes()
     }
 
+    /// Account this control-owned runtime and both reserved occurrence ledgers.
+    /// Dynamic processor state is charged by the processor's fixed-storage
+    /// contract; allocator bookkeeping is excluded.
+    pub(crate) fn accounted_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.primary
+                    .capacity()
+                    .checked_add(self.scratch.capacity())?
+                    .checked_mul(std::mem::size_of::<MutableOccurrence>())?,
+            )?
+            .checked_add(self.pair.fixed_storage_pair_bytes()?)
+    }
+
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
