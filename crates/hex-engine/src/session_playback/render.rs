@@ -93,6 +93,7 @@ impl SessionPlayback {
         );
         let mut performance_frame = self.performance_frame;
         let mut arrangement_frame = self.arrangement_frame;
+        let mut arrangement_loop_pass = self.arrangement_loop_pass;
         let mut output_offset = 0;
         let mut route_changed = false;
         let region = (!self.linear_arrangement_export)
@@ -102,7 +103,8 @@ impl SessionPlayback {
 
         while output_offset < output.len() {
             if let Some(region) = region {
-                arrangement_frame = normalize_loop_cursor(arrangement_frame, region)?;
+                (arrangement_frame, arrangement_loop_pass) =
+                    normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
             let (captured_release, applied_route) =
                 self.apply_due_routes(performance_frame, arrangement_frame)?;
@@ -129,7 +131,8 @@ impl SessionPlayback {
             }
             if chunk_frames == 0 {
                 if let Some(region) = region {
-                    arrangement_frame = normalize_loop_cursor(arrangement_frame, region)?;
+                    (arrangement_frame, arrangement_loop_pass) =
+                        normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
                     continue;
                 }
                 return Err(SessionPlaybackError::ArithmeticOverflow);
@@ -140,6 +143,7 @@ impl SessionPlayback {
             self.render_route_chunk(
                 performance_frame,
                 arrangement_frame,
+                arrangement_loop_pass,
                 &mut output[output_offset..chunk_end],
                 pages.as_deref_mut(),
             )?;
@@ -152,7 +156,8 @@ impl SessionPlayback {
                 .checked_add(chunk)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(region) = region {
-                arrangement_frame = normalize_loop_cursor(arrangement_frame, region)?;
+                (arrangement_frame, arrangement_loop_pass) =
+                    normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
             self.release_scratch
                 .retain(|entry| entry.voice.end_frame() > performance_frame);
@@ -183,6 +188,7 @@ impl SessionPlayback {
         self.release_order = self.release_order_scratch;
         self.performance_frame = performance_frame;
         self.arrangement_frame = arrangement_frame;
+        self.arrangement_loop_pass = arrangement_loop_pass;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -241,6 +247,7 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
+        arrangement_loop_pass: u64,
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), SessionPlaybackError> {
@@ -349,10 +356,12 @@ impl SessionPlayback {
                             routes: &self.route_scratch,
                             runtimes: &mut self.mutable_instruments,
                             onsets: &mut self.mutable_onsets,
+                            suppressions: &self.suppression_scratch,
                             events: &mut self.mutable_events,
                             spans: &mut self.spans,
                             performance_frame,
                             arrangement_frame,
+                            arrangement_loop_pass,
                             timing: &timing,
                         },
                         index,
@@ -655,6 +664,7 @@ fn process_mutable_tail(
             performance_frame,
             output,
             onsets,
+            &[],
             events,
         )
         .map_err(|_| SessionPlaybackError::MutableInstrumentRuntime)
@@ -665,10 +675,12 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     routes: &'a [super::TrackRoute],
     runtimes: &'a mut [Option<MutableInstrumentTrackRuntime>],
     onsets: &'a mut MutableOnsetBuffer,
+    suppressions: &'a [MidiOccurrenceSuppression],
     events: &'a mut Vec<hex_lattice::NativeInstrumentEvent>,
     spans: &'a mut MidiSpanBuffer,
     performance_frame: u64,
     arrangement_frame: u64,
+    arrangement_loop_pass: u64,
     timing: &'a T,
 }
 
@@ -682,10 +694,12 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
         routes,
         runtimes,
         onsets,
+        suppressions,
         events,
         spans,
         performance_frame,
         arrangement_frame,
+        arrangement_loop_pass,
         timing,
     } = context;
     if runtimes.get(index).and_then(Option::as_ref).is_none() {
@@ -729,11 +743,14 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                                     span.clip,
                                     span.note,
                                     span.iteration,
-                                    0,
+                                    arrangement_loop_pass,
                                 ),
+                                onset_beat: span.onset_beat,
+                                gate_end_beat: span.gate_end_beat,
                                 source_start: span.start,
                                 source_gate_end: span.gate_end,
                                 pitch: span.pitch,
+                                channel: span.channel,
                                 velocity: span.velocity,
                             })
                             .is_err();
@@ -767,9 +784,12 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                                 span.iteration,
                                 0,
                             ),
+                            onset_beat: span.onset_beat,
+                            gate_end_beat: span.gate_end_beat,
                             source_start: span.start_frame,
                             source_gate_end: span.gate_end_frame,
                             pitch: span.pitch,
+                            channel: span.channel,
                             velocity: span.velocity,
                         })
                         .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
@@ -792,6 +812,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
             },
             output,
             onsets,
+            suppressions,
             events,
         )
         .map_err(SessionPlaybackError::from)
@@ -1046,9 +1067,13 @@ fn next_pending_frame(routes: &[TrackRoute]) -> Option<u64> {
         .min()
 }
 
-fn normalize_loop_cursor(frame: u64, region: LoopRegion) -> Result<u64, SessionPlaybackError> {
+fn normalize_loop_cursor(
+    frame: u64,
+    region: LoopRegion,
+    loop_pass: u64,
+) -> Result<(u64, u64), SessionPlaybackError> {
     if frame < region.end() {
-        return Ok(frame);
+        return Ok((frame, loop_pass));
     }
     let length = region
         .end()
@@ -1057,5 +1082,12 @@ fn normalize_loop_cursor(frame: u64, region: LoopRegion) -> Result<u64, SessionP
     if length == 0 {
         return Err(SessionPlaybackError::ArithmeticOverflow);
     }
-    Ok(region.start() + (frame - region.start()) % length)
+    let wraps = (frame - region.start()) / length;
+    let loop_pass = loop_pass
+        .checked_add(wraps)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    Ok((
+        region.start() + (frame - region.start()) % length,
+        loop_pass,
+    ))
 }

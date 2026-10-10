@@ -78,6 +78,39 @@ Commands and timing scope match the mutable-tail comparison below.
 
 # Performance requirements and baseline — 8 October 2026
 
+## Mutable occurrence handoff — 10 October 2026
+
+Pulse2166's focused release probe runs 100 repeated instrument-configuration
+handoffs at a fixed performance frame after one initial render. The source has
+64 simultaneous Arrangement occurrences on one track; each handoff prepares a
+fresh candidate outside the timer while the old 64-proof runtime remains in its
+tail bank. Candidate construction and previous-publication destruction stay
+outside the timed call. Apple M5 Pro arm64, macOS26.6.2, 48 kHz. One release
+sample produced p50 35.250 µs, p95 36.416 µs, p99 41.500 µs and max 47.625 µs.
+This measures the new admission path, which had no valid equivalent baseline:
+the prior implementation refused this historical mutable chase. This is a
+headless measurement of the handoff operation used by the callback path, timed
+on the control thread; it is not callback timing or a many-track deadline
+claim.
+
+The unchanged 100-track canonical handoff profile remains comparable. One
+baseline run at base `6f46b5c7df6f790cf08080eb7e5b7d615bb87bd3` measured p50 /
+p95 / p99 / max 18.917 / 21.625 / 23.000 / 26.959 µs. One candidate run measured
+18.833 / 21.542 / 22.709 / 24.625 µs with the same checksum
+`27829135380449`. A clean candidate rebuild repeated the workload at
+18.875 / 21.458 / 24.833 / 28.292 µs with the same checksum. These are single
+short samples per build with uncontrolled machine load; they do not establish
+a general speedup or regression. Both profiles exclude preparation, render
+oracles and retired-owner destruction from the handoff timer.
+
+On this 64-bit build, the fixed mutable proof ledger occupies 13,312 bytes per
+runtime's two twins. The measured maximal 256-track host component increases
+from 3,761,744 to 6,910,544 bytes (+3,148,800 bytes) because both active and
+retained owners reserve proof slots and the onset entries now include authored
+time/channel metadata. This component is separate from device-declared payload,
+prepared graphs, allocator overhead and simultaneously queued/retired playback
+owners. The release probe and layout test do not bound whole-process memory.
+
 ## Clean return-routing profile repeat — 10 October 2026
 
 The 100-track/16-return release routing workload was repeated three times at

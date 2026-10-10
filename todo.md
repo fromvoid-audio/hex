@@ -655,6 +655,30 @@ PreparedRevision test seam does not inject effect registries, so the specific
 incompatible-suffix case is not represented as a full compiled handoff fixture.
 
 
+Pulse2166 implements changed mutable-instrument handoff suppression on the
+focused engine branch. Dispatch proofs retain stable authored occurrence
+identity and exact gate/release deadlines through NoteOff, including short
+same-block notes. A zero-tail runtime regression verifies an exclusive-block
+boundary NoteOff is delivered exactly once across further render partitions
+and the runtime reaches quiescence. Exact candidate occurrences across
+configuration/slot handoffs are suppressed through the later old-law or
+candidate declared tail;
+repeated revisions carry the existing owner once and extend the same proof.
+Changed historical payload/timing with reused IDs still refuses chase. Proof
+storage is fixed at 64 entries per runtime twin, justified by the compiled
+overlapping-span ceiling that includes release tails; it does not narrow the
+DSP voice limit. The maximal host component is 6,910,544 bytes versus 3,761,744
+before this change. A release probe covers 100 repeated handoffs with 64 active
+occurrences; the existing 100-track unchanged handoff profile preserves its
+PCM checksum. See [mutable handoff performance](docs/performance.md) and the
+[owned occurrence contract](docs/lattice-instruments.md). Engine-level
+runtime/PCM/clock refusal remains retryable after capacity failure. Canonical
+editor history while an audio candidate is pending is separately tracked by
+Pulse2180 and is not established here. Engine/audio targeted tests, allocation
+probes, affected clippy, format and repository guards pass; root performs full
+local CI after this branch is frozen. Native UI,
+device deadlines and multi-track stress remain unverified.
+
 Pulse2113: the mixed Session profiler's independent oracle now handles canonical
 hybrid snapshots when expressing Arrangement transport wraps as source periods.
 The regression failed at frame72,001/120,001 before the repair and now matches
