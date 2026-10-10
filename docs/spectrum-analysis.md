@@ -36,3 +36,41 @@ rate endpoints, reset and malformed input followed by valid analysis. Final
 exact-source full local CI, PR review and merge evidence live in Pulse2287.
 Live post-node capture, accepted-render publication, retirement, callback
 overhead and native visual/listening acceptance remain Pulse2250.
+
+## bounded capture worker — Pulse2288
+
+`hex-audio::spectrum_worker` consumes accepted stereo output supplied by its
+caller. It does not yet install a tap in the prepared callback. Capture submits
+1–256 finite frames through a 32-batch rtrb SPSC queue. Full or invalid
+submissions consume a sequence but drop only analysis; the next accepted batch
+exposes the gap. Sequence overflow refuses further submission until the owner
+constructs a new producer and generation. Rates remain 8,000–192,000 Hz.
+
+The worker owns fixed rolling and ordered 4,096-frame buffers and the kernel.
+It drains at most 32 batches per poll, sleeping five milliseconds when idle.
+Changes in target, generation, rate or sequence continuity reset the window.
+Applied parameter revisions preserve contiguous actual output and stamp its
+latest revision. The global 30 Hz analysis limit survives context changes;
+unchanged windows are not recomputed after capture stops.
+
+A bounded one-result channel separates worker results from control. Each
+result carries its target context, worker receive time and FFT completion time.
+`try_latest` drains at most the channel capacity and discards results more than
+100 ms past worker receipt. This is receipt-based freshness, not proof of
+physical capture or display latency under worker starvation. Actual callback
+integration must validate accepted-render publication, queue overflow/gaps,
+revision/target retirement and end-to-end freshness before exposing a trace.
+
+Construction occurs on control. Only the capture producer moves into a callback;
+its submit path copies bounded inline data and performs one nonblocking push.
+After callback quiescence, return the producer to control and consume it in
+`shutdown_and_join`; its destruction and worker join stay off callback. Dropping
+the worker handle signals exit but does not join. The owner must use explicit
+shutdown to verify retirement.
+
+Nine deterministic worker tests cover cadence, changing context/revision, gaps,
+malformed/rate input, exhaustion, idle freshness and lifecycle. An opt-in capture
+probe asserts zero total allocation count/bytes and zero signed net count/bytes,
+with construction and reclamation outside measurement. It tests submission, not
+the future live callback tap, native APIs or physical deadlines. Full exact-source
+local CI and focused PR evidence are tracked by Pulse2288.

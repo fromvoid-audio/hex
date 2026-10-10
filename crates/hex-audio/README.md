@@ -76,6 +76,37 @@ unchanged control entries plus snapshot reads. Render/validation checks stay
 outside timing; no CPAL stream is opened. See docs/performance.md for methodology,
 retained outliers and the separate physical deadline gate.
 
+## Output spectrum analysis
+
+`spectrum` provides the fixed 4096-frame stereo FFT kernel; `spectrum_worker`
+provides a bounded, off-callback consumer for already-rendered stereo output.
+Create both sides on a control thread with `spawn_spectrum_worker`, move only
+`SpectrumCapture` into a future callback tap, and submit finite batches of 1–256
+frames. The capture queue holds 32 batches. A full queue or invalid batch drops
+only analysis data and consumes its sequence, so the next accepted batch exposes
+the discontinuity. Unsupported sample rates are refused at submission and also
+consume a sequence. Sequence numbers never wrap; exhaustion requires a new
+capture producer and generation. Callback submission copies into inline storage
+and performs one nonblocking SPSC push; it does not wake the worker.
+
+The worker drains at most 32 batches per poll, assembles a fixed 4096-frame
+rolling window, and publishes no faster than 30 Hz through a one-result bounded
+channel. Target, capture generation, sample-rate changes and sequence gaps clear
+the rolling window. Ordinary applied-revision changes keep contiguous output
+samples and update the published revision. Sample-rate changes reconstruct the
+kernel on the worker. Results expire after 100 ms without accepted capture. The
+worker thread owns FFT construction/reconstruction and analysis; no FFT or
+backend tap is integrated into the current CPAL callback.
+
+The owner must first quiesce the callback and return its capture producer to a
+control thread, then call `SpectrumWorker::shutdown_and_join(capture)`. That
+method drops the queue producer on control and joins the worker. Dropping the
+worker handle only requests worker exit and does not join; it is not a substitute
+for the explicit lifecycle. Backend target selection, actual-output observer
+placement, revision stamping and UI display remain separate integration work.
+See [spectrum analysis](../../docs/spectrum-analysis.md) for the numeric
+contract and limits.
+
 ## Dependencies
 
 hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
