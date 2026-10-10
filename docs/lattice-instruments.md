@@ -548,3 +548,45 @@ samplers. Shared contexts are a generic extension point for future immutable
 configuration-heavy analytic instruments; this work does not register the
 Operator context or add mutable voice continuity, seek/chase, loop handling or
 effect residual-tail ownership.
+
+## Control-owned runtime checkpoints — Pulse2181
+
+`SessionPlayback` now exposes a `MutableRuntimeCheckpointStore` for bounded,
+in-memory snapshots of one mutable instrument track at a time. Each snapshot
+retains the committed paired runtime, both fixed occurrence-proof buffers and
+the next occurrence ID, plus the exact immutable prepared-revision identity,
+sample rate, track ID and captured performance frame. The proof records remain
+owned values; no source pointer is used as an occurrence proof. A store accepts
+at most 16 snapshots and charges the prepared pair declaration, two fixed
+64-entry proof buffers and all 16 inline entry slots against a 256 KiB
+aggregate ceiling. The fixed slots are part of the store's `size_of` charge,
+including when empty; `clear` drops all runtime owners but retains this fixed
+charge. Shared immutable `PreparedRevision` graph data and allocator bookkeeping
+are excluded. Restore preflights the retained store plus a declared temporary
+candidate below a separate 512 KiB operation peak before calling the factory;
+this operation bound likewise excludes shared graph allocations and allocator
+bookkeeping. The current feedback fixture charges 17,976 bytes for one
+checkpoint on macOS arm64; exact `size_of` contributions are architecture
+dependent.
+
+Capture refuses an open speculative block. Restore requires the same exact
+prepared `Arc`, sample rate, track and performance frame, prepares a temporary
+runtime through the revision's ordinary factory, and replaces the target only
+after complete-history compatibility and occurrence-ledger transfer succeeds.
+The checkpoint remains reusable; target retirement happens on the exclusive
+caller/control thread. `copy_history_from` now explicitly guarantees complete
+future-sample state, including held and released voices, envelopes, phase,
+feedback and random-generator state. The test-only feedback device proves
+instrument-runtime-only sample-identical held-note and ended-gate feedback
+continuation across checkpoints with different render partitions, along with ID/proof continuity,
+uncommitted-state refusal, exact revision/frame invalidation, atomic refusal and
+factory-call-free count/byte admission refusal.
+
+This is not a full project or seek checkpoint. The continuation oracle covers
+only one instrument runtime plus its engine occurrence ledger; it does not
+prove transport/source-loop, route, return or effect-history continuation.
+Supported replay distance is zero: restore is valid only at the captured
+performance frame. Serialized persistence, offline bounded replay, native seek
+and publication-worker integration remain
+separate work under Pulses 2164/2165 and later integration. Focused engine and
+lattice tests pass; full local CI and parent integration review are still open.

@@ -17,6 +17,12 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod mutable_checkpoint;
+pub use mutable_checkpoint::{
+    MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
+    MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
+};
+
 const QUARTER_RAW: u64 = 1_u64 << 32;
 const FOUR_QUARTERS_RAW: u64 = QUARTER_RAW * 4;
 

@@ -94,7 +94,17 @@ pub trait MutableInstrumentRuntime: Any + Send {
     /// output without another event. The runtime must satisfy its declared
     /// release-tail bound after the final note-off.
     fn is_quiescent(&self) -> bool;
+    /// Whether all state in `previous` can be copied with equivalent future
+    /// samples under this runtime's immutable configuration. This includes
+    /// gated and released voices, envelopes, phase, feedback/filter memory,
+    /// random-generator state, and any other state that can affect output.
+    /// The answer must remain invariant for each runtime's lifetime.
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool;
+    /// Copy the complete future-sample state from a compatible runtime.
+    /// After copying, processing the same events with the same frame
+    /// partitioning must produce sample-identical output. Implementations must
+    /// include held/released voices and every envelope, phase, feedback and
+    /// random-generator state value; this operation is bounded and alloc-free.
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime);
     fn fixed_storage_bytes(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
@@ -227,6 +237,12 @@ impl NativeInstrumentRuntimePair {
         self.block_started && self.scratch.is_quiescent()
     }
 
+    /// Whether committed history is available for a control-side checkpoint.
+    /// An open speculative block is never observable or checkpointable.
+    pub const fn committed_state_available(&self) -> bool {
+        !self.block_started
+    }
+
     /// Measured sum reported by both runtime implementations, excluding
     /// allocator bookkeeping. Implementations remain responsible for honest
     /// accounting of their fixed internal storage.
@@ -297,8 +313,9 @@ impl NativeInstrumentRuntimePair {
                 .can_copy_history_from(previous.primary.as_ref())
     }
 
-    /// Copy the old committed state to both candidate twins only after both
-    /// compatibility checks have passed.
+    /// Copy the complete old committed future-sample state to both candidate
+    /// twins only after both compatibility checks have passed. The source and
+    /// destination remain unchanged on refusal.
     pub fn inherit_from(&mut self, previous: &Self) -> Result<(), NativeInstrumentRuntimeError> {
         if !self.can_inherit_from(previous) {
             return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
