@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "local-ci.py"
@@ -65,6 +67,67 @@ class LocalCiRunnerTests(unittest.TestCase):
 
     def summary(self, run_id: str = "case") -> dict[str, object]:
         return json.loads((self.repo / "artifacts/local-ci" / run_id / "summary.json").read_text())
+
+    def test_low_space_stops_before_tools_and_preserves_files(self) -> None:
+        sentinel = self.repo / "keep.hex"
+        sentinel.write_bytes(b"original user work")
+        runner = local_ci.LocalCiRunner(self.repo, run_id="low-space", env=self.env,
+                                        steps=(local_ci.Step("first", ("first",)),))
+        with patch.object(local_ci.shutil, "disk_usage", return_value=SimpleNamespace(total=100 * local_ci.GIB, free=100)):
+            self.assertEqual(runner.run(), 2)
+        summary = self.summary("low-space")
+        self.assertEqual(summary["status"], "failed")
+        self.assertFalse(summary["stale"])
+        self.assertEqual(summary["steps"][0]["status"], "not_run")
+        self.assertIn("No files were removed", summary["disk_error"])
+        self.assertNotIn("first", self.call_log.read_text())
+        self.assertEqual(sentinel.read_bytes(), b"original user work")
+
+    def test_explicit_target_mount_is_probed_separately(self) -> None:
+        runner = local_ci.LocalCiRunner(self.repo, run_id="target-space",
+            env={**self.env, "CARGO_TARGET_DIR": "separate/missing-target"},
+            steps=(local_ci.Step("first", ("first",)),))
+        available = SimpleNamespace(total=100 * local_ci.GIB, free=4 * local_ci.GIB)
+        full = SimpleNamespace(total=100 * local_ci.GIB, free=100)
+        with patch.object(local_ci.shutil, "disk_usage", side_effect=[available, full]):
+            self.assertEqual(runner.run(), 2)
+        summary = self.summary("target-space")
+        probes = summary["disk_headroom"]["probes"]
+        self.assertEqual([probe["role"] for probe in probes], ["workspace", "target"])
+        self.assertEqual(probes[1]["requested_path"], str(self.repo.resolve() / "separate/missing-target"))
+        self.assertEqual(probes[1]["probed_path"], str(self.repo.resolve()))
+        self.assertFalse((self.repo / "separate").exists())
+
+    def test_disk_probe_failure_retains_report_without_running_checks(self) -> None:
+        runner = local_ci.LocalCiRunner(self.repo, run_id="probe-error", env=self.env,
+                                        steps=(local_ci.Step("first", ("first",)),))
+        with patch.object(local_ci.shutil, "disk_usage", side_effect=OSError("unavailable volume")):
+            self.assertEqual(runner.run(), 2)
+        summary = self.summary("probe-error")
+        self.assertIn("unavailable volume", summary["disk_error"])
+        self.assertEqual(summary["steps"][0]["status"], "not_run")
+
+    def test_headroom_is_rechecked_before_heavy_steps(self) -> None:
+        runner = local_ci.LocalCiRunner(self.repo, run_id="shrinking-space", env=self.env,
+            steps=(local_ci.Step("first", ("first",)), local_ci.Step("heavy", ("cargo", "build"))))
+        available = SimpleNamespace(total=100 * local_ci.GIB, free=4 * local_ci.GIB)
+        full = SimpleNamespace(total=100 * local_ci.GIB, free=100)
+        with patch.object(local_ci.shutil, "disk_usage", side_effect=[available, available, full]):
+            self.assertEqual(runner.run(), 2)
+        summary = self.summary("shrinking-space")
+        self.assertEqual([step["status"] for step in summary["steps"]], ["passed", "not_run"])
+        self.assertNotIn("cargo build", self.call_log.read_text())
+        self.assertFalse(summary["stale"])
+
+    def test_quick_headroom_floor_and_invalid_configuration(self) -> None:
+        runner = local_ci.LocalCiRunner(self.repo, mode="quick", run_id="quick-space", env=self.env,
+                                        steps=(local_ci.Step("first", ("first",)),))
+        with patch.object(local_ci.shutil, "disk_usage", return_value=SimpleNamespace(total=1000, free=100)):
+            self.assertEqual(runner.run(), 0)
+        self.assertEqual(self.summary("quick-space")["status"], "partial")
+        for value in (-1, 0.5, True, sys.maxsize + 1):
+            with self.assertRaises(ValueError):
+                local_ci.LocalCiRunner(self.repo, min_free_bytes=value)
 
     def test_quick_success_records_commit_commands_and_per_step_logs_as_partial(self) -> None:
         runner = local_ci.LocalCiRunner(
