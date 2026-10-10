@@ -599,3 +599,12 @@ mutable admission, chase/range support and user-facing mutable instruments are
 not established. The same enabled track slot currently prepares a mutable
 factory for both Arrangement and Session; a Session-only mutable factory cannot
 be represented by current preparation, so this case is not claimed as tested.
+
+
+Pulse2167: standalone original six-value operator envelopes and a four-envelope
+bank are implemented in hex-devices, with linear attack, exponential decay and
+instantaneous-value release, explicit finite cutoff and frame units. Independent
+curve/boundary/zero-stage/malformed/rate/partition oracles pass with all45 device
+tests. Existing registered FM4 state/output is unchanged. Strict Clippy and source
+guards pass; full local checks remain pending. Parent2161 stays open for FM routing/event binding,
+rollback and native device integration. See [envelope contract](docs/operator-envelopes.md).
