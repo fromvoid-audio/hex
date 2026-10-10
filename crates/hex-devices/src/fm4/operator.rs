@@ -5,8 +5,10 @@ use crate::operator_waveform::{
     OperatorWaveform, OperatorWaveformBank, harmonic_cap_index, prepared_bank,
 };
 mod context;
+mod feedback;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
+pub use feedback::PreparedOperatorFeedbackVoice;
 pub use tuning::OperatorTuning;
 
 /// Original immutable acyclic FM note, not a registered native device.
