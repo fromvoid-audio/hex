@@ -171,4 +171,13 @@ impl PreparedRevision {
     pub fn contains_streamed_sources(&self) -> bool {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
     }
+
+    /// Whether the compiled Arrangement owns any enabled mutable instrument.
+    /// Session-only inventory must not affect linear Arrangement range policy.
+    pub fn has_arrangement_mutable_instruments(&self) -> bool {
+        self.arrangement
+            .tracks()
+            .iter()
+            .any(crate::Track::has_mutable_instrument)
+    }
 }

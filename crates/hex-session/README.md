@@ -30,6 +30,9 @@ tokens live on the worker; relative media continue resolving from the directory
 where the current model was opened. `hex-export` owns linear
 PCM16 rendering and create-new WAV publication; a separate worker handles export
 without holding the canonical editing worker during rendering.
+Export jobs retain the exact captured `Arc<PreparedRevision>` and pass it to the
+shared prepared renderer; the worker does not reduce it to an Arrangement
+project or recompile it.
 `Request::RestorePlayback { generation }` creates a paused playback handoff from
 the latest successfully compiled revision without changing project state. Its
 event echoes the generation in `restore_complete`, including when recompilation
@@ -130,6 +133,9 @@ does not own audio callback state or activate Session UI controls.
 `ViewState.midi_preview` is an Arc-backed index keyed by
 clip ID and shares the state revision; save/path-only events reuse the same Arc.
 Native export captures its compiled audio/MIDI clip and release-tail horizon.
+Prepared linear WAV export uses that captured revision directly; enabled mutable
+Arrangement instruments currently require a zero range start, and mutable
+Arrangement source loops are explicitly refused.
 
 `tests/session_workflow.rs` exercises the public worker contract with original
 Session MIDI clips, an explicit Stop cell and an Arrangement MIDI companion.
