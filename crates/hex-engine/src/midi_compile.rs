@@ -8,6 +8,39 @@ pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
 /// Maximum prepared MIDI note occurrences across the entire project.
 pub const MAX_COMPILED_MIDI_OCCURRENCES: usize = 65_536;
 
+/// Device-specific limits copied from the prepared mutable factory before
+/// Arrangement span compilation. The copy keeps admission independent of
+/// runtime construction and avoids preparing the factory twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MutableInstrumentLimits {
+    pub(crate) max_events_per_query: usize,
+    pub(crate) max_active_occurrences: usize,
+    pub(crate) max_release_tail_frames: u64,
+}
+
+impl MutableInstrumentLimits {
+    pub(crate) fn from_factory(
+        factory: &dyn hex_lattice::PreparedMutableInstrumentRuntime,
+    ) -> Result<Self, Invalid> {
+        let max_events_per_query = factory.max_events_per_block();
+        let max_active_occurrences = factory.max_active_occurrences();
+        if max_events_per_query == 0
+            || max_events_per_query > crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
+            || max_active_occurrences == 0
+            || max_active_occurrences > MAX_SIMULTANEOUS_VOICES_PER_TRACK
+        {
+            return Err(Invalid(
+                "mutable instrument capacity declaration is unsupported",
+            ));
+        }
+        Ok(Self {
+            max_events_per_query,
+            max_active_occurrences,
+            max_release_tail_frames: factory.max_release_tail_frames(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiEventKind {
     NoteOff,
@@ -203,6 +236,7 @@ pub(crate) fn compile_instrument_track(
     project: &Project,
     track: &Track,
     instrument: Option<&dyn PreparedNativeInstrument>,
+    mutable_limits: Option<MutableInstrumentLimits>,
     shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
     shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
@@ -244,13 +278,7 @@ pub(crate) fn compile_instrument_track(
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
-    let mutable_tail_frames = instrument
-        .map(|instrument| instrument.prepare_mutable_runtime())
-        .transpose()
-        .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
-        .flatten()
-        .map(|runtime| runtime.max_release_tail_frames());
-    let bank = if instrument.is_some() && mutable_tail_frames.is_none() {
+    let bank = if instrument.is_some() && mutable_limits.is_none() {
         instrument
             .map(|instrument| {
                 crate::midi_note_bank::PreparedMidiNoteBank::prepare(
@@ -264,7 +292,7 @@ pub(crate) fn compile_instrument_track(
     } else {
         None
     };
-    let mutable = mutable_tail_frames.is_some();
+    let mutable = mutable_limits.is_some();
     let mut spans = Vec::new();
     spans
         .try_reserve_exact(if instrument.is_some() { span_count } else { 0 })
@@ -315,8 +343,9 @@ pub(crate) fn compile_instrument_track(
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
                 if instrument.is_some() {
                     let (sampler_index, end) = if mutable {
-                        let tail = mutable_tail_frames
-                            .ok_or(Invalid("mutable instrument tail declaration is missing"))?;
+                        let tail = mutable_limits
+                            .ok_or(Invalid("mutable instrument limits are missing"))?
+                            .max_release_tail_frames;
                         (
                             u16::MAX,
                             gate_end
@@ -382,7 +411,7 @@ pub(crate) fn compile_instrument_track(
             span.iteration,
         )
     });
-    validate_density(&spans)?;
+    validate_density(&spans, mutable_limits)?;
     let mut nodes = Vec::with_capacity(spans.len());
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
     Ok(Some(crate::InstrumentTrack {
@@ -396,27 +425,92 @@ pub(crate) fn compile_instrument_track(
     }))
 }
 
-fn validate_density(spans: &[CompiledNoteSpan]) -> Result<(), Invalid> {
-    let onset_frames = spans.iter().map(|span| span.start).collect::<Vec<_>>();
+trait DensitySpan {
+    fn start(&self) -> u64;
+    fn gate_end(&self) -> u64;
+    fn end(&self) -> u64;
+}
+
+impl DensitySpan for CompiledNoteSpan {
+    fn start(&self) -> u64 {
+        self.start
+    }
+    fn gate_end(&self) -> u64 {
+        self.gate_end
+    }
+    fn end(&self) -> u64 {
+        self.end
+    }
+}
+
+fn validate_density<S: DensitySpan>(
+    spans: &[S],
+    mutable_limits: Option<MutableInstrumentLimits>,
+) -> Result<(), Invalid> {
+    let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
     validate_onset_density(&onset_frames)?;
 
     let mut edges = Vec::with_capacity(spans.len() * 2);
     for span in spans {
-        edges.push((span.start, true));
-        edges.push((span.end, false));
+        edges.push((span.start(), true));
+        edges.push((span.end(), false));
     }
     edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
     let mut active = 0_usize;
     for (_, is_start) in edges {
         if is_start {
             active += 1;
-            if active > MAX_SIMULTANEOUS_VOICES_PER_TRACK {
-                return Err(Invalid(
-                    "midi voice density exceeds 64 simultaneous voices per track",
-                ));
+            let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
+                limits
+                    .max_active_occurrences
+                    .min(MAX_SIMULTANEOUS_VOICES_PER_TRACK)
+            });
+            if active > max_voices {
+                let message = if mutable_limits.is_some() {
+                    "midi voice density exceeds the instrument capacity per track"
+                } else {
+                    "midi voice density exceeds 64 simultaneous voices per track"
+                };
+                return Err(Invalid(message));
             }
         } else {
             active -= 1;
+        }
+    }
+    if let Some(limits) = mutable_limits {
+        validate_event_density(
+            spans,
+            limits
+                .max_events_per_query
+                .min(crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_event_density<S: DensitySpan>(spans: &[S], max_events: usize) -> Result<(), Invalid> {
+    let mut edges = Vec::new();
+    let edge_count = spans
+        .len()
+        .checked_mul(2)
+        .ok_or(Invalid("mutable midi event edge count overflow"))?;
+    edges
+        .try_reserve_exact(edge_count)
+        .map_err(|_| Invalid("could not reserve mutable midi edge density"))?;
+    for span in spans {
+        edges.push((span.start(), true));
+        edges.push((span.gate_end(), false));
+    }
+    edges.sort_unstable_by_key(|(frame, is_on)| (*frame, *is_on));
+    for (start_index, (start, _)) in edges.iter().copied().enumerate() {
+        let window_end = start
+            .checked_add(RENDER_QUERY_FRAMES)
+            .ok_or(Invalid("mutable midi event window exceeds frame range"))?;
+        let end_index = edges.partition_point(|(frame, _)| *frame < window_end);
+        if end_index - start_index > max_events {
+            return Err(Invalid(
+                "mutable midi event density exceeds the instrument capacity per query",
+            ));
         }
     }
     Ok(())
@@ -491,5 +585,104 @@ mod density_tests {
         let mut boundary = vec![0; 128];
         boundary.extend([RENDER_QUERY_FRAMES; 128]);
         assert!(validate_onset_density(&boundary).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod declared_capacity_tests {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct Span {
+        start: u64,
+        gate_end: u64,
+        end: u64,
+    }
+
+    impl DensitySpan for Span {
+        fn start(&self) -> u64 {
+            self.start
+        }
+        fn gate_end(&self) -> u64 {
+            self.gate_end
+        }
+        fn end(&self) -> u64 {
+            self.end
+        }
+    }
+
+    fn limits(events: usize, voices: usize) -> MutableInstrumentLimits {
+        MutableInstrumentLimits {
+            max_events_per_query: events,
+            max_active_occurrences: voices,
+            max_release_tail_frames: 0,
+        }
+    }
+
+    #[test]
+    fn aggregate_gateoffs_and_short_note_edges_are_counted_per_half_open_query() {
+        let mut spans = Vec::new();
+        spans.extend((0..64).map(|_| Span {
+            start: 0,
+            gate_end: 256,
+            end: 256,
+        }));
+        // At frame 256 the old gates end before these new gates begin. Their
+        // 64 NoteOffs and 128 adjacent one-frame notes produce 320 edges in
+        // one query without exceeding one simultaneously active voice.
+        spans.extend((0..128).map(|index| {
+            let start = 256 + index * 2;
+            Span {
+                start,
+                gate_end: start + 1,
+                end: start + 1,
+            }
+        }));
+        assert_eq!(
+            validate_density(&spans, Some(limits(256, 64))),
+            Err(Invalid(
+                "mutable midi event density exceeds the instrument capacity per query",
+            ))
+        );
+
+        spans.truncate(64 + 96);
+        assert_eq!(validate_density(&spans, Some(limits(256, 64))), Ok(()));
+    }
+
+    #[test]
+    fn voice_capacity_uses_release_end_not_noteoff_edges() {
+        let overlapping_release_spans = (0..65)
+            .map(|_| Span {
+                start: 0,
+                gate_end: 256,
+                end: 300,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&overlapping_release_spans, Some(limits(256, 64))),
+            Err(Invalid(
+                "midi voice density exceeds the instrument capacity per track",
+            ))
+        );
+
+        // A NoteOff exactly at the boundary is processed before a new NoteOn
+        // there, so 64 adjacent releases and 64 fresh gates remain within the
+        // fixed host voice bound. The 256-frame event windows are half-open.
+        let adjacent_boundary_spans = (0..64)
+            .map(|_| Span {
+                start: 0,
+                gate_end: 256,
+                end: 256,
+            })
+            .chain((0..64).map(|_| Span {
+                start: 256,
+                gate_end: 512,
+                end: 512,
+            }))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&adjacent_boundary_spans, Some(limits(256, 64))),
+            Ok(())
+        );
     }
 }

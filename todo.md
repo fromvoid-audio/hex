@@ -1263,3 +1263,18 @@ open. Pulse2215 is ready_for_review. Pulse2220 aggregate finite/source device
 capacity admission is active on its separate branch and is not included in this
 build. Verified PR links remain in Pulse after attachment registration reached
 100 identities. No hosted CI or automatic merge was used.
+
+## 10 October 2026 — Pulse2220 device-capacity admission
+
+Finite Arrangement and Session/source-loop mutable MIDI preparation now checks
+aggregate NoteOn/NoteOff density and release-inclusive voices against the prepared
+device declarations. Cached Session templates and runtime handoff eligibility
+include those copied event, voice and release limits. Same-source lower-capacity
+and changed-release regressions prove fresh admission rather than stale reuse.
+
+Targeted engine tests passed (208, 3 ignored), audio allocation probes remained
+zero, strict engine Clippy and repository guards passed. Candidate rejection
+preserves project/history/redo and previous nonzero PCM in an Editor regression;
+service dirty/revision updates remain success-only by inspection and existing
+transactional tests. Full exact-head local CI, PR publication and a fresh combined
+build remain pending. No schema changes or callback preparation were added.
