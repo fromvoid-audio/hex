@@ -3,9 +3,9 @@
 ## Purpose
 
 Reusable, compact native GPUI controls for Hex, including numeric knobs and
-sliders, toggles, selectors, and device frames. Numeric controls expose typed
-gesture events; callers own canonical state, audio commands, persistence, and
-undo policy.
+sliders, toggles, selectors, color pickers, and device frames. Numeric controls
+and the color picker expose typed change events; callers own canonical state,
+audio commands, persistence, and undo policy.
 
 ## Dependencies
 
@@ -21,9 +21,12 @@ and `ControlStyle`, render that entity in the device layout, and subscribe to
 to enable focused text editing and arrow-key adjustments. Specs support linear,
 positive logarithmic and zero-centered bipolar scales, optional units, and a
 caller-provided formatter/parser pair. Toggle and selector entities emit their
-own typed change events. `device_frame` accepts a title, style, header actions
-and body element; it does not impose device-specific layout or parameter
-semantics.
+own typed change events. `ColorPicker` accepts caller-owned opaque RGB and style,
+draws a saturation/brightness field and hue strip, and emits synchronized RGB/HSV
+values. The caller retains the RGB value as canonical state and may synchronize
+it back while preserving a preferred hue for gray or black. `device_frame`
+accepts a title, style, header actions and body element; it does not impose
+device-specific layout or parameter semantics.
 
 Numeric event phases are `begin`, `change`, `commit` and `cancel`. The widget
 keeps a responsive local draft but does not queue audio work, merge gestures,
@@ -36,7 +39,7 @@ Does not depend on or construct Hex projects, audio engines, DSP devices, sessio
 workers, plug-in hosts, or application-specific theme state. It does not claim
 that provisional control laws reproduce Ableton Live without reference tests.
 
-Caller-owned styles can update existing numeric/toggle/selector controls without
+Caller-owned styles can update existing numeric/toggle/selector/color-picker controls without
 replacing active entities or numeric drafts. Numeric text selections derive their
 tint from the injected accent and surface. Application theme persistence remains
 outside this crate.

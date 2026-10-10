@@ -7,8 +7,9 @@ use gpui::{
 };
 use hex_preferences::ThemePreferences;
 use hex_widgets::{
-    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
-    NumericEventPhase, NumericScale, NumericSpec,
+    ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, NumericControl,
+    NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
+    NumericSpec, RgbColor,
 };
 use std::{collections::HashMap, path::PathBuf};
 
@@ -96,6 +97,95 @@ impl ThemeChannel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ThemeRole {
+    Background,
+    Text,
+    Primary,
+    Secondary,
+}
+
+impl ThemeRole {
+    const ALL: [Self; 4] = [Self::Background, Self::Text, Self::Primary, Self::Secondary];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Text => "text",
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
+
+    fn color(self, colors: ThemePreferences) -> hex_preferences::RgbColor {
+        match self {
+            Self::Background => colors.background,
+            Self::Text => colors.text,
+            Self::Primary => colors.primary,
+            Self::Secondary => colors.secondary,
+        }
+    }
+
+    fn set(self, colors: &mut ThemePreferences, color: hex_preferences::RgbColor) {
+        match self {
+            Self::Background => colors.background = color,
+            Self::Text => colors.text = color,
+            Self::Primary => colors.primary = color,
+            Self::Secondary => colors.secondary = color,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum HsbChannel {
+    Hue,
+    Saturation,
+    Brightness,
+}
+
+impl HsbChannel {
+    const ALL: [Self; 3] = [Self::Hue, Self::Saturation, Self::Brightness];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hue => "h",
+            Self::Saturation => "s",
+            Self::Brightness => "b",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hue => "hue",
+            Self::Saturation => "sat",
+            Self::Brightness => "bright",
+        }
+    }
+
+    fn range(self) -> (f64, f64, u8) {
+        match self {
+            Self::Hue => (0.0, 359.0, 0),
+            Self::Saturation | Self::Brightness => (0.0, 100.0, 0),
+        }
+    }
+
+    fn get(self, hsv: HsvColor) -> f64 {
+        match self {
+            Self::Hue => hsv.hue,
+            Self::Saturation => hsv.saturation,
+            Self::Brightness => hsv.value,
+        }
+    }
+
+    fn set(self, hsv: &mut HsvColor, value: f64) {
+        match self {
+            Self::Hue => hsv.hue = value,
+            Self::Saturation => hsv.saturation = value,
+            Self::Brightness => hsv.value = value,
+        }
+    }
+}
+
 struct ColorControl {
     entity: Entity<NumericControl>,
     _subscription: Subscription,
@@ -114,9 +204,14 @@ pub(super) struct ThemeSettingsState {
     saving_colors: Option<(u64, ThemePreferences)>,
     before_open: ThemePreferences,
     draft: ThemePreferences,
+    selected_role: ThemeRole,
+    role_hues: HashMap<ThemeRole, f64>,
     error: Option<String>,
     focus: FocusHandle,
     controls: HashMap<ThemeChannel, ColorControl>,
+    hsb_controls: HashMap<HsbChannel, ColorControl>,
+    picker: Option<Entity<ColorPicker>>,
+    picker_subscription: Option<Subscription>,
 }
 
 impl ThemeSettingsState {
@@ -135,9 +230,24 @@ impl ThemeSettingsState {
             saving_colors: None,
             before_open: colors,
             draft: colors,
+            selected_role: ThemeRole::Primary,
+            role_hues: ThemeRole::ALL
+                .into_iter()
+                .map(|role| {
+                    let color = role.color(colors);
+                    let hsv = hex_widgets::rgb_to_hsv(
+                        RgbColor::new(color.red, color.green, color.blue),
+                        0.0,
+                    );
+                    (role, hsv.hue)
+                })
+                .collect(),
             error: None,
             focus: cx.focus_handle(),
             controls: HashMap::new(),
+            hsb_controls: HashMap::new(),
+            picker: None,
+            picker_subscription: None,
         }
     }
 }
@@ -303,6 +413,80 @@ impl EditorView {
                 },
             );
         }
+        for channel in HsbChannel::ALL {
+            let (minimum, maximum, precision) = channel.range();
+            let spec = match NumericSpec::new(
+                minimum,
+                maximum,
+                minimum,
+                NumericScale::Linear,
+                precision,
+                None::<std::sync::Arc<str>>,
+            ) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    self.theme_settings.error = Some(error.to_string());
+                    return;
+                }
+            };
+            let hsv = self.selected_hsv();
+            let config = match NumericControlConfig::new(
+                format!("theme-hsb-{}", channel.name()),
+                theme::text(channel.label()),
+                NumericControlKind::HorizontalSlider,
+                spec,
+                channel.get(hsv),
+                style,
+            ) {
+                Ok(config) => config,
+                Err(error) => {
+                    self.theme_settings.error = Some(error.to_string());
+                    return;
+                }
+            };
+            let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            let subscription =
+                cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+                    if matches!(
+                        event.phase,
+                        NumericEventPhase::Change
+                            | NumericEventPhase::Commit
+                            | NumericEventPhase::Cancel
+                    ) {
+                        view.update_theme_hsb(channel, event.value, cx);
+                    }
+                });
+            self.theme_settings.hsb_controls.insert(
+                channel,
+                ColorControl {
+                    entity,
+                    _subscription: subscription,
+                },
+            );
+        }
+        let role = self.theme_settings.selected_role;
+        let color = role.color(self.theme_settings.draft);
+        let rgb = RgbColor::new(color.red, color.green, color.blue);
+        let hue = self
+            .theme_settings
+            .role_hues
+            .get(&role)
+            .copied()
+            .unwrap_or(0.0);
+        let config = match ColorPickerConfig::new("theme-color-picker", rgb, hue, style) {
+            Ok(config) => config,
+            Err(error) => {
+                self.theme_settings.error = Some(error.into());
+                return;
+            }
+        };
+        let entity = cx.new(|picker_cx| ColorPicker::from_config(picker_cx, config));
+        let subscription = cx.subscribe(&entity, |view, _, event: &ColorPickerEvent, cx| {
+            view.update_theme_picker(*event, cx);
+        });
+        self.theme_settings.picker = Some(entity);
+        self.theme_settings.picker_subscription = Some(subscription);
+        self.sync_theme_controls(cx);
     }
 
     fn update_theme_channel(&mut self, channel: ThemeChannel, value: f64, cx: &mut Context<Self>) {
@@ -314,6 +498,9 @@ impl EditorView {
             return;
         }
         channel.set(&mut self.theme_settings.draft, value.round() as u8);
+        if self.theme_settings.selected_role.name() == channel.color_name() {
+            self.sync_theme_controls(cx);
+        }
         let valid = theme::colors_are_legible(self.theme_settings.draft);
         if valid {
             theme::apply_preferences(self.theme_settings.draft);
@@ -333,6 +520,100 @@ impl EditorView {
                 let _ = control.set_external_value(value, cx);
             });
         }
+        let role = self.theme_settings.selected_role;
+        let color = role.color(colors);
+        let hue = self
+            .theme_settings
+            .role_hues
+            .get(&role)
+            .copied()
+            .unwrap_or(0.0);
+        if let Some(picker) = self.theme_settings.picker.clone() {
+            let hsv = picker.update(cx, |picker, cx| {
+                picker.set_external_color(
+                    RgbColor::new(color.red, color.green, color.blue),
+                    hue,
+                    cx,
+                );
+                picker.hsv()
+            });
+            self.theme_settings.role_hues.insert(role, hsv.hue);
+            for (channel, control) in &self.theme_settings.hsb_controls {
+                let value = channel.get(hsv);
+                control.entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    let _ = control.set_external_value(value, cx);
+                });
+            }
+        }
+    }
+
+    fn selected_hsv(&self) -> HsvColor {
+        let role = self.theme_settings.selected_role;
+        let color = role.color(self.theme_settings.draft);
+        let preferred = self
+            .theme_settings
+            .role_hues
+            .get(&role)
+            .copied()
+            .unwrap_or(0.0);
+        hex_widgets::rgb_to_hsv(RgbColor::new(color.red, color.green, color.blue), preferred)
+    }
+
+    fn select_theme_role(&mut self, role: ThemeRole, cx: &mut Context<Self>) {
+        self.theme_settings.selected_role = role;
+        if let Some(picker) = self.theme_settings.picker.as_ref() {
+            let color = role.color(self.theme_settings.draft);
+            let rgb = RgbColor::new(color.red, color.green, color.blue);
+            let hue = self
+                .theme_settings
+                .role_hues
+                .get(&role)
+                .copied()
+                .unwrap_or(0.0);
+            picker.update(cx, |picker, cx| picker.set_external_color(rgb, hue, cx));
+        }
+        self.sync_theme_controls(cx);
+        cx.notify();
+    }
+
+    fn update_theme_hsb(&mut self, channel: HsbChannel, value: f64, cx: &mut Context<Self>) {
+        if self.theme_settings.saving {
+            return;
+        }
+        let (minimum, maximum, _) = channel.range();
+        if !value.is_finite() || !(minimum..=maximum).contains(&value) {
+            self.theme_settings.error = Some("hsv value is outside its valid range".into());
+            return;
+        }
+        let Some(picker) = self.theme_settings.picker.as_ref() else {
+            return;
+        };
+        picker.update(cx, |picker, cx| {
+            let mut hsv = picker.hsv();
+            channel.set(&mut hsv, value);
+            let _ = picker.set_hsv(hsv, cx);
+        });
+    }
+
+    fn update_theme_picker(&mut self, event: ColorPickerEvent, cx: &mut Context<Self>) {
+        if self.theme_settings.saving {
+            return;
+        }
+        let role = self.theme_settings.selected_role;
+        role.set(
+            &mut self.theme_settings.draft,
+            hex_preferences::RgbColor::new(event.color.red, event.color.green, event.color.blue),
+        );
+        self.theme_settings.role_hues.insert(role, event.hsv.hue);
+        let valid = theme::colors_are_legible(self.theme_settings.draft);
+        if valid {
+            theme::apply_preferences(self.theme_settings.draft);
+        }
+        self.theme_settings.error =
+            (!valid).then(|| "text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
+        self.sync_theme_controls(cx);
+        cx.notify();
     }
 
     fn collect_theme_control_drafts(
@@ -354,10 +635,36 @@ impl EditorView {
             result.map_err(|error| error.to_string())?;
         }
         self.theme_settings.draft = colors;
+        let mut hsv = self.selected_hsv();
+        for (channel, control) in &self.theme_settings.hsb_controls {
+            let result = control.entity.update(cx, |control, cx| {
+                let prepared = control
+                    .prepare_finish_edit_for_owner(cx)
+                    .map_err(|error| error.to_string())?;
+                if let Some(prepared) = prepared {
+                    channel.set(&mut hsv, prepared.value);
+                    control.accept_finish_edit_for_owner(prepared, cx);
+                }
+                Ok::<(), String>(())
+            });
+            result.map_err(|error| error.to_string())?;
+        }
+        let Some(color) = hex_widgets::hsv_to_rgb(hsv) else {
+            return Err("hsv value is outside its valid range".into());
+        };
+        self.theme_settings.selected_role.set(
+            &mut self.theme_settings.draft,
+            hex_preferences::RgbColor::new(color.red, color.green, color.blue),
+        );
+        self.theme_settings
+            .role_hues
+            .insert(self.theme_settings.selected_role, hsv.hue);
+        let colors = self.theme_settings.draft;
         let valid = theme::colors_are_legible(colors);
         if valid {
             theme::apply_preferences(colors);
         }
+        self.sync_theme_controls(cx);
         self.theme_settings.error =
             (!valid).then(|| "text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
         Ok(colors)
@@ -474,6 +781,9 @@ impl EditorView {
                         self.theme_settings.open = false;
                         self.theme_settings.error = None;
                         self.theme_settings.controls.clear();
+                        self.theme_settings.hsb_controls.clear();
+                        self.theme_settings.picker = None;
+                        self.theme_settings.picker_subscription = None;
                         return true;
                     } else {
                         self.theme_settings.save_generation =
@@ -507,6 +817,9 @@ impl EditorView {
         self.theme_settings.open = false;
         self.theme_settings.error = None;
         self.theme_settings.controls.clear();
+        self.theme_settings.hsb_controls.clear();
+        self.theme_settings.picker = None;
+        self.theme_settings.picker_subscription = None;
         self.focus.focus(window);
         cx.notify();
     }
@@ -526,6 +839,9 @@ impl EditorView {
             self.theme_settings.draft = self.theme_settings.before_open;
             self.theme_settings.open = false;
             self.theme_settings.controls.clear();
+            self.theme_settings.hsb_controls.clear();
+            self.theme_settings.picker = None;
+            self.theme_settings.picker_subscription = None;
             self.focus.focus(window);
             cx.notify();
         }
@@ -544,86 +860,99 @@ impl EditorView {
         let error = self.theme_settings.error.clone();
         let writable = self.theme_settings.writable;
         let saving = self.theme_settings.saving;
-        let mut rows = div().flex().flex_col().gap(px(6.0));
-        for (name, color, channels) in [
-            (
-                "background",
-                colors.background,
-                [
-                    ThemeChannel::BackgroundRed,
-                    ThemeChannel::BackgroundGreen,
-                    ThemeChannel::BackgroundBlue,
-                ],
-            ),
-            (
-                "text",
-                colors.text,
-                [
-                    ThemeChannel::TextRed,
-                    ThemeChannel::TextGreen,
-                    ThemeChannel::TextBlue,
-                ],
-            ),
-            (
-                "primary",
-                colors.primary,
-                [
-                    ThemeChannel::PrimaryRed,
-                    ThemeChannel::PrimaryGreen,
-                    ThemeChannel::PrimaryBlue,
-                ],
-            ),
-            (
-                "secondary",
-                colors.secondary,
-                [
-                    ThemeChannel::SecondaryRed,
-                    ThemeChannel::SecondaryGreen,
-                    ThemeChannel::SecondaryBlue,
-                ],
-            ),
-        ] {
-            let hex = format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue);
-            let mut channel_controls = div().flex().flex_1().gap(px(4.0));
-            for channel in channels {
-                if let Some(control) = self.theme_settings.controls.get(&channel) {
-                    control.entity.update(cx, |control, cx| {
-                        let _ = control.set_external_style(style, cx);
-                        control.set_enabled(!saving, cx);
-                        let _ = control.set_external_value(f64::from(channel.get(colors)), cx);
-                    });
-                    channel_controls = channel_controls.child(
-                        div()
-                            .flex_1()
-                            .min_w(px(72.0))
-                            .h(px(26.0))
-                            .child(control.entity.clone()),
-                    );
-                }
-            }
+        let mut rows = div().flex().gap(px(6.0));
+        for role in ThemeRole::ALL {
+            let color = role.color(colors);
+            let selected = role == self.theme_settings.selected_role;
+            let id = format!("theme-role-{}", role.name());
             rows = rows.child(
                 div()
+                    .id(gpui::SharedString::from(id.clone()))
+                    .debug_selector(move || id.clone())
+                    .flex_1()
+                    .h(px(28.0))
+                    .px(px(6.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .child(div().size(px(12.0)).bg(rgb(color.packed())))
-                    .child(
-                        div()
-                            .w(px(78.0))
-                            .text_xs()
-                            .text_color(rgb(style.text))
-                            .child(theme::text(name)),
-                    )
-                    .child(
-                        div()
-                            .w(px(56.0))
-                            .text_xs()
-                            .text_color(rgb(style.muted))
-                            .child(theme::text(hex)),
-                    )
-                    .child(channel_controls),
+                    .justify_center()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(if selected { style.accent } else { style.border }))
+                    .bg(rgb(color.packed()))
+                    .hover(|hover| hover.border_color(rgb(style.accent)))
+                    .text_xs()
+                    .text_color(rgb(theme::readable_text(color.packed(), style.text)))
+                    .on_click(cx.listener(move |view, _, _, cx| view.select_theme_role(role, cx)))
+                    .child(theme::text(role.name())),
             );
         }
+        let role = self.theme_settings.selected_role;
+        let color = role.color(colors);
+        let hex = format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue);
+        let mut controls = div().flex().gap(px(4.0));
+        for channel in ThemeChannel::ALL
+            .into_iter()
+            .filter(|channel| channel.color_name() == role.name())
+        {
+            if let Some(control) = self.theme_settings.controls.get(&channel) {
+                control.entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    control.set_enabled(!saving, cx);
+                    let _ = control.set_external_value(f64::from(channel.get(colors)), cx);
+                });
+                controls = controls.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(72.0))
+                        .h(px(26.0))
+                        .child(control.entity.clone()),
+                );
+            }
+        }
+        let mut element = div().flex().flex_col().gap(px(4.0));
+        for channel in HsbChannel::ALL {
+            if let Some(control) = self.theme_settings.hsb_controls.get(&channel) {
+                control.entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    control.set_enabled(!saving, cx);
+                });
+                element = element.child(div().h(px(24.0)).child(control.entity.clone()));
+            }
+        }
+        let picker = self.theme_settings.picker.clone();
+        let control = picker.map_or_else(
+            || div().w(px(180.0)).h(px(132.0)),
+            |entity| div().child(entity.clone()),
+        );
+        let content = div()
+            .flex()
+            .items_start()
+            .gap(px(10.0))
+            .child(control)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(300.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .text_xs()
+                            .child(theme::text(role.name()))
+                            .child(theme::text(hex)),
+                    )
+                    .child(element)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(style.muted))
+                            .child(theme::text("rgb")),
+                    )
+                    .child(controls),
+            );
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -642,7 +971,8 @@ impl EditorView {
             .text_color(rgb(style.text))
             .shadow_lg()
             .child(div().text_sm().child(theme::text("theme colors")))
-            .child(rows);
+            .child(rows)
+            .child(content);
         if let Some(error) = error {
             card = card.child(
                 div()
@@ -687,6 +1017,7 @@ impl EditorView {
         Some(
             div()
                 .id("theme settings backdrop")
+                .debug_selector(|| "theme settings backdrop".into())
                 .absolute()
                 .inset_0()
                 .flex()
@@ -751,6 +1082,7 @@ mod tests {
     use super::*;
     use gpui::{
         AppContext, Empty, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
+        size,
     };
     use hex_project::Project;
     use hex_session::service::{Service, ViewState};
@@ -916,6 +1248,179 @@ mod tests {
             focused,
             "successful save returns keyboard focus to the editor"
         );
+    }
+
+    #[gpui::test]
+    fn selected_role_picker_drag_updates_hsb_rgb_preview_and_saved_preferences(
+        cx: &mut TestAppContext,
+    ) {
+        let _restore = RestoreTheme(theme::preferences());
+        let defaults = ThemePreferences::default();
+        theme::apply_preferences(defaults);
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        visual.run_until_parked();
+        let panel = visual
+            .debug_bounds("theme settings panel")
+            .expect("settings panel at minimum editor size");
+        let backdrop = visual
+            .debug_bounds("theme settings backdrop")
+            .expect("settings backdrop at minimum editor size");
+        assert!(panel.origin.y >= backdrop.origin.y);
+        assert!(panel.origin.y + panel.size.height <= backdrop.origin.y + backdrop.size.height);
+        for selector in [
+            "reset theme colors",
+            "cancel theme changes",
+            "save theme settings",
+            "theme-role-background",
+            "theme-role-text",
+            "theme-role-primary",
+            "theme-role-secondary",
+            "theme-color-picker-field",
+            "theme-color-picker-hue",
+            "theme-hsb-h-slider",
+            "theme-hsb-s-slider",
+            "theme-hsb-b-slider",
+            "theme-primary-r-slider",
+        ] {
+            let control = visual
+                .debug_bounds(selector)
+                .expect("settings action bounds");
+            assert!(control.origin.x >= panel.origin.x);
+            assert!(control.origin.x + control.size.width <= panel.origin.x + panel.size.width);
+            assert!(control.origin.y >= panel.origin.y);
+            assert!(control.origin.y + control.size.height <= panel.origin.y + panel.size.height);
+            assert!(
+                control.origin.y + control.size.height <= backdrop.origin.y + backdrop.size.height
+            );
+        }
+
+        click_bounds(&mut visual, "theme-role-secondary");
+        visual.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |view, _| view.theme_settings.selected_role),
+            ThemeRole::Secondary
+        );
+        let field = visual
+            .debug_bounds("theme-color-picker-field")
+            .expect("saturation and brightness field");
+        let start = point(
+            field.origin.x + field.size.width / 4.0,
+            field.origin.y + field.size.height / 2.0,
+        );
+        let outside = point(field.origin.x + field.size.width + px(32.0), field.origin.y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+
+        editor.read_with(cx, |view, _| {
+            let changed = view.theme_settings.draft.secondary;
+            assert_ne!(changed, defaults.secondary);
+            assert_eq!(theme::preferences().secondary, changed);
+            let hsv = view.selected_hsv();
+            assert_eq!(hsv.saturation, 100.0);
+            assert_eq!(hsv.value, 100.0);
+            assert_eq!(
+                view.theme_settings.hsb_controls[&HsbChannel::Saturation]
+                    .entity
+                    .read_with(cx, |control, _| control.value()),
+                100.0
+            );
+            assert_eq!(
+                view.theme_settings.hsb_controls[&HsbChannel::Brightness]
+                    .entity
+                    .read_with(cx, |control, _| control.value()),
+                100.0
+            );
+        });
+
+        click_bounds(&mut visual, "reset theme colors");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.theme_settings.draft, defaults);
+            assert_eq!(theme::preferences(), defaults);
+        });
+
+        let hue_value = visual
+            .debug_bounds("theme-hsb-h-value")
+            .expect("hue direct value field");
+        let hue_click = point(
+            hue_value.origin.x + hue_value.size.width / 2.0,
+            hue_value.origin.y + hue_value.size.height / 2.0,
+        );
+        visual.simulate_mouse_down(hue_click, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(hue_click, MouseButton::Left, Modifiers::default());
+        visual.simulate_input("120");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.selected_hsv().hue, 120.0);
+            let expected =
+                hex_widgets::hsv_to_rgb(view.selected_hsv()).expect("valid selected hsv");
+            let actual = view.theme_settings.draft.secondary;
+            assert_eq!(
+                actual,
+                hex_preferences::RgbColor::new(expected.red, expected.green, expected.blue)
+            );
+            assert_ne!(actual, defaults.secondary);
+        });
+
+        click_bounds(&mut visual, "save theme settings");
+        visual.run_until_parked();
+        let reloaded = hex_preferences::load_theme_preferences(&directory.0.join("theme.json"))
+            .expect("saved palette reloads");
+        assert_eq!(reloaded.secondary, theme::preferences().secondary);
+    }
+
+    #[gpui::test]
+    fn picker_contrast_error_keeps_last_legible_preview_until_cancel(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        let defaults = ThemePreferences::default();
+        theme::apply_preferences(defaults);
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+
+        editor.update(cx, |view, cx| {
+            view.select_theme_role(ThemeRole::Text, cx);
+            let background = view.theme_settings.draft.background;
+            let hsv = hex_widgets::rgb_to_hsv(
+                RgbColor::new(background.red, background.green, background.blue),
+                0.0,
+            );
+            let picker = view
+                .theme_settings
+                .picker
+                .clone()
+                .expect("shared color picker");
+            picker.update(cx, |picker, cx| {
+                assert!(picker.set_hsv(hsv, cx));
+            });
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.theme_settings.draft.text, defaults.background);
+            assert_eq!(theme::preferences(), defaults);
+            assert!(
+                view.theme_settings
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("4.5:1 contrast"))
+            );
+        });
+        assert!(visual.debug_bounds("theme settings status").is_some());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(theme::preferences(), defaults);
     }
 
     #[gpui::test]
