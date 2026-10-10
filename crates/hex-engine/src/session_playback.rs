@@ -110,6 +110,7 @@ pub enum SessionPlaybackError {
     MutableInstrumentChase,
     SharedAnalyticContext,
     MediaPagesUnavailable,
+    CandidateAlreadyUsed,
     Midi(crate::MidiTemplateError),
     Arrangement(&'static str),
 }
@@ -157,6 +158,7 @@ impl fmt::Display for SessionPlaybackError {
                 Self::MediaPagesUnavailable => {
                     "streamed session playback requires a media page provider"
                 }
+                Self::CandidateAlreadyUsed => "session playback candidate has already been used",
                 Self::Midi(_) => "session playback midi query failed",
                 Self::Arrangement(_) => "session playback arrangement source failed",
                 Self::SessionTempoUnavailable(_) => "session tempo is unavailable",
@@ -287,6 +289,7 @@ pub struct SessionPlayback {
     playing: bool,
     linear_arrangement_export: bool,
     route_state_generation: u64,
+    candidate_admission_open: bool,
 }
 
 impl fmt::Debug for SessionPlayback {
@@ -300,6 +303,7 @@ impl fmt::Debug for SessionPlayback {
             .field("playing", &self.playing)
             .field("linear_arrangement_export", &self.linear_arrangement_export)
             .field("route_state_generation", &self.route_state_generation)
+            .field("candidate_admission_open", &self.candidate_admission_open)
             .finish()
     }
 }
@@ -570,6 +574,7 @@ impl SessionPlayback {
             playing: false,
             linear_arrangement_export,
             route_state_generation: 0,
+            candidate_admission_open: true,
         })
     }
 
@@ -633,7 +638,9 @@ impl SessionPlayback {
         performance_frame: u64,
         playing: bool,
     ) -> Result<(), SessionPlaybackError> {
+        self.require_fresh_candidate()?;
         self.validate_legacy_transport(performance_frame)?;
+        self.candidate_admission_open = false;
         self.arrangement_frame = arrangement_frame;
         self.performance_frame = performance_frame;
         self.playing = playing;
@@ -715,9 +722,16 @@ impl SessionPlayback {
         self.release_capacity
     }
 
-    /// Reconcile this freshly prepared runtime with an accepted predecessor.
-    /// The method uses only preallocated route/release buffers and copies no
-    /// owning graph references. All runtime fields change together on success.
+    /// Reconcile this unused prepared runtime with an accepted predecessor.
+    /// Preflight refusals, including `ReleaseBankFull`, leave both committed
+    /// runtimes unchanged and keep this candidate available for retry. Once
+    /// runtime inheritance starts, admission closes before any possibly partial
+    /// mutation; a later error consumes the candidate. Any public apply/render
+    /// attempt also consumes candidate admission, even if rendering is refused;
+    /// an accepted legacy transport seed does as well. Handoff uses preallocated
+    /// route/release storage and retains at most one
+    /// `Arc` per unique carried shared context; it never retains an old playback
+    /// graph or allocates an owner per voice.
     pub fn try_inherit_state_from(
         &mut self,
         previous: &mut Self,
@@ -728,7 +742,16 @@ impl SessionPlayback {
         if self.linear_arrangement_export || previous.linear_arrangement_export {
             return Err(SessionPlaybackError::InvalidCommand);
         }
+        self.require_fresh_candidate()?;
         self.inherit_state(previous)
+    }
+
+    pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {
+        if self.candidate_admission_open {
+            Ok(())
+        } else {
+            Err(SessionPlaybackError::CandidateAlreadyUsed)
+        }
     }
 
     pub fn owner(&self, track: TrackId) -> Option<SessionPlaybackOwner> {

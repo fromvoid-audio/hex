@@ -711,3 +711,13 @@ remains a separate prerequisite.
   repairs a measured draft regression. Three 100-track baseline/candidate runs
   preserve PCM and differ ~0.5–0.6%; injected1,600-note shared lookup measurements
   are documented in docs/performance.md, without a native-deadline claim.
+
+Pulse2174 candidate admission: a SessionPlayback may be handed off as a candidate
+only while its fresh admission latch is open. Public apply/render calls and an
+accepted legacy seed close admission; handoff closes it before the first runtime
+mutation. Pre-mutation ReleaseBankFull refusals retain retry eligibility. Added
+source regressions cover used and accepted candidate rejection plus preservation
+of candidate/predecessor state and PCM. Engine tests (146), audio callback
+allocation probes (16), affected strict Clippy, formatting and diff checks pass.
+Full local CI remains with the integration owner; no native acceptance is
+claimed.

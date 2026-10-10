@@ -1378,6 +1378,10 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        // All capacity/timing planning is complete. Runtime inheritance below
+        // may partially mutate candidate state before returning an error, so it
+        // permanently consumes this candidate's single admission opportunity.
+        self.candidate_admission_open = false;
         for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
                 continue;
