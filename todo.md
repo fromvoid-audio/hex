@@ -28,15 +28,16 @@ Completed chronology and superseded work orders are preserved in the
 
 ### latest source checkpoint
 
-The fresh user test app is `hex-lattice-return-review-20261010-e2b92a6.app`,
-combining the preceding PR38–87 integration and verified source heads PR88–95.
-Exact combined local CI passed all16 checks at
-`e2b92a6d12ac9995051a6f419a1c8c0e93d2a774`
-(`20261010T080125Z-acc79727`, stale=false). The optimized desktop build and
-strict ad-hoc signature passed; independent binary SHA256 is
-`5df5e92ee9cacbd63937b0ea7801748cb0906067d37974d2a6131692547253fc`.
-Its manifest preserves58 PR links and unsupported scope. Earlier bundles remain
-unchanged. The agent has not launched this app; native review/listening is open.
+The latest user test app is `hex-lattice-return-review-20261010-1b67f5f.app`,
+combining preceding PR38–87 integration and verified source heads PR88–97.
+Exact combined16-check CI passed at
+`1b67f5f1c1fbbcc14b9239625b065f113f9eb242`
+(`20261010T081954Z-2c027a93`, stale=false), following correction of merged
+test-module formatting. Optimized build18.83s and strict ad-hoc signature passed;
+independent binary SHA256 is
+`298500e79ea281ba7d5ba12026c749dae480b33aac35d4b301a134af3afec0bb`.
+Its manifest preserves60 PR links and unsupported scope. Earlier bundles remain
+unchanged. The agent has not launched the app; native review/listening is open.
 
 Native stateful seek is [PR91](https://github.com/PORTALSURFER/hex/pull/91);
 Operator fixed tuning is [PR92](https://github.com/PORTALSURFER/hex/pull/92);
@@ -45,8 +46,12 @@ Session live-effect draining after source stop is
 [PR94](https://github.com/PORTALSURFER/hex/pull/94), and conditional seek
 cancellation before callback installation is
 [PR95](https://github.com/PORTALSURFER/hex/pull/95). Pulse2208 and2211 are ready
-for review with native acceptance open. Pulse2204 detached Return-chain residual
-ownership remains a separate active change and is not included in this bundle.
+for review with native acceptance open. Pulse2204 whole Return residual
+ownership is[PR97](https://github.com/PORTALSURFER/hex/pull/97), included and ready
+for review after all16 focused checks. Stack evidence is
+[PR96](https://github.com/PORTALSURFER/hex/pull/96); the production8MiB reservation
+is unchanged. Mutable source loops2214 are active separately; transport loop
+seam/chase2215 depends on that work. Neither is in this bundle.
 Constructor stack
 measurements (2195), mutable loop boundaries (2165), sustained performance (2108),
 complete Operator parity and plugin hosting remain open. One freely positioned
@@ -1160,6 +1165,22 @@ engineClippy, formatting, architecture and the actual Return callback allocation
 probe pass. Full exact-head local CI, PR publication and native listening remain
 pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).
 
+## 10 October2026 — review59 integration checkpoint
+
+Return residual ownership is[PR97](https://github.com/PORTALSURFER/hex/pull/97),
+sourceff7cbbc. An old immediate-cut Return integration assertion was replaced
+with an uninterrupted zero-fed filter oracle; all10 Return routing tests pass.
+Its full local pipeline is rerunning after that repair. Constructor stack
+evidence is[PR96](https://github.com/PORTALSURFER/hex/pull/96), source5707ae7;
+its affected debug/release probes and strict checks pass. Both are combined on
+`codex/lattice-review-59` for exact combined validation. The delivered e2b92a6
+app remains unchanged and does not include96/97. No new native acceptance or
+merge is claimed.
+
+Pulse2165 is split into mutable source loops2214 (active) and transport seam/
+loop-start chase2215 (todo, depends on2214). The existing transport-loop refusal
+remains until bounded gates, chase, identity/capacity and rollback are verified.
+
 ## 10 October 2026 — Pulse2214 mutable source loops
 
 Interactive mutable instruments now accept looping Session sources and finite
@@ -1169,3 +1190,20 @@ Six focused tests and the actual callback allocation probe pass; exact-head loca
 CI and combined native review are next. Arrangement transport wrapping (2215) and
 mutable Arrangement source-loop linear export remain refused.
 See [the contract](docs/mutable-source-loops.md).
+
+## 10 October 2026 — review60 source-loop test build
+
+[PR98](https://github.com/PORTALSURFER/hex/pull/98) is ready for review at
+1daa652; all16 exact source checks passed20261010T084224Z-35cfd2e9.
+Combined sourcecd71021 passed all16 checks20261010T084321Z-a06c7557,
+stale=false. Optimized release build took19.36seconds. Strictly verified local
+ad-hoc app: artifacts/hex-lattice-source-loop-review-20261010-cd71021.app.
+Its adjacent manifest records61 integrated PR links (38–98), exact source and
+binarySHA256 eb35615920835b80792cb786bde0948f53dad47dc84bc66fff4b9dd3485a04fb.
+Earlier review apps remain intact. Source-loop PCM, partitions, capacity/error
+rollback and callback allocation probes pass; native repeated MIDI playback,
+Utility/Operator behavior and save/reopen remain user acceptance. Transport wraps
+2215 are active on their own branch, not included in this build; mutable
+Arrangement source-loop linear export remains refused. No PR is auto-merged.
+Codex attachment registration reached100 identities; verified PR links remain
+in Pulse and this ledger. Performance comparison measurement is separate2218.
