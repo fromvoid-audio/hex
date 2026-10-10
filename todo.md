@@ -1447,3 +1447,26 @@ The mode value uses common pending retirement; switch/ack/undo/redo regression
 passes. Targeted UI tests: 368 passed, 2 existing ignored; strict package clippy,
 desktop build, fmt and architecture/UI/GPUI guards passed. Full local CI and
 fresh signed combined build follow; native visual/input acceptance remains open.
+
+## 10 October 2026 — review66 Utility UI checkpoint
+
+Focused [PR105](https://github.com/PORTALSURFER/hex/pull/105), source4789861,
+passed all16 local checks20261010T120917Z-6a782e22. Combinedb0fdd82 passed
+all16 checks20261010T120917Z-443d6d1d. Both clean/stale=false. Pulse2232 is
+ready_for_review; native visual/input/listening acceptance remains pending.
+
+Fresh optimized release26.65seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-utility-ui-review-20261010-b0fdd82.app.
+Signed binarySHA256 cd21a38164e8c0f655ca4cb2d086ce1b27b34adb60034b772d838d66f1d58d45.
+Adjacent manifest records68 integrated PR links. Utility uses a rounded184px
+frame at the fixed228px device rail, compact needle dials/switches/selectors,
+UI-only display codecs, vector headphone audition and shared mode popup.
+Mode acknowledgement/Undo/Redo retires pending values correctly.
+
+User checklist: compare regular/Return Utility layout; drag and type gain,
+width and balance; right-click width to switch mode and Undo/Redo; exercise
+polarity/channel/mono/bass/cutoff/audition plus bypass/reorder/remove.
+No agent app launch, automatic merge or DSP parity claim. Earlier review apps
+remain intact. Attachment limit100 prevented attaching PR105; verified link is
+preserved in Pulse and this ledger. Operator panel2233 follows separately;
+live Operator parameter work2229 remains todo.
