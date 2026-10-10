@@ -27,9 +27,12 @@ as `Option<u32>`: a frame count is known latency, while `None` is unknown. The
 default is unknown. `StereoMatrix` declares exact zero latency, and registered
 Utility filter processors declare zero fixed buffering/lookahead delay. IIR
 phase/group delay is not algorithmic buffering latency and is not included.
-This metadata is descriptive; it does not yet drive compensation or admission.
-When a future return-track compiler is added, it must refuse unknown or nonzero
-processor latency until path compensation is implemented.
+For Return effects, the compiler now requires registered effect preparation and
+explicit `Some(0)` processor latency; a matrix-only effect uses the memoryless
+zero-latency matrix contract. Unknown and nonzero Return processors refuse
+candidate compilation before history commit. This admits only zero-algorithmic-
+latency Return paths; it does not provide path compensation. General latency
+compensation, sidechains, feedback routing and plugins remain unimplemented.
 
 ## Host graph contract — planned
 

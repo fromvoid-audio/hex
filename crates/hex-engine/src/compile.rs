@@ -245,16 +245,6 @@ fn compile_project<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
-    if !snapshot.return_tracks().is_empty()
-        || snapshot
-            .tracks()
-            .iter()
-            .any(|track| !track.sends().is_empty())
-    {
-        return Err(Invalid(
-            "return tracks and sends are not supported by playback compilation yet",
-        ));
-    }
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let shared_contexts = match shared_contexts {
         Some(contexts) => contexts,
@@ -389,6 +379,21 @@ fn compile_project<'a>(
                 }
             }
         }
+        let sends = track
+            .sends()
+            .iter()
+            .map(|send| {
+                let return_index = snapshot
+                    .return_tracks()
+                    .iter()
+                    .position(|candidate| candidate.id() == send.return_track())
+                    .ok_or(Invalid("send return target is missing during compile"))?;
+                Ok(crate::CompiledSend {
+                    return_index,
+                    gain: send.gain(),
+                })
+            })
+            .collect::<Result<Vec<_>, Invalid>>()?;
         tracks.push(
             Track::with_audio_instrument_and_effects(
                 clips,
@@ -404,12 +409,54 @@ fn compile_project<'a>(
             )?
             .with_track_id(track.id())
             .with_instrument_config(track.instrument())
-            .with_mutable_instrument(mutable_instrument, mutable_looping_source),
+            .with_mutable_instrument(mutable_instrument, mutable_looping_source)
+            .with_sends(sends),
         );
+    }
+    let mut return_buses = Vec::new();
+    return_buses
+        .try_reserve_exact(snapshot.return_tracks().len())
+        .map_err(|_| Invalid("could not reserve compiled return tracks"))?;
+    for return_track in snapshot.return_tracks() {
+        let effect_plan = compile_effect_devices(
+            return_track.devices(),
+            hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
+            0,
+            snapshot.sample_rate(),
+            registry,
+            true,
+        )?;
+        for device in &effect_plan.device_chain {
+            if let Some(definition) = &device.definition {
+                stateful_count = stateful_count
+                    .checked_add(1)
+                    .ok_or(Invalid("stateful device count overflow"))?;
+                stateful_bytes = stateful_bytes
+                    .checked_add(definition.declared_runtime_bytes())
+                    .ok_or(Invalid("stateful device runtime budget overflow"))?;
+                if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                    || stateful_bytes
+                        > hex_lattice::MAX_STATEFUL_PROCESSORS
+                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                {
+                    return Err(Invalid(
+                        "stateful device runtime exceeds its bounded budget",
+                    ));
+                }
+            }
+        }
+        return_buses.push(crate::ReturnBus {
+            id: return_track.id(),
+            gain: return_track.gain(),
+            muted: return_track.muted(),
+            matrix: effect_plan.fused,
+            device_chain: std::sync::Arc::from(effect_plan.device_chain),
+        });
     }
     let project = Project::with_compiled_tracks(
         snapshot.sample_rate(),
         tracks,
+        return_buses,
         snapshot.loop_region(),
         snapshot.master_gain(),
         shared_contexts,
@@ -429,22 +476,49 @@ fn compile_device_effects(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     sample_rate: u32,
 ) -> Result<CompiledEffectPlan, Invalid> {
+    compile_effect_devices(
+        track.devices(),
+        hex_lattice::ProcessorChainOwner::Track(track.id().value()),
+        track.instrument_position().unwrap_or(0),
+        sample_rate,
+        registry,
+        false,
+    )
+}
+
+fn compile_effect_devices(
+    source_devices: &[hex_project::Device],
+    owner: hex_lattice::ProcessorChainOwner,
+    split: usize,
+    sample_rate: u32,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    require_zero_latency: bool,
+) -> Result<CompiledEffectPlan, Invalid> {
     let mut matrix = hex_lattice::StereoMatrix::identity();
     let mut prefix = hex_lattice::StereoMatrix::identity();
     let mut suffix = hex_lattice::StereoMatrix::identity();
     let mut devices = Vec::new();
     devices
-        .try_reserve_exact(track.devices().len())
+        .try_reserve_exact(source_devices.len())
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
     let mut stateful = false;
-    let split = track.instrument_position().unwrap_or(0);
-    for (index, device) in track.devices().iter().enumerate() {
+    for (index, device) in source_devices.iter().enumerate() {
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let prepared_device = registry
             .prepare_device(&migrated, sample_rate)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
+        if require_zero_latency
+            && prepared_device
+                .processor
+                .as_ref()
+                .is_some_and(|processor| processor.algorithmic_latency_frames() != Some(0))
+        {
+            return Err(Invalid(
+                "return effect has unknown or nonzero algorithmic latency",
+            ));
+        }
         let processor = prepared_device.processor.map(std::sync::Arc::from);
         stateful |= processor.is_some();
         let prepared = if device.bypassed() {
@@ -459,7 +533,7 @@ fn compile_device_effects(
             suffix = suffix.then(prepared).map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedProcessorInstance {
-            track_id: track.id().value(),
+            owner,
             device_id: device.id().value(),
             device_type: migrated.type_id(),
             matrix: prepared,

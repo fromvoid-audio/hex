@@ -89,10 +89,27 @@ pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// Maximum control-declared storage for one runtime twin.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
 
-/// One processor prepared for a stable track/device identity.
+/// Typed owner identity for a prepared effect chain. Numeric IDs share the
+/// canonical project allocator, while this tag keeps track and return owners
+/// distinct during runtime history handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessorChainOwner {
+    Track(u64),
+    Return(u64),
+}
+
+impl ProcessorChainOwner {
+    fn is_valid(self) -> bool {
+        match self {
+            Self::Track(id) | Self::Return(id) => id != 0,
+        }
+    }
+}
+
+/// One processor prepared for a stable typed chain/device identity.
 #[derive(Clone)]
 pub struct PreparedProcessorInstance {
-    pub track_id: u64,
+    pub owner: ProcessorChainOwner,
     pub device_id: u64,
     pub device_type: DeviceTypeId,
     pub matrix: StereoMatrix,
@@ -109,7 +126,7 @@ impl fmt::Debug for PreparedProcessorInstance {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreparedProcessorInstance")
-            .field("track_id", &self.track_id)
+            .field("owner", &self.owner)
             .field("device_id", &self.device_id)
             .field("device_type", &self.device_type)
             .field("matrix", &self.matrix)
@@ -121,7 +138,7 @@ impl fmt::Debug for PreparedProcessorInstance {
 }
 
 struct RuntimeEntry {
-    track_id: u64,
+    owner: ProcessorChainOwner,
     device_id: u64,
     device_type: DeviceTypeId,
     matrix: StereoMatrix,
@@ -159,7 +176,7 @@ impl NativeRuntimeChain {
         let mut declared_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         for instance in instances {
-            if instance.track_id == 0 || instance.device_id == 0 || instance.sample_rate == 0 {
+            if !instance.owner.is_valid() || instance.device_id == 0 || instance.sample_rate == 0 {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             instance.device_type.validate()?;
@@ -189,7 +206,7 @@ impl NativeRuntimeChain {
                 (0, None, None)
             };
             entries.push(RuntimeEntry {
-                track_id: instance.track_id,
+                owner: instance.owner,
                 device_id: instance.device_id,
                 device_type: instance.device_type,
                 matrix: instance.matrix,
@@ -252,7 +269,7 @@ impl NativeRuntimeChain {
                 return true;
             };
             let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
-                old.track_id == entry.track_id
+                old.owner == entry.owner
                     && old.device_id == entry.device_id
                     && old.device_type == entry.device_type
                     && old.runtime_version == entry.runtime_version
@@ -305,7 +322,7 @@ impl NativeRuntimeChain {
     ) {
         for entry in &mut self.entries {
             if let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
-                old.track_id == entry.track_id
+                old.owner == entry.owner
                     && old.device_id == entry.device_id
                     && old.device_type == entry.device_type
                     && old.runtime_version == entry.runtime_version
@@ -822,7 +839,7 @@ mod tests {
             .unwrap();
         assert_eq!(prepared.algorithmic_latency_frames(), None);
         let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),
@@ -856,7 +873,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut successor = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),
@@ -882,7 +899,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut incompatible_rate = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),
@@ -914,7 +931,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let instance = |device_id| PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),
@@ -960,7 +977,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let instance = || PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id: 10,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),
@@ -996,7 +1013,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let make_instance = |device_id| PreparedProcessorInstance {
-            track_id: 3,
+            owner: ProcessorChainOwner::Track(3),
             device_id,
             device_type: DeviceTypeId::from_static("test.independent"),
             matrix: StereoMatrix::identity(),

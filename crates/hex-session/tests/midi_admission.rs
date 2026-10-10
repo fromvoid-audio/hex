@@ -1,4 +1,5 @@
 //! Playable MIDI admission and failed candidate preparation remain transactional.
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{BeatTime, Command, Created, Editor, MidiNoteInsert, MidiNoteUpdate, Project};
 use hex_session::service::{Event, Request, Service};
 use std::{
@@ -99,6 +100,46 @@ fn unrenderable_edit_preserves_revision_history_ids_and_working_graph() {
     let mut frames = [[0.0; 2]; 256];
     playback.render(&mut frames).unwrap();
     assert!(frames.iter().any(|frame| frame[0].abs() > 0.001));
+}
+
+#[test]
+fn unsupported_return_effect_rejects_prepared_edit_without_history_commit() {
+    let service = Service::new(8_000, 16, 32).unwrap();
+    let initial = event(&service);
+    assert!(initial.playback.is_some());
+    let added = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "return".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(return_track)) = added.created else {
+        panic!("return track expected")
+    };
+    assert!(added.playback.is_some());
+    let unsupported = NativeDeviceState::new(
+        DeviceTypeId::from_static("test.unregistered.return.effect"),
+        1,
+        vec![1],
+    )
+    .unwrap();
+    let rejected = edit(
+        &service,
+        Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: unsupported,
+        },
+    );
+    assert!(rejected.error.is_some());
+    assert_eq!(rejected.state.project, added.state.project);
+    assert_eq!(rejected.state.revision, added.state.revision);
+    assert_eq!(rejected.state.unsaved, added.state.unsaved);
+    assert!(rejected.state.can_undo);
+    assert!(rejected.playback.is_none());
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.state.project.return_tracks().is_empty());
 }
 
 #[test]

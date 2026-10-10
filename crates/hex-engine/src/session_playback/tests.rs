@@ -2193,6 +2193,122 @@ fn registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session(
 }
 
 #[test]
+fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_transactionally() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let filter_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let mut snapshot = source.snapshot();
+    let mut next_id = snapshot.next_id;
+    let mut return_tracks = Vec::new();
+    for return_index in 0..hex_project::MAX_RETURN_TRACKS {
+        let devices_in_chain = if return_index + 1 == hex_project::MAX_RETURN_TRACKS {
+            15
+        } else {
+            16
+        };
+        let mut devices = Vec::new();
+        for _ in 0..devices_in_chain {
+            devices.push(DeviceSnapshot {
+                id: next_id,
+                bypassed: false,
+                state: filter_state.clone(),
+            });
+            next_id += 1;
+        }
+        return_tracks.push(hex_project::ReturnTrackSnapshot {
+            id: next_id,
+            name: format!("return {return_index}"),
+            gain: 1.0,
+            muted: false,
+            devices,
+        });
+        next_id += 1;
+    }
+    snapshot.next_id = next_id;
+    snapshot.return_tracks = return_tracks;
+    let base = Project::from_snapshot(snapshot).unwrap();
+    let return_track = base.return_tracks().last().unwrap().id();
+    let mut editor = Editor::new(base, 16).unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    assert!(editor.can_redo());
+    // Exactly 255 stateful Returns plus one mutable instrument are admitted.
+    // The candidate below adds the 256th Return effect and exceeds the joint cap.
+    let predecessor = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut predecessor_playback = SessionPlayback::new(Arc::clone(&predecessor)).unwrap();
+    let mut oracle_playback = SessionPlayback::new(Arc::clone(&predecessor)).unwrap();
+    predecessor_playback
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    oracle_playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 16];
+    predecessor_playback.render(&mut prefix).unwrap();
+    oracle_playback.render(&mut prefix).unwrap();
+
+    let before = editor.project().snapshot();
+    let can_undo = editor.can_undo();
+    let can_redo = editor.can_redo();
+    let rejected = editor.execute_prepared(
+        Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: filter_state,
+        },
+        |candidate| {
+            PreparedRevision::prepare_with_instrument_registry(
+                candidate,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(predecessor.session()),
+                &registry,
+            )
+            .map_err(|_| hex_project::Invalid("prepared graph exceeded runtime budget"))
+        },
+    );
+    assert_eq!(
+        rejected.unwrap_err().0,
+        "prepared graph exceeded runtime budget"
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!(editor.can_undo(), can_undo);
+    assert_eq!(editor.can_redo(), can_redo);
+
+    let mut after_rejection = [[0.0; 2]; 16];
+    let mut oracle_after_rejection = [[0.0; 2]; 16];
+    predecessor_playback.render(&mut after_rejection).unwrap();
+    oracle_playback.render(&mut oracle_after_rejection).unwrap();
+    assert_eq!(after_rejection, oracle_after_rejection);
+}
+
+#[test]
 fn unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_revisions() {
     use hex_project::{Command, Editor};
 

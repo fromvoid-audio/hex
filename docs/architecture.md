@@ -134,9 +134,11 @@ instrument audio while source audio continues through the effects. See the
 Schema17 adds ordered return buses with separate typed `ReturnId`s, generic
 effect chains, mix gain/mute, and sparse regular-track sends. The return model
 does not depend on a device registry and does not admit clips, instruments,
-Session cells or return-to-return routing. Until the Pulse2177 audio integration,
-engine compilation rejects projects containing returns or sends; it never
-publishes a graph that silently drops them. See [return tracks](return-tracks.md).
+Session cells or return-to-return routing. The engine compiles regular-track
+post-fader sends through registered Return effects into Main; Return gain/mute
+precedes the single master gain. Unknown/nonzero algorithmic latency refuses
+Return effect admission, while general path compensation remains future work.
+See [return tracks](return-tracks.md).
 
 `hex_engine::compile::project` resolves the snapshot's asset IDs through a decoded
 PCM bank, checks exact rate/frame metadata, and produces immutable playback data.

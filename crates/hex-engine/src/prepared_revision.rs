@@ -132,6 +132,8 @@ impl PreparedRevision {
             instruments,
             shared_contexts,
         )?;
+        crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
+            .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
         let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
@@ -218,6 +220,8 @@ impl PreparedRevision {
                 &instruments,
                 shared_contexts,
             )?;
+        crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
+            .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
         let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
