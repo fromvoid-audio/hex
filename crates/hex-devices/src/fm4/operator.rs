@@ -20,6 +20,8 @@ pub struct PreparedOperatorFm4 {
     waveforms: [OperatorWaveform; OPERATORS],
     waveform_bank: Option<&'static OperatorWaveformBank>,
     harmonic_caps: [u8; OPERATORS],
+    amplitude_velocity_scales: [f32; OPERATORS],
+    amplitude_velocity_active: bool,
 }
 
 impl PreparedOperatorFm4 {
@@ -77,8 +79,40 @@ impl PreparedOperatorFm4 {
         waveforms: [OperatorWaveform; OPERATORS],
         tuning: [OperatorTuning; OPERATORS],
     ) -> Result<Self, Invalid> {
+        Self::new_with_tuning_and_amplitude_velocity(
+            sample_rate,
+            pitch,
+            velocity,
+            oscillators,
+            routing,
+            envelopes,
+            waveforms,
+            tuning,
+            [0.0; OPERATORS],
+        )
+    }
+
+    /// Prepare a standalone note with per-oscillator velocity sensitivity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_tuning_and_amplitude_velocity(
+        sample_rate: u32,
+        pitch: u8,
+        velocity: u8,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelopes: [OperatorEnvelope; OPERATORS],
+        waveforms: [OperatorWaveform; OPERATORS],
+        tuning: [OperatorTuning; OPERATORS],
+        amplitude_velocity: [f32; OPERATORS],
+    ) -> Result<Self, Invalid> {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
+        }
+        if amplitude_velocity
+            .iter()
+            .any(|amount| !amount.is_finite() || !(0.0..=1.0).contains(amount))
+        {
+            return Err(Invalid("invalid operator amplitude velocity amount"));
         }
         let steps = tuning::prepared_steps(
             sample_rate,
@@ -109,6 +143,8 @@ impl PreparedOperatorFm4 {
         } else {
             None
         };
+        let amplitude_velocity_scales =
+            amplitude_velocity_scales(amplitude_velocity, f64::from(velocity) / 127.0);
         Ok(Self {
             core,
             envelopes: PreparedOperatorEnvelopes::new(sample_rate, envelopes)?,
@@ -116,6 +152,8 @@ impl PreparedOperatorFm4 {
             waveforms,
             waveform_bank,
             harmonic_caps,
+            amplitude_velocity_active: amplitude_velocity_scales != [1.0; OPERATORS],
+            amplitude_velocity_scales,
         })
     }
 
@@ -128,9 +166,12 @@ impl PreparedOperatorFm4 {
     /// allocation or lazy initialization occurs here. No limiter/antialiasing;
     /// amplitude is bounded by authored carrier weights/levels (at most 32).
     pub fn sample(&self, table: &SineTable, age_frames: u64, gate_frames: u64) -> f32 {
-        let amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return 0.0;
+        }
+        if self.amplitude_velocity_active {
+            scale_operator_amplitudes(&mut amplitudes, self.amplitude_velocity_scales);
         }
         let routed = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
             self.core
@@ -147,6 +188,23 @@ impl PreparedOperatorFm4 {
             return 0.0;
         };
         (routed * self.velocity) as f32
+    }
+}
+
+pub(super) fn amplitude_velocity_scales(
+    amounts: [f32; OPERATORS],
+    normalized_velocity: f64,
+) -> [f32; OPERATORS] {
+    let velocity = normalized_velocity as f32;
+    amounts.map(|amount| 1.0 - amount + amount * velocity)
+}
+
+pub(super) fn scale_operator_amplitudes(
+    amplitudes: &mut [f64; OPERATORS],
+    scales: [f32; OPERATORS],
+) {
+    for (amplitude, scale) in amplitudes.iter_mut().zip(scales) {
+        *amplitude *= f64::from(scale);
     }
 }
 

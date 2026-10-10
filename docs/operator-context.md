@@ -3,11 +3,16 @@
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`
-occupies688 bytes and owns no per-context allocations. Each
-`PreparedOperatorNote` is48 bytes, with four phase increments, one velocity
-coefficient and four packed cap indices. The caller must sample a note against
-its preparing configuration. Native context identity/ownership belongs to
-Pulse2169, not this standalone DSP API.
+occupies704 bytes and owns no per-context allocations. Each
+`PreparedOperatorNote` is64 bytes, with four phase increments, one velocity
+coefficient, four packed cap indices and four prepared amplitude scales. The
+caller must sample a note against its preparing configuration. The engine's
+prepared note bank stores a revision context reference alongside notes created
+by that context; shared-context identity and lease ownership keep that pair
+intact through playback and retirement. The sampling adapter therefore validates
+bounded payload fields and waveform compatibility but does not recompute the
+control-prepared velocity scale for each sample. Native context identity and
+ownership belongs to Pulse2169, not this standalone DSP API.
 
 Configuration preparation validates rate and uses already validated oscillator,
 routing and envelope types. Each note validates pitch, velocity and every
@@ -23,10 +28,10 @@ the prior sampling route and exact PCM. Non-sine shapes use a process-wide bank
 whose table data is245,880 bytes; the fixed OnceLock cell occupies24 bytes on this64-bit target, including
 the16-byte Box descriptor (245,904 bytes total before allocator bookkeeping). Each
 non-sine context holds only a static reference. For100 notes sharing one
-configuration, the shared configuration and compact-note storage is5488 bytes; this excludes
+configuration, the shared configuration and compact-note storage is7,104 bytes; this excludes
 host note records, banks, references and graph/retirement storage.
 
-The current77 device tests pass. Exact-bit comparisons cover arbitrary/reverse acyclic
+The current79 device tests pass. Exact-bit comparisons cover arbitrary/reverse acyclic
 routes, three rates, pitch/velocity pairs, zero/early/long gates, release ends,
 large ages and reverse query order. Independent envelope/FM oracles remain
 passing; the control codec's four-operator PCM oracle also exercises the compact
@@ -54,7 +59,7 @@ Reproduce with `cargo run --release -p hex-devices --example profile_fm4` and
 Pulse2172 adds the registered shared-context adapter and exercises it through
 Arrangement, Session, callback and export paths; Pulse2183 adds registered
 mixed-waveform rendering and generic choice/state migration. The current shared
-configuration is688 bytes and compact notes are48 bytes. The standalone timing
+configuration was688 bytes and compact notes were48 bytes before sensitivity. The standalone timing
 measurements above predate the waveform work and must not be treated as its
 performance evidence. Mutable feedback, FM sideband aliasing quality, remaining
 Operator behavior and native listening remain open. See the
@@ -63,7 +68,32 @@ reproducible profile command. Full local CI is recorded in the focused PR and
 Pulse ticket.
 
 Pulse2205 adds four control-prepared tuning modes to the shared configuration.
-The measured arm64 context/note sizes are688/48 bytes. Fixed Hz and multiplier
-are converted to phase steps before playback; callback sampling and the shared
-eight-word note payload remain unchanged. Earlier timings above predate fixed
-tuning and do not establish its performance.
+Pulse2222 adds four per-oscillator amplitude velocity amounts. Scale
+`1 - amount + amount * normalized_velocity` is prepared for each note on the
+control side, then multiplies that oscillator's envelope amplitude before it
+participates in modulation or carrier routing. This original bounded scale
+changes modulator timbre while the existing global velocity multiplier remains
+in place. A valid zero scale is retained when amount and velocity produce zero;
+the active marker distinguishes it from legacy all-zero reserved words. Zero
+amounts skip the new amplitude multiplication, preserving the legacy sampling
+route and exact PCM. The generic shared note remains8 u64 words
+(64 bytes); its last two Operator-private words now carry four packed f32 scales.
+The expanded standalone compact note is64 bytes and its shared configuration
+is704 bytes. A three-run release comparison of the existing neutral 100-voice
+profile used the same workload on both revisions: 48 kHz, four-stage routing,
+128-frame blocks, 100 warmups and 2,000 timed blocks. Before Pulse2222 (base
+`93da08a`) the median total was0.697 s standalone /0.678 s compact; after it,
+three final runs measured0.673/0.770/0.691 s standalone and
+0.785/0.702/0.699 s compact (medians0.691 s /0.702 s). These short runs happened on a busy, noisy host;
+they do not establish a reliable speed change or deadline. The full/compact
+PCM stayed bit-identical. The measured sizes changed from600/688/48 bytes
+(standalone note/context/compact note) to624/704/64 bytes. The after binary
+SHA-256 was`2cfe557c75af7be885e0959221f0eef3950b97c7a06fc0961258de569154f098`;
+raw logs are in ignored `artifacts/profiles/operator-velocity-after-optimized/`
+and the before logs in the baseline worktree's matching profile folder. The
+benchmark follows the neutral direct standalone/compact route and does not time
+registered shared-payload decoding or its context adapter. Active sensitivity
+is covered by the independent full-output oracle and a registered callback
+allocation probe, which verifies zero total and net allocation/deallocation but
+does not establish timing. No physical callback deadline or Live numerical
+parity is claimed.

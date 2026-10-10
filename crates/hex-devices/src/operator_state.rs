@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 3;
+pub const OPERATOR_STATE_VERSION: u32 = 4;
+const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
 mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
@@ -30,10 +31,13 @@ const ENVELOPE_FIELDS: usize = 6;
 const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
 const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
 const WAVEFORM_COUNT: usize = OPERATORS;
-const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1 + OPERATORS * 3;
+const VELOCITY_SENSITIVITY_COUNT: usize = OPERATORS;
+const PARAMETER_COUNT: usize =
+    FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1 + OPERATORS * 3 + VELOCITY_SENSITIVITY_COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
-const PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
+const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
+const PAYLOAD_BYTES: usize = TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -78,6 +82,14 @@ pub mod parameter {
     }
     pub const fn fixed_multiplier(operator: u32) -> ParameterId {
         tuning_parameter(operator, 2)
+    }
+
+    /// Operator numbers are one-based. Zero denotes an invalid endpoint.
+    pub const fn amplitude_velocity(operator: u32) -> ParameterId {
+        if operator == 0 || operator > 4 {
+            return ParameterId::from_static(0);
+        }
+        ParameterId::from_static(73 + operator)
     }
     const fn tuning_parameter(operator: u32, field: u32) -> ParameterId {
         if operator == 0 || operator > 4 {
@@ -239,6 +251,28 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         result[index + offset] = tuning[offset];
         offset += 1;
     }
+    index += tuning.len();
+    let velocity_labels = [
+        "op1 amplitude velocity",
+        "op2 amplitude velocity",
+        "op3 amplitude velocity",
+        "op4 amplitude velocity",
+    ];
+    let mut operator = 0;
+    while operator < OPERATORS {
+        result[index + operator] = ParameterDescriptor {
+            id: ParameterId::from_static(74 + operator as u32),
+            label: velocity_labels[operator],
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        };
+        operator += 1;
+    }
     result
 }
 
@@ -250,6 +284,7 @@ pub struct OperatorSettings {
     fields: [f32; FIELD_COUNT],
     waveforms: [OperatorWaveform; OPERATORS],
     tuning: tuning::TuningState,
+    amplitude_velocity: [f32; OPERATORS],
 }
 
 impl OperatorSettings {
@@ -265,6 +300,7 @@ impl OperatorSettings {
             fields,
             waveforms: [OperatorWaveform::Sine; OPERATORS],
             tuning: tuning::TuningState::default(),
+            amplitude_velocity: [0.0; OPERATORS],
         }
     }
 
@@ -275,6 +311,7 @@ impl OperatorSettings {
         let expected_len = match state.state_version() {
             LEGACY_STATE_VERSION => LEGACY_PAYLOAD_BYTES,
             WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
+            TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -308,15 +345,30 @@ impl OperatorSettings {
                     .ok_or(DeviceContractError::MalformedState)?;
             }
         }
-        let tuning = if state.state_version() == OPERATOR_STATE_VERSION {
-            tuning::TuningState::decode(&state.payload()[WAVEFORM_PAYLOAD_BYTES..])?
+        let tuning = if state.state_version() >= TUNING_STATE_VERSION {
+            tuning::TuningState::decode(
+                &state.payload()[WAVEFORM_PAYLOAD_BYTES..TUNING_PAYLOAD_BYTES],
+            )?
         } else {
             tuning::TuningState::default()
         };
+        let mut amplitude_velocity = [0.0; OPERATORS];
+        if state.state_version() == OPERATOR_STATE_VERSION {
+            for (index, bytes) in state.payload()[TUNING_PAYLOAD_BYTES..]
+                .chunks_exact(size_of::<f32>())
+                .enumerate()
+            {
+                let bytes: [u8; 4] = bytes
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?;
+                amplitude_velocity[index] = f32::from_le_bytes(bytes);
+            }
+        }
         let result = Self {
             fields,
             waveforms,
             tuning,
+            amplitude_velocity,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -335,6 +387,9 @@ impl OperatorSettings {
             payload.extend_from_slice(&waveform.choice().to_le_bytes());
         }
         self.tuning.append(&mut payload);
+        for amount in self.amplitude_velocity {
+            payload.extend_from_slice(&amount.to_le_bytes());
+        }
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -354,6 +409,10 @@ impl OperatorSettings {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
             ))?;
+        }
+        for (index, amount) in self.amplitude_velocity.iter().enumerate() {
+            PARAMETERS[PARAMETER_COUNT - OPERATORS + index]
+                .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
             return Err(DeviceContractError::InvalidParameterValue);
@@ -414,19 +473,25 @@ impl OperatorSettings {
         }
     }
 
+    fn amplitude_velocity_index(parameter: ParameterId) -> Option<usize> {
+        let index = parameter.value().checked_sub(74)? as usize;
+        (index < OPERATORS).then_some(index)
+    }
+
     /// Standalone control preparation only; no native sampler/registry admission.
     pub fn prepare_configuration(
         &self,
         sample_rate: u32,
     ) -> Result<PreparedOperatorConfiguration, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorConfiguration::new_with_tuning(
+        PreparedOperatorConfiguration::new_with_tuning_and_amplitude_velocity(
             sample_rate,
             oscillators,
             routing,
             envelopes,
             self.waveforms,
             self.tuning.modes()?,
+            self.amplitude_velocity,
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -439,7 +504,7 @@ impl OperatorSettings {
         velocity: u8,
     ) -> Result<PreparedOperatorFm4, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorFm4::new_with_tuning(
+        PreparedOperatorFm4::new_with_tuning_and_amplitude_velocity(
             sample_rate,
             pitch,
             velocity,
@@ -448,6 +513,7 @@ impl OperatorSettings {
             envelopes,
             self.waveforms,
             self.tuning.modes()?,
+            self.amplitude_velocity,
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -493,6 +559,14 @@ impl NativeDeviceMetadata for OperatorMetadata {
         if parameter == parameter::routing_preset() {
             return Ok(ParameterValue::Choice(settings.routing_preset().choice()));
         }
+        if let Some(index) = OperatorSettings::amplitude_velocity_index(parameter) {
+            return settings
+                .amplitude_velocity
+                .get(index)
+                .copied()
+                .map(ParameterValue::Float)
+                .ok_or(DeviceContractError::UnknownParameter);
+        }
         if let Some(index) = waveform_index(parameter) {
             return settings
                 .waveforms
@@ -530,6 +604,17 @@ impl NativeDeviceMetadata for OperatorMetadata {
             let preset = OperatorRoutingPreset::from_choice(choice)
                 .ok_or(DeviceContractError::InvalidParameterValue)?;
             settings.apply_routing_preset(preset);
+            return settings.to_state();
+        }
+        if let Some(index) = OperatorSettings::amplitude_velocity_index(parameter) {
+            let ParameterValue::Float(amount) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            let field = settings
+                .amplitude_velocity
+                .get_mut(index)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            *field = amount;
             return settings.to_state();
         }
         if let Some(index) = waveform_index(parameter) {

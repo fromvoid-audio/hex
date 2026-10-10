@@ -227,6 +227,7 @@ fn display_name(type_id: DeviceTypeId, name: Option<&str>) -> Result<String, Inv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex_lattice_contract::ParameterKind;
 
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
@@ -373,7 +374,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "operator");
-        assert_eq!(operator_view.parameters.len(), 69);
+        assert_eq!(operator_view.parameters.len(), 73);
         for parameter in operator_view
             .parameters
             .iter()
@@ -381,6 +382,43 @@ mod tests {
         {
             assert_eq!(parameter.value, ParameterValue::Choice(0));
         }
+        for operator_index in 0..4 {
+            let id = hex_lattice_contract::ParameterId::new(74 + operator_index).unwrap();
+            let parameter = operator_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == id)
+                .expect("operator amplitude velocity parameter is exposed");
+            assert_eq!(parameter.value, ParameterValue::Float(0.0));
+            assert_eq!(
+                parameter.descriptor.kind,
+                ParameterKind::Float {
+                    min: 0.0,
+                    max: 1.0,
+                    unit: None
+                }
+            );
+        }
+        let velocity_id = hex_lattice_contract::ParameterId::new(74).unwrap();
+        let patched_operator = crate::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &operator_state,
+            velocity_id,
+            ParameterValue::Float(0.5),
+        )
+        .expect("generic Operator velocity patch");
+        let patched_view =
+            native_device_view_for_class(NativeDeviceClass::Instrument, &patched_operator)
+                .expect("patched Operator view");
+        assert_eq!(
+            patched_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == velocity_id)
+                .expect("patched velocity parameter")
+                .value,
+            ParameterValue::Float(0.5)
+        );
         assert_eq!(
             native_device_descriptors_for_class(NativeDeviceClass::Instrument, operator.type_id)
                 .unwrap(),

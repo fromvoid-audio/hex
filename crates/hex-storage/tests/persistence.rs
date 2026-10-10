@@ -296,6 +296,11 @@ fn registered_operator_fixed_tuning_roundtrips_as_opaque_state() {
     check_operator_opaque_roundtrip(3);
 }
 
+#[test]
+fn registered_operator_velocity_sensitivities_roundtrip_as_opaque_state() {
+    check_operator_opaque_roundtrip(4);
+}
+
 fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
@@ -330,11 +335,16 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
             payload.extend_from_slice(&choice.to_le_bytes());
         }
     }
-    if state_version == 3 {
+    if state_version >= 3 {
         for index in 0..4 {
             payload.extend_from_slice(&u32::from(index % 2 == 0).to_le_bytes());
             payload.extend_from_slice(&(100.0_f32 * (index + 1) as f32).to_le_bytes());
             payload.extend_from_slice(&2.0_f32.to_le_bytes());
+        }
+    }
+    if state_version >= 4 {
+        for amount in [0.0_f32, 0.25, 0.75, 1.0] {
+            payload.extend_from_slice(&amount.to_le_bytes());
         }
     }
     let state = NativeDeviceState::new(

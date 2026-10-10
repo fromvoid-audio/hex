@@ -21,18 +21,23 @@ All-ratio preparation uses the existing quantizer exactly. Mixed tuning computes
 fixed or note-derived frequency on control, then uses the same rounded phase-step
 law. Waveform harmonic caps follow those actual steps. Existing note-relative
 phase/retrigger, envelopes, routing and gate laws remain unchanged. No frequency
-conversion, allocation or replay is added to sampling. The arm64 shared context
-is688 bytes and a compact note remains48 bytes (5,488 bytes for100 notes sharing
-one context, excluding host records, shared table banks and ownership storage).
+conversion, allocation or replay is added to sampling. At this milestone before
+Pulse2222, the arm64 shared context was688 bytes and a compact note was48 bytes
+(5,488 bytes for100 notes sharing one context, excluding host records, shared
+table banks and ownership storage). Pulse2222 adds a 16-byte sensitivity array
+to the context and four prepared scales to the note; current sizes are recorded
+in [compact Operator notes](operator-context.md).
 
-State version3 is288 bytes. It preserves the full version2 240-byte prefix and
+State version3 was288 bytes. It preserved the full version2 240-byte prefix and
 appends four12-byte records: little-endian u32 fixed flag, f32 Hz and f32 multiplier.
 Version1's224-byte prefix and version2's240-byte prefix survive migration exactly.
-Parameter IDs62–73 expose one boolean and two floats per oscillator. Generic
+Parameter IDs62–73 exposed one boolean and two floats per oscillator. Version4
+appends the four amplitude-velocity amounts at IDs74–77, preserving the v3
+prefix. Generic
 catalog controls, opaque storage, project commands and undo/redo require no
 Operator-specific storage or UI branches.
 
-Automated evidence:77 device tests pass; new independent fixed-tone and mixed-FM
+Automated evidence before Pulse2222:77 device tests passed; new independent fixed-tone and mixed-FM
 oracles cover pitch independence, waveform caps, invalid values and Nyquist.
 Three native admission tests include a fixed250 Hz PCM oracle. Session history
 checks atomic refusal and undo/redo;20 storage tests include opaque version3
