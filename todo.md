@@ -544,3 +544,16 @@ affected Clippy and source guards pass. A short release profile found 100×16 FM
 block maxima above nominal periods; Pulse2108 owns the open performance follow-up.
 Full local CI and user native listening remain separate acceptance gates. See
 [FM4 contract](docs/fm4.md) and [performance evidence](docs/performance.md).
+
+Pulse2156: FM4 preparation now skips operators that cannot reach a nonzero-level
+carrier, using existing prepared-level fields so the bounded sampler ABI and
+owned payload size remain unchanged. It still validates all authored oscillator
+frequencies and routing, including unreachable operators. An independent full-
+evaluation oracle compares sample bits for the optimized and packed samplers
+across single/additive/serial/branched/silent graphs, signed-zero routing,
+zero-level middle modulators, quiet/normal/full velocities and release ages.
+Matched release profiles preserve whole-run PCM hashes; default single-carrier
+workloads improved in the observed samples, while the fully audible four-stage
+case showed a small noisy cost. These timings are not callback deadline proof;
+see [FM4 performance evidence](docs/performance.md). Targeted checks and full
+local CI remain before review; native listening remains separate.

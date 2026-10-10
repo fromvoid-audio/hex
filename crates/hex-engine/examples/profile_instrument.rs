@@ -22,6 +22,7 @@ const MEASURED_BLOCKS: usize = 3_000;
 struct Workload {
     instrument_position: usize,
     fm4: bool,
+    four_stage_fm4: bool,
     dense_sustain: bool,
     one_note: bool,
 }
@@ -104,10 +105,27 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 id: instrument_id,
                 bypassed: false,
                 state: if workload.fm4 {
-                    hex_engine::default_native_device_state_for_class(
+                    let mut state = hex_engine::default_native_device_state_for_class(
                         hex_engine::NativeDeviceClass::Instrument,
                         DeviceTypeId::from_static("hex.instrument.fm4"),
-                    )?
+                    )?;
+                    if workload.four_stage_fm4 {
+                        for (parameter, value) in [
+                            (14, 1.0), // operator 1 modulates operator 2
+                            (19, 1.0), // operator 2 modulates operator 3
+                            (24, 1.0), // operator 3 modulates operator 4
+                            (29, 0.0), // carrier 1 is silent
+                            (32, 1.0), // operator 4 is the audible carrier
+                        ] {
+                            state = hex_engine::patch_native_device_parameter_for_class(
+                                hex_engine::NativeDeviceClass::Instrument,
+                                &state,
+                                ParameterId::from_static(parameter),
+                                ParameterValue::Float(value),
+                            )?;
+                        }
+                    }
+                    state
                 } else {
                     hex_project::default_instrument_state()?
                 },
@@ -161,6 +179,10 @@ fn measure(
     );
     playback.apply(PlaybackCommand::Play);
     let mut output = vec![[0.0; 2]; block_size];
+    let sample_count = block_size
+        .checked_mul(measured_blocks)
+        .ok_or("profile sample count overflow")?;
+    let mut complete_run = Vec::with_capacity(sample_count);
     for _ in 0..warmup_blocks {
         playback.render(black_box(&mut output))?;
     }
@@ -171,11 +193,19 @@ fn measure(
         let block_started = Instant::now();
         playback.render(black_box(&mut output))?;
         timings.push(block_started.elapsed().as_nanos());
+        complete_run.extend_from_slice(&output);
         black_box(&output);
     }
-    let elapsed = started.elapsed();
+    let render_elapsed_nanos = timings.iter().sum::<u128>();
+    let whole_run_digest = complete_run
+        .iter()
+        .flatten()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+            (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    let elapsed_including_collection_and_hash = started.elapsed();
     timings.sort_unstable();
-    let output_digest = output
+    let final_block_digest = output
         .iter()
         .flatten()
         .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
@@ -184,8 +214,9 @@ fn measure(
     let total_frames = block_size * measured_blocks;
     let deadline_us = block_size as f64 / f64::from(RATE) * 1_000_000.0;
     println!(
-        "block={block_size:3} frames total={total_frames} elapsed={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x output_digest={output_digest:016x}",
-        elapsed.as_secs_f64(),
+        "block={block_size:3} frames total={total_frames} render_sum={:.3}s elapsed_with_collection_and_hash={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x final_block_digest={final_block_digest:016x} whole_run_digest={whole_run_digest:016x}",
+        render_elapsed_nanos as f64 / 1_000_000_000.0,
+        elapsed_including_collection_and_hash.as_secs_f64(),
         timings[timings.len() - 1] as f64 / 1_000.0,
         timings[timings.len() - 1] as f64 / (deadline_us * 1_000.0),
     );
@@ -210,25 +241,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workload = Workload {
         instrument_position,
         fm4: arguments.iter().any(|argument| argument == "--fm4"),
+        four_stage_fm4: arguments
+            .iter()
+            .any(|argument| argument == "--four-stage-fm4"),
         dense_sustain: arguments
             .iter()
             .any(|argument| argument == "--dense-sustain"),
         one_note: arguments.iter().any(|argument| argument == "--one-note"),
     };
-    let warmup_blocks = if arguments.iter().any(|argument| argument == "--short") {
-        10
-    } else {
-        WARMUP_BLOCKS
-    };
-    let measured_blocks = if arguments.iter().any(|argument| argument == "--short") {
-        100
-    } else {
-        MEASURED_BLOCKS
-    };
+    if workload.four_stage_fm4 && !workload.fm4 {
+        return Err("--four-stage-fm4 requires --fm4".into());
+    }
+    let short_profile = arguments.iter().any(|argument| argument == "--short");
+    let warmup_blocks = parse_profile_count(
+        &arguments,
+        "--warmup-blocks=",
+        if short_profile { 10 } else { WARMUP_BLOCKS },
+    )?;
+    let measured_blocks = parse_profile_count(
+        &arguments,
+        "--measured-blocks=",
+        if short_profile { 100 } else { MEASURED_BLOCKS },
+    )?;
     println!("instrument position: {instrument_position}");
     println!(
-        "instrument={} notes_per_track={} dense_sustain={} warmup_blocks={} measured_blocks={}",
+        "instrument={} four_stage_fm4={} notes_per_track={} dense_sustain={} warmup_blocks={} measured_blocks={}",
         if workload.fm4 { "fm4" } else { "sine" },
+        workload.four_stage_fm4,
         if workload.one_note {
             1
         } else {
@@ -314,4 +353,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     Ok(())
+}
+
+fn parse_profile_count(
+    arguments: &[String],
+    prefix: &str,
+    default: usize,
+) -> Result<usize, Box<dyn Error>> {
+    let Some(argument) = arguments
+        .iter()
+        .find(|argument| argument.starts_with(prefix))
+    else {
+        return Ok(default);
+    };
+    let count = argument[prefix.len()..].parse::<usize>()?;
+    if count == 0 || count > 10_000 {
+        return Err(format!("{prefix} value must be between 1 and 10000").into());
+    }
+    Ok(count)
 }
