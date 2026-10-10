@@ -36,9 +36,14 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_runtime;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, NativeInstrumentDefinition, NativeInstrumentRegistry,
     PreparedAnalyticNote, PreparedNativeInstrument,
+};
+pub use instrument_runtime::{
+    MutableInstrumentRuntime, NativeInstrumentEvent, NativeInstrumentRuntimeError,
+    NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.
