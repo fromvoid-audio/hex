@@ -1,7 +1,8 @@
 use hex_devices::SineTable;
 use hex_engine::{PreparedSessionInventory, Renderer, compile};
 use hex_lattice::{
-    NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
+    NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -80,6 +81,46 @@ impl PreparedNativeInstrument for ConstantPrepared {
         payload[0] = u64::from(self.stereo[0].to_bits());
         payload[1] = u64::from(self.stereo[1].to_bits());
         Ok(PreparedAnalyticNote::new(payload, 4, constant_sample))
+    }
+
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
+        Ok(Some(Box::new(ConstantSharedContext {
+            stereo: self.stereo,
+        })))
+    }
+}
+
+struct ConstantSharedContext {
+    stereo: StereoFrame,
+}
+
+impl PreparedSharedAnalyticContext for ConstantSharedContext {
+    fn declared_context_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<PreparedSharedAnalyticNote, DeviceContractError> {
+        let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0] = u64::from(self.stereo[0].to_bits());
+        payload[1] = u64::from(self.stereo[1].to_bits());
+        Ok(PreparedSharedAnalyticNote::new(payload, 4))
+    }
+
+    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
+        if age < gate.saturating_add(note.release_frames()) {
+            [
+                f32::from_bits(note.payload()[0] as u32),
+                f32::from_bits(note.payload()[1] as u32),
+            ]
+        } else {
+            [0.0; 2]
+        }
     }
 }
 fn constant_sample(

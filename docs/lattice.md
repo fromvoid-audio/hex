@@ -47,6 +47,15 @@ settings from overwriting another edit. Descriptors supply UI control metadata.
 Tests register a second independent definition through the same storage and
 preparation paths to establish the modular seam.
 
+Analytic instrument definitions may optionally prepare an immutable shared
+sampling context with compact per-note data. Arrangement and Session share the
+same context table within a prepared revision; compatible state/type/rate
+configurations reuse owners across revisions, and old copied releases keep
+their originating context through bounded playback leases. The existing
+41-word inline sampler stays unchanged for Sine and FM4. Contexts are generic
+and do not admit Operator or mutable voices; exact byte bounds and control-side
+retirement are specified in [instrument slots](lattice-instruments.md).
+
 The engine prepares Utility matrices on the control side. Because these effects
 are linear and memoryless, their ordered composition can process each source
 contribution before summation without a track scratch buffer. Effects run before

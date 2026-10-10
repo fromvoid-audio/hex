@@ -1,7 +1,12 @@
 //! Control-side interning for immutable analytic MIDI note samplers.
 use crate::Invalid;
-use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
+use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument, PreparedSharedAnalyticNote};
 use std::sync::Arc;
+
+use crate::{
+    Frame,
+    shared_analytic::{SharedAnalyticContextTable, SharedContextOwner},
+};
 
 /// One per-track bank cannot contain more than every valid MIDI velocity for
 /// every pitch. The project-wide authored-note limit is tighter in practice.
@@ -16,12 +21,80 @@ pub(crate) const MAX_SESSION_NOTE_BANK_REFERENCES: usize = 2 * hex_project::MAX_
 #[derive(Clone, Copy, Debug)]
 struct BankEntry {
     key: u16,
-    sampler: PreparedAnalyticNote,
+    sampler: PreparedMidiNote,
+}
+
+/// A source-bank note. Inline values preserve the historical sampler ABI;
+/// shared values carry only a bounded note payload and a provenance-tagged
+/// context index. The index is resolved against the current revision or the
+/// playback's retained-owner lease table at sample time.
+/// Keep this by-value so existing inline samplers do not allocate or add an
+/// indirect owner lookup; the large variant is the preserved 344-byte value.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PreparedMidiNote {
+    Inline(PreparedAnalyticNote),
+    Shared {
+        context: SharedContextRef,
+        note: PreparedSharedAnalyticNote,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SharedContextRef {
+    Revision(u16),
+    Retained(u16),
+}
+
+impl PreparedMidiNote {
+    pub(crate) fn release_frames(self) -> u64 {
+        match self {
+            Self::Inline(note) => note.release_frames(),
+            Self::Shared { note, .. } => note.release_frames(),
+        }
+    }
+
+    pub(crate) fn context_ref(self) -> Option<SharedContextRef> {
+        match self {
+            Self::Inline(_) => None,
+            Self::Shared { context, .. } => Some(context),
+        }
+    }
+
+    pub(crate) fn with_context_ref(self, context: SharedContextRef) -> Self {
+        match self {
+            Self::Inline(_) => self,
+            Self::Shared { note, .. } => Self::Shared { context, note },
+        }
+    }
+
+    pub(crate) fn sample(
+        &self,
+        contexts: &SharedAnalyticContextTable,
+        retained: &[Option<Arc<SharedContextOwner>>],
+        age_frames: u64,
+        gate_frames: u64,
+    ) -> Option<Frame> {
+        match self {
+            Self::Inline(note) => Some(note.sample(age_frames, gate_frames)),
+            Self::Shared { context, note } => {
+                let owner = match *context {
+                    SharedContextRef::Revision(index) => contexts.owner(index),
+                    SharedContextRef::Retained(index) => {
+                        retained.get(usize::from(index)).and_then(Option::as_deref)
+                    }
+                }?;
+                Some(owner.context().sample(note, age_frames, gate_frames))
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct PreparedMidiNoteBank {
     entries: Vec<BankEntry>,
+    context_id: Option<crate::shared_analytic::SharedContextId>,
+    context_index: Option<u16>,
 }
 
 pub(crate) type NoteKeys = Vec<u16>;
@@ -30,7 +103,7 @@ pub(crate) fn prepare_silent(
     keys: &mut NoteKeys,
     previous: Option<&Arc<PreparedMidiNoteBank>>,
 ) -> Result<Arc<PreparedMidiNoteBank>, Invalid> {
-    PreparedMidiNoteBank::prepare(keys, &SilentInstrument, previous)
+    PreparedMidiNoteBank::prepare(keys, &SilentInstrument, previous, None)
 }
 
 struct SilentInstrument;
@@ -62,6 +135,8 @@ impl PreparedMidiNoteBank {
     pub(crate) fn empty() -> Arc<Self> {
         Arc::new(Self {
             entries: Vec::new(),
+            context_id: None,
+            context_index: None,
         })
     }
 
@@ -87,6 +162,7 @@ impl PreparedMidiNoteBank {
         keys: &mut NoteKeys,
         instrument: &dyn PreparedNativeInstrument,
         previous: Option<&Arc<Self>>,
+        shared_context: Option<(u16, &SharedContextOwner)>,
     ) -> Result<Arc<Self>, Invalid> {
         keys.sort_unstable();
         keys.dedup();
@@ -103,7 +179,21 @@ impl PreparedMidiNoteBank {
         if requested_bytes > per_track_byte_limit {
             return Err(Invalid("midi note bank allocation limit reached"));
         }
-        if let Some(previous) = previous.filter(|bank| bank.matches(keys, count)) {
+        if shared_context.is_none()
+            && instrument
+                .prepare_shared_analytic_context()
+                .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?
+                .is_some()
+        {
+            return Err(Invalid(
+                "shared analytic instrument requires a prepared context table",
+            ));
+        }
+        let context_id = shared_context.map(|(_, owner)| owner.id());
+        let context_index = shared_context.map(|(index, _)| index);
+        if let Some(previous) =
+            previous.filter(|bank| bank.matches(keys, count, context_id, context_index))
+        {
             return Ok(Arc::clone(previous));
         }
         let mut entries = Vec::new();
@@ -113,9 +203,21 @@ impl PreparedMidiNoteBank {
         for &key in keys.iter() {
             let pitch = (key >> 8) as u8;
             let velocity = key as u8;
-            let sampler = instrument
-                .prepare_note(pitch, velocity)
-                .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?;
+            let sampler = if let Some((context_index, context)) = shared_context {
+                PreparedMidiNote::Shared {
+                    context: SharedContextRef::Revision(context_index),
+                    note: context
+                        .context()
+                        .prepare_note(pitch, velocity)
+                        .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?,
+                }
+            } else {
+                PreparedMidiNote::Inline(
+                    instrument
+                        .prepare_note(pitch, velocity)
+                        .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?,
+                )
+            };
             entries.push(BankEntry { key, sampler });
         }
         if entries.len() != count || entries.capacity() < count {
@@ -123,17 +225,35 @@ impl PreparedMidiNoteBank {
                 "midi note bank admission changed during preparation",
             ));
         }
-        Ok(Arc::new(Self { entries }))
+        Ok(Arc::new(Self {
+            entries,
+            context_id,
+            context_index,
+        }))
     }
 
-    fn matches(&self, keys: &NoteKeys, count: usize) -> bool {
-        if self.entries.len() != count {
+    fn matches(
+        &self,
+        keys: &NoteKeys,
+        count: usize,
+        context_id: Option<crate::shared_analytic::SharedContextId>,
+        context_index: Option<u16>,
+    ) -> bool {
+        if self.entries.len() != count
+            || self.context_id != context_id
+            || self.context_index != context_index
+        {
             return false;
         }
         self.entries
             .iter()
             .zip(keys)
             .all(|(entry, key)| entry.key == *key)
+    }
+
+    pub(crate) fn context_matches(&self, context: Option<(u16, &SharedContextOwner)>) -> bool {
+        self.context_index == context.map(|(index, _)| index)
+            && self.context_id == context.map(|(_, owner)| owner.id())
     }
 
     pub(crate) fn index(&self, pitch: u8, velocity: u8) -> Option<u16> {
@@ -144,7 +264,7 @@ impl PreparedMidiNoteBank {
             .and_then(|index| u16::try_from(index).ok())
     }
 
-    pub(crate) fn sampler(&self, index: u16) -> Option<PreparedAnalyticNote> {
+    pub(crate) fn sampler(&self, index: u16) -> Option<PreparedMidiNote> {
         self.entries
             .get(usize::from(index))
             .map(|entry| entry.sampler)
@@ -294,13 +414,15 @@ mod tests {
             identity: 11,
             preparations: AtomicUsize::new(0),
         };
-        let first = PreparedMidiNoteBank::prepare(&mut keys, &first_instrument, None).unwrap();
+        let first =
+            PreparedMidiNoteBank::prepare(&mut keys, &first_instrument, None, None).unwrap();
         assert_eq!(first_instrument.preparations.load(Ordering::Relaxed), 2);
         assert_eq!(first.index(60, 100), Some(0));
         assert_ne!(first.index(60, 100), first.index(61, 100));
 
         let exact_reuse =
-            PreparedMidiNoteBank::prepare(&mut keys, &first_instrument, Some(&first)).unwrap();
+            PreparedMidiNoteBank::prepare(&mut keys, &first_instrument, Some(&first), None)
+                .unwrap();
         assert!(Arc::ptr_eq(&first, &exact_reuse));
         assert_eq!(first_instrument.preparations.load(Ordering::Relaxed), 2);
 
@@ -308,9 +430,16 @@ mod tests {
             identity: 29,
             preparations: AtomicUsize::new(0),
         };
-        let second = PreparedMidiNoteBank::prepare(&mut keys, &second_instrument, None).unwrap();
+        let second =
+            PreparedMidiNoteBank::prepare(&mut keys, &second_instrument, None, None).unwrap();
         let first_sampler = first.sampler(first.index(60, 100).unwrap()).unwrap();
         let second_sampler = second.sampler(second.index(60, 100).unwrap()).unwrap();
+        let PreparedMidiNote::Inline(first_sampler) = first_sampler else {
+            panic!("test instrument should use inline analytic notes");
+        };
+        let PreparedMidiNote::Inline(second_sampler) = second_sampler else {
+            panic!("test instrument should use inline analytic notes");
+        };
         assert_eq!(first_sampler.sample(0, 1), [11.0, 160.0]);
         assert_eq!(second_sampler.sample(0, 1), [29.0, 160.0]);
         assert!(!Arc::ptr_eq(&first, &second));
@@ -381,8 +510,8 @@ mod tests {
         let per_revision = max_bank_bytes
             .checked_add(max_indices * std::mem::size_of::<u16>())
             .unwrap();
-        assert_eq!(per_revision, 47_079_424);
-        assert_eq!(per_revision.checked_mul(2).unwrap(), 94_158_848);
+        assert_eq!(per_revision, 47_091_712);
+        assert_eq!(per_revision.checked_mul(2).unwrap(), 94_183_424);
     }
 
     #[test]
@@ -397,7 +526,7 @@ mod tests {
             identity: 1,
             preparations: AtomicUsize::new(0),
         };
-        let bank = PreparedMidiNoteBank::prepare(&mut keys, &instrument, None).unwrap();
+        let bank = PreparedMidiNoteBank::prepare(&mut keys, &instrument, None, None).unwrap();
         assert_eq!(bank.entries.len(), MAX_NOTE_BANK_ENTRIES_PER_TRACK);
         assert_eq!(
             bank.index(127, 127),
