@@ -1,6 +1,9 @@
 //! Bounded native mutable Operator runtime for effective self-feedback.
 use super::{FEEDBACK_COUNT, OperatorSettings, PAYLOAD_BYTES};
-use crate::{SineTable, fm4::OPERATORS, fm4::PreparedOperatorConfiguration};
+use crate::{
+    SineTable,
+    fm4::{OPERATORS, OperatorFeedbackRetargetFrame, PreparedOperatorConfiguration},
+};
 use hex_lattice::{
     InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentEvent,
     NativeInstrumentRuntimeError, PreparedInstrumentHistoryRetarget,
@@ -258,16 +261,33 @@ impl OperatorFeedbackRuntime {
     }
 
     fn process_voice_sample(&mut self, frame: &mut StereoFrame) {
+        let active_ramp = self.retarget.as_ref();
+        let shared_frame: Option<OperatorFeedbackRetargetFrame<'_>> =
+            active_ramp.and_then(|ramp| {
+                (self.retarget_elapsed < ramp.frames())
+                    .then(|| {
+                        ramp.frame_at(&self.configuration, self.retarget_elapsed)
+                            .ok()
+                    })
+                    .flatten()
+            });
         for slot in &mut self.voices {
             if let Some(voice) = slot.voice.as_mut() {
-                let sample = if let Some(ramp) = self.retarget {
+                let sample = if let Some(ramp) = active_ramp {
                     if self.retarget_elapsed < ramp.frames() {
-                        voice.process_frame_with_retarget(
-                            &self.configuration,
-                            self.sine_table,
-                            &ramp,
-                            self.retarget_elapsed,
-                        )
+                        if let Some(shared_frame) = shared_frame.as_ref() {
+                            voice.process_frame_with_shared_retarget(
+                                &self.configuration,
+                                self.sine_table,
+                                ramp,
+                                shared_frame,
+                                self.retarget_elapsed,
+                            )
+                        } else {
+                            // A malformed global frame cannot authorize any
+                            // per-voice partial transition for this sample.
+                            continue;
+                        }
                     } else {
                         voice.process_frame(&self.configuration, self.sine_table)
                     }

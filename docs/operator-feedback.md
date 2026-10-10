@@ -291,3 +291,25 @@ refusal. The local audio allocation probe also exercises live Operator parameter
 handoff and graph retirement with zero total and net callback-thread allocation.
 Native listening and physical device deadline acceptance remain open
 (Pulse2229).
+
+
+## shared checked sample frame — Pulse2294
+
+The registered runtime computes current and next global ramp parameters once per
+sample and lends an immutable crate-private frame to its voices. The frame is bound
+to the exact borrowed ramp, target configuration and elapsed offset. Every voice
+still checks its own note/configuration, participant identity, current feedback
+boundary and checked age increment before mutation. Pitch, velocity, phase, gate,
+envelope age and feedback history remain per voice. The public checked per-voice
+API creates the same frame itself; its refusal and audio semantics are preserved.
+Copied-ramp or wrong-clock frames refuse atomically. No runtime field, schema,
+capacity or allocation is added:4032B/twin,8064B/pair,16voices and256events remain.
+
+Two focused regressions compare shared/per-voice processing through distinct notes,
+release, mid-ramp NoteOn, chained edits and endpoints, and reject mismatched frames
+without changing voice state. Existing independent-recurrence/partition and actual
+callback tests remain in place. Preserved old/new release executables additionally
+produce identical partition and retarget PCM checksums across all18 interleaved
+workload runs; measured scope and limitations are in docs/performance.md. This
+reduces ramp work, not the unchanged steady-state or whole-graph handoff costs;
+higher-capacity and physical deadline acceptance remain Pulse2226/2108.

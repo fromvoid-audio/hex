@@ -129,11 +129,14 @@ impl PreparedOperatorFeedbackRetarget {
         if elapsed_frames > self.frames
             || current_target.configuration_id() != self.target_configuration_id
             || !current_target.retarget_compatible_with(next_target)
-            || !voice_matches_ramp_boundary(voice, self, elapsed_frames)?
         {
             return Err(Invalid("invalid Operator retarget continuation"));
         }
         let actual_current = self.values_at(elapsed_frames)?;
+        if !voice_matches_ramp_boundary(voice, self, elapsed_frames, actual_current.feedback_turns)
+        {
+            return Err(Invalid("invalid Operator retarget continuation"));
+        }
         if current_target.feedback_parameters(self.target.feedback_turns)? != self.target {
             return Err(Invalid(
                 "Operator retarget source no longer matches its ramp",
@@ -218,6 +221,34 @@ impl PreparedOperatorFeedbackRetarget {
                 self.target.feedback_turns,
                 progress,
             ),
+        })
+    }
+
+    /// Prepare the global values for one sample boundary. Every voice in the
+    /// runtime borrows this immutable frame, while retaining its own note,
+    /// envelope, phase and feedback history. The borrow binds the frame to
+    /// this exact ramp value and prevents reuse with another ramp or clock.
+    #[inline]
+    pub(crate) fn frame_at<'a>(
+        &'a self,
+        configuration: &PreparedOperatorConfiguration,
+        elapsed_frames: u32,
+    ) -> Result<OperatorFeedbackRetargetFrame<'a>, Invalid> {
+        if elapsed_frames >= self.frames
+            || configuration.configuration_id() != self.target_configuration_id
+        {
+            return Err(Invalid("invalid Operator retarget frame boundary"));
+        }
+        let parameters = self.values_at(elapsed_frames)?;
+        let next_boundary = elapsed_frames.saturating_add(1).min(self.frames);
+        let next_feedback_turns = self.values_at(next_boundary)?.feedback_turns;
+        Ok(OperatorFeedbackRetargetFrame {
+            retarget: self,
+            configuration_id: configuration.configuration_id(),
+            elapsed_frames,
+            parameters,
+            next_feedback_turns,
+            next_boundary,
         })
     }
 
@@ -309,10 +340,30 @@ impl PreparedOperatorFeedbackVoice {
         retarget: &PreparedOperatorFeedbackRetarget,
         elapsed_frames: u32,
     ) -> Result<RetargetFrame, Invalid> {
+        let shared = retarget.frame_at(configuration, elapsed_frames)?;
+        self.preflight_shared_retarget_frame(configuration, retarget, &shared, elapsed_frames)
+    }
+
+    #[inline]
+    fn preflight_shared_retarget_frame(
+        &self,
+        configuration: &PreparedOperatorConfiguration,
+        retarget: &PreparedOperatorFeedbackRetarget,
+        shared: &OperatorFeedbackRetargetFrame<'_>,
+        elapsed_frames: u32,
+    ) -> Result<RetargetFrame, Invalid> {
         if elapsed_frames >= retarget.frames
+            || !std::ptr::eq(shared.retarget, retarget)
+            || shared.configuration_id != configuration.configuration_id()
+            || shared.elapsed_frames != elapsed_frames
             || configuration.configuration_id() != retarget.target_configuration_id
             || !configuration.note_matches_configuration(&self.note)
-            || !voice_matches_ramp_boundary(self, retarget, elapsed_frames)?
+            || !voice_matches_ramp_boundary(
+                self,
+                retarget,
+                elapsed_frames,
+                shared.parameters.feedback_turns,
+            )
         {
             return Err(Invalid(
                 "Operator retarget does not match the prepared voice configuration",
@@ -322,14 +373,11 @@ impl PreparedOperatorFeedbackVoice {
             .age_frames
             .checked_add(1)
             .ok_or(Invalid("operator feedback voice age overflow"))?;
-        let parameters = retarget.values_at(elapsed_frames)?;
-        let next_boundary = elapsed_frames.saturating_add(1).min(retarget.frames);
-        let next_feedback_turns = retarget.values_at(next_boundary)?.feedback_turns;
         Ok(RetargetFrame {
             next_age,
-            parameters,
-            next_feedback_turns,
-            next_boundary,
+            parameters: shared.parameters,
+            next_feedback_turns: shared.next_feedback_turns,
+            next_boundary: shared.next_boundary,
         })
     }
 
@@ -346,7 +394,30 @@ impl PreparedOperatorFeedbackVoice {
         retarget: &PreparedOperatorFeedbackRetarget,
         elapsed_frames: u32,
     ) -> Result<f32, Invalid> {
-        let frame = self.preflight_retarget_frame(configuration, retarget, elapsed_frames)?;
+        let shared = retarget.frame_at(configuration, elapsed_frames)?;
+        self.process_frame_with_shared_retarget(
+            configuration,
+            table,
+            retarget,
+            &shared,
+            elapsed_frames,
+        )
+    }
+
+    /// Render with a frame shared by the runtime's active voices. All fallible
+    /// checks, including note identity and age overflow, finish before state
+    /// changes.
+    #[inline]
+    pub(crate) fn process_frame_with_shared_retarget(
+        &mut self,
+        configuration: &PreparedOperatorConfiguration,
+        table: &crate::SineTable,
+        retarget: &PreparedOperatorFeedbackRetarget,
+        shared: &OperatorFeedbackRetargetFrame<'_>,
+        elapsed_frames: u32,
+    ) -> Result<f32, Invalid> {
+        let frame =
+            self.preflight_shared_retarget_frame(configuration, retarget, shared, elapsed_frames)?;
         let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
         let (sample, outputs) = configuration.sample_with_feedback_parameters(
             table,
@@ -540,22 +611,34 @@ struct RetargetFrame {
     next_boundary: u32,
 }
 
+/// Shared parameter values for one global retarget sample. The lifetime and
+/// pointer check bind every consumer to the ramp used to mint this frame.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OperatorFeedbackRetargetFrame<'a> {
+    retarget: &'a PreparedOperatorFeedbackRetarget,
+    configuration_id: u64,
+    elapsed_frames: u32,
+    parameters: OperatorFeedbackParameters,
+    next_feedback_turns: [f64; OPERATORS],
+    next_boundary: u32,
+}
+
 fn voice_matches_ramp_boundary(
     voice: &PreparedOperatorFeedbackVoice,
     retarget: &PreparedOperatorFeedbackRetarget,
     elapsed_frames: u32,
-) -> Result<bool, Invalid> {
-    let expected = retarget.values_at(elapsed_frames)?;
-    Ok(if voice.is_ramp_participant() {
+    expected_feedback_turns: [f64; OPERATORS],
+) -> bool {
+    if voice.is_ramp_participant() {
         (voice.configuration_id() == retarget.source_configuration_id
             || voice.configuration_id() == retarget.target_configuration_id)
-            && voice.feedback_turns == expected.feedback_turns
+            && voice.feedback_turns == expected_feedback_turns
     } else {
         (voice.configuration_id() == retarget.source_configuration_id
             || (elapsed_frames == retarget.frames
                 && voice.configuration_id() == retarget.target_configuration_id))
-            && voice.feedback_turns == expected.feedback_turns
-    })
+            && voice.feedback_turns == expected_feedback_turns
+    }
 }
 
 fn validate_frame_count(frames: u32) -> Result<(), Invalid> {
@@ -891,6 +974,152 @@ mod tests {
             assert_eq!(voice.gate_frame(), Some(u64::from(gate)));
             assert_eq!(voice.age_frames(), total as u64);
         }
+    }
+
+    #[test]
+    fn one_shared_sample_frame_matches_independent_voice_validation_and_chained_ramps() {
+        const FEEDBACK_C: [f64; OPERATORS] = [0.29, 0.0, 0.0, 0.77];
+        let old = standard_config(LEVELS_A, CARRIERS_A);
+        let target = standard_config(LEVELS_B, CARRIERS_B);
+        let next = standard_config([0.91, 0.47, 0.62, 0.31], [0.2, -0.1, 0.45, 0.3]);
+        let table = SineTable::new();
+        let first_voice = old
+            .prepare_feedback_voice(57, 61, FEEDBACK_A)
+            .expect("first old voice");
+        let first_ramp = first_voice
+            .prepare_retarget(&old, &target, FEEDBACK_B, 9)
+            .expect("first shared ramp");
+        let second_voice = old
+            .prepare_feedback_voice(86, 119, FEEDBACK_A)
+            .expect("second old voice");
+        let mut shared_voices = [Some(first_voice), Some(second_voice), None];
+        let mut reference_voices = shared_voices;
+        let mut ramp = first_ramp;
+        let mut ramp_elapsed = 0;
+
+        for elapsed in 0..18 {
+            if elapsed == 3 {
+                for voices in [&mut shared_voices, &mut reference_voices] {
+                    let mut fresh = target
+                        .prepare_feedback_voice(72, 93, FEEDBACK_B)
+                        .expect("fresh target voice");
+                    fresh
+                        .enroll_in_retarget(&target, &ramp, ramp_elapsed)
+                        .expect("enroll at current global boundary");
+                    voices[2] = Some(fresh);
+                }
+            }
+            if elapsed == 2 {
+                shared_voices[0]
+                    .as_mut()
+                    .expect("first shared voice")
+                    .note_off()
+                    .expect("first note-off");
+                reference_voices[0]
+                    .as_mut()
+                    .expect("first reference voice")
+                    .note_off()
+                    .expect("first note-off");
+            }
+            if elapsed == 6 {
+                shared_voices[2]
+                    .as_mut()
+                    .expect("fresh shared voice")
+                    .note_off()
+                    .expect("fresh note-off");
+                reference_voices[2]
+                    .as_mut()
+                    .expect("fresh reference voice")
+                    .note_off()
+                    .expect("fresh note-off");
+            }
+            if elapsed == 5 {
+                ramp = ramp
+                    .continue_from_shared_ramp(&target, &next, FEEDBACK_C, ramp_elapsed, 7)
+                    .expect("retarget from the shared current boundary");
+                ramp_elapsed = 0;
+            }
+
+            let configuration = if elapsed < 5 { &target } else { &next };
+            let shared_frame = (ramp_elapsed < ramp.frames()).then(|| {
+                ramp.frame_at(configuration, ramp_elapsed)
+                    .expect("shared sample frame")
+            });
+            for index in 0..shared_voices.len() {
+                let (Some(shared_voice), Some(reference_voice)) = (
+                    shared_voices[index].as_mut(),
+                    reference_voices[index].as_mut(),
+                ) else {
+                    continue;
+                };
+                let shared_sample = if let Some(frame) = shared_frame.as_ref() {
+                    shared_voice
+                        .process_frame_with_shared_retarget(
+                            configuration,
+                            &table,
+                            &ramp,
+                            frame,
+                            ramp_elapsed,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("shared frame refused voice {index} at {elapsed}: {error}")
+                        })
+                } else {
+                    shared_voice
+                        .process_frame(configuration, &table)
+                        .expect("ordinary endpoint sample")
+                };
+                let reference_sample = if ramp_elapsed < ramp.frames() {
+                    reference_voice
+                        .process_frame_with_retarget(configuration, &table, &ramp, ramp_elapsed)
+                        .expect("independent checked interpolation frame")
+                } else {
+                    reference_voice
+                        .process_frame(configuration, &table)
+                        .expect("ordinary endpoint sample")
+                };
+                assert_eq!(shared_sample.to_bits(), reference_sample.to_bits());
+                assert_eq!(shared_voice, reference_voice);
+            }
+            ramp_elapsed += 1;
+        }
+    }
+
+    #[test]
+    fn shared_sample_frame_rejects_a_copied_ramp_and_wrong_clock_atomically() {
+        let old = standard_config(LEVELS_A, CARRIERS_A);
+        let target = standard_config(LEVELS_B, CARRIERS_B);
+        let mut voice = old
+            .prepare_feedback_voice(PITCH, VELOCITY, FEEDBACK_A)
+            .expect("prepared voice");
+        let ramp = voice
+            .prepare_retarget(&old, &target, FEEDBACK_B, 11)
+            .expect("prepared ramp");
+        let foreign_ramp = ramp;
+        let foreign_frame = foreign_ramp
+            .frame_at(&target, 0)
+            .expect("frame belongs to copied ramp");
+        let unchanged = voice;
+        assert!(
+            voice
+                .process_frame_with_shared_retarget(
+                    &target,
+                    &SineTable::new(),
+                    &ramp,
+                    &foreign_frame,
+                    0,
+                )
+                .is_err()
+        );
+        assert_eq!(voice, unchanged);
+
+        let frame = ramp.frame_at(&target, 0).expect("frame at boundary zero");
+        assert!(
+            voice
+                .process_frame_with_shared_retarget(&target, &SineTable::new(), &ramp, &frame, 1,)
+                .is_err()
+        );
+        assert_eq!(voice, unchanged);
     }
 
     #[test]

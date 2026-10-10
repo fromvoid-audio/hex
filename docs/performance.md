@@ -2206,3 +2206,37 @@ continuous FFT throughput,30Hz native display, dense workloads or physical-devic
 deadlines. Those require paced/native acceptance. Registered callback probes assert
 zero total and signed-net allocations/bytes for observation, rejected output and
 shutdown; construction, oracles and reclamation remain outside measured scopes.
+
+
+## 11 October 2026 — shared Operator ramp frame (Pulse2294)
+
+Source `0bbef22a7d830a151657ac1ba0a1d146cea68c7c`; actual registered feedback
+SessionPlayback at48kHz,128frames,100warm/2000measured blocks, alternating supported
+parameter handoffs (one track changed per graph),16voice ceiling. Three interleaved
+before/after rounds, including reversed order in round2. Baseline is the preserved
+Pulse2291 executable from source4d64565, SHA256
+`d19487b26d0682930a4a06b8737b5227a74cf43c0ef2e5c65e1797ad5b835747`; candidate
+`015ce1096ead9f67039fbba7141e636f6ae608e454eb89eade210f0a594ba496`. Both binaries,
+raw logs, metadata and summary are in artifacts/profiles/operator-shared-frame-2294.
+All partition/retarget checksums match between binaries and repetitions; density
+checks still refuse17voices and report4032B/twin8064B/pair112Btargetproof.
+
+| tracks × voices | handoff before p50 / p95 (µs) | handoff after p50 / p95 (µs) | render before p50 / p95 (µs) | render after p50 / p95 (µs) |
+| --- | --- | --- | --- | --- |
+| 1 × 1 | 4.83–4.92 / 6.54–7.42 | 4.79–4.83 / 5.83–7.08 | 11.88–11.96 / 14.21–16.92 | 11.21–11.29 / 15.25–17.00 |
+| 1 × 16 | 7.71–7.79 / 10.33–13.50 | 7.62–7.75 / 13.00–13.38 | 171.42–172.04 / 200.96–215.04 | 94.00–96.50 / 129.83–139.54 |
+| 100 × 16 | 4396.33–4485.92 / 5093.71–5351.12 | 4517.21–4671.92 / 5362.12–5655.17 | 3497.12–3552.29 / 4107.25–4300.83 | 3395.67–3438.46 / 4100.83–4207.29 |
+
+The16-voice active-ramp following-render median is about44–45% lower in this fixture.
+One-voice improvement is small; dense following-render ranges improve slightly,
+while dense handoff ranges are slightly higher/overlapping in their tails. Handoff
+is not this optimization's target and whole-graph costs remain.100x16 render
+medians still exceed the2,667µs nominal block duration. No capacity is raised.
+
+22:39:48–22:41:44UTC, Apple M5 Pro/macOS26.6.2/rustc1.98.1. No other Hex Cargo or
+profile ran; separate project test runners/blocked coordinators were present.
+Their process inventory is retained; OS activity was uncontrolled. This is not a
+quiet-machine certificate, sustained native callback proof or a Live comparison.
+Preparation and handoff/render timings are separate, construction/retirement stays
+outside render timing; raw p99/max and outliers remain. Quiet dense throughput and
+physical deadlines remain Pulse2226/2108, not inferred from this optimization.
