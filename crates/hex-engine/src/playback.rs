@@ -323,19 +323,43 @@ impl Playback {
         if !runtime.is_linear_arrangement_export() {
             return Err(crate::ArrangementPrerollError::CandidatePositionMismatch);
         }
+        Ok(Self::from_prerolled_session_runtime(runtime))
+    }
+
+    /// Wrap an interactive Session runtime without reconstructing, seeking, or
+    /// changing its route policy. The caller must supply a runtime prepared by
+    /// `prepare_interactive_arrangement_preroll_from_revision` and perform its
+    /// own current-project/route admission checks; this wrapper does not prove
+    /// the runtime's target frame or that it is ready for live publication.
+    /// The wrapped runtime remains Session-capable and can accept route
+    /// commands or serve as the predecessor for an ordinary graph-handoff
+    /// candidate.
+    pub fn from_interactive_arrangement_preroll(
+        runtime: SessionPlayback,
+    ) -> Result<Self, crate::ArrangementPrerollError> {
+        if runtime.is_linear_arrangement_export() {
+            return Err(crate::ArrangementPrerollError::CandidatePositionMismatch);
+        }
+        Ok(Self::from_prerolled_session_runtime(runtime))
+    }
+
+    fn from_prerolled_session_runtime(runtime: SessionPlayback) -> Self {
         let prepared_revision = Arc::clone(runtime.prepared_revision());
         let project = Arc::clone(prepared_revision.arrangement());
-        Ok(Self {
+        let position = runtime.arrangement_frame();
+        let performance_frame = runtime.performance_frame();
+        let playing = runtime.playing();
+        Self {
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
-            position: 0,
-            performance_frame: 0,
+            position,
+            performance_frame,
             performance_clock_exhausted: false,
-            playing: false,
-        })
+            playing,
+        }
     }
 
     /// Retain a valid Arrangement artifact when the optional Session runtime

@@ -1689,6 +1689,7 @@ fn import_to_session(
 #[cfg(test)]
 mod service_tests {
     use super::*;
+    use crate::arrangement_seek::ArrangementSeekMode;
     use std::{
         fs,
         sync::{Barrier, atomic::AtomicU64, mpsc},
@@ -1711,6 +1712,7 @@ mod service_tests {
         );
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                mode: ArrangementSeekMode::LinearArrangement,
                 generation: 9,
                 revision: 4,
                 prepared_revision: Arc::clone(&prepared),
@@ -1728,6 +1730,7 @@ mod service_tests {
             thread::yield_now();
         };
         assert_eq!(result.request_id, request_id);
+        assert_eq!(result.mode, ArrangementSeekMode::LinearArrangement);
         assert_eq!(result.generation, 9);
         assert_eq!(result.revision, 4);
         assert_eq!(result.destination_frame, 0);
@@ -1741,6 +1744,173 @@ mod service_tests {
         ));
         assert_eq!(playback.position(), 0);
         assert_eq!(playback.performance_frame(), 0);
+        assert!(playback.playing());
+    }
+
+    #[test]
+    fn service_seek_worker_can_prepare_an_interactive_session_runtime() {
+        let service = Service::new(48_000, 4, 0).expect("service");
+        let initial = next_event(&service);
+        let prepared = Arc::clone(
+            initial
+                .playback
+                .as_ref()
+                .and_then(Playback::prepared_revision)
+                .expect("prepared startup playback"),
+        );
+        let request_id = service
+            .request_arrangement_seek(ArrangementSeekSpec {
+                mode: ArrangementSeekMode::Interactive,
+                generation: 2,
+                revision: 1,
+                prepared_revision: Arc::clone(&prepared),
+                destination_frame: 0,
+                work_budget_frames: 0,
+                start_playing: false,
+            })
+            .expect("admit interactive seek");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            if let Some(result) = service.try_arrangement_seek_result() {
+                break result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "interactive seek did not complete"
+            );
+            thread::yield_now();
+        };
+        assert_eq!(result.request_id, request_id);
+        assert_eq!(result.mode, ArrangementSeekMode::Interactive);
+        let mut playback = result.result.expect("interactive candidate");
+        assert!(Arc::ptr_eq(
+            playback.prepared_revision().expect("playback revision"),
+            &prepared
+        ));
+        playback
+            .try_apply_action(hex_engine::playback::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Play,
+            ))
+            .expect("interactive candidate accepts Session transport");
+        assert!(playback.playing());
+    }
+
+    #[test]
+    fn interactive_seek_worker_handles_stateful_arrangement_candidate() {
+        let service = Service::new(48_000, 4, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "stateful seek".into(),
+            }))
+            .expect("add track");
+        let track_event = next_event(&service);
+        assert!(track_event.error.is_none());
+        let track = track_event.state.project.tracks()[0].id();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(
+                    hex_lattice_contract::DeviceTypeId::new("hex.utility").expect("utility id"),
+                ),
+                before: None,
+            })
+            .expect("add stateful effect");
+        let added = next_event(&service);
+        assert!(added.error.is_none());
+        let utility = added.state.project.track(track).unwrap().devices()[0].id();
+        service
+            .submit(Request::SetDeviceParameter {
+                device: utility,
+                parameter: hex_lattice_contract::ParameterId::from_static(11),
+                value: hex_lattice_contract::ParameterValue::Bool(true),
+            })
+            .expect("enable stateful utility filter");
+        let installed = next_event(&service);
+        assert!(installed.error.is_none());
+        service
+            .submit(Request::Edit(Command::AddReturnTrack {
+                name: "stateful return".into(),
+            }))
+            .expect("add return");
+        let return_added = next_event(&service);
+        let return_track = return_added.state.project.return_tracks()[0].id();
+        let utility_id =
+            hex_lattice_contract::DeviceTypeId::new("hex.utility").expect("utility type id");
+        let state =
+            hex_engine::default_native_device_state(utility_id).expect("default utility state");
+        service
+            .submit(Request::Edit(Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            }))
+            .expect("insert return effect");
+        let return_device_added = next_event(&service);
+        assert!(return_device_added.error.is_none());
+        let return_device = return_device_added.state.project.return_tracks()[0].devices()[0].id();
+        service
+            .submit(Request::SetDeviceParameter {
+                device: return_device,
+                parameter: hex_lattice_contract::ParameterId::from_static(11),
+                value: hex_lattice_contract::ParameterValue::Bool(true),
+            })
+            .expect("enable stateful return filter");
+        let return_filter_enabled = next_event(&service);
+        assert!(return_filter_enabled.error.is_none());
+        service
+            .submit(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            }))
+            .expect("route track to return");
+        let installed = next_event(&service);
+        assert!(installed.error.is_none());
+        let prepared = Arc::clone(
+            installed
+                .playback
+                .as_ref()
+                .and_then(Playback::prepared_revision)
+                .expect("compiled stateful playback"),
+        );
+        assert!(prepared.arrangement_seek_requires_preroll());
+
+        let destination = 8_192;
+        let request_id = service
+            .request_arrangement_seek(ArrangementSeekSpec {
+                mode: ArrangementSeekMode::Interactive,
+                generation: 3,
+                revision: installed.state.revision,
+                prepared_revision: Arc::clone(&prepared),
+                destination_frame: destination,
+                work_budget_frames: destination,
+                start_playing: false,
+            })
+            .expect("admit stateful interactive seek");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            if let Some(result) = service.try_arrangement_seek_result() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "stateful seek did not complete");
+            thread::yield_now();
+        };
+        assert_eq!(result.request_id, request_id);
+        assert_eq!(result.mode, ArrangementSeekMode::Interactive);
+        assert_eq!(result.destination_frame, destination);
+        let mut playback = result.result.expect("stateful interactive candidate");
+        assert_eq!(playback.position(), destination);
+        assert!(Arc::ptr_eq(
+            playback.prepared_revision().expect("candidate revision"),
+            &prepared
+        ));
+        playback
+            .try_apply_action(hex_engine::playback::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Play,
+            ))
+            .expect("candidate remains Session-capable");
         assert!(playback.playing());
     }
 

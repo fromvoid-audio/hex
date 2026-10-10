@@ -38,8 +38,10 @@ the latest successfully compiled revision without changing project state. Its
 event echoes the generation in `restore_complete`, including when recompilation
 fails, so the UI can reject stale recovery attempts.
 
-`ArrangementSeekWorker` is a separate control thread for bounded fresh
-Arrangement preroll. It does not queue behind edits, and its one-running,
+`ArrangementSeekWorker` is a separate control thread with an explicit 8 MiB
+stack reservation for bounded runtime construction and Arrangement preroll.
+Each Service reserves one such stack; this is distinct from its candidate
+runtime storage ceiling. The worker does not queue behind edits, and its one-running,
 one-replaceable-pending, one-ready-result mailbox does not block submission when
 the result slot is occupied. A newer request cancels running work and replaces
 pending work. The unread result moves into a worker-owned retirement slot under
@@ -59,11 +61,16 @@ fence. Teardown signals cancellation and detaches without joining the caller;
 the worker drains its owned pending item and runtime slots before exit. Pending
 request metadata and prepared-revision handles displaced by submit/invalidate
 may be released on the caller after unlocking.
-This linear Arrangement-only runtime refuses Session route actions and is not
-yet promotable to interactive native playback. Normally the lane owns one
-candidate runtime; its two fixed retirement slots bound defensive stale-state
-retirement to at most two preroll runtime budgets, with no new preparation until
-both drain.
+`ArrangementSeekMode::LinearArrangement` (the default) preserves the
+export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
+constructs a normal Session runtime before replaying Arrangement history, so it
+keeps Session route support and can inherit into a normal compiled successor.
+The request and result carry the selected mode. Both modes refuse enabled
+Arrangement transport loops. Wrapping a candidate does not prove its target
+position or publication readiness; the caller still validates current
+project/route/Stop identity. Normally the lane owns one candidate runtime; its
+two fixed retirement slots bound defensive stale-state retirement to at most
+two preroll runtime budgets, with no new preparation until both drain.
 
 ## Does not own
 
