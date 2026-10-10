@@ -13,6 +13,14 @@ widgets = (
     'self.icon(', 'self.control_icon(', 'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
+    # Compact Operator composition components keep labels routed through
+    # `theme::text` at their component boundary.
+    'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
+    'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'control)',
+    'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
+    'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(',
+    'routing_header_cell(',
+    'hex_widgets::curve_plot(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',

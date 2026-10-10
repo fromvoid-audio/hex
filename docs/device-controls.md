@@ -246,6 +246,27 @@ values, switches, selectors and popup behavior belong to `hex-widgets`. Improve
 those reusable controls rather than introducing Utility-only appearance paths.
 All native devices inherit library styling and interaction improvements; new
 device panels only compose library controls and bind validated descriptors.
-Operator's dedicated layout will use this same library. Reusable density
-variants are permitted; variants must not encode a particular device identity.
-Native visual acceptance of the shared system remains with the user.
+Operator uses a dedicated 580px compact composition within the 213px device
+rail: all four operator rows remain visible, while oscillator, envelope and
+routing details share the same rounded frame and canonical controls. The
+envelope curve is a read-only preview of its authored ADSR-like fields; its
+points are not direct drag handles. The 77 supported descriptors are reached
+through the four operator rows, oscillator/envelope pages and routing matrix;
+the routing matrix labels its source, target and output columns, and the four
+diagonal FM routes are intentionally absent. The oscillator page gives the
+selected waveform's cycle preview the full detail width; fixed-frequency rows
+retain their ratio, multiplier and toggle without shrinking their controls. This panel does not add
+unsupported filter, LFO or preset controls, and the numeric feedback/voice
+behavior remains governed by the device contract. Reusable density variants
+are permitted; variants must not encode a particular device identity. Native
+visual acceptance of the shared system remains with the user.
+
+The Operator oscillator page also shows the selected built-in waveform's ideal
+single-cycle shape and exposes per-oscillator velocity sensitivity as a
+percentage; level descriptors use the shared linear-amplitude dB presentation.
+The cycle is a compact shape preview, not a display of the band-limited table
+or a promise of identical spectral output. Changing oscillator/page selection
+finalizes numeric drafts and moves focus out of hidden selector popups. Invalid
+numeric drafts keep their current page and prevent the fixed-frequency switch
+from hiding an invalid ratio field. Per-device page state is cleared on project
+replacement and device removal.

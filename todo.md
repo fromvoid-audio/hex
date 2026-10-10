@@ -1512,3 +1512,61 @@ Pulse2243 fixes selector choices painting behind/clipped by device bodies. Move
 them to an anchored foreground overlay, preserving constant field bounds and
 choice/history/focus/keyboard contracts. Separate focused PRs and a combined
 signed test app follow; Pulse owns authoritative acceptance state.
+
+## 10 October 2026 — review68 shared Lattice UI checkpoint
+
+Utility is the testbed for the shared native Lattice UI, recorded in AGENTS.md
+and widget/device guides. Device panels compose shared controls and bind
+parameters; reusable appearance and popup behavior live in hex-widgets.
+[PR106](https://github.com/PORTALSURFER/hex/pull/106) makes all native frames
+inherit4px rounding and numeric readouts3px; compact/standard headers share a
+renderer. Code source ddaef18 passed all16 localCI checks
+20261010T124950Z-2a446d0e; later b0ebec6 changes documentation only.
+
+[PR107](https://github.com/PORTALSURFER/hex/pull/107) moves shared selector
+options to deferred anchored foreground popups. Field width/bounds stay stable;
+menus escape clipping, occlude lower controls, flip at edges and scroll long
+lists. Choice clicks emit once; Escape/outside/blur/disable dismiss. Bounds
+measurement refreshes only when changed. All29 widget tests and strictClippy
+pass. Focused741aad4 and combinedf117a83 pass all16 localCI checks
+20261010T130201Z-e57b1b12 and20261010T130201Z-fd8ec4b9, clean/stale=false.
+
+Fresh optimized release21.07s and independently verified strict ad-hoc signature:
+artifacts/hex-native-device-ui-review-20261010-f117a83.app. BinarySHA256
+6af107f2a1ecbf3c2df532c092092bf97c70d48950169f024cda2915541e8ca0.
+Manifest retains70 integrated PR links. Pulse2242/2243 are ready for review;
+check shared frame corners on Utility, Operator/sine and Returns, then dropdown
+choice selection, outside/Escape dismissal and placement. No agent app launch
+or automatic merge. Native visual/input acceptance remains open; earlier apps
+remain intact. Attachment cap100 prevents attaching PR106/107 in Codex; verified
+links are preserved in Pulse and here. Operator composition2233 remains separate.
+
+
+### 2026-10-10 — dedicated Operator UI on the shared Utility baseline
+
+[PR108](https://github.com/PORTALSURFER/hex/pull/108) adds a580px compact
+Operator composition on frozen review68, including Utility105/commonframes106/
+foregroundselectors107. Four D/C/B/A oscillator rows stay visible; full-width
+ideal cycle, authored envelope and labelled source/target/output FM views expose
+all77 registered controls. Shared MiniDial density, bounded curve renderer and
+common numeric codecs preserve the Lattice library boundary. Canonical edits,
+invalid-draft hiding prevention, selector dismissal and project/device page-state
+retirement are source-tested. No DSP/schema or active-retarget behavior changes.
+
+Focused codedca30f8 and combined7a7c7d9 pass all16 localCI checks, clean/stale=false:
+20261010T133700Z-9c78f548 and20261010T133701Z-11001199. Targeted35 device-panel
+tests and31 widget tests pass; final source review resolves fixed-mode sizing
+and routing headers. Fresh optimized release17.78s, strict ad-hoc signature and
+independent executableSHA25678ef924db386b0d724a1aacee8e8ff283cecb17acaf74536f92c8df035a0a396
+verify. App: artifacts/hex-operator-ui-review-20261010-7a7c7d9.app; siblingmanifest
+records source7a7c7d9ef18222cbe092e9232c1ed83396bc8714 and71 integratedPRlinks.
+Later documentation-only delivery commits do not alter that artifact's source
+identity. Earlier apps remain intact. Native visual/input/listening acceptance
+is pending user testing; no app launch or automatic merge.
+
+Pulse2233 owns review. Real draggable envelope breakpoints2247 and automatic
+shell-to-display context2248 remain separate todo PRs; current curves are
+read-only previews, and full Live DSP/UI parity is not established. Test Utility/
+Operator shared styling, oscillator/fixed tuning and dropdowns, envelope/routing
+values with drag/type/Undo, device reorder/remove and save/reopen. Codexattachment
+cap100 prevents attaching108; verified link is retained in Pulse and here.
