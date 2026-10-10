@@ -592,7 +592,7 @@ do not wrap or block this export. Feature-gated integration coverage checks an
 independent hybrid prefix/instrument/suffix PCM16 oracle, release across a
 256-frame boundary, exact range lengths and atomic refusal without temporary
 files. Focused engine/export/session tests, strict Clippy and local-CI runner tests pass;
-full local CI remains with root; built-in
+all16 clean local checks pass (PR64); built-in
 mutable admission, chase/range support and user-facing mutable instruments are
 not established. The same enabled track slot currently prepares a mutable
 factory for both Arrangement and Session; a Session-only mutable factory cannot
@@ -613,6 +613,6 @@ envelopes before modulation/carrier routing through one private oscillator core.
 All49 device tests and strict Clippy pass, including independent full-output
 serial/additive FM oracles and exact legacy PCM. Initial helper overhead was
 repaired with inlining/static shaping; final short paired median0.349→0.352s,
-not native deadline evidence. Full local CI remains pending. No device registry,
+not native deadline evidence. All16 clean local checks pass (PR66). No device registry,
 state, UI or mutable voice admission changed; parent2161 native integration is
 open. See [original enveloped FM contract](docs/operator-fm.md).
