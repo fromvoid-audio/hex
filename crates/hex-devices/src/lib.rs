@@ -2,6 +2,7 @@
 pub mod fm4;
 pub mod operator_envelope;
 pub mod operator_state;
+pub mod operator_waveform;
 pub mod utility;
 pub mod utility_filters;
 
