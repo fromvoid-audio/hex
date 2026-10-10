@@ -69,6 +69,11 @@ fn device_frame_inner(
                 .gap(px(header_gap))
                 .items_center()
                 .bg(rgb(style.raised))
+                // GPUI overflow masks are rectangular; round the header background too.
+                .when_some(radius, |header, radius| {
+                    let inner_radius = px((radius - DEVICE_FRAME_BORDER_WIDTH).max(0.0));
+                    header.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                })
                 .border_b_1()
                 .border_color(rgb(style.border))
                 .child(div().size(px(7.0)).rounded_full().bg(rgb(style.accent)))
