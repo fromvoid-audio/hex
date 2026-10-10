@@ -10,6 +10,90 @@ const RETURN_SECTION_HEADER_HEIGHT: f32 = 20.0;
 const RETURN_SECTION_MAX_HEIGHT: f32 = 67.0;
 
 impl EditorView {
+    pub(super) fn return_send_menu_overlay(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<Div>> {
+        if self.mode != super::EditorMode::Arrangement {
+            return None;
+        }
+        let track_id = self.send_menu_track?;
+        let state = self.state.as_ref().cloned()?;
+        let Some(track) = state.project.track(track_id).cloned() else {
+            super::device_panel::retire_removed_send_controls(self, cx);
+            self.send_menu_track = None;
+            self.focus.focus(window);
+            cx.notify();
+            return None;
+        };
+        let Some(track_index) = state
+            .project
+            .tracks()
+            .iter()
+            .position(|candidate| candidate.id() == track_id)
+        else {
+            super::device_panel::retire_removed_send_controls(self, cx);
+            self.send_menu_track = None;
+            self.focus.focus(window);
+            cx.notify();
+            return None;
+        };
+        let body = self.arrangement_bounds?;
+        let scroll_y = f32::from(self.track_scroll.0.borrow().base_handle.offset().y);
+        let expected_top = body.top + track_index as f32 * TRACK_ROW_HEIGHT + scroll_y;
+        let expected_bottom = expected_top + TRACK_ROW_HEIGHT;
+        let body_bottom = body.top + body.height;
+        let row_is_visible = expected_bottom > body.top && expected_top < body_bottom;
+        if !row_is_visible {
+            if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
+                self.send_menu_track = None;
+                self.focus.focus(window);
+            } else {
+                self.track_scroll
+                    .scroll_to_item(track_index, gpui::ScrollStrategy::Top);
+            }
+            cx.notify();
+            return None;
+        }
+        if self.arrangement_bounds_epoch != self.drag_layout_generation.wrapping_sub(1) {
+            return None;
+        }
+        let lane = self.drag_lanes.get(&track_id).copied()?;
+        if self.drag_lane_epochs.get(&track_id).copied()
+            != Some(self.drag_layout_generation.wrapping_sub(1))
+            || (lane.top - expected_top).abs() > 1.0
+        {
+            return None;
+        }
+        let return_count = state.project.return_tracks().len();
+        let menu_height = if return_count == 0 {
+            34.0
+        } else {
+            (6.0 + (return_count as f32 * 26.0)).min(140.0)
+        };
+        let window_bounds = window.bounds();
+        let window_width = f32::from(window_bounds.size.width);
+        let window_height = f32::from(window_bounds.size.height);
+        let left = (lane.left + lane.width + super::tracks::TRACK_HEADER_WIDTH - 245.0)
+            .clamp(0.0, (window_width - 245.0).max(0.0));
+        let above = lane.top - menu_height - 1.0;
+        let top = if above >= 0.0 {
+            above
+        } else {
+            lane.top + TRACK_ROW_HEIGHT + 1.0
+        }
+        .clamp(0.0, (window_height - menu_height).max(0.0));
+        Some(
+            div()
+                .id("return-send-menu-overlay")
+                .absolute()
+                .left(px(left.max(0.0)))
+                .top(px(top))
+                .child(self.return_send_menu(&track, cx)),
+        )
+    }
+
     pub(super) fn return_tracks_view(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let Some(state) = self.state.as_ref() else {
             return div()
@@ -208,7 +292,7 @@ impl EditorView {
     }
 
     pub(super) fn return_send_menu(
-        &self,
+        &mut self,
         track: &Track,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
@@ -216,11 +300,8 @@ impl EditorView {
         let mut menu = div()
             .id(("return-send-menu", track_id.value()))
             .debug_selector(|| format!("return-send-menu-{}", track_id.value()))
-            .absolute()
-            .right_0()
-            .bottom(px(TRACK_ROW_HEIGHT))
-            .w(px(190.0))
-            .max_h(px(120.0))
+            .w(px(245.0))
+            .max_h(px(140.0))
             .flex()
             .flex_col()
             .overflow_y_scroll()
@@ -229,7 +310,7 @@ impl EditorView {
             .border_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .shadow_lg();
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.as_ref().cloned() else {
             return menu;
         };
         let returns = state.project.return_tracks();
@@ -253,8 +334,6 @@ impl EditorView {
                 .iter()
                 .find(|send| send.return_track() == return_id)
                 .map_or(0.0, hex_project::SendLevel::gain);
-            let decrease = stepped_send_gain(gain, false);
-            let increase = stepped_send_gain(gain, true);
             let mut row = div()
                 .id(ElementId::Name(
                     format!("return-send-row-{}-{}", track_id.value(), return_id.value()).into(),
@@ -262,7 +341,7 @@ impl EditorView {
                 .debug_selector(|| {
                     format!("return-send-row-{}-{}", track_id.value(), return_id.value())
                 })
-                .h(px(21.0))
+                .h(px(26.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -271,70 +350,9 @@ impl EditorView {
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(div().flex_1().min_w_0().truncate().child(theme::text(name)))
-                .child(
-                    send_adjust_button(
-                        format!("send-down-{}-{}", track_id.value(), return_id.value()),
-                        "−",
-                        "decrease send level",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        super::device_panel::enqueue_return_edit(
-                            view,
-                            Command::SetReturnSend {
-                                track: track_id,
-                                return_track: return_id,
-                                gain: decrease,
-                            },
-                            cx,
-                        );
-                        cx.notify();
-                    })),
-                )
-                .child(
-                    div()
-                        .id(ElementId::Name(
-                            format!(
-                                "return-send-value-{}-{}",
-                                track_id.value(),
-                                return_id.value()
-                            )
-                            .into(),
-                        ))
-                        .debug_selector(move || {
-                            format!(
-                                "return-send-value-{}-{}",
-                                track_id.value(),
-                                return_id.value()
-                            )
-                        })
-                        .w(px(34.0))
-                        .text_right()
-                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                        .child(theme::text(if gain == 0.0 {
-                            "off".to_owned()
-                        } else {
-                            format!("{gain:.3}")
-                        })),
-                )
-                .child(
-                    send_adjust_button(
-                        format!("send-up-{}-{}", track_id.value(), return_id.value()),
-                        "+",
-                        "increase send level",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        super::device_panel::enqueue_return_edit(
-                            view,
-                            Command::SetReturnSend {
-                                track: track_id,
-                                return_track: return_id,
-                                gain: increase,
-                            },
-                            cx,
-                        );
-                        cx.notify();
-                    })),
-                );
+                .child(super::device_panel::return_send_numeric_control(
+                    self, cx, track_id, return_id, gain,
+                ));
             if gain > 0.0 {
                 row = row.bg(rgb(theme::color(theme::PaletteRole::Surface)));
             }
@@ -364,83 +382,4 @@ fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui:
             .into()
         })
         .child(theme::text(icon))
-}
-
-fn send_adjust_button(
-    id: String,
-    icon: &'static str,
-    tooltip: &'static str,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.clone().into()))
-        .debug_selector(move || id.clone())
-        .size(px(15.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-        .cursor(gpui::CursorStyle::PointingHand)
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::transport::MiniTooltip {
-                description: tooltip.into(),
-            })
-            .into()
-        })
-        .child(theme::text(icon))
-}
-
-/// Change one return send in bounded steps while keeping roundoff from leaving
-/// a nonzero sparse send at either endpoint. Interior stored values are not
-/// quantized.
-pub(super) fn stepped_send_gain(gain: f32, increase: bool) -> f32 {
-    const MAX_GAIN: f32 = 2.0;
-    const STEP: f32 = 0.1;
-    const ENDPOINT_EPSILON: f32 = 1.0e-6;
-
-    let gain = if gain.is_finite() {
-        gain.clamp(0.0, MAX_GAIN)
-    } else {
-        0.0
-    };
-    let delta = if increase { STEP } else { -STEP };
-    let stepped = (gain + delta).clamp(0.0, MAX_GAIN);
-    if stepped <= ENDPOINT_EPSILON {
-        0.0
-    } else if MAX_GAIN - stepped <= ENDPOINT_EPSILON {
-        MAX_GAIN
-    } else {
-        stepped
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::stepped_send_gain;
-
-    #[test]
-    fn three_send_steps_up_then_down_remove_the_sparse_send_exactly() {
-        let mut gain = 0.0;
-        for _ in 0..3 {
-            gain = stepped_send_gain(gain, true);
-        }
-        assert!(gain > 0.0);
-        for _ in 0..3 {
-            gain = stepped_send_gain(gain, false);
-        }
-        assert_eq!(gain, 0.0);
-    }
-
-    #[test]
-    fn send_steps_preserve_interior_values_and_clamp_finite_endpoints() {
-        let stepped = stepped_send_gain(0.375, false);
-        assert!((stepped - 0.275).abs() < 1.0e-6);
-        assert!((stepped - 0.3).abs() > 1.0e-3);
-        assert_eq!(stepped_send_gain(0.0, false), 0.0);
-        assert_eq!(stepped_send_gain(2.0, true), 2.0);
-        assert_eq!(stepped_send_gain(1.999_999_9, true), 2.0);
-        assert!(stepped_send_gain(f32::NAN, true).is_finite());
-    }
 }

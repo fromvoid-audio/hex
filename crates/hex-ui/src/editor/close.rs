@@ -423,7 +423,7 @@ mod window_tests {
                         document_path: None,
                     }));
                     view.begin_device_gesture(
-                        hex_session::device_gesture::GestureTarget {
+                        hex_session::device_gesture::GestureTarget::DeviceParameter {
                             device,
                             parameter: hex_session::device_gesture::ParameterId::new(1)
                                 .expect("gain parameter"),
@@ -453,7 +453,14 @@ mod window_tests {
         editor.read_with(cx, |view, _| {
             assert!(view.state.as_ref().is_some_and(|state| !state.unsaved));
             let draft = view.device_gesture.snapshot().expect("cancel keeps draft");
-            assert_eq!(draft.target.device, device);
+            assert_eq!(
+                draft.target,
+                hex_session::device_gesture::GestureTarget::DeviceParameter {
+                    device,
+                    parameter: hex_session::device_gesture::ParameterId::new(1)
+                        .expect("gain parameter"),
+                }
+            );
             assert_eq!(
                 draft.value,
                 hex_session::device_gesture::ParameterValue::Float(2.0)
@@ -542,7 +549,7 @@ mod window_tests {
                 editor.update(cx, |view, cx| {
                     view.state = Some(Arc::clone(&state));
                     view.begin_device_gesture(
-                        hex_session::device_gesture::GestureTarget {
+                        hex_session::device_gesture::GestureTarget::DeviceParameter {
                             device,
                             parameter: gain,
                         },

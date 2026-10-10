@@ -28,16 +28,18 @@ pub(super) fn render(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
-    let stale_target_has_work = active_target.is_some_and(|target| !alive.contains(&target.device))
-        || stale_keys.iter().any(|key| {
-            matches!(
-                view.device_panel.controls.get(key),
-                Some(ParameterControl::Float { entity, .. })
-                    if entity.read_with(cx, |control, _| {
-                        control.is_interacting() || control.is_editing()
-                    })
-            )
-        });
+    let stale_target_has_work = active_target.is_some_and(|target| match target {
+        GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+        GestureTarget::ReturnSend { .. } => false,
+    }) || stale_keys.iter().any(|key| {
+        matches!(
+            view.device_panel.controls.get(key),
+            Some(ParameterControl::Float { entity, .. })
+                if entity.read_with(cx, |control, _| {
+                    control.is_interacting() || control.is_editing()
+                })
+        )
+    });
     for key in stale_keys {
         if let Some(mut control) = view.device_panel.controls.remove(&key) {
             cancel_control(view, cx, key, &mut control);

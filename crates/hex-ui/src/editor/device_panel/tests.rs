@@ -1,5 +1,7 @@
 use super::*;
-use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{
+    AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size,
+};
 use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
@@ -110,8 +112,15 @@ fn actor_return_utility_fixture() -> (
             .expect("Utility state"),
         }))
         .expect("Utility request");
-    let device_event = receive_service_event(&service);
-    let state = device_event.state;
+    let _device_event = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.25,
+        }))
+        .expect("initial send request");
+    let state = receive_service_event(&service).state;
     let device = state
         .project
         .return_tracks()
@@ -173,7 +182,16 @@ fn pump_until(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "worker-backed device action did not complete"
+            "worker-backed device action did not complete: {}",
+            editor.read_with(cx, |view, _| format!(
+                "worker={} queued={} gesture={:?} barriers={} error={:?} revision={:?}",
+                view.worker_requests_pending,
+                view.pending_requests.len(),
+                view.device_gesture.snapshot(),
+                view.device_gesture_barriers.len(),
+                view.error,
+                view.state.as_ref().map(|state| state.revision)
+            ))
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -1167,8 +1185,10 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
         let snapshot = view.device_gesture.snapshot().expect("synchronous begin");
-        assert_eq!(snapshot.target.device, device);
-        assert_eq!(snapshot.target.parameter, parameter);
+        assert_eq!(
+            snapshot.target,
+            GestureTarget::DeviceParameter { device, parameter }
+        );
         assert_eq!(snapshot.value, ParameterValue::Float(2.5));
         assert!(view.device_gesture.has_pending_terminal());
         assert!(matches!(
@@ -1335,7 +1355,10 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
             .device_gesture
             .snapshot()
             .expect("active pointer gesture");
-        assert_eq!(snapshot.target.parameter, parameter);
+        assert_eq!(
+            snapshot.target,
+            GestureTarget::DeviceParameter { device, parameter }
+        );
         assert_ne!(snapshot.value, ParameterValue::Float(initial));
     });
 
@@ -1468,7 +1491,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         view.device_gesture
             .begin(
                 view.project_generation,
-                GestureTarget {
+                GestureTarget::DeviceParameter {
                     device: first_device,
                     parameter,
                 },
@@ -1488,12 +1511,11 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     editor.read_with(cx, |view, _| {
         assert!(!view.saving_project, "full barrier queue refuses the save");
         assert_eq!(
-            view.device_gesture
-                .snapshot()
-                .expect("other edit")
-                .target
-                .device,
-            first_device
+            view.device_gesture.snapshot().expect("other edit").target,
+            GestureTarget::DeviceParameter {
+                device: first_device,
+                parameter,
+            }
         );
         assert!(!view.device_gesture.has_pending_terminal());
         let Some(ParameterControl::Float { entity, .. }) =
@@ -1516,8 +1538,13 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     });
     editor.read_with(cx, |view, _| {
         let snapshot = view.device_gesture.snapshot().expect("retried gesture");
-        assert_eq!(snapshot.target.device, second_device);
-        assert_eq!(snapshot.target.parameter, parameter);
+        assert_eq!(
+            snapshot.target,
+            GestureTarget::DeviceParameter {
+                device: second_device,
+                parameter,
+            }
+        );
         assert_eq!(snapshot.value, ParameterValue::Float(2.5));
         assert!(view.device_gesture.has_pending_terminal());
         assert_eq!(
@@ -1782,6 +1809,571 @@ fn invalid_return_numeric_draft_is_cancelled_when_its_owner_is_removed(cx: &mut 
         assert!(view.device_panel.controls.is_empty());
         assert!(view.state.as_ref().unwrap().project.track(track).is_some());
         assert_eq!(view.device_panel.message, None);
+    });
+}
+
+#[gpui::test]
+fn return_send_numeric_entry_uses_one_undoable_canonical_edit(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, _, _) = actor_return_utility_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual
+        .debug_bounds(selector)
+        .expect("return send value field");
+    let click = point(value.center().x, value.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.375");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control.entity.read_with(cx, |control, _| {
+            assert!(
+                control.is_editing(),
+                "send value field entered text editing"
+            )
+        });
+    });
+    editor.update(cx, |view, cx| assert!(super::finalize_controls(view, cx)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("state");
+        assert_eq!(
+            state.revision,
+            initial_revision + 1,
+            "one send edit committed"
+        );
+        let send = state
+            .project
+            .track(track)
+            .expect("source track")
+            .sends()
+            .iter()
+            .find(|send| send.return_track() == return_track)
+            .expect("canonical send");
+        assert!(
+            (send.gain() - 0.375).abs() < 0.000_01,
+            "status: {:?}",
+            view.status
+        );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Undo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.state.as_ref().is_some_and(|state| {
+                state.project.track(track).is_some_and(|track| {
+                    track.sends().iter().any(|send| {
+                        send.return_track() == return_track && (send.gain() - 0.25).abs() < 0.000_01
+                    })
+                })
+            })
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Redo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.state.as_ref().is_some_and(|state| {
+                state.project.track(track).is_some_and(|track| {
+                    track.sends().iter().any(|send| {
+                        send.return_track() == return_track
+                            && (send.gain() - 0.375).abs() < 0.000_01
+                    })
+                })
+            })
+    });
+}
+
+#[gpui::test]
+fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
+    cx: &mut TestAppContext,
+) {
+    let (service, mut state, track, return_track, _, _) = actor_return_utility_fixture();
+    for index in 0..24 {
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: format!("extra {index}"),
+            }))
+            .expect("add scroll fixture track");
+        state = receive_service_event(&service).state;
+    }
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+
+    let menu_selector = Box::leak(format!("return-send-menu-{}", track.value()).into_boxed_str());
+    let value_selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let menu = visual
+        .debug_bounds(menu_selector)
+        .expect("send popup at minimum size");
+    let value = visual
+        .debug_bounds(value_selector)
+        .expect("send numeric field");
+    let window = visual.update(|window, _| window.bounds());
+    assert!(menu.origin.x >= window.origin.x && menu.origin.y >= window.origin.y);
+    assert!(menu.origin.x + menu.size.width <= window.origin.x + window.size.width);
+    assert!(menu.origin.y + menu.size.height <= window.origin.y + window.size.height);
+    assert_eq!(
+        value.size.width,
+        px(46.0),
+        "numeric value hit target is not clipped"
+    );
+
+    editor.update(cx, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(24, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.update(|window, app| {
+        editor.update(app, |view, app| {
+            let _ = view.return_send_menu_overlay(window, app);
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_ne!(
+            view.track_scroll.0.borrow().base_handle.offset().y,
+            px(0.0),
+            "the source row must actually be outside the current viewport"
+        );
+        assert_eq!(
+            view.send_menu_track, None,
+            "popup closes when its source row scrolls out of view"
+        );
+    });
+    assert!(
+        visual.update(|window, app| editor.update(app, |view, _| view.focus.is_focused(window)))
+    );
+
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.track(track).is_none())
+    });
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let _ = super::view(view, cx);
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.send_menu_track, None,
+            "removed source closes its send popup"
+        );
+        assert!(
+            !view
+                .device_panel
+                .send_controls
+                .contains_key(&SendControlKey {
+                    track,
+                    return_track,
+                }),
+            "removed source retires its cached send widget"
+        );
+    });
+}
+
+#[gpui::test]
+fn valid_return_send_draft_commits_once_when_owner_scrolls_offscreen(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, mut state, track, return_track, _, _) = actor_return_utility_fixture();
+    for index in 0..24 {
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: format!("extra {index}"),
+            }))
+            .expect("add scroll fixture track");
+        state = receive_service_event(&service).state;
+    }
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual
+        .debug_bounds(selector)
+        .expect("return send value field");
+    let click = point(value.center().x, value.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.625");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control
+            .entity
+            .read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+
+    editor.update(cx, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(24, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.update(|window, app| {
+        editor.update(app, |view, app| {
+            let _ = view.return_send_menu_overlay(window, app);
+        });
+    });
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        view.send_menu_track.is_none()
+            && view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+            && view.state.as_ref().is_some_and(|state| {
+                state.revision == initial_revision + 1
+                    && state.project.track(track).is_some_and(|track| {
+                        track.sends().iter().any(|send| {
+                            send.return_track() == return_track
+                                && (send.gain() - 0.625).abs() < 0.000_01
+                        })
+                    })
+            })
+    });
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control
+            .entity
+            .read_with(cx, |control, _| assert!(!control.is_editing()));
+    });
+    assert!(
+        visual.update(|window, app| editor.update(app, |view, _| view.focus.is_focused(window)))
+    );
+}
+
+#[gpui::test]
+fn invalid_return_send_draft_cancels_and_restores_when_owner_scrolls_offscreen(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, mut state, track, return_track, _, _) = actor_return_utility_fixture();
+    for index in 0..24 {
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: format!("extra {index}"),
+            }))
+            .expect("add scroll fixture track");
+        state = receive_service_event(&service).state;
+    }
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual
+        .debug_bounds(selector)
+        .expect("return send value field");
+    let click = point(value.center().x, value.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("2.5");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control
+            .entity
+            .read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+
+    editor.update(cx, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(24, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.update(|window, app| {
+        editor.update(app, |view, app| {
+            let _ = view.return_send_menu_overlay(window, app);
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.send_menu_track, None);
+        assert!(view.device_gesture.snapshot().is_none());
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.error.as_deref().is_some_and(|error| {
+            error.contains("invalid send value") && error == error.to_lowercase()
+        }));
+        assert_eq!(
+            view.state.as_ref().expect("state").revision,
+            initial_revision
+        );
+        let send = view
+            .state
+            .as_ref()
+            .expect("state")
+            .project
+            .track(track)
+            .expect("source track")
+            .sends()
+            .iter()
+            .find(|send| send.return_track() == return_track)
+            .expect("canonical send");
+        assert!((send.gain() - 0.25).abs() < 0.000_01);
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control
+            .entity
+            .read_with(cx, |control, _| assert!(!control.is_editing()));
+    });
+    assert!(
+        visual.update(|window, app| editor.update(app, |view, _| view.focus.is_focused(window)))
+    );
+}
+
+#[gpui::test]
+fn invalid_return_send_draft_blocks_finalize_and_escape_restores_canonical(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, _, _) = actor_return_utility_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual
+        .debug_bounds(selector)
+        .expect("return send value field");
+    let click = point(value.center().x, value.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("2.5");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control
+            .entity
+            .read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+    editor.update(cx, |view, cx| {
+        assert!(!super::finalize_controls(view, cx));
+        cx.notify();
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().expect("state").revision,
+            initial_revision
+        );
+        assert!(view.error.is_some());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        assert!(super::finalize_controls(view, cx));
+        cx.notify();
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("state");
+        assert_eq!(state.revision, initial_revision);
+        let send = state
+            .project
+            .track(track)
+            .expect("source track")
+            .sends()
+            .iter()
+            .find(|send| send.return_track() == return_track)
+            .expect("canonical send remains");
+        assert!((send.gain() - 0.25).abs() < 0.000_01);
+    });
+}
+
+#[gpui::test]
+fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) {
+    let (service, state, track, return_track, _, _) = actor_return_utility_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-slider",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let slider = visual.debug_bounds(selector).expect("return send slider");
+    let start = point(slider.center().x, slider.center().y);
+    let moved = point(start.x + px(36.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let control = &view.device_panel.send_controls[&SendControlKey {
+            track,
+            return_track,
+        }];
+        control.entity.read_with(cx, |control, _| {
+            assert!(
+                control.is_interacting(),
+                "send slider is in a pointer gesture"
+            )
+        });
+        let snapshot = view.device_gesture.snapshot().expect("active send gesture");
+        assert_eq!(
+            snapshot.target,
+            GestureTarget::ReturnSend {
+                track,
+                return_track
+            }
+        );
+        assert!(matches!(snapshot.value, ParameterValue::Float(value) if value > 0.25));
+        let canonical = view
+            .state
+            .as_ref()
+            .expect("state")
+            .project
+            .track(track)
+            .unwrap();
+        assert!(canonical.sends().iter().any(|send| {
+            send.return_track() == return_track && (send.gain() - 0.25).abs() < 0.000_01
+        }));
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+            && view.state.as_ref().is_some_and(|state| {
+                state.revision == initial_revision + 1
+                    && state.project.track(track).is_some_and(|track| {
+                        track
+                            .sends()
+                            .iter()
+                            .any(|send| send.return_track() == return_track && send.gain() > 0.25)
+                    })
+            })
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Undo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.state.as_ref().is_some_and(|state| {
+                state.project.track(track).is_some_and(|track| {
+                    track.sends().iter().any(|send| {
+                        send.return_track() == return_track && (send.gain() - 0.25).abs() < 0.000_01
+                    })
+                })
+            })
     });
 }
 

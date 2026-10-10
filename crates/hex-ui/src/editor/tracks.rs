@@ -207,7 +207,7 @@ pub(super) struct ClipViewTimeline<'a> {
 
 impl EditorView {
     pub(super) fn track_row(
-        &self,
+        &mut self,
         state: &ViewState,
         track: &Track,
         track_index: usize,
@@ -945,11 +945,18 @@ impl EditorView {
                     },
                 )))
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    view.send_menu_track = if view.send_menu_track == Some(track_id) {
+                    let next = if view.send_menu_track == Some(track_id) {
                         None
                     } else {
                         Some(track_id)
                     };
+                    if next != view.send_menu_track
+                        && !super::device_panel::finalize_controls(view, cx)
+                    {
+                        cx.notify();
+                        return;
+                    }
+                    view.send_menu_track = next;
                     cx.notify();
                 })),
             );
@@ -976,11 +983,6 @@ impl EditorView {
             }))
             .child(track_name_view)
             .child(track_controls);
-        let header = if self.send_menu_track == Some(track_id) {
-            header.child(self.return_send_menu(track, cx))
-        } else {
-            header
-        };
         div()
             .w_full()
             .h(px(TRACK_ROW_HEIGHT))
