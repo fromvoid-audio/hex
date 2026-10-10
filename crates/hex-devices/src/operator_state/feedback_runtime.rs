@@ -343,11 +343,11 @@ impl OperatorFeedbackRuntime {
             return false;
         };
         previous.voices.iter().all(|slot| {
-            let Some(mut voice) = slot.voice else {
+            let Some(voice) = slot.voice else {
                 return true;
             };
             voice
-                .process_frame_with_retarget(&self.configuration, self.sine_table, &ramp, 0)
+                .validate_retarget_frame(&self.configuration, &ramp, 0)
                 .is_ok()
         })
     }
