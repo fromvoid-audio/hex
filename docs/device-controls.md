@@ -237,3 +237,15 @@ renderer; no device chooses its own outline radius. Header backgrounds round
 their top corners explicitly because GPUI overflow masks are rectangular.
 Numeric readouts share `CONTROL_CORNER_RADIUS` (3 logical pixels). Frame styling
 belongs to this library; device modules own parameter composition and bindings.
+
+### shared Lattice visual system
+
+Utility is the reference testbed for the native Lattice look and feel. Its
+parameter composition is device-specific; its frames, knobs, sliders, editable
+values, switches, selectors and popup behavior belong to `hex-widgets`. Improve
+those reusable controls rather than introducing Utility-only appearance paths.
+All native devices inherit library styling and interaction improvements; new
+device panels only compose library controls and bind validated descriptors.
+Operator's dedicated layout will use this same library. Reusable density
+variants are permitted; variants must not encode a particular device identity.
+Native visual acceptance of the shared system remains with the user.
