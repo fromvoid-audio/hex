@@ -28,10 +28,15 @@ weights; it is not an additional serialized mode. Named topology selections
 update the existing routing parameters through the ordinary immutable device
 patch contract. See the [routing preset contract](operator-routing-presets.md).
 
-This milestone does not implement mutable feedback, filters, additional
-waveforms beyond these four, unbounded routing, full Operator controls or Live numerical parity. The injected
-mutable runtime remains test-only. Native listening and device-deadline behavior
-require separate acceptance; see [performance measurements](performance.md).
+The registered native device still does not admit feedback controls or mutable
+voice history. The standalone bounded feedback kernel is specified separately
+in the [Operator feedback contract](operator-feedback.md); routing that state
+through project persistence, native runtime handoff, Session, seeking, loops and
+export remains a later admission gate. Filters, additional waveforms beyond
+these four, unbounded routing, full Operator controls and Live numerical parity
+also remain open. The injected mutable runtime remains test-only. Native
+listening and device-deadline behavior require separate acceptance; see
+[performance measurements](performance.md).
 
 Fixed oscillators use frequency in Hz times a multiplier, independent of MIDI
 pitch. Ratio oscillators retain the previous exact phase-step law. Per-operator

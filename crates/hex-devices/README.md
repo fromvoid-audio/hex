@@ -18,11 +18,14 @@ versioned opaque state and reusable metadata for those four envelopes. The
 metadata registers the original acyclic waveform-aware Operator as a shared-context
 analytic instrument; this does not admit feedback or full Live Operator behavior.
 The [compact Operator kernel](../../docs/operator-context.md) prepares one
-immutable DSP configuration and48-byte notes without duplicating envelopes or
+immutable DSP configuration and64-byte notes without duplicating envelopes or
 the routing graph into each note. Registered playback uses a bounded borrowed
 shared context and that compact note representation. The
 [fixed tuning contract](../../docs/operator-fixed-tuning.md) adds per-oscillator
 pitch-independent tuning through generic versioned state and metadata.
+The [standalone feedback kernel](../../docs/operator-feedback.md) adds a compact
+sequential per-note recurrence; registered playback still does not admit
+feedback controls or feedback state.
 
 ## Dependencies
 
