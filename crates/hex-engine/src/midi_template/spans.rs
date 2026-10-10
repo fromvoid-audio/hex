@@ -75,7 +75,11 @@ impl PreparedNativeInstrument for SilentInstrument {
         _pitch: u8,
         _velocity: u8,
     ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
-        Ok(PreparedAnalyticNote::new([0; 3], 0, silent_note_sample))
+        Ok(PreparedAnalyticNote::new(
+            [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+            0,
+            silent_note_sample,
+        ))
     }
 }
 
@@ -118,7 +122,7 @@ pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) until_frame: u64,
 }
 
-/// Opaque copied sine voice retained after a route is replaced.
+/// Opaque copied analytic voice retained after a route is replaced.
 #[derive(Clone, Copy, Debug)]
 pub struct MidiReleaseVoice {
     start_frame: u64,
@@ -187,11 +191,11 @@ impl MidiRenderSpan {
 }
 
 impl MidiReleaseVoice {
-    pub(crate) fn end_frame(self) -> u64 {
+    pub(crate) fn end_frame(&self) -> u64 {
         self.end_frame
     }
 
-    pub(crate) fn gate_end_frame(self) -> u64 {
+    pub(crate) fn gate_end_frame(&self) -> u64 {
         self.gate_end_frame
     }
 
@@ -294,7 +298,7 @@ impl MidiReleaseVoice {
         })
     }
 
-    pub(crate) fn sample_at(self, frame: u64) -> Option<[f32; 2]> {
+    pub(crate) fn sample_at(&self, frame: u64) -> Option<[f32; 2]> {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
         }
@@ -471,7 +475,7 @@ impl PreparedMidiInstrumentTemplate {
             .iter()
             .chain(&repeats)
             .filter_map(|span| bank.sampler(span.sampler_index))
-            .map(PreparedAnalyticNote::release_frames)
+            .map(|sampler| sampler.release_frames())
             .max()
             .unwrap_or_else(|| u64::from(source.sample_rate / 20).max(1));
         let release_raw = release_window_raw(
@@ -1185,11 +1189,9 @@ mod note_bank_lifetime_tests {
             _pitch: u8,
             _velocity: u8,
         ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
-            Ok(PreparedAnalyticNote::new(
-                [0.25_f32.to_bits() as u64, 0, 0],
-                4,
-                test_sample,
-            ))
+            let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
+            payload[hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS - 1] = u64::from(0.25_f32.to_bits());
+            Ok(PreparedAnalyticNote::new(payload, 4, test_sample))
         }
     }
 
@@ -1200,7 +1202,10 @@ mod note_bank_lifetime_tests {
         release: u64,
     ) -> [f32; 2] {
         if age < gate.saturating_add(release) {
-            [f32::from_bits(payload[0] as u32), -0.5]
+            [
+                f32::from_bits(payload[hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS - 1] as u32),
+                -0.5,
+            ]
         } else {
             [0.0; 2]
         }

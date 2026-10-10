@@ -76,18 +76,18 @@ impl NativeInstrumentDefinition for ConstantDefinition {
 }
 impl PreparedNativeInstrument for ConstantPrepared {
     fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
-        Ok(PreparedAnalyticNote::new(
-            [
-                self.stereo[0].to_bits() as u64,
-                self.stereo[1].to_bits() as u64,
-                0,
-            ],
-            4,
-            constant_sample,
-        ))
+        let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0] = u64::from(self.stereo[0].to_bits());
+        payload[1] = u64::from(self.stereo[1].to_bits());
+        Ok(PreparedAnalyticNote::new(payload, 4, constant_sample))
     }
 }
-fn constant_sample(payload: &[u64; 3], age: u64, gate: u64, release: u64) -> StereoFrame {
+fn constant_sample(
+    payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age: u64,
+    gate: u64,
+    release: u64,
+) -> StereoFrame {
     if age < gate.saturating_add(release) {
         [
             f32::from_bits(payload[0] as u32),

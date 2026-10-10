@@ -391,7 +391,7 @@ notes, preserving source-window admission. Focused engine/session/export and
 callback allocation checks pass; clean full local CI remains the integration gate.
 Accounted repeated-note sampler/index storage falls in the Session fixture, while
 unique-heavy Arrangement storage rises; noisy timings establish no speedup.
-FM4 registration/payload expansion2124 and native instrument panel2127 remain
+FM4 registry/state admission2124 and native instrument panel2127 remain
 separate open work, with Pulse authoritative for review and acceptance.
 
 Instrument panel2127: canonical instrument slot now renders before effects, with
@@ -400,3 +400,12 @@ parameters and gestures by canonical slot ownership; UI caches class/type identi
 Sine exposes no fabricated parameters. Full Session tests, rendered panel actions,
 nine gesture tests, strict affected Clippy and source guards pass. Full local CI
 and user native acceptance follow; FM4 admission and full Operator remain open.
+
+Pulse2133: the analytic sampler payload is widened to41 owned `u64` words for
+the standalone validated FM4 kernel, with borrowed per-frame sampling and
+bit-exact legacy sine output. FM4 remains unregistered; this change does not
+admit it to projects or provide its state codec/UI. Bank and fixed Session MIDI
+scratch growth are derived and documented in [lattice instruments](docs/lattice-instruments.md);
+release timing and Session preparation before/after are recorded in
+[performance](docs/performance.md). Focused source checks remain separate from
+root full local CI and review.

@@ -41,7 +41,11 @@ impl PreparedNativeInstrument for SilentInstrument {
         _pitch: u8,
         _velocity: u8,
     ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
-        Ok(PreparedAnalyticNote::new([0; 3], 0, silent_sample))
+        Ok(PreparedAnalyticNote::new(
+            [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+            0,
+            silent_sample,
+        ))
     }
 }
 
@@ -203,25 +207,7 @@ impl PreparedMidiNoteBank {
         bank_bytes: usize,
         index_count: usize,
     ) -> Result<(), Invalid> {
-        let max_entries = MAX_NOTE_BANK_ENTRIES_PER_PROJECT
-            .checked_mul(2)
-            .ok_or(Invalid("combined midi bank entry budget overflow"))?;
-        let max_bank_bytes = max_entries
-            .checked_mul(std::mem::size_of::<BankEntry>())
-            .and_then(|bytes| {
-                let owners = hex_project::MAX_TRACKS.checked_mul(2)?.checked_mul(
-                    std::mem::size_of::<PreparedMidiNoteBank>()
-                        .checked_add(2 * std::mem::size_of::<usize>())?
-                        .checked_add(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?,
-                )?;
-                let session_handles = hex_project::MAX_SESSION_CELLS
-                    .checked_mul(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?;
-                bytes.checked_add(owners)?.checked_add(session_handles)
-            })
-            .ok_or(Invalid("combined midi bank byte budget overflow"))?;
-        let max_index_count = MAX_ARRANGEMENT_NOTE_BANK_REFERENCES
-            .checked_add(MAX_SESSION_NOTE_BANK_REFERENCES)
-            .ok_or(Invalid("combined midi bank index budget overflow"))?;
+        let (max_bank_bytes, max_index_count) = complete_revision_limits()?;
         let index_bytes = index_count
             .checked_mul(std::mem::size_of::<u16>())
             .ok_or(Invalid("combined midi bank index size overflow"))?;
@@ -243,6 +229,29 @@ impl PreparedMidiNoteBank {
     }
 }
 
+fn complete_revision_limits() -> Result<(usize, usize), Invalid> {
+    let max_entries = MAX_NOTE_BANK_ENTRIES_PER_PROJECT
+        .checked_mul(2)
+        .ok_or(Invalid("combined midi bank entry budget overflow"))?;
+    let max_bank_bytes = max_entries
+        .checked_mul(std::mem::size_of::<BankEntry>())
+        .and_then(|bytes| {
+            let owners = hex_project::MAX_TRACKS.checked_mul(2)?.checked_mul(
+                std::mem::size_of::<PreparedMidiNoteBank>()
+                    .checked_add(2 * std::mem::size_of::<usize>())?
+                    .checked_add(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?,
+            )?;
+            let session_handles = hex_project::MAX_SESSION_CELLS
+                .checked_mul(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?;
+            bytes.checked_add(owners)?.checked_add(session_handles)
+        })
+        .ok_or(Invalid("combined midi bank byte budget overflow"))?;
+    let max_index_count = MAX_ARRANGEMENT_NOTE_BANK_REFERENCES
+        .checked_add(MAX_SESSION_NOTE_BANK_REFERENCES)
+        .ok_or(Invalid("combined midi bank index budget overflow"))?;
+    Ok((max_bank_bytes, max_index_count))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,11 +269,9 @@ mod tests {
             velocity: u8,
         ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
             self.preparations.fetch_add(1, Ordering::Relaxed);
-            Ok(PreparedAnalyticNote::new(
-                [self.identity, u64::from(pitch), u64::from(velocity)],
-                7,
-                probe_sample,
-            ))
+            let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
+            payload[..3].copy_from_slice(&[self.identity, u64::from(pitch), u64::from(velocity)]);
+            Ok(PreparedAnalyticNote::new(payload, 7, probe_sample))
         }
     }
 
@@ -340,6 +347,42 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn complete_revision_limit_accounts_wide_entries_all_owners_and_indices() {
+        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 344);
+        assert_eq!(std::mem::size_of::<BankEntry>(), 352);
+        let (max_bank_bytes, max_indices) = complete_revision_limits().unwrap();
+        assert!(
+            PreparedMidiNoteBank::validate_complete_revision_budget(max_bank_bytes, max_indices,)
+                .is_ok()
+        );
+        assert!(
+            PreparedMidiNoteBank::validate_complete_revision_budget(
+                max_bank_bytes + 1,
+                max_indices,
+            )
+            .is_err()
+        );
+        assert!(
+            PreparedMidiNoteBank::validate_complete_revision_budget(
+                max_bank_bytes,
+                max_indices + 1,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            PreparedMidiNoteBank::validate_complete_revision_budget(0, usize::MAX),
+            Err(Invalid("combined midi bank index size overflow"))
+        );
+        assert_eq!(MAX_NOTE_BANK_ENTRIES_PER_PROJECT * 2, 131_072);
+        assert_eq!(max_indices, 196_608);
+        let per_revision = max_bank_bytes
+            .checked_add(max_indices * std::mem::size_of::<u16>())
+            .unwrap();
+        assert_eq!(per_revision, 47_079_424);
+        assert_eq!(per_revision.checked_mul(2).unwrap(), 94_158_848);
     }
 
     #[test]
