@@ -1622,3 +1622,17 @@ native visual acceptance remain pending. See [Operator shell context contract]
  8,048B/pair within the existing8,192B ceiling. No native retarget wiring yet.
 - Original release timing sample and limitations:docs/operator-feedback.md.
   Host integration/admission, callback probes and native listening remain2229.
+
+## 10 October 2026 — Operator shared-ramp helpers (Pulse2285)
+
+- Added state-only fresh-note enrollment at the shared parameter boundary,
+  including a subsequent same-offset NoteOff at envelope age zero.
+- Exact history copying rebinds configuration identities while preserving the
+  ramp, phase, gate, feedback memory and future PCM. Rapid edits and zero-clock
+  copies have focused regression coverage.
+- Shared-ramp continuation remains defined after every voice expires; the host
+  must advance one clock for all voices at closed render boundaries.
+- Child validation passed 115 device tests, formatting and strict crate Clippy.
+  Final integrated local CI and PR merge evidence are recorded in Pulse.
+- This kernel prerequisite does not enable live registered parameter edits;
+  runtime admission, callback probes and native listening remain Pulse2229.
