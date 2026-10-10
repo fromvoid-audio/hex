@@ -35,6 +35,13 @@ effect chain. The current stateful effect consumes summed stereo frames and
 cannot substitute for note input, voice ownership or source scheduling. This is
 a proposal requiring architecture acceptance, not an already implemented API.
 
+This paragraph records the original 9 October proposal, not the accepted
+current chain model: a later canonical model permits one instrument at a stored
+free position among effects. Audio enters the prefix, MIDI is added at the
+instrument, then the summed signal traverses the suffix. See the current
+[lattice instrument contract](../../docs/lattice-instruments.md). This research
+note remains a reference-experiment plan and does not claim instrument parity.
+
 Preparation owns validation, state migration, coefficients/tables, maximum
 voices/events and allocation. The audio owner consumes timestamped bounded
 events, retains preallocated voice histories and emits stereo frames through the
