@@ -1314,3 +1314,25 @@ standalone/0.678s compact, after0.691s/0.702s; note/context/compact sizes change
 600/688/48 to624/704/64bytes. No reliable speed, adapter timing, physical deadline
 or Live numerical parity claim. Full exact-head local CI and native acceptance
 remain pending. See docs/operator-context.md for workload and raw-log provenance.
+
+## 10 October 2026 — review63 velocity test build
+
+Focused [PR102](https://github.com/PORTALSURFER/hex/pull/102), source4a10773,
+passed all16 exact local checks20261010T101119Z-4923c9f6, stale=false. Full CI
+first caught stale descriptor/payload fixture counts; repairs retain independent
+PCM oracles and add nonneutral history/storage coverage. Combinedccc6232 passed
+all16 checks20261010T101108Z-a069085b, stale=false. Fresh optimized release
+25.09seconds; strict ad-hoc signature and signed-binary hash independently
+verified: artifacts/hex-lattice-velocity-review-20261010-ccc6232.app, SHA256
+f2f9cfbc14cc0c926dacd7239fecb18eaf3a20d30b3e6dd2aa80471b9c75283b.
+Its adjacent manifest records65 integrated source PR links (38–102).
+
+The user checklist covers four amplitude velocity controls, notes at different
+velocities, neutral previous sound and save/reopen. Native control/listening
+acceptance remains pending; no app was launched by the agent, earlier apps remain
+intact. Pulse2222 is ready_for_review. Codex attachment registration reached100
+identities; verified links remain in Pulse and this ledger. No hosted CI or
+automatic merges. Pulse2223 standalone bounded self-feedback DSP is separately
+in_progress and absent from this app; native feedback admission remains a later
+gate. Exact Live laws, full Operator, plugins, PDC and physical deadlines remain
+open.
