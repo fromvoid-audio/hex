@@ -480,6 +480,28 @@ impl NativeDeviceMetadata for UtilityDefinition {
             _ => return Err(DeviceContractError::UnknownParameter),
         })
     }
+    fn parameter_enabled(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        let settings = decode_state(state)?;
+        let descriptor = DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        descriptor.validate(self.read_parameter(state, id)?)?;
+        let stereo_channels = !matches!(
+            settings.channel_mode,
+            ChannelMode::Left | ChannelMode::Right
+        );
+        Ok(match id {
+            parameter::WIDTH | parameter::MID_SIDE_ENABLED | parameter::MID_SIDE_BALANCE => {
+                stereo_channels
+            }
+            _ => true,
+        })
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -1082,6 +1104,83 @@ mod tests {
         let future =
             NativeDeviceState::new(UTILITY_TYPE_ID, 99, patched.payload().to_vec()).unwrap();
         assert!(registry.migrate_state(&future).is_err());
+    }
+
+    #[test]
+    fn utility_width_and_mid_side_availability_tracks_channel_mode_without_resetting_values() {
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        let mut state = UTILITY_DEFINITION.default_state().unwrap();
+        for (parameter, value) in [
+            (parameter::WIDTH, ParameterValue::Float(2.5)),
+            (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(true)),
+            (parameter::MID_SIDE_BALANCE, ParameterValue::Float(-0.4)),
+        ] {
+            state = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter, value)
+                .unwrap();
+        }
+        let conditional = [
+            parameter::WIDTH,
+            parameter::MID_SIDE_ENABLED,
+            parameter::MID_SIDE_BALANCE,
+        ];
+
+        for mode in [1, 2] {
+            let left_or_right = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter::CHANNEL, ParameterValue::Choice(mode))
+                .unwrap();
+            for parameter in conditional {
+                assert!(
+                    !UTILITY_DEFINITION
+                        .parameter_enabled(&left_or_right, parameter)
+                        .unwrap()
+                );
+            }
+            assert_eq!(
+                UTILITY_DEFINITION
+                    .read_parameter(&left_or_right, parameter::WIDTH)
+                    .unwrap(),
+                ParameterValue::Float(2.5)
+            );
+            assert_eq!(
+                UTILITY_DEFINITION
+                    .read_parameter(&left_or_right, parameter::MID_SIDE_ENABLED)
+                    .unwrap(),
+                ParameterValue::Bool(true)
+            );
+            assert_eq!(
+                UTILITY_DEFINITION
+                    .read_parameter(&left_or_right, parameter::MID_SIDE_BALANCE)
+                    .unwrap(),
+                ParameterValue::Float(-0.4)
+            );
+        }
+
+        for mode in [0, 3] {
+            let stereo_or_swap = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter::CHANNEL, ParameterValue::Choice(mode))
+                .unwrap();
+            for parameter in conditional {
+                assert!(
+                    UTILITY_DEFINITION
+                        .parameter_enabled(&stereo_or_swap, parameter)
+                        .unwrap()
+                );
+            }
+        }
+
+        assert!(
+            UTILITY_DEFINITION
+                .parameter_enabled(&state, ParameterId::from_static(99))
+                .is_err()
+        );
+        let malformed = NativeDeviceState::new(UTILITY_TYPE_ID, 2, vec![0; 19]).unwrap();
+        assert!(
+            UTILITY_DEFINITION
+                .parameter_enabled(&malformed, parameter::WIDTH)
+                .is_err()
+        );
     }
 
     #[test]

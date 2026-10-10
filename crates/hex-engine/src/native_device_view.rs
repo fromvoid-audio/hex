@@ -25,6 +25,8 @@ pub struct NativeDeviceCatalogEntry {
 pub struct NativeDeviceParameterView {
     pub descriptor: &'static ParameterDescriptor,
     pub value: ParameterValue,
+    /// Whether the editor should enable this control for the current device state.
+    pub enabled: bool,
 }
 
 /// One immutable device's complete read-only parameter view. Consumers cache
@@ -190,7 +192,14 @@ fn build_view<D: NativeDeviceMetadata + ?Sized>(
         descriptor
             .validate(value)
             .map_err(|_| Invalid("native device parameter value is invalid"))?;
-        parameters.push(NativeDeviceParameterView { descriptor, value });
+        let enabled = definition
+            .parameter_enabled(migrated, descriptor.id)
+            .map_err(|_| Invalid("native device parameter availability is invalid"))?;
+        parameters.push(NativeDeviceParameterView {
+            descriptor,
+            value,
+            enabled,
+        });
     }
     Ok(NativeDeviceView {
         type_id: state.type_id(),
@@ -237,6 +246,38 @@ mod tests {
             crate::native_device_parameter(&original, first.id).unwrap(),
             first.default
         );
+    }
+
+    #[test]
+    fn class_aware_view_exposes_current_conditional_parameter_availability() {
+        let catalog = native_device_catalog().unwrap();
+        let utility = &catalog[0];
+        let state = crate::default_native_device_state(utility.type_id).unwrap();
+        let channel = utility
+            .parameters
+            .iter()
+            .find(|parameter| parameter.label == "channel")
+            .expect("channel selector");
+        let left =
+            crate::patch_native_device_parameter(&state, channel.id, ParameterValue::Choice(1))
+                .unwrap();
+        let view = native_device_view(&left).unwrap();
+        for label in ["width", "mid-side", "mid-side balance"] {
+            let parameter = view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.label == label)
+                .expect("conditional control");
+            assert!(!parameter.enabled, "{label} is unavailable in left mode");
+        }
+        let width = view
+            .parameters
+            .iter()
+            .find(|parameter| parameter.descriptor.label == "width")
+            .unwrap();
+        assert_eq!(width.value, ParameterValue::Float(1.0));
+        let stereo = native_device_view(&state).unwrap();
+        assert!(stereo.parameters.iter().all(|parameter| parameter.enabled));
     }
 
     #[test]

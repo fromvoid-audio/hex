@@ -302,6 +302,265 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
 }
 
 #[gpui::test]
+fn utility_left_mode_disables_width_and_mid_side_controls_without_losing_values(
+    cx: &mut TestAppContext,
+) {
+    let (service, mut state, track, device, _, _) = actor_utility_fixture();
+    let descriptors = hex_engine::native_device_descriptors_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        state.project.track(track).expect("track").devices()[0]
+            .state()
+            .type_id(),
+    )
+    .expect("Utility descriptors");
+    let parameter = |label: &str| {
+        descriptors
+            .iter()
+            .find(|descriptor| descriptor.label == label)
+            .expect("Utility parameter")
+            .id
+    };
+    let width = parameter("width");
+    let channel = parameter("channel");
+    let mid_side = parameter("mid-side");
+    let mid_side_balance = parameter("mid-side balance");
+    for (parameter, value) in [
+        (width, ParameterValue::Float(2.5)),
+        (mid_side, ParameterValue::Bool(true)),
+        (mid_side_balance, ParameterValue::Float(-0.4)),
+        (channel, ParameterValue::Choice(1)),
+    ] {
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter,
+                value,
+            })
+            .expect("Utility setup request");
+        state = receive_service_event(&service).state;
+    }
+
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let width_slider = Box::leak(
+        format!(
+            "device-{}-parameter-{}-slider",
+            device.value(),
+            width.value()
+        )
+        .into_boxed_str(),
+    );
+    let width_bounds = visual
+        .debug_bounds(width_slider)
+        .expect("disabled width slider");
+    let width_click = point(width_bounds.center().x, width_bounds.center().y);
+    let balance_slider = Box::leak(
+        format!(
+            "device-{}-parameter-{}-slider",
+            device.value(),
+            mid_side_balance.value()
+        )
+        .into_boxed_str(),
+    );
+    let balance_bounds = visual
+        .debug_bounds(balance_slider)
+        .expect("disabled mid-side balance slider");
+    let balance_click = point(balance_bounds.center().x, balance_bounds.center().y);
+    let mid_side_toggle = Box::leak(
+        format!("device-{}-parameter-{}", device.value(), mid_side.value()).into_boxed_str(),
+    );
+    let toggle_bounds = visual
+        .debug_bounds(mid_side_toggle)
+        .expect("disabled mid-side toggle");
+    let toggle_click = point(toggle_bounds.center().x, toggle_bounds.center().y);
+    let channel_selector = Box::leak(
+        format!("device-{}-parameter-{}", device.value(), channel.value()).into_boxed_str(),
+    );
+    let channel_bounds = visual
+        .debug_bounds(channel_selector)
+        .expect("channel selector");
+    editor.read_with(cx, |view, _| {
+        let current = view.state.as_ref().expect("state");
+        let utility_state = current.project.track(track).expect("track").devices()[0].state();
+        assert_eq!(current.revision, initial_revision);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                width,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        assert!(current.can_undo);
+    });
+
+    visual.simulate_mouse_down(width_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(width_click.x + px(24.0), width_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(width_click.x + px(24.0), width_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_down(balance_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(balance_click.x + px(24.0), balance_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(balance_click.x + px(24.0), balance_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_down(toggle_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let current = view.state.as_ref().expect("state");
+        assert_eq!(current.revision, initial_revision);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.device_gesture.snapshot().is_none());
+        let utility_state = current.project.track(track).expect("track").devices()[0].state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                width,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                mid_side,
+            )
+            .unwrap(),
+            ParameterValue::Bool(true)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                mid_side_balance,
+            )
+            .unwrap(),
+            ParameterValue::Float(-0.4)
+        );
+    });
+
+    let channel_click = point(channel_bounds.center().x, channel_bounds.center().y);
+    visual.simulate_mouse_down(channel_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let swap_selector = Box::leak(
+        format!(
+            "device-{}-parameter-{}-option-3",
+            device.value(),
+            channel.value()
+        )
+        .into_boxed_str(),
+    );
+    let swap = visual.debug_bounds(swap_selector).expect("swap option");
+    let swap_click = point(swap.center().x, swap.center().y);
+    visual.simulate_mouse_down(swap_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(swap_click, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state.project.track(track).is_some_and(|track| {
+                hex_engine::native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    track.devices()[0].state(),
+                    channel,
+                ) == Ok(ParameterValue::Choice(3))
+            })
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let current = view.state.as_ref().expect("state");
+        let utility_state = current.project.track(track).expect("track").devices()[0].state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                width,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.5),
+            "re-enabling width preserves its stored value"
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility_state,
+                mid_side,
+            )
+            .unwrap(),
+            ParameterValue::Bool(true),
+            "re-enabling mid-side preserves its stored value"
+        );
+        let view = hex_engine::native_device_view_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            utility_state,
+        )
+        .unwrap();
+        assert!(
+            view.parameters
+                .iter()
+                .filter(|parameter| matches!(
+                    parameter.descriptor.label,
+                    "width" | "mid-side" | "mid-side balance"
+                ))
+                .all(|parameter| parameter.enabled)
+        );
+    });
+
+    visual.simulate_mouse_down(width_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(width_click.x + px(20.0), width_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(width_click.x + px(20.0), width_click.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state.project.track(track).is_some_and(|track| {
+                hex_engine::native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    track.devices()[0].state(),
+                    width,
+                ) != Ok(ParameterValue::Float(2.5))
+            })
+        })
+    });
+    visual.simulate_mouse_down(toggle_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_click, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state.project.track(track).is_some_and(|track| {
+                hex_engine::native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    track.devices()[0].state(),
+                    mid_side,
+                ) == Ok(ParameterValue::Bool(false))
+            })
+        })
+    });
+}
+
+#[gpui::test]
 fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut TestAppContext) {
     let (service, initial_state, track, _, _, _) = actor_utility_fixture();
     let utility = hex_engine::native_device_catalog()

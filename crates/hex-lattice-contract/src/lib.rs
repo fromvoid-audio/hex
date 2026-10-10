@@ -294,6 +294,26 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError>;
+    /// Whether a parameter is currently editable for this validated device state.
+    /// This is an editor affordance only: patch validation remains authoritative,
+    /// and inactive authored values may stay stored and round-trip unchanged.
+    /// Definitions with no conditional controls inherit the always-enabled rule.
+    /// Implementations must refuse malformed states and unknown parameters.
+    fn parameter_enabled(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        let migrated = self.migrate_state(state)?;
+        let descriptor = self
+            .descriptors()
+            .iter()
+            .find(|descriptor| descriptor.id == parameter)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        let value = self.read_parameter(&migrated, parameter)?;
+        descriptor.validate(value)?;
+        Ok(true)
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -305,6 +325,221 @@ pub trait NativeDeviceMetadata: Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const AVAILABILITY_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.availability");
+    const AVAILABILITY_PARAMETER: ParameterId = ParameterId::from_static(1);
+    const AVAILABILITY_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        id: AVAILABILITY_PARAMETER,
+        label: "level",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.5),
+        presentation: ParameterPresentation::Linear,
+    }];
+    const MODE_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.mode");
+    const MODE_PARAMETER: ParameterId = ParameterId::from_static(1);
+    const CONDITIONAL_PARAMETER: ParameterId = ParameterId::from_static(2);
+    const MODE_DESCRIPTORS: &[ParameterDescriptor] = &[
+        ParameterDescriptor {
+            id: MODE_PARAMETER,
+            label: "mode",
+            kind: ParameterKind::Choice {
+                labels: &["off", "on"],
+            },
+            default: ParameterValue::Choice(0),
+            presentation: ParameterPresentation::Linear,
+        },
+        ParameterDescriptor {
+            id: CONDITIONAL_PARAMETER,
+            label: "amount",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.5),
+            presentation: ParameterPresentation::Linear,
+        },
+    ];
+
+    struct AlwaysEnabledDefinition;
+    struct ModeConditionalDefinition;
+
+    impl NativeDeviceMetadata for AlwaysEnabledDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            AVAILABILITY_TYPE
+        }
+
+        fn state_version(&self) -> u32 {
+            1
+        }
+
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            AVAILABILITY_DESCRIPTORS
+        }
+
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(AVAILABILITY_TYPE, 1, vec![])
+        }
+
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != AVAILABILITY_TYPE {
+                return Err(DeviceContractError::WrongDeviceType);
+            }
+            if state.state_version() != 1 {
+                return Err(DeviceContractError::UnsupportedStateVersion);
+            }
+            if !state.payload().is_empty() {
+                return Err(DeviceContractError::MalformedState);
+            }
+            Ok(state.clone())
+        }
+
+        fn read_parameter(
+            &self,
+            _: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            if parameter == AVAILABILITY_PARAMETER {
+                Ok(ParameterValue::Float(0.5))
+            } else {
+                Err(DeviceContractError::UnknownParameter)
+            }
+        }
+
+        fn patch_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            let descriptor = AVAILABILITY_DESCRIPTORS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            descriptor.validate(value)?;
+            self.migrate_state(state)
+        }
+    }
+
+    impl NativeDeviceMetadata for ModeConditionalDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            MODE_TYPE
+        }
+
+        fn state_version(&self) -> u32 {
+            1
+        }
+
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            MODE_DESCRIPTORS
+        }
+
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(MODE_TYPE, 1, vec![0])
+        }
+
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != MODE_TYPE {
+                return Err(DeviceContractError::WrongDeviceType);
+            }
+            if state.state_version() != 1 {
+                return Err(DeviceContractError::UnsupportedStateVersion);
+            }
+            if state.payload().len() != 1 || state.payload()[0] > 1 {
+                return Err(DeviceContractError::MalformedState);
+            }
+            Ok(state.clone())
+        }
+
+        fn read_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            self.migrate_state(state)?;
+            match parameter {
+                MODE_PARAMETER => Ok(ParameterValue::Choice(u32::from(state.payload()[0]))),
+                CONDITIONAL_PARAMETER => Ok(ParameterValue::Float(0.5)),
+                _ => Err(DeviceContractError::UnknownParameter),
+            }
+        }
+
+        fn parameter_enabled(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<bool, DeviceContractError> {
+            let migrated = self.migrate_state(state)?;
+            let descriptor = MODE_DESCRIPTORS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            descriptor.validate(self.read_parameter(&migrated, parameter)?)?;
+            Ok(parameter != CONDITIONAL_PARAMETER || migrated.payload()[0] == 1)
+        }
+
+        fn patch_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            let descriptor = MODE_DESCRIPTORS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            descriptor.validate(value)?;
+            self.migrate_state(state)
+        }
+    }
+
+    #[test]
+    fn metadata_defaults_valid_parameters_to_enabled_and_validates_state() {
+        let definition = AlwaysEnabledDefinition;
+        let state = definition.default_state().unwrap();
+        assert!(
+            definition
+                .parameter_enabled(&state, AVAILABILITY_PARAMETER)
+                .unwrap()
+        );
+        assert_eq!(
+            definition.parameter_enabled(&state, ParameterId::from_static(2)),
+            Err(DeviceContractError::UnknownParameter)
+        );
+        let malformed = NativeDeviceState::new(AVAILABILITY_TYPE, 1, vec![0]).unwrap();
+        assert_eq!(
+            definition.parameter_enabled(&malformed, AVAILABILITY_PARAMETER),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+
+    #[test]
+    fn independent_metadata_can_disable_a_parameter_from_its_current_state() {
+        let definition = ModeConditionalDefinition;
+        let off = definition.default_state().unwrap();
+        let on = NativeDeviceState::new(MODE_TYPE, 1, vec![1]).unwrap();
+        assert!(
+            !definition
+                .parameter_enabled(&off, CONDITIONAL_PARAMETER)
+                .unwrap()
+        );
+        assert!(
+            definition
+                .parameter_enabled(&on, CONDITIONAL_PARAMETER)
+                .unwrap()
+        );
+        assert!(definition.parameter_enabled(&off, MODE_PARAMETER).unwrap());
+    }
 
     #[test]
     fn namespaced_ids_state_versions_and_payloads_are_bounded() {
