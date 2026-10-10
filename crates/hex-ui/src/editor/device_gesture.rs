@@ -1,5 +1,7 @@
 use super::EditorView;
-use hex_session::device_gesture::{GesturePhase, GestureTarget, ParameterValue};
+use hex_session::device_gesture::{
+    GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
+};
 use hex_session::service::{Request, SubmitError};
 use std::collections::VecDeque;
 
@@ -77,9 +79,28 @@ impl EditorView {
         Ok(())
     }
 
+    pub(super) fn begin_device_pair_gesture(
+        &mut self,
+        device: hex_project::DeviceId,
+        first: hex_lattice_contract::ParameterId,
+        second: hex_lattice_contract::ParameterId,
+        initial: ParameterPairValue,
+    ) -> Result<(), &'static str> {
+        self.device_gesture
+            .begin_pair(self.project_generation, device, first, second, initial)?;
+        Ok(())
+    }
+
     #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
     pub fn change_device_gesture(&mut self, value: ParameterValue) -> Result<(), &'static str> {
         self.device_gesture.change(value).map(|_| ())
+    }
+
+    pub(super) fn change_device_pair_gesture(
+        &mut self,
+        value: ParameterPairValue,
+    ) -> Result<(), &'static str> {
+        self.device_gesture.change_pair(value).map(|_| ())
     }
 
     pub(super) fn finish_device_gesture(
@@ -87,6 +108,13 @@ impl EditorView {
         value: ParameterValue,
     ) -> Result<(), &'static str> {
         self.device_gesture.finish(value)
+    }
+
+    pub(super) fn finish_device_pair_gesture(
+        &mut self,
+        value: ParameterPairValue,
+    ) -> Result<(), &'static str> {
+        self.device_gesture.finish_pair(value)
     }
 
     #[allow(dead_code)] // The native device panel binds this interaction contract in its own request.
@@ -181,12 +209,17 @@ impl EditorView {
             return false;
         }
         if !self.device_gesture.has_pending_terminal() {
-            let value = self
-                .device_gesture
-                .snapshot()
-                .map(|snapshot| snapshot.value);
-            if let Some(value) = value {
-                if let Err(error) = self.device_gesture.finish(value) {
+            let snapshot = self.device_gesture.snapshot();
+            if let Some(snapshot) = snapshot {
+                let result = if let Some(second) = snapshot.secondary_value {
+                    self.device_gesture.finish_pair(ParameterPairValue {
+                        first: snapshot.value,
+                        second,
+                    })
+                } else {
+                    self.device_gesture.finish(snapshot.value)
+                };
+                if let Err(error) = result {
                     self.error = Some(error.into());
                     return false;
                 }

@@ -193,6 +193,87 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
 }
 
 #[test]
+fn eq8_nondefault_independent_banks_roundtrip_as_generic_opaque_state() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "eq8 storage".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    let return_track = match editor
+        .execute(Command::AddReturnTrack {
+            name: "eq8 return".into(),
+        })
+        .unwrap()
+    {
+        Created::ReturnTrack(id) => id,
+        _ => panic!("return track"),
+    };
+
+    // The EQ codec owns this valid version-1 payload; storage deliberately sees
+    // only an opaque type/version/byte envelope and preserves every channel bank.
+    let mut payload = Vec::with_capacity(565);
+    payload.push(2); // mid/side banks selected
+    payload.extend_from_slice(&1.25_f32.to_le_bytes());
+    for bank in 0..5 {
+        for band in 0..8 {
+            let enabled = (bank == 1 && band == 2) || (bank == 4 && band == 6);
+            let shape = if bank == 1 { 7 } else { 0 };
+            let frequency: f32 = if bank == 1 && band == 2 {
+                1_337.0
+            } else if bank == 4 && band == 6 {
+                8_765.0
+            } else {
+                [
+                    40.0, 100.0, 250.0, 500.0, 1_000.0, 2_500.0, 6_000.0, 12_000.0,
+                ][band]
+            };
+            let gain: f32 = if bank == 1 && band == 2 { 9.5 } else { 0.0 };
+            let q = if bank == 4 && band == 6 {
+                3.25
+            } else {
+                std::f32::consts::FRAC_1_SQRT_2
+            };
+            payload.push(u8::from(enabled));
+            payload.push(shape);
+            payload.extend_from_slice(&frequency.to_le_bytes());
+            payload.extend_from_slice(&gain.to_le_bytes());
+            payload.extend_from_slice(&q.to_le_bytes());
+        }
+    }
+    let eq8 = NativeDeviceState::new(DeviceTypeId::from_static("hex.eq8"), 1, payload).unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: eq8.clone(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: eq8.clone(),
+        })
+        .unwrap();
+
+    let project = editor.project().clone();
+    let encoded = encode(&project).unwrap();
+    let decoded = decode(&encoded).unwrap();
+    assert_eq!(decoded, project);
+    assert_eq!(decoded.track(track).unwrap().devices()[0].state(), &eq8);
+    assert_eq!(
+        decoded.return_tracks()[0].devices()[0].state(),
+        &eq8,
+        "return-track storage preserves the same independent bank payload"
+    );
+}
+
+#[test]
 fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor

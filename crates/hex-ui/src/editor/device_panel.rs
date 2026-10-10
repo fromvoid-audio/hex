@@ -20,6 +20,7 @@ use hex_widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod eq8_panel;
 mod numeric_display;
 mod operator_panel;
 mod send_controls;
@@ -111,6 +112,10 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
+    eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
+    eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
+    eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -290,6 +295,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.eq8_panels.clear();
+        view.device_panel.eq8_graphs.clear();
+        view.device_panel.eq8_responses.clear();
+        view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
@@ -331,6 +340,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.eq8_panels.clear();
+        view.device_panel.eq8_graphs.clear();
+        view.device_panel.eq8_responses.clear();
+        view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.owner = desired_owner;
         view.device_panel.message = None;
     }
@@ -377,6 +390,29 @@ fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
     }
     view.device_panel.views.clear();
     view.device_panel.pending_values.clear();
+    retire_removed_eq8_graphs(view, cx, &HashSet::new());
+}
+
+pub(super) fn retire_removed_eq8_graphs(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    alive: &HashSet<DeviceId>,
+) {
+    let stale: Vec<_> = view
+        .device_panel
+        .eq8_graphs
+        .keys()
+        .filter(|device| !alive.contains(device))
+        .copied()
+        .collect();
+    for device in stale {
+        if let Some(graph) = view.device_panel.eq8_graphs.remove(&device) {
+            graph.entity.update(cx, |graph, cx| graph.cancel(cx));
+        }
+        view.device_panel.eq8_responses.remove(&device);
+        view.device_panel.eq8_panels.remove(&device);
+        view.device_panel.eq8_graph_gestures.remove(&device);
+    }
 }
 
 fn cancel_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
@@ -417,6 +453,7 @@ fn render_track(
         .map(|snapshot| snapshot.target);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -450,6 +487,16 @@ fn render_track(
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel
         .operator_pages
+        .retain(|device, _| alive.contains(device));
+    retire_removed_eq8_graphs(view, cx, &alive);
+    view.device_panel
+        .eq8_panels
+        .retain(|device, _| alive.contains(device));
+    view.device_panel
+        .eq8_responses
+        .retain(|device, _| alive.contains(device));
+    view.device_panel
+        .eq8_graph_gestures
         .retain(|device, _| alive.contains(device));
 
     if view.device_panel.effect_catalog.is_none() {
@@ -968,6 +1015,19 @@ fn render_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq8") {
+                let sample_rate = view
+                    .state
+                    .as_ref()
+                    .map_or(48_000, |state| state.project.sample_rate());
+                eq8_panel::render_body(
+                    view,
+                    cx,
+                    device_id,
+                    device.state(),
+                    device_view,
+                    sample_rate,
+                )
             } else {
                 let mut body = div()
                     .id(ElementId::Name(
@@ -997,7 +1057,7 @@ fn render_effect(
                 }
                 body
             };
-            if device_view.type_id.as_str() == Ok("hex.utility") {
+            if matches!(device_view.type_id.as_str(), Ok("hex.utility" | "hex.eq8")) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
@@ -1014,19 +1074,21 @@ fn render_effect(
             }
         }
         Err(error) => {
+            let compact = matches!(
+                device.state().type_id().as_str(),
+                Ok("hex.utility" | "hex.eq8")
+            );
             let body = div()
                 .id(ElementId::Name(
                     format!("device-body-{}", device_id.value()).into(),
                 ))
                 .debug_selector(move || format!("device-body-{}", device_id.value()))
                 .w_full()
-                .h(px(
-                    if device.state().type_id().as_str() == Ok("hex.utility") {
-                        UTILITY_FRAME_BODY_HEIGHT
-                    } else {
-                        DEVICE_FRAME_BODY_HEIGHT
-                    },
-                ))
+                .h(px(if compact {
+                    UTILITY_FRAME_BODY_HEIGHT
+                } else {
+                    DEVICE_FRAME_BODY_HEIGHT
+                }))
                 .min_h_0()
                 .overflow_y_scroll()
                 .p(px(5.0))
@@ -1040,7 +1102,7 @@ fn render_effect(
                     .as_str()
                     .unwrap_or("unknown device"),
             );
-            if device.state().type_id().as_str() == Ok("hex.utility") {
+            if compact {
                 compact_device_frame(title, control_style(), header_actions, body)
             } else {
                 device_frame(title, control_style(), header_actions, body)
@@ -1056,10 +1118,10 @@ fn render_effect(
         ),
     );
     let selector = format!("effect-device-{}", device_id.value());
-    let frame_width = if device.state().type_id().as_str() == Ok("hex.utility") {
-        UTILITY_FRAME_WIDTH
-    } else {
-        DEVICE_FRAME_WIDTH
+    let frame_width = match device.state().type_id().as_str() {
+        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
+        Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
+        _ => DEVICE_FRAME_WIDTH,
     };
     div()
         .id(ElementId::Name(selector.clone().into()))
@@ -1807,13 +1869,27 @@ pub(super) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
-    let gesture_value = view.device_gesture.snapshot().filter(|snapshot| {
-        snapshot.target
-            == (GestureTarget::DeviceParameter {
-                device: key.device,
-                parameter: key.parameter,
-            })
-    });
+    let gesture_value = view
+        .device_gesture
+        .snapshot()
+        .and_then(|snapshot| match snapshot.target {
+            GestureTarget::DeviceParameter { device, parameter }
+                if device == key.device && parameter == key.parameter =>
+            {
+                Some(snapshot.value)
+            }
+            GestureTarget::DeviceParameterPair { device, first, .. }
+                if device == key.device && first == key.parameter =>
+            {
+                Some(snapshot.value)
+            }
+            GestureTarget::DeviceParameterPair { device, second, .. }
+                if device == key.device && second == key.parameter =>
+            {
+                snapshot.secondary_value
+            }
+            _ => None,
+        });
     let pending_value = view.device_panel.pending_values.get(&key).copied();
     if pending_value.is_some()
         && view.worker_requests_pending == 0
@@ -1823,16 +1899,13 @@ pub(super) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.map_or_else(
-        || {
-            view.device_panel
-                .pending_values
-                .get(&key)
-                .copied()
-                .unwrap_or(canonical_value)
-        },
-        |snapshot| snapshot.value,
-    )
+    gesture_value.unwrap_or_else(|| {
+        view.device_panel
+            .pending_values
+            .get(&key)
+            .copied()
+            .unwrap_or(canonical_value)
+    })
 }
 
 fn parameter_control_with_presentation(
@@ -1950,6 +2023,8 @@ fn parameter_control_with_presentation(
                 let width = match display_label {
                     Some("bass mono" | "mono") => 64.0,
                     Some("bass mono audition") => 14.0,
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => 18.0,
+                    Some("on") => 18.0,
                     Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
@@ -2014,6 +2089,7 @@ fn create_parameter_control(
                 ParameterPresentation::LinearAmplitudeDecibels => {
                     NumericScale::LinearAmplitudeDecibels
                 }
+                ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
                 ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
@@ -2171,6 +2247,9 @@ fn create_parameter_control(
                     let Ok(value) = u32::try_from(event.index) else {
                         return;
                     };
+                    if !finalize_controls(view, cx) {
+                        return;
+                    }
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
                     if !view.enqueue_device_barrier(Request::SetDeviceParameter {

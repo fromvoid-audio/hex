@@ -20,7 +20,8 @@ Device implementations own codecs and preparation; the engine composes admitted
 memoryless matrices in chain order on control. `PreparedTrackMix` shares the
 result across audio/MIDI Arrangement and Session paths, before track and master
 mixing. Unknown types, future state versions and invalid payloads refuse
-preparation even when bypassed. The default registry admits linear Utility;
+preparation even when bypassed. The default registry admits Utility and the
+stateful registered eq eight processor;
 `compile::project_with_registry` also supports independently registered test
 definitions. Stateful devices and instrument replacement remain separate work.
 See [lattice](../../docs/lattice.md).

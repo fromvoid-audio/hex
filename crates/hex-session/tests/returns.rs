@@ -490,6 +490,107 @@ fn removing_return_with_active_parameter_gesture_cancels_stale_owner() {
 }
 
 #[test]
+fn eq_eight_processes_on_regular_and_return_device_chains() {
+    use hex_engine::NativeDeviceClass;
+
+    let service = Service::new(48_000, 16, 0).expect("service");
+    wait(&service);
+    let track_event = edit(
+        &service,
+        Command::AddMidiTrack {
+            name: "eq source".into(),
+        },
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track expected")
+    };
+    let clip_event = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).expect("clip length"),
+        },
+    );
+    let Some(Created::Clip(clip)) = clip_event.created else {
+        panic!("clip expected")
+    };
+    let note_event = edit(
+        &service,
+        Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(2).expect("note duration"),
+            pitch: 60,
+            channel: 0,
+            velocity: 120,
+        },
+    );
+    let dry = rendered(&mut { note_event });
+
+    let mut eq = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.eq8"),
+    )
+    .expect("eq eight default state");
+    for (parameter, value) in [
+        (ParameterId::from_static(1), ParameterValue::Bool(true)),
+        (ParameterId::from_static(3), ParameterValue::Float(261.6)),
+        (ParameterId::from_static(4), ParameterValue::Float(12.0)),
+    ] {
+        eq = hex_engine::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            &eq,
+            parameter,
+            value,
+        )
+        .expect("eq eight parameter");
+    }
+    let regular_insert = edit(
+        &service,
+        Command::InsertDevice {
+            track,
+            before: None,
+            state: eq.clone(),
+        },
+    );
+    let regular_pcm = rendered(&mut { regular_insert });
+    assert_ne!(regular_pcm, dry, "regular-track EQ must affect playback");
+
+    let return_event = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "eq return".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(return_track)) = return_event.created else {
+        panic!("return track expected")
+    };
+    let sent_event = edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.5,
+        },
+    );
+    let sent_without_eq = rendered(&mut { sent_event });
+    let return_insert = edit(
+        &service,
+        Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: eq,
+        },
+    );
+    let return_pcm = rendered(&mut { return_insert });
+    assert_ne!(
+        return_pcm, sent_without_eq,
+        "registered EQ must process Return contributions"
+    );
+}
+
+#[test]
 fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
     use hex_session::device_gesture::{GestureKey, GesturePhase, GestureRequest, GestureTarget};
 

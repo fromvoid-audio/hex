@@ -1,4 +1,5 @@
-//! Original native DSP: registered sine/FM4 instruments and Utility effects.
+//! Original native DSP: registered sine/FM4/Operator instruments and Utility/EQ eight effects.
+pub mod eq8;
 pub mod fm4;
 pub mod operator_envelope;
 pub mod operator_state;
@@ -15,8 +16,8 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 1] =
-    [&utility::UTILITY_DEFINITION];
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 2] =
+    [&utility::UTILITY_DEFINITION, &eq8::EQ8_DEFINITION];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
     &SINE_INSTRUMENT,
     &fm4::device::FM4_DEFINITION,
@@ -25,7 +26,7 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 
-/// The immutable catalog of original built-in linear effects.
+/// The immutable catalog of original built-in native effects.
 pub fn native_registry()
 -> Result<hex_lattice::NativeDeviceRegistry<'static>, hex_lattice_contract::DeviceContractError> {
     hex_lattice::NativeDeviceRegistry::new(&BUILTIN_NATIVE_DEVICES)

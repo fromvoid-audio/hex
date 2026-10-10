@@ -25,7 +25,7 @@ bytes so project/history clones retain state without copying each payload.
 State parsing and replacement allocations belong on control workers.
 
 `hex-lattice` owns the native processing-definition and registry seam;
-`hex-devices` implements and registers Utility. A device definition supplies
+`hex-devices` implements and registers Utility and eq eight. A device definition supplies
 defaults, validation, state migration, parameter access/patching and preparation.
 Its codec interprets its own payload. Adding a device means implementing this
 contract and registering it, without adding a per-device storage DTO or engine
@@ -69,8 +69,8 @@ path; preparation rejects non-finite coefficients or composition overflow.
 
 Memoryless `StereoMatrix` transforms declare exact zero algorithmic latency.
 Prepared stateful processors declare `Option<u32>` frames: the default `None`
-means unknown, while registered Utility filters report `Some(0)` because they
-use no fixed buffering or lookahead. Their IIR phase/group delay is separate.
+means unknown, while registered Utility and eq eight filters report `Some(0)`
+because they use no fixed buffering or lookahead. Their IIR phase/group delay is separate.
 This metadata does not remove interface latency or implement general device
 latency compensation. Return effect admission now requires a registered
 processor's explicit zero-latency declaration; unknown and nonzero values are
@@ -145,3 +145,13 @@ events, bounded per-definition capacity and declared tail quiescence. It is a
 test-only foundation; engine event generation, Arrangement/Session integration,
 outgoing tails, sustained chase and callback retirement/probes remain open. See
 [instrument slots](lattice-instruments.md).
+
+## eq eight
+
+The registered original `hex.eq8` implementation and compact regular/Return
+device panel are documented in [eq eight](eq-eight.md). Its stateful coefficient
+bank uses compatible same-rate history transfer; channel-mode changes reset the
+incompatible lane history while remaining publishable. The panel's frequency
+response is a bounded control-side query of the prepared coefficients, not a
+live analyzer or a claim of Live response parity. Native visual and listening
+acceptance remain with the user.

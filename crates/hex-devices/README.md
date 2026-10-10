@@ -3,6 +3,7 @@
 ## Purpose
 
 Implement original native device DSP, including a linear stereo Utility processor,
+the registered eight-band stateful [eq eight](../../docs/eq-eight.md) effect,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
 Own the original four-operator phase-modulation kernel and its versioned,

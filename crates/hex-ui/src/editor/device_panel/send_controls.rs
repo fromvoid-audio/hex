@@ -199,6 +199,9 @@ pub fn commit_owned_numeric_edit(
                 parameter,
                 value,
             },
+            GestureTarget::DeviceParameterPair { .. } => {
+                return Err("paired parameter edits use the graph gesture");
+            }
             GestureTarget::ReturnSend {
                 track,
                 return_track,
