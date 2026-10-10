@@ -1,0 +1,849 @@
+use super::return_effect_tails::{ReturnEffectTail, ReturnEffectTailPlan};
+use super::*;
+use hex_lattice::{
+    NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
+    PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+};
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterValue};
+use hex_project::{DeviceSnapshot, ReturnId, ReturnTrackSnapshot};
+use std::any::Any;
+
+struct HoldDefinition;
+
+#[derive(Clone)]
+struct HoldRuntime {
+    remaining: u8,
+}
+
+impl PreparedNativeProcessor for HoldDefinition {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<HoldRuntime>()
+    }
+
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite { max_tail_frames: 4 }
+    }
+
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(HoldRuntime { remaining: 0 })
+    }
+}
+
+impl NativeProcessorRuntime for HoldRuntime {
+    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+        for frame in frames {
+            if *frame != [0.0; 2] {
+                self.remaining = 4;
+            } else if self.remaining > 0 {
+                *frame = [0.25, -0.5];
+                self.remaining -= 1;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.remaining = 0;
+    }
+
+    fn is_quiescent(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous.as_any().is::<Self>()
+    }
+
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            self.remaining = previous.remaining;
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct ScaleDefinition(f32);
+
+#[derive(Clone)]
+struct ScaleRuntime(f32);
+
+struct TailDefinition {
+    frames: u64,
+    bytes: usize,
+}
+
+impl PreparedNativeProcessor for ScaleDefinition {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<ScaleRuntime>()
+    }
+
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite { max_tail_frames: 0 }
+    }
+
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(ScaleRuntime(self.0))
+    }
+}
+
+impl NativeProcessorRuntime for ScaleRuntime {
+    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+        for frame in frames {
+            frame[0] *= self.0;
+            frame[1] *= self.0;
+        }
+    }
+
+    fn reset(&mut self) {}
+
+    fn is_quiescent(&self) -> bool {
+        true
+    }
+
+    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous.as_any().is::<Self>()
+    }
+
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            self.0 = previous.0;
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl PreparedNativeProcessor for TailDefinition {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+
+    fn declared_runtime_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite {
+            max_tail_frames: self.frames,
+        }
+    }
+
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(HoldRuntime { remaining: 0 })
+    }
+}
+
+const HOLD_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.return.hold");
+const SCALE_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.return.scale");
+const TAIL_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.return.tail");
+
+fn processor_instances(
+    return_id: ReturnId,
+    tail_matrix: StereoMatrix,
+) -> Vec<PreparedProcessorInstance> {
+    processor_instances_with_scale(return_id, tail_matrix, 2.0, 2)
+}
+
+fn processor_instances_with_scale(
+    return_id: ReturnId,
+    tail_matrix: StereoMatrix,
+    scale: f32,
+    state_value: u8,
+) -> Vec<PreparedProcessorInstance> {
+    let hold_state = Arc::new(NativeDeviceState::new(HOLD_TYPE, 1, vec![1]).unwrap());
+    let scale_state = Arc::new(NativeDeviceState::new(SCALE_TYPE, 1, vec![state_value]).unwrap());
+    vec![
+        PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Return(return_id.value()),
+            device_id: 20,
+            device_type: HOLD_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(hold_state),
+            definition: Some(Arc::new(HoldDefinition)),
+        },
+        PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Return(return_id.value()),
+            device_id: 21,
+            device_type: SCALE_TYPE,
+            matrix: tail_matrix,
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(scale_state),
+            definition: Some(Arc::new(ScaleDefinition(scale))),
+        },
+    ]
+}
+
+fn tail_instances(
+    return_id: ReturnId,
+    count: usize,
+    frames: u64,
+    bytes: usize,
+) -> Vec<PreparedProcessorInstance> {
+    (0..count)
+        .map(|index| PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Return(return_id.value()),
+            device_id: 100 + index as u64,
+            device_type: TAIL_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(
+                NativeDeviceState::new(TAIL_TYPE, 1, vec![index as u8]).unwrap(),
+            )),
+            definition: Some(Arc::new(TailDefinition { frames, bytes })),
+        })
+        .collect()
+}
+
+fn active_tail_chain(
+    return_id: ReturnId,
+    count: usize,
+    frames: u64,
+    bytes: usize,
+) -> NativeRuntimeChain {
+    let mut chain =
+        NativeRuntimeChain::new(tail_instances(return_id, count, frames, bytes)).unwrap();
+    chain.begin_block();
+    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.commit_block();
+    chain
+}
+
+fn prepared_return_project(include_return: bool, master_gain: f32) -> Project {
+    prepared_return_project_with_bus(include_return, master_gain, 0.75, false)
+}
+
+fn prepared_return_project_with_bus(
+    include_return: bool,
+    master_gain: f32,
+    return_gain: f32,
+    return_muted: bool,
+) -> Project {
+    let mut snapshot = super::tests::project(1.0, 0, 8 << 32).snapshot();
+    snapshot.master_gain = master_gain;
+    if include_return {
+        let return_id = snapshot.next_id;
+        snapshot.next_id += 1;
+        snapshot.tracks[0]
+            .sends
+            .push(hex_project::SendLevelSnapshot {
+                return_track: return_id,
+                gain: 1.0,
+            });
+        snapshot.return_tracks.push(ReturnTrackSnapshot {
+            id: return_id,
+            name: "return".into(),
+            gain: return_gain,
+            muted: return_muted,
+            devices: vec![DeviceSnapshot {
+                id: snapshot.next_id,
+                bypassed: false,
+                state: {
+                    let mut state = hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap();
+                    state = hex_devices::utility::UTILITY_DEFINITION
+                        .patch_parameter(
+                            &state,
+                            hex_devices::utility::parameter::WIDTH,
+                            ParameterValue::Float(0.0),
+                        )
+                        .unwrap();
+                    hex_devices::utility::UTILITY_DEFINITION
+                        .patch_parameter(
+                            &state,
+                            hex_devices::utility::parameter::DC_REMOVE,
+                            ParameterValue::Bool(true),
+                        )
+                        .unwrap()
+                },
+            }],
+        });
+        snapshot.next_id += 1;
+    } else {
+        snapshot.tracks[0].sends.clear();
+        snapshot.return_tracks.clear();
+    }
+    Project::from_snapshot(snapshot).unwrap()
+}
+
+fn prepared_matrix_return_project(master_gain: f32) -> Project {
+    let mut snapshot = prepared_return_project(true, master_gain).snapshot();
+    let state = &mut snapshot.return_tracks[0].devices[0].state;
+    *state = hex_devices::utility::UTILITY_DEFINITION
+        .patch_parameter(
+            state,
+            hex_devices::utility::parameter::DC_REMOVE,
+            ParameterValue::Bool(false),
+        )
+        .unwrap();
+    Project::from_snapshot(snapshot).unwrap()
+}
+
+fn playback(project: &Project) -> SessionPlayback {
+    let revision = super::tests::revision(project, Arc::new(hex_devices::SineTable::new()));
+    SessionPlayback::new(revision).unwrap()
+}
+
+fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
+    let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+    chain.begin_block();
+    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.commit_block();
+    chain
+}
+
+fn warm(playback: &mut SessionPlayback) {
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    playback.render(&mut output).unwrap();
+}
+
+fn assert_old_return_tail_with_candidate_chain(
+    return_id: ReturnId,
+    old_matrix: StereoMatrix,
+    candidate_instances: Vec<PreparedProcessorInstance>,
+) {
+    let old_project = prepared_return_project(true, 1.0);
+    let new_project = prepared_return_project(true, 0.5);
+    let mut previous = playback(&old_project);
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
+    warm(&mut previous);
+    let mut candidate = playback(&new_project);
+    candidate.return_chains[0] = NativeRuntimeChain::new(candidate_instances.clone()).unwrap();
+
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+    assert!(candidate.return_chains[0].committed_range_is_quiescent(0..2));
+
+    let mut baseline = playback(&new_project);
+    baseline.return_chains[0] = NativeRuntimeChain::new(candidate_instances).unwrap();
+    warm(&mut baseline);
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    baseline.render(&mut expected).unwrap();
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let tail_active = index < 4;
+        let scale = if tail_active { 0.75 * 0.5 } else { 0.0 };
+        let mut matrix_frame = [0.25, -0.5];
+        old_matrix.apply_block(std::slice::from_mut(&mut matrix_frame));
+        assert!((actual[0] - expected[0] - matrix_frame[0] * 2.0 * scale).abs() < 1.0e-6);
+        assert!((actual[1] - expected[1] - matrix_frame[1] * 2.0 * scale).abs() < 1.0e-6);
+    }
+}
+
+#[test]
+fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
+    let old_project = prepared_matrix_return_project(1.0);
+    let new_project = prepared_return_project(false, 0.5);
+    let return_id = old_project.return_tracks()[0].id();
+    let mut previous = playback(&old_project);
+    let old_matrix = previous.revision.arrangement().return_buses()[0]
+        .matrix
+        .unwrap();
+    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    warm(&mut previous);
+    assert!(!previous.return_chains[0].committed_range_is_quiescent(0..2));
+
+    let mut candidate = playback(&new_project);
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+    assert!(previous.return_chains[0].is_empty());
+
+    let mut baseline = playback(&new_project);
+    warm(&mut baseline);
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    baseline.render(&mut expected).unwrap();
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let tail_active = index < 4;
+        let scale = if tail_active { 0.75 * 0.5 } else { 0.0 };
+        let mut matrix_frame = [0.25, -0.5];
+        old_matrix.apply_block(std::slice::from_mut(&mut matrix_frame));
+        assert!((actual[0] - expected[0] - matrix_frame[0] * 2.0 * scale).abs() < 1.0e-6);
+        assert!((actual[1] - expected[1] - matrix_frame[1] * 2.0 * scale).abs() < 1.0e-6);
+    }
+}
+
+#[test]
+fn unchanged_chain_inherits_history_once_without_a_duplicate_tail() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let matrix = playback(&project).revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    let instances = processor_instances(return_id, matrix);
+    let mut previous = playback(&project);
+    previous.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+    warm(&mut previous);
+    let mut candidate = playback(&project);
+    candidate.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    previous.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn gain_only_bus_edit_inherits_history_under_new_controls() {
+    let old_project = prepared_return_project_with_bus(true, 1.0, 0.75, false);
+    let new_project = prepared_return_project_with_bus(true, 0.5, 0.25, false);
+    let return_id = old_project.return_tracks()[0].id();
+    let matrix =
+        playback(&old_project).revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    let instances = processor_instances(return_id, matrix);
+    let mut previous = playback(&old_project);
+    previous.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+    warm(&mut previous);
+    let mut candidate = playback(&new_project);
+    candidate.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+
+    let mut baseline = playback(&new_project);
+    baseline.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+    warm(&mut baseline);
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    baseline.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+
+    let muted_project = prepared_return_project_with_bus(true, 1.0, 0.75, true);
+    let mut previous = playback(&old_project);
+    previous.return_chains[0] =
+        NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+    warm(&mut previous);
+    let mut muted_candidate = playback(&muted_project);
+    muted_candidate.return_chains[0] =
+        NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+    muted_candidate
+        .try_inherit_state_from(&mut previous)
+        .unwrap();
+    assert!(
+        muted_candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    assert!(!muted_candidate.return_chains[0].committed_range_is_quiescent(0..2));
+}
+
+#[test]
+fn changed_return_suffix_keeps_old_prefix_state_and_starts_new_chain_fresh() {
+    let old_project = prepared_return_project(true, 1.0);
+    let new_project = prepared_return_project(true, 0.5);
+    let return_id = old_project.return_tracks()[0].id();
+    let mut previous = playback(&old_project);
+    let old_matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
+    warm(&mut previous);
+    let mut candidate = playback(&new_project);
+    candidate.return_chains[0] = NativeRuntimeChain::new(processor_instances_with_scale(
+        return_id,
+        StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
+        3.0,
+        3,
+    ))
+    .unwrap();
+
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(candidate.return_chains[0].committed_range_is_quiescent(0..2));
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+
+    let mut baseline = playback(&new_project);
+    baseline.return_chains[0] = NativeRuntimeChain::new(processor_instances_with_scale(
+        return_id,
+        StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
+        3.0,
+        3,
+    ))
+    .unwrap();
+    warm(&mut baseline);
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    baseline.render(&mut expected).unwrap();
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let tail_active = index < 4;
+        let scale = if tail_active { 0.75 * 0.5 } else { 0.0 };
+        let mut matrix_frame = [0.25, -0.5];
+        old_matrix.apply_block(std::slice::from_mut(&mut matrix_frame));
+        assert!((actual[0] - expected[0] - matrix_frame[0] * 2.0 * scale).abs() < 1.0e-6);
+        assert!((actual[1] - expected[1] - matrix_frame[1] * 2.0 * scale).abs() < 1.0e-6);
+    }
+}
+
+#[test]
+fn bypass_and_reorder_changes_keep_the_entire_previous_return_chain() {
+    let old_project = prepared_return_project(true, 1.0);
+    let return_id = old_project.return_tracks()[0].id();
+    let old_matrix =
+        playback(&old_project).revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    let mut bypassed = processor_instances(return_id, old_matrix);
+    bypassed[1].bypassed = true;
+    assert_old_return_tail_with_candidate_chain(return_id, old_matrix, bypassed);
+
+    let mut reordered = processor_instances(return_id, old_matrix);
+    reordered.reverse();
+    assert_old_return_tail_with_candidate_chain(return_id, old_matrix, reordered);
+}
+
+#[test]
+fn active_return_tail_moves_forward_across_later_revisions() {
+    let old_project = prepared_return_project(true, 1.0);
+    let first_candidate_project = prepared_return_project(false, 0.5);
+    let second_candidate_project = prepared_return_project(false, 0.25);
+    let return_id = old_project.return_tracks()[0].id();
+    let mut previous = playback(&old_project);
+    let old_matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
+    warm(&mut previous);
+
+    let mut first_candidate = playback(&first_candidate_project);
+    first_candidate
+        .try_inherit_state_from(&mut previous)
+        .unwrap();
+    assert_eq!(
+        first_candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+
+    let mut second_candidate = playback(&second_candidate_project);
+    second_candidate
+        .try_inherit_state_from(&mut first_candidate)
+        .unwrap();
+    assert_eq!(
+        second_candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+    assert!(
+        first_candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+
+    let mut baseline = playback(&second_candidate_project);
+    warm(&mut baseline);
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = actual;
+    second_candidate.render(&mut actual).unwrap();
+    baseline.render(&mut expected).unwrap();
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let tail_active = index < 4;
+        let scale = if tail_active { 0.75 * 0.25 } else { 0.0 };
+        let mut matrix_frame = [0.25, -0.5];
+        old_matrix.apply_block(std::slice::from_mut(&mut matrix_frame));
+        assert!((actual[0] - expected[0] - matrix_frame[0] * 2.0 * scale).abs() < 1.0e-6);
+        assert!((actual[1] - expected[1] - matrix_frame[1] * 2.0 * scale).abs() < 1.0e-6);
+    }
+}
+
+#[test]
+fn seek_resets_return_tail_state() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let mut playback = playback(&project);
+    let matrix = playback.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    let bus = &playback.revision.arrangement().return_buses()[0];
+    playback.return_effect_tails.slots_mut()[0] =
+        Some(ReturnEffectTail::new(active_chain(return_id, matrix), bus));
+    playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    let tail = playback.return_effect_tails.slots()[0].as_ref().unwrap();
+    assert!(!tail.output_active);
+    assert!(tail.chain.committed_range_is_quiescent(0..tail.chain.len()));
+}
+
+#[test]
+fn muted_or_zero_gain_return_removal_does_not_capture_an_inaudible_chain() {
+    let target = prepared_return_project(false, 1.0);
+    for (gain, muted) in [(0.75, true), (0.0, false)] {
+        let old_project = prepared_return_project_with_bus(true, 1.0, gain, muted);
+        let return_id = old_project.return_tracks()[0].id();
+        let mut previous = playback(&old_project);
+        previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+        let mut candidate = playback(&target);
+        candidate.try_inherit_state_from(&mut previous).unwrap();
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        assert!(!previous.return_chains[0].is_empty());
+    }
+}
+
+#[test]
+fn failed_block_restores_tail_history_for_the_next_render_attempt() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let playback = playback(&project);
+    let bus = &playback.revision.arrangement().return_buses()[0];
+    let mut bank = ReturnEffectTailBank::new().unwrap();
+    bank.slots_mut()[0] = Some(ReturnEffectTail::new(
+        active_chain(return_id, StereoMatrix::identity()),
+        bus,
+    ));
+
+    bank.begin_block();
+    let mut failed_attempt = [[0.0; 2]; 1];
+    bank.render_chunk(&mut failed_attempt);
+    assert_eq!(failed_attempt[0], [0.375, -0.75]);
+    bank.rollback_block();
+    assert!(bank.slots()[0].as_ref().unwrap().output_active);
+
+    bank.begin_block();
+    let mut retry = [[0.0; 2]; 1];
+    bank.render_chunk(&mut retry);
+    assert_eq!(retry, failed_attempt);
+    bank.commit_block();
+    assert!(bank.slots()[0].as_ref().unwrap().output_active);
+}
+
+#[test]
+fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let mut playback = playback(&project);
+    let bus = &playback.revision.arrangement().return_buses()[0];
+    playback.return_effect_tails.slots_mut()[0] = Some(ReturnEffectTail::new(
+        active_tail_chain(return_id, 1, 4, hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES),
+        bus,
+    ));
+    let bank = &playback.return_effect_tails;
+    let buses = &[];
+    let chains = &[];
+    let bytes_cap =
+        2 * hex_lattice::MAX_STATEFUL_PROCESSORS * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES;
+    let mut processors = hex_lattice::MAX_STATEFUL_PROCESSORS - 1;
+    let mut bytes = bytes_cap - 2 * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES;
+    let mut entries = 4_095;
+    assert!(
+        ReturnEffectTailPlan::preflight(
+            buses,
+            chains,
+            bank,
+            buses,
+            chains,
+            48_000,
+            &mut processors,
+            &mut bytes,
+            &mut entries,
+        )
+        .is_ok()
+    );
+    assert_eq!(processors, hex_lattice::MAX_STATEFUL_PROCESSORS);
+    assert_eq!(bytes, bytes_cap);
+    assert_eq!(entries, 4_096);
+
+    let mut processors = hex_lattice::MAX_STATEFUL_PROCESSORS;
+    let mut bytes = 0;
+    let mut entries = 0;
+    assert_eq!(
+        ReturnEffectTailPlan::preflight(
+            buses,
+            chains,
+            bank,
+            buses,
+            chains,
+            48_000,
+            &mut processors,
+            &mut bytes,
+            &mut entries,
+        )
+        .err(),
+        Some(SessionPlaybackError::ReleaseBankFull)
+    );
+    let mut processors = 0;
+    let mut bytes = bytes_cap;
+    let mut entries = 0;
+    assert_eq!(
+        ReturnEffectTailPlan::preflight(
+            buses,
+            chains,
+            bank,
+            buses,
+            chains,
+            48_000,
+            &mut processors,
+            &mut bytes,
+            &mut entries,
+        )
+        .err(),
+        Some(SessionPlaybackError::ReleaseBankFull)
+    );
+    let mut processors = 0;
+    let mut bytes = 0;
+    let mut entries = 4_096;
+    assert_eq!(
+        ReturnEffectTailPlan::preflight(
+            buses,
+            chains,
+            bank,
+            buses,
+            chains,
+            48_000,
+            &mut processors,
+            &mut bytes,
+            &mut entries,
+        )
+        .err(),
+        Some(SessionPlaybackError::ReleaseBankFull)
+    );
+}
+
+#[test]
+fn excessive_or_overflowing_finite_return_tail_refuses_atomically_and_retries_after_stop() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let too_long = 48_000 * MAX_FINITE_EFFECT_TAIL_SECONDS + 1;
+    for (frames, count) in [(too_long, 1), (u64::MAX, 2)] {
+        let mut previous = playback(&project);
+        previous.return_chains[0] = active_tail_chain(return_id, count, frames, 8);
+        let mut candidate = playback(&prepared_return_project(false, 1.0));
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut previous),
+            Err(SessionPlaybackError::ReleaseBankFull)
+        );
+        assert!(!previous.return_chains[0].is_empty());
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+
+        previous.apply(SessionPlaybackCommand::Stop).unwrap();
+        candidate.try_inherit_state_from(&mut previous).unwrap();
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+}
+
+#[test]
+fn full_return_tail_bank_refuses_atomically_and_retries_after_stop() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let mut previous = playback(&project);
+    let matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, matrix);
+    let bus = &previous.revision.arrangement().return_buses()[0];
+    for slot in previous.return_effect_tails.slots_mut() {
+        *slot = Some(ReturnEffectTail::new(active_chain(return_id, matrix), bus));
+    }
+    assert!(
+        previous.return_effect_tails.slots()[0]
+            .as_ref()
+            .is_some_and(|tail| !tail.chain.committed_range_is_quiescent(0..tail.chain.len()))
+    );
+    assert!(
+        !previous.return_chains[0].committed_range_is_quiescent(0..previous.return_chains[0].len())
+    );
+    let mut candidate = playback(&prepared_return_project(false, 1.0));
+    let error = candidate.try_inherit_state_from(&mut previous);
+    assert_eq!(error, Err(SessionPlaybackError::ReleaseBankFull));
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    assert_eq!(
+        previous
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .count(),
+        64
+    );
+    assert!(!previous.return_chains[0].committed_range_is_quiescent(0..2));
+
+    previous.apply(SessionPlaybackCommand::Stop).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+}

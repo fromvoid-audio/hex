@@ -9656,3 +9656,5 @@ mod effect_tail_budget_tests;
 
 #[path = "silence_effect_tests.rs"]
 mod silence_effect_tests;
+#[path = "return_effect_tail_tests.rs"]
+mod return_effect_tail_tests;

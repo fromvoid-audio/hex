@@ -1139,3 +1139,15 @@ focused PCM, callback allocation and strict affected source checks; full combine
 validation is next. Pulse2204 Return-chain residual ownership remains a separate
 active change and is not included. No native acceptance, merge or new test bundle
 is claimed at this source checkpoint.
+
+## 10 October2026 — Pulse2204 Return revision residuals
+
+Whole old Return chains now retain residual output across removal, device
+configuration/bypass/order changes, feeding the current Main under old bus
+controls and current master gain. A separate64-slot bank shares bounded
+track-tail accounting. Transfer validation precedes owner movement; exhausted
+budgets preserve old PCM for retry. Stop/Seek, rollback and unchanged-history
+semantics have focused coverage. Engine181pass/3ignored,12added tests, strict
+engineClippy, formatting, architecture and the actual Return callback allocation
+probe pass. Full exact-head local CI, PR publication and native listening remain
+pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).

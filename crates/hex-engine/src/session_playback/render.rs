@@ -49,6 +49,7 @@ impl SessionPlayback {
             for tail in self.tail_mutable_instruments.iter_mut().flatten() {
                 tail.runtime.rollback_block();
             }
+            self.return_effect_tails.rollback_block();
         }
         result
     }
@@ -69,6 +70,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.begin_block();
         }
+        self.return_effect_tails.begin_block();
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
         }
@@ -175,6 +177,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.commit_block();
         }
+        self.return_effect_tails.commit_block();
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.commit_block();
         }
@@ -731,6 +734,7 @@ impl SessionPlayback {
                 }
             }
         }
+        self.return_effect_tails.render_chunk(output);
         Ok(())
     }
 }
