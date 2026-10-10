@@ -364,12 +364,63 @@ each graph admits up to 2 MiB active pairs and up to 2 MiB retained tails. Old,
 candidate and retired publication owners can coexist, so these figures are not
 a process-wide peak bound and omit allocator overhead and other graph assets.
 
-This is still a proof-only path. Mutable chase, seek/chase and loop behavior,
-effect residual-tail quiescence and built-in mutable admission remain deferred
-to Pulses 2163, 2164, 2165, 2162 and later Operator work. Pulse 2159 adds
+This is still a proof-only path. Exact compatible mutable-owner continuity is
+implemented separately below; changed-route suppression, seek/chase and loop
+behavior, effect residual-tail quiescence and built-in mutable admission remain
+deferred to Pulses 2166, 2164, 2165, 2162 and later Operator work. Pulse 2159 adds
 prepared linear Arrangement WAV export through shared SessionPlayback, but
 nonzero range starts are refused whenever the compiled Arrangement contains an
 enabled mutable instrument; those ranges could require mutable history/chase.
 Mutable Arrangement source loops are refused, while unused Session loops and
 the global transport loop do not wrap this linear export. This does not admit a
 built-in mutable instrument or establish general mutable export support.
+
+Pulse 2163 adds exact compatible-owner continuity for unchanged mutable routes.
+The handoff can copy the committed mutable pair, both occurrence ledgers and
+next occurrence ID when stable track identity, instrument ID/state/bypass,
+instrument gap, ordered effect IDs/state/bypass, source ownership and placement,
+sample rate, and the complete timing map still match. Arrangement owners also
+require the exact retained MIDI source identities and clip start/length; Session
+owners require the same launched clip, track, scene, source identity, instrument
+configuration and launch position. Name and other unrelated track edits can
+therefore keep active feedback history without creating a duplicate old-law
+tail. The candidate's compatible effect histories still inherit through the
+existing stable-device matching path. Exact carry preflights the full candidate
+effect chain, including a suffix that the general old-tail preflight may have
+excluded. An adversarial lattice runtime-chain fixture verifies rejection when
+that retained suffix cannot copy history. PreparedRevision's test seam injects
+instrument definitions but not effect registries, so this specific mismatch is
+not constructible as an end-to-end compiled handoff fixture without a broader
+registry seam.
+
+Preparation retains bounded descriptors only for tracks with a compiled
+mutable instrument: at most 256 track records, 64 effect records per track,
+and 16,384 Arrangement MIDI clip records across the project. The maximum inline
+descriptor-buffer formula per revision is
+`256 * size_of<track-record> + 16,384 * size_of<device-record> + 16,384 * size_of<clip-record>`;
+the track record includes its two `Vec` headers. There are at most 512 nested
+device/clip buffer allocations plus the outer track buffer; allocator metadata
+and Arc-owned state/source payloads are separate. Device-state payloads and MIDI
+sources are retained through their existing Arc-backed immutable values, not
+copied into per-note snapshots. Preparation checks the project caps and uses
+fallible reservation. Preparation zips canonical and compiled track order with
+at most 256 stable-ID checks. Handoff compares the shared sample rate and
+complete timing map once, then binary-searches descriptors by stable TrackId.
+The continuity route map is bounded by 256 old routes × 256 candidate route
+entries; the existing route handoff also uses fixed project-track bounds.
+Across all mutable tracks there are at most 16,640 device records (instrument
+plus 64 effects per track) and 16,384 Arrangement clip records to compare.
+Device payload equality is exact and bounded by the 4,096-byte state limit per
+device. It does not scan MIDI notes or recompile sources on the callback.
+Descriptor Vec allocations and retained source/state Arcs are per prepared
+revision; multiple active, candidate and retired revisions can coexist, so
+these bounds are not a process-wide memory maximum.
+
+Changed instrument state/type/identity, enablement, position, effect topology or
+configuration, Arrangement source identity/placement, Session launch/source,
+timing, or pending route continues through the existing conservative refusal or
+old-law tail path. This slice does not add changed-note suppression, source or
+transport loop continuity, seek/chase, effect residual-tail quiescence, or
+mutable built-in admission; see Pulses 2166, 2165, 2164, 2162 and the later
+Operator gates. The continuity fixtures use the injected proof instrument and
+do not claim production mutable-device availability.

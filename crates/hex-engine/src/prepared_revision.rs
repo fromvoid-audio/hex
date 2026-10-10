@@ -6,8 +6,58 @@ use crate::{
     },
 };
 use hex_devices::SineTable;
-use hex_project::{AssetId, Project};
+use hex_project::{
+    AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
+    Project, TrackId,
+};
 use std::{collections::BTreeMap, sync::Arc};
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreparedDeviceIdentity {
+    id: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+    bypassed: bool,
+}
+
+impl From<&Device> for PreparedDeviceIdentity {
+    fn from(device: &Device) -> Self {
+        Self {
+            id: device.id(),
+            state: device.state().clone(),
+            bypassed: device.bypassed(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreparedArrangementMidiSource {
+    id: hex_project::ClipId,
+    start: hex_project::BeatTime,
+    length: hex_project::BeatTime,
+    source: MidiSourceIdentity,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreparedMutableTrackRevision {
+    id: TrackId,
+    instrument: Option<PreparedDeviceIdentity>,
+    instrument_position: Option<usize>,
+    effects: Vec<PreparedDeviceIdentity>,
+    arrangement_midi_sources: Vec<PreparedArrangementMidiSource>,
+}
+
+impl PreparedMutableTrackRevision {
+    fn topology_matches(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.instrument == other.instrument
+            && self.instrument_position == other.instrument_position
+            && self.effects == other.effects
+    }
+
+    fn arrangement_sources_match(&self, other: &Self) -> bool {
+        self.arrangement_midi_sources == other.arrangement_midi_sources
+    }
+}
 
 /// Immutable compiled outputs prepared before a canonical revision is committed.
 /// Arrangement playback and Session inventory share a stable instrument table;
@@ -16,6 +66,7 @@ pub struct PreparedRevision {
     arrangement: Arc<PlaybackProject>,
     session: Arc<PreparedSessionInventory>,
     midi_preview: Arc<MidiArrangementPreview>,
+    mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -69,6 +120,7 @@ impl PreparedRevision {
             previous_session,
             instruments,
         )?;
+        let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
             .checked_add(session.midi_note_bank_storage_bytes())
@@ -87,6 +139,7 @@ impl PreparedRevision {
             arrangement: Arc::new(arrangement),
             session: Arc::new(session),
             midi_preview: Arc::new(midi_preview),
+            mutable_track_revisions,
         })
     }
 
@@ -135,6 +188,7 @@ impl PreparedRevision {
             sine_table,
             previous_session,
         )?;
+        let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
             .checked_add(session.midi_note_bank_storage_bytes())
@@ -153,6 +207,7 @@ impl PreparedRevision {
             arrangement: Arc::new(arrangement),
             session: Arc::new(session),
             midi_preview: Arc::new(midi_preview),
+            mutable_track_revisions,
         })
     }
 
@@ -180,4 +235,105 @@ impl PreparedRevision {
             .iter()
             .any(crate::Track::has_mutable_instrument)
     }
+
+    pub(crate) fn mutable_track_topology_matches(&self, other: &Self, track: TrackId) -> bool {
+        let Some(old) = self.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new) = other.mutable_track_revision(track) else {
+            return false;
+        };
+        old.topology_matches(new)
+    }
+
+    pub(crate) fn mutable_arrangement_track_matches(&self, other: &Self, track: TrackId) -> bool {
+        let Some(old) = self.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new) = other.mutable_track_revision(track) else {
+            return false;
+        };
+        old.topology_matches(new) && old.arrangement_sources_match(new)
+    }
+
+    fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
+        self.mutable_track_revisions
+            .binary_search_by_key(&track, |revision| revision.id)
+            .ok()
+            .and_then(|index| self.mutable_track_revisions.get(index))
+    }
+}
+
+fn prepare_mutable_track_revisions(
+    project: &Project,
+    arrangement: &PlaybackProject,
+) -> Result<Vec<PreparedMutableTrackRevision>, Invalid> {
+    if project.tracks().len() > MAX_TRACKS || arrangement.tracks().len() > MAX_TRACKS {
+        return Err(Invalid(
+            "mutable revision track count exceeds project limit",
+        ));
+    }
+    if arrangement.tracks().len() != project.tracks().len() {
+        return Err(Invalid(
+            "mutable revision descriptors do not match compiled tracks",
+        ));
+    }
+    let mutable_track_count = arrangement
+        .tracks()
+        .iter()
+        .filter(|track| track.has_mutable_instrument())
+        .count();
+    let mut revisions = Vec::new();
+    revisions
+        .try_reserve_exact(mutable_track_count)
+        .map_err(|_| Invalid("could not reserve mutable revision descriptors"))?;
+    let mut arrangement_clip_count = 0usize;
+    for (track, compiled) in project.tracks().iter().zip(arrangement.tracks()) {
+        arrangement_clip_count = arrangement_clip_count
+            .checked_add(track.midi_clips().len())
+            .filter(|count| *count <= MAX_CLIPS)
+            .ok_or(Invalid(
+                "mutable revision MIDI clip count exceeds project limit",
+            ))?;
+        if compiled.canonical_track_id() != Some(track.id()) {
+            return Err(Invalid(
+                "mutable revision descriptor track ordering is inconsistent",
+            ));
+        }
+        if !compiled.has_mutable_instrument() {
+            continue;
+        }
+        if track.devices().len() > MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("mutable revision effect count exceeds track limit"));
+        }
+        let mut effects = Vec::new();
+        effects
+            .try_reserve_exact(track.devices().len())
+            .map_err(|_| Invalid("could not reserve mutable effect descriptors"))?;
+        effects.extend(track.devices().iter().map(PreparedDeviceIdentity::from));
+
+        let mut arrangement_midi_sources = Vec::new();
+        arrangement_midi_sources
+            .try_reserve_exact(track.midi_clips().len())
+            .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
+        arrangement_midi_sources.extend(track.midi_clips().iter().map(|clip| {
+            PreparedArrangementMidiSource {
+                id: clip.id(),
+                start: clip.start(),
+                length: clip.length(),
+                source: clip.source_identity(),
+            }
+        }));
+        arrangement_midi_sources.sort_unstable_by_key(|clip| clip.id);
+
+        revisions.push(PreparedMutableTrackRevision {
+            id: track.id(),
+            instrument: track.instrument().map(PreparedDeviceIdentity::from),
+            instrument_position: track.instrument_position(),
+            effects,
+            arrangement_midi_sources,
+        });
+    }
+    revisions.sort_unstable_by_key(|revision| revision.id);
+    Ok(revisions)
 }

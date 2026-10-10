@@ -679,6 +679,7 @@ mod tests {
     struct IndependentRuntime {
         history: f32,
     }
+    struct IncompatibleRuntime;
 
     impl NativeDeviceMetadata for IndependentDefinition {
         fn type_id(&self) -> DeviceTypeId {
@@ -769,6 +770,18 @@ mod tests {
                 self.history = previous.history;
             }
         }
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    impl NativeProcessorRuntime for IncompatibleRuntime {
+        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn reset(&mut self) {}
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
         fn as_any(&self) -> &dyn StdAny {
             self
         }
@@ -909,6 +922,42 @@ mod tests {
         // The new suffix starts fresh (device 10 contributes zero); device 9
         // retains its prefix history and contributes one.
         assert_eq!(fresh_audio, [[1.0, 1.0]]);
+    }
+
+    #[test]
+    fn full_chain_preflight_rejects_an_incompatible_retained_suffix() {
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&IndependentDefinition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepared = registry
+            .prepare_processor(
+                &registry
+                    .default_state(DeviceTypeId::from_static("test.independent"))
+                    .unwrap(),
+                48_000,
+            )
+            .unwrap()
+            .unwrap();
+        let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
+        let instance = || PreparedProcessorInstance {
+            track_id: 3,
+            device_id: 10,
+            device_type: DeviceTypeId::from_static("test.independent"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            definition: Some(std::sync::Arc::clone(&prepared)),
+        };
+        let previous = NativeRuntimeChain::new(vec![instance()]).unwrap();
+        let mut candidate = NativeRuntimeChain::new(vec![instance()]).unwrap();
+
+        // Model a factory/runtime compatibility change behind unchanged
+        // identity metadata. Excluding this old suffix is valid for a tail
+        // owner, but exact full-chain carry must refuse before inherit_from.
+        let entry = candidate.entries.first_mut().unwrap();
+        entry.primary = Some(Box::new(IncompatibleRuntime));
+        entry.scratch = Some(Box::new(IncompatibleRuntime));
+        assert!(candidate.can_inherit_from_excluding_old_range(&previous, 0..1));
+        assert!(!candidate.can_inherit_from(&previous));
     }
 
     #[test]

@@ -597,3 +597,25 @@ mutable admission, chase/range support and user-facing mutable instruments are
 not established. The same enabled track slot currently prepares a mutable
 factory for both Arrangement and Session; a Session-only mutable factory cannot
 be represented by current preparation, so this case is not claimed as tested.
+
+Pulse2163 exact compatible mutable continuity is implemented on the focused
+engine branch. Prepared revisions retain exact bounded descriptors for mutable
+tracks; unchanged Arrangement and launched Session owners carry both mutable
+runtime twins, occurrence ledgers and next IDs across handoff. A real Editor
+rename preserves held and recently released feedback history, and deleting an
+earlier track verifies stable TrackId mapping while its old-law release tail
+finishes separately. Changed Arrangement source is still refused while a
+candidate occurrence would require chase. All 134 hex-engine unit tests and
+its integration suites pass with the injected instrument seam, as do all 24
+hex-lattice unit tests; all hex-audio
+allocation-probe tests pass, including zero-total and zero-signed-net callback
+checks for unchanged carry/refusal and control-side retirement. Strict affected
+Clippy, formatting and architecture/style guards pass. Full local CI and review
+remain with root. This does not add changed-source/config suppression, mutable
+seek/chase or loop continuity, effect residual-tail quiescence, or a built-in
+mutable instrument. Exact-carry handoff now preflights the complete effect chain
+before copying history; a lattice-level adversarial suffix-compatibility test
+covers rejection. A Session source-edit regression confirms the existing global
+historical floor still carries an unrelated unchanged mutable route. The
+PreparedRevision test seam does not inject effect registries, so the specific
+incompatible-suffix case is not represented as a full compiled handoff fixture.
