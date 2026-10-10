@@ -1,5 +1,24 @@
 # compact original Operator notes
 
+## shell-to-detail selection contract
+
+The four shell rows are ordered d, c, b, a to match the compact device layout.
+Pressing a row's level, ratio/frequency, or fixed-mode multiplier control selects
+that oscillator and returns the detail pane to its oscillator page. The existing
+shared control remains mounted under its stable `DeviceId` and `ParameterId`, so
+the same pointer press can continue as a drag and create one canonical gesture.
+When a focused shell numeric control begins a keyboard adjustment, it selects the
+same oscillator before the parameter gesture is dispatched. These transitions
+finish other valid numeric drafts, preserve an invalid draft rather than hiding
+it, and exclude only the initiating shell control from finalization. They do not
+change device state or DSP configuration. Other devices keep their independent
+controls and context.
+
+The rendered GPUI regression covers all four row mappings, selector dismissal,
+invalid-draft refusal, pointer drag/undo, focused keyboard adjustment, stationary
+typed editing and neighboring Utility state. This is source-level UI evidence;
+native visual acceptance remains pending.
+
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`

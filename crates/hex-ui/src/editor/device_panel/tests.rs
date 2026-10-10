@@ -1174,7 +1174,314 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
 }
 
 #[gpui::test]
+fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _state, track, utility, utility_parameter, utility_enabled) =
+        actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("remove default instrument");
+    let _empty = receive_service_event(&service);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+            before: None,
+        })
+        .expect("add native Operator");
+    let state = receive_service_event(&service).state;
+    let operator = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("Operator instrument")
+        .id();
+    let operator_level = |state: &ViewState, parameter: u32| {
+        let instrument = state
+            .project
+            .track(track)
+            .and_then(hex_project::Track::instrument)
+            .expect("Operator instrument");
+        hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, instrument.state())
+            .expect("Operator view")
+            .parameters
+            .into_iter()
+            .find(|item| item.descriptor.id.value() == parameter)
+            .expect("Operator parameter")
+            .value
+    };
+    let original_d_level = operator_level(&state, 11);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            operator,
+            operator_panel::OperatorPanelState {
+                selected_operator: 0,
+                page: operator_panel::OperatorPage::Routing,
+            },
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let oscillator_tab =
+        Box::leak(format!("operator-page-{}-osc", operator.value()).into_boxed_str());
+    let tab = visual
+        .debug_bounds(oscillator_tab)
+        .expect("oscillator page tab");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let waveform_a = ParameterKey {
+        device: operator,
+        parameter: hex_lattice_contract::ParameterId::from_static(57),
+    };
+    let waveform_selector = editor.read_with(cx, |view, _| {
+        let Some(ParameterControl::Choice { entity, .. }) =
+            view.device_panel.controls.get(&waveform_a)
+        else {
+            panic!("operator a waveform selector is cached")
+        };
+        entity.clone()
+    });
+    let waveform = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-57", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator a waveform selector");
+    visual.simulate_click(waveform.center(), Modifiers::default());
+    visual.run_until_parked();
+    waveform_selector.read_with(cx, |selector, _| assert!(selector.is_open()));
+
+    for selected in [1_usize, 2, 3, 0] {
+        let parameter = selected as u32 * 3 + 2;
+        let knob = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{parameter}-knob", operator.value()).into_boxed_str(),
+            ))
+            .expect("Operator shell level knob");
+        visual.simulate_click(knob.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.device_panel.operator_pages[&operator],
+                operator_panel::OperatorPanelState {
+                    selected_operator: selected,
+                    page: operator_panel::OperatorPage::Oscillator,
+                }
+            );
+        });
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{}", operator.value(), 57 + selected)
+                        .into_boxed_str(),
+                ))
+                .is_some(),
+            "the selected oscillator's center detail is shown"
+        );
+    }
+    waveform_selector.read_with(cx, |selector, _| {
+        assert!(!selector.is_open(), "context changes dismiss the old popup")
+    });
+
+    let phase_a = hex_lattice_contract::ParameterId::from_static(3);
+    enter_typed_value(&mut visual, operator, phase_a, "invalid");
+    let d_level = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-11-knob", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator d level knob");
+    visual.simulate_click(d_level.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.device_panel.operator_pages[&operator].selected_operator,
+            0
+        );
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: operator,
+                parameter: phase_a,
+            })
+        else {
+            panic!("operator a phase field remains cached")
+        };
+        entity.read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+    let phase_a_value = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-3-value", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator a phase value");
+    visual.simulate_click(phase_a_value.center(), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
+    let d_level = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-11-knob", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator d level knob");
+    let start = point(d_level.center().x, d_level.center().y);
+    let moved = point(start.x, start.y - px(30.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&operator].selected_operator,
+            3
+        );
+    });
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&operator].selected_operator,
+            3
+        );
+        let gesture = view
+            .device_gesture
+            .snapshot()
+            .expect("shell drag starts its parameter gesture");
+        assert_eq!(
+            gesture.target,
+            GestureTarget::DeviceParameter {
+                device: operator,
+                parameter: hex_lattice_contract::ParameterId::from_static(11),
+            }
+        );
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_ne!(
+            operator_level(view.state.as_ref().expect("state"), 11),
+            original_d_level,
+            "dragging the shell control changes its own parameter"
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .is_some_and(|state| operator_level(state, 11) == original_d_level)
+    });
+
+    let original_b_level = editor.read_with(cx, |view, _| {
+        operator_level(view.state.as_ref().expect("state"), 5)
+    });
+    let b_level = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-5-knob", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator b level knob");
+    visual.simulate_click(b_level.center(), Modifiers::default());
+    editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            operator,
+            operator_panel::OperatorPanelState {
+                selected_operator: 0,
+                page: operator_panel::OperatorPage::Routing,
+            },
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("up");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .is_some_and(|state| operator_level(state, 5) != original_b_level)
+            && view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&operator],
+            operator_panel::OperatorPanelState {
+                selected_operator: 1,
+                page: operator_panel::OperatorPage::Oscillator,
+            },
+            "a focused shell numeric adjustment follows its oscillator on begin"
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .is_some_and(|state| operator_level(state, 5) == original_b_level)
+    });
+
+    let c_level_value = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-8-value", operator.value()).into_boxed_str(),
+        ))
+        .expect("operator c level numeric field");
+    visual.simulate_click(c_level_value.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.device_panel.operator_pages[&operator].selected_operator,
+            2
+        );
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: operator,
+                parameter: hex_lattice_contract::ParameterId::from_static(8),
+            })
+        else {
+            panic!("operator c level field remains cached")
+        };
+        entity.read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.7");
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("state");
+        assert_eq!(
+            operator_level(state, 8),
+            ParameterValue::Float(0.7),
+            "the newly focused numeric field accepts and commits typed input"
+        );
+        assert_eq!(
+            parameter_value(state, track, utility, utility_parameter,),
+            ParameterValue::Bool(utility_enabled),
+            "Operator context changes leave the neighboring Utility unchanged"
+        );
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .any(|key| key.device == utility)
+        );
+    });
+}
+
+#[gpui::test]
 fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, _state, track, _, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::RemoveInstrument { track }))
@@ -1208,7 +1515,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             .expect("enable fixed frequency");
         state = receive_service_event(&service).state;
     }
-    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let shell = visual
@@ -1243,6 +1550,36 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 <= row_bounds.origin.x + row_bounds.size.width
         );
     }
+    // Fixed frequency and multiplier have distinct IDs from ratio controls.
+    // A keyboard edit must follow the focused fixed-frequency field too.
+    let frequency = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-66-knob", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("operator b fixed frequency");
+    visual.simulate_click(frequency.center(), Modifiers::default());
+    editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            instrument_id,
+            operator_panel::OperatorPanelState {
+                selected_operator: 0,
+                page: operator_panel::OperatorPage::Routing,
+            },
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&instrument_id],
+            operator_panel::OperatorPanelState {
+                selected_operator: 1,
+                page: operator_panel::OperatorPage::Oscillator,
+            }
+        );
+    });
 }
 
 #[gpui::test]
