@@ -679,6 +679,27 @@ probes, affected clippy, format and repository guards pass; root performs full
 local CI after this branch is frozen. Native UI,
 device deadlines and multi-track stress remain unverified.
 
+Pulse2180 adds durable UI-side audio admission reporting keyed by project
+generation, canonical project revision and audio revision. The footer distinguishes
+the current pending/applied/rejected canonical revision from the last admitted
+canonical graph; numeric device/send previews remain separate transient overlays.
+Exact rejected canonical candidate identity is captured before acknowledgment
+pruning, so stale/coalesced rejection cannot overwrite newer accepted or pending
+work. A preview rejection is visible only while its project generation, canonical
+revision, gesture key and sequence are still current; it does not label its reused
+canonical revision rejected. Preview application and cancel/restore do not change
+canonical admission. Queue-full/deferred publication remains pending.
+This does not roll back canonical project history, dirty state, undo/redo, or
+worker save/export snapshots, and the callback protocol is unchanged. Focused
+controller/tracker tests cover same-number project replacement, exact rejection,
+coalesced older rejection with newer applied work, same-revision preview
+apply/reject/cancel/restore, later canonical commit, stale applied work, recovery
+reset and status transitions. Existing session-service tests cover compile
+refusal history preservation and captured export revision; native footer behavior
+and close/recovery interaction still need UI acceptance. Targeted checks and the
+root acceptance/full local-CI pass remain outstanding; keep this ticket open
+until those gates are recorded.
+
 Pulse2113: the mixed Session profiler's independent oracle now handles canonical
 hybrid snapshots when expressing Arrangement transport wraps as source periods.
 The regression failed at frame72,001/120,001 before the repair and now matches
@@ -803,3 +824,15 @@ local CI and native user UI/listening acceptance remain open. The 100-track/16-r
 audio profile has three additional clean-commit repetitions with matching PCM
 digest; see [return-track performance evidence](docs/performance.md) and
 [return-track contract](docs/return-tracks.md).
+
+
+2026-10-10 review51 integration checkpoint: mutable occurrence suppression and
+its zero-tail NoteOff repair passed all16 clean-head local CI at `90dae89`
+(report `20261010T050643Z-055f49b7`) and are published as PR80. Continuous
+return-send gestures and the popup input fix are integrated from `4f2d141`;
+source-focused tests pass and that branch's full local CI is running. The
+combined source retains the single freely positioned instrument contract.
+Combined exact-head validation, a fresh signed build and native user acceptance
+remain open at this documentation checkpoint. Pulse is the live review authority;
+this paragraph supplements earlier source checkpoints rather than marking the
+parent Lattice/Operator/return workflows complete.

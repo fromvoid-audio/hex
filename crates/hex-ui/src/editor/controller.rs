@@ -11,7 +11,8 @@ use super::{
 use gpui::Context;
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
-use hex_session::service::{Event, Request, SubmitError};
+use hex_session::device_gesture::GestureKey;
+use hex_session::service::{DevicePreviewIdentity, Event, Request, SubmitError};
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -108,8 +109,15 @@ impl EditorView {
             };
             match audio.control.publish_with_policy(pending.playback, policy) {
                 Ok(audio_revision) => {
-                    self.applied_revisions
-                        .push_back((audio_revision, pending.project_revision));
+                    let project_revision = super::audio_admission::ProjectRevision {
+                        generation: pending.project_generation,
+                        revision: pending.project_revision,
+                    };
+                    if pending.device_preview_identity.is_none() {
+                        visible_change |= self
+                            .audio_admission
+                            .published(project_revision, audio_revision);
+                    }
                     self.playback_candidates.push_back(PlaybackCandidate {
                         audio_revision,
                         project_generation: pending.project_generation,
@@ -170,22 +178,70 @@ impl EditorView {
         // rejection snapshot first and then acquiring `applied_revision` lets
         // accepted work win accounting before older coalesced rejections prune
         // the remaining pending revisions.
+        let active_gesture = (!self.device_gesture.has_pending_terminal())
+            .then(|| self.device_gesture.snapshot())
+            .flatten()
+            .map(|snapshot| (snapshot.key, snapshot.sequence));
         let rejected_revision = audio
             .control
             .status
             .rejected_revision()
             .filter(|(revision, _)| *revision > self.observed_rejected_revision);
+        if let Some((audio_revision, reason)) = rejected_revision {
+            // Resolve the exact project-generation mapping before any applied
+            // high-water reconciliation removes candidate metadata. Callback
+            // telemetry is audio-revision-only, so stale/coalesced rejection
+            // may describe an earlier project generation.
+            if let Some(project) =
+                rejected_candidate_project(&self.playback_candidates, audio_revision)
+            {
+                visible_change |=
+                    self.audio_admission
+                        .rejected(project, audio_revision, reason.message());
+            } else if rejected_preview_candidate(
+                &self.playback_candidates,
+                audio_revision,
+                self.project_generation,
+                self.state.as_ref().map(|state| state.revision),
+                active_gesture,
+            ) {
+                // Preview failures are transient, but remain visible even
+                // though they do not change the canonical admission footer.
+                visible_change |= replace_error(
+                    &mut self.error,
+                    &format!("preview rejected: {}", reason.message()),
+                );
+            }
+        }
         let applied = audio.control.status.applied_revision.load(Acquire);
-        let applied_project_revision =
-            reconcile_revision_acks(&mut self.applied_revisions, applied, None);
-        let audible = promote_playback_candidates(&mut self.playback_candidates, applied);
+        if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
+            &self.playback_candidates,
+            applied,
+            rejected_revision.map(|(revision, _)| revision),
+        ) {
+            visible_change |= self.audio_admission.applied(project, audio_revision);
+        }
+        let audible = promote_playback_candidates(
+            &mut self.playback_candidates,
+            applied,
+            rejected_revision.map(|(revision, _)| revision),
+        );
         if let Some(candidate) = audible {
             let preview_source_is_valid =
                 candidate.device_preview_identity.is_none_or(|identity| {
-                    identity.canonical_revision == candidate.state.revision
-                        && identity.project_generation == candidate.project_generation
+                    preview_source_is_current(
+                        identity,
+                        candidate.project_generation,
+                        candidate.state.revision,
+                        self.project_generation,
+                        self.state.as_ref().map(|state| state.revision),
+                        active_gesture,
+                    )
                 });
             if preview_source_is_valid {
+                if candidate.project_generation == self.project_generation {
+                    self.applied_project_revision = Some(candidate.state.revision);
+                }
                 self.audible_playback = Some(candidate);
             } else {
                 visible_change |= replace_error(
@@ -194,15 +250,10 @@ impl EditorView {
                 );
             }
         }
-        if let Some(revision) = applied_project_revision {
-            self.applied_project_revision = Some(revision);
-        }
-        if let Some((revision, reason)) = rejected_revision {
+        if let Some((revision, _)) = rejected_revision {
             self.observed_rejected_revision = revision;
-            reconcile_revision_acks(&mut self.applied_revisions, applied, Some(revision));
             self.playback_candidates
                 .retain(|candidate| candidate.audio_revision > revision);
-            visible_change |= replace_error(&mut self.error, reason.message());
         }
         while let Some(pending) = self.pending_audio_commands.pop_front() {
             let action_is_current = queued_action_is_current(
@@ -434,7 +485,6 @@ impl EditorView {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
             self.suppress_cursor_click = false;
-            self.applied_revisions.clear();
             self.applied_project_revision = None;
             self.playback_candidates.clear();
             self.audible_playback = None;
@@ -545,6 +595,11 @@ impl EditorView {
                 self.midi_group_gesture = None;
             }
         }
+        self.audio_admission
+            .canonical_revision(super::audio_admission::ProjectRevision {
+                generation: self.project_generation,
+                revision,
+            });
         if event.duplicate_complete {
             let created = match event.created {
                 Some(hex_project::Created::Clip(clip)) => Some(clip),
@@ -1339,38 +1394,99 @@ impl EditorView {
     }
 }
 
-fn reconcile_revision_acks(
-    revisions: &mut VecDeque<(u64, u64)>,
-    applied_high_water: u64,
-    rejected_high_water: Option<u64>,
-) -> Option<u64> {
-    let mut latest_applied = None;
-    while revisions
-        .front()
-        .is_some_and(|(audio_revision, _)| *audio_revision <= applied_high_water)
-    {
-        if let Some((_, project_revision)) = revisions.pop_front() {
-            latest_applied = Some(project_revision);
-        }
-    }
-    if let Some(rejected) = rejected_high_water {
-        revisions.retain(|(audio_revision, _)| *audio_revision > rejected);
-    }
-    latest_applied
-}
-
 fn promote_playback_candidates(
     candidates: &mut VecDeque<PlaybackCandidate>,
     applied_high_water: u64,
+    rejected_audio_revision: Option<u64>,
 ) -> Option<PlaybackCandidate> {
     let mut latest = None;
     while candidates
         .front()
         .is_some_and(|candidate| candidate.audio_revision <= applied_high_water)
     {
-        latest = candidates.pop_front();
+        if let Some(candidate) = candidates.pop_front()
+            && Some(candidate.audio_revision) != rejected_audio_revision
+        {
+            latest = Some(candidate);
+        }
     }
     latest
+}
+
+fn latest_applied_canonical_candidate(
+    candidates: &VecDeque<PlaybackCandidate>,
+    applied_high_water: u64,
+    rejected_audio_revision: Option<u64>,
+) -> Option<(super::audio_admission::ProjectRevision, u64)> {
+    candidates
+        .iter()
+        .rfind(|candidate| {
+            candidate.audio_revision <= applied_high_water
+                && Some(candidate.audio_revision) != rejected_audio_revision
+                && candidate.device_preview_identity.is_none()
+        })
+        .map(|candidate| {
+            (
+                super::audio_admission::ProjectRevision {
+                    generation: candidate.project_generation,
+                    revision: candidate.state.revision,
+                },
+                candidate.audio_revision,
+            )
+        })
+}
+
+fn rejected_candidate_project(
+    candidates: &VecDeque<PlaybackCandidate>,
+    audio_revision: u64,
+) -> Option<super::audio_admission::ProjectRevision> {
+    candidates
+        .iter()
+        .find(|candidate| {
+            candidate.audio_revision == audio_revision
+                && candidate.device_preview_identity.is_none()
+        })
+        .map(|candidate| super::audio_admission::ProjectRevision {
+            generation: candidate.project_generation,
+            revision: candidate.state.revision,
+        })
+}
+
+fn rejected_preview_candidate(
+    candidates: &VecDeque<PlaybackCandidate>,
+    audio_revision: u64,
+    project_generation: u64,
+    canonical_revision: Option<u64>,
+    active_gesture: Option<(GestureKey, u64)>,
+) -> bool {
+    candidates.iter().any(|candidate| {
+        candidate.audio_revision == audio_revision
+            && candidate.device_preview_identity.is_some_and(|identity| {
+                preview_source_is_current(
+                    identity,
+                    candidate.project_generation,
+                    candidate.state.revision,
+                    project_generation,
+                    canonical_revision,
+                    active_gesture,
+                )
+            })
+    })
+}
+
+fn preview_source_is_current(
+    identity: DevicePreviewIdentity,
+    candidate_generation: u64,
+    candidate_revision: u64,
+    current_generation: u64,
+    current_revision: Option<u64>,
+    active_gesture: Option<(GestureKey, u64)>,
+) -> bool {
+    identity.project_generation == candidate_generation
+        && identity.project_generation == current_generation
+        && identity.canonical_revision == candidate_revision
+        && Some(identity.canonical_revision) == current_revision
+        && active_gesture == Some((identity.key, identity.sequence))
 }
 
 fn pending_playback_for_state(
@@ -1505,16 +1621,19 @@ fn allows_non_open_request(
 mod tests {
     use super::{
         SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
-        intent_desired_playing, pending_playback_for_state, promote_playback_candidates,
-        queued_action_is_current, reconcile_revision_acks, reconcile_session_ticket,
+        intent_desired_playing, latest_applied_canonical_candidate, pending_playback_for_state,
+        preview_source_is_current, promote_playback_candidates, queued_action_is_current,
+        reconcile_session_ticket, rejected_candidate_project, rejected_preview_candidate,
         retained_install_fresh_policy,
     };
+    use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
     use crate::editor::duplicate::{DuplicateIntent, Press};
     use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
     use hex_engine::playback::Playback;
     use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
     use hex_project::{ClipId, Command, Created, Editor, Project};
-    use hex_session::service::{Request, ViewState};
+    use hex_session::device_gesture::GestureKey;
+    use hex_session::service::{DevicePreviewIdentity, Request, ViewState};
     use std::{collections::VecDeque, sync::Arc};
 
     #[test]
@@ -1528,23 +1647,196 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_rejection_ack_drops_every_older_wait_after_applied_accounting() {
-        let mut pending = VecDeque::from([(4, 8), (5, 9), (6, 10), (7, 11)]);
-        assert_eq!(reconcile_revision_acks(&mut pending, 4, None), Some(8));
-        assert_eq!(pending, VecDeque::from([(5, 9), (6, 10), (7, 11)]));
+    fn exact_rejection_mapping_precedes_coalesced_applied_candidate_promotion() {
+        let old = ProjectRevision {
+            generation: 8,
+            revision: 40,
+        };
+        let current = ProjectRevision {
+            generation: 9,
+            revision: 0,
+        };
+        let mut candidates = VecDeque::from([candidate(17, 40, 8), candidate(18, 0, 9)]);
+        let rejected = rejected_candidate_project(&candidates, 17)
+            .expect("rejected audio revision maps before candidate pruning");
+        assert_eq!(rejected, old);
 
-        // Latest-only callback telemetry skipped two refusals. The accepted
-        // project revision is accounted first; all remaining earlier requests
-        // are terminally rejected by the newer high-water mark.
-        assert_eq!(reconcile_revision_acks(&mut pending, 4, Some(7)), None);
-        assert!(pending.is_empty());
+        let mut status = AudioAdmissionStatus::default();
+        status.canonical_revision(current);
+        status.published(current, 18);
+        assert!(!status.rejected(rejected, 17, "stale generation rejection"));
+
+        let audible = promote_playback_candidates(&mut candidates, 18, Some(17))
+            .expect("new accepted candidate survives older rejection telemetry");
+        assert_eq!(audible.audio_revision, 18);
+        assert_eq!(audible.project_generation, current.generation);
+        status.applied(current, audible.audio_revision);
+        assert_eq!(
+            status.current().unwrap().state,
+            crate::editor::audio_admission::AdmissionState::Applied
+        );
+        assert_eq!(status.last_audible().unwrap().project, current);
     }
 
     #[test]
-    fn coalesced_accepted_and_rejected_ack_accounts_acceptance_first() {
-        let mut pending = VecDeque::from([(4, 8), (5, 9), (6, 10), (7, 11), (8, 12)]);
-        assert_eq!(reconcile_revision_acks(&mut pending, 6, Some(8)), Some(10));
-        assert!(pending.is_empty());
+    fn same_revision_preview_apply_reject_and_cancel_do_not_change_canonical_admission() {
+        let canonical = ProjectRevision {
+            generation: 3,
+            revision: 40,
+        };
+        let mut status = AudioAdmissionStatus::default();
+        status.canonical_revision(canonical);
+        status.published(canonical, 16);
+
+        let mut preview = preview_candidate(17, 40, 3);
+        let active = Some((
+            GestureKey {
+                generation: 3,
+                token: 1,
+            },
+            1,
+        ));
+        assert!(rejected_candidate_project(&VecDeque::from([preview.clone()]), 17).is_none());
+        assert!(rejected_preview_candidate(
+            &VecDeque::from([preview.clone()]),
+            17,
+            3,
+            Some(40),
+            active,
+        ));
+        let current_identity = preview.device_preview_identity.expect("preview identity");
+        assert!(preview_source_is_current(
+            current_identity,
+            3,
+            40,
+            3,
+            Some(40),
+            active,
+        ));
+        let stale_generation = preview_candidate(18, 40, 2);
+        assert!(!rejected_preview_candidate(
+            &VecDeque::from([stale_generation]),
+            18,
+            3,
+            Some(40),
+            active,
+        ));
+        assert!(!preview_source_is_current(
+            current_identity,
+            3,
+            40,
+            4,
+            Some(0),
+            active,
+        ));
+        let mut stale_sequence = preview_candidate(19, 40, 3);
+        stale_sequence
+            .device_preview_identity
+            .as_mut()
+            .expect("preview identity")
+            .sequence = 0;
+        assert!(!rejected_preview_candidate(
+            &VecDeque::from([stale_sequence]),
+            19,
+            3,
+            Some(40),
+            active,
+        ));
+        // Cancel/commit retires the active gesture, so a delayed terminal
+        // preview refusal cannot overwrite a newer status message.
+        assert!(!rejected_preview_candidate(
+            &VecDeque::from([preview.clone()]),
+            17,
+            3,
+            Some(40),
+            None,
+        ));
+        assert!(!preview_source_is_current(
+            current_identity,
+            3,
+            40,
+            3,
+            Some(40),
+            None,
+        ));
+        assert!(!rejected_preview_candidate(
+            &VecDeque::from([preview.clone()]),
+            17,
+            4,
+            Some(0),
+            active,
+        ));
+
+        // A valid preview can become audible for this exact canonical source,
+        // while its transient audio revision remains outside canonical status.
+        let mut preview_candidates = VecDeque::from([candidate(16, 40, 3), preview.clone()]);
+        let (applied_project, applied_audio) =
+            latest_applied_canonical_candidate(&preview_candidates, 17, None)
+                .expect("the canonical candidate applied before the transient preview");
+        status.applied(applied_project, applied_audio);
+        let audible_preview = promote_playback_candidates(&mut preview_candidates, 17, None)
+            .expect("the callback promoted the preview graph");
+        assert!(audible_preview.device_preview_identity.is_some());
+        assert_eq!(
+            status.current().unwrap().state,
+            crate::editor::audio_admission::AdmissionState::Applied
+        );
+        assert_eq!(status.last_audible().unwrap().audio_revision, 16);
+
+        // Cancellation restores canonical playback at the same project
+        // revision; that terminal canonical candidate remains identifiable.
+        preview = candidate(18, 40, 3);
+        let mut restore_candidates = VecDeque::from([preview]);
+        let restored = promote_playback_candidates(&mut restore_candidates, 18, None)
+            .expect("cancel restored the canonical graph");
+        assert_eq!(
+            rejected_candidate_project(&VecDeque::from([restored]), 18),
+            Some(canonical)
+        );
+        status.published(canonical, 18);
+        status.applied(canonical, 18);
+        assert_eq!(
+            status.current().unwrap().state,
+            crate::editor::audio_admission::AdmissionState::Applied
+        );
+        assert_eq!(status.last_audible().unwrap().audio_revision, 18);
+
+        // A newer canonical revision stays pending when only its numeric
+        // preview is accepted, then becomes applied on the terminal commit.
+        let committed = ProjectRevision {
+            generation: 3,
+            revision: 41,
+        };
+        status.canonical_revision(committed);
+        status.published(committed, 19);
+        let preview = preview_candidate(20, 41, 3);
+        let mut candidates = VecDeque::from([preview.clone()]);
+        assert!(rejected_candidate_project(&candidates, 20).is_none());
+        assert!(latest_applied_canonical_candidate(&candidates, 20, None).is_none());
+        let audible_preview = promote_playback_candidates(&mut candidates, 20, None)
+            .expect("the callback promoted the latest numeric preview");
+        assert!(audible_preview.device_preview_identity.is_some());
+        assert_eq!(status.current().unwrap().project, committed);
+        assert_eq!(
+            status.current().unwrap().state,
+            crate::editor::audio_admission::AdmissionState::Pending
+        );
+
+        let canonical_candidate = candidate(21, 41, 3);
+        assert_eq!(
+            rejected_candidate_project(&VecDeque::from([canonical_candidate.clone()]), 21),
+            Some(committed)
+        );
+        status.published(committed, 21);
+        let applied =
+            latest_applied_canonical_candidate(&VecDeque::from([canonical_candidate]), 21, None)
+                .expect("terminal canonical candidate applied");
+        status.applied(applied.0, applied.1);
+        assert_eq!(
+            status.current().unwrap().state,
+            crate::editor::audio_admission::AdmissionState::Applied
+        );
+        assert_eq!(status.last_audible().unwrap().audio_revision, 21);
     }
 
     #[test]
@@ -1604,6 +1896,24 @@ mod tests {
         }
     }
 
+    fn preview_candidate(
+        audio_revision: u64,
+        project_revision: u64,
+        generation: u64,
+    ) -> PlaybackCandidate {
+        let mut candidate = candidate(audio_revision, project_revision, generation);
+        candidate.device_preview_identity = Some(DevicePreviewIdentity {
+            project_generation: generation,
+            key: GestureKey {
+                generation,
+                token: 1,
+            },
+            sequence: 1,
+            canonical_revision: project_revision,
+        });
+        candidate
+    }
+
     #[test]
     fn event_playback_retains_its_exact_read_only_view_until_publication_retry() {
         let captured = candidate(3, 12, 4).state;
@@ -1623,8 +1933,8 @@ mod tests {
             candidate(6, 60, 2),
             candidate(7, 70, 2),
         ]);
-        assert!(promote_playback_candidates(&mut candidates, 3).is_none());
-        let audible = promote_playback_candidates(&mut candidates, 5).expect("accepted view");
+        assert!(promote_playback_candidates(&mut candidates, 3, None).is_none());
+        let audible = promote_playback_candidates(&mut candidates, 5, None).expect("accepted view");
         assert_eq!(audible.audio_revision, 5);
         assert_eq!(audible.state.revision, 50);
         candidates.retain(|item| item.audio_revision > 7);
@@ -1635,7 +1945,7 @@ mod tests {
     #[test]
     fn rejected_unapplied_candidate_never_becomes_audible() {
         let mut candidates = VecDeque::from([candidate(4, 40, 2)]);
-        assert!(promote_playback_candidates(&mut candidates, 3).is_none());
+        assert!(promote_playback_candidates(&mut candidates, 3, None).is_none());
         candidates.retain(|item| item.audio_revision > 4);
         assert!(candidates.is_empty());
     }
