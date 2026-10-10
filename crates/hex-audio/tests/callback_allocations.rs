@@ -770,8 +770,8 @@ fn insert_stateful_effects_at(
         .project()
         .track(track)
         .and_then(|track| track.instrument())
-        .ok_or("expected instrument slot")?
-        .id();
+        .ok_or("expected instrument slot")?;
+    let instrument = instrument.id();
     if instrument_position == 1 {
         editor.execute(Command::MoveTrackDevice {
             device: instrument,
@@ -992,6 +992,161 @@ fn stateful_utility_handoff_at_position(
 
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn arrangement_instrument_bypass_and_reenable_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    for instrument_position in [0, 1] {
+        arrangement_instrument_bypass_at_position(instrument_position)?;
+    }
+    Ok(())
+}
+
+fn arrangement_instrument_bypass_at_position(
+    instrument_position: usize,
+) -> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "arrangement keys".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected instrument track".into()),
+    };
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 120,
+    })?;
+    insert_stateful_effects_at(&mut editor, track, instrument_position)?;
+    let first_project = editor.project().clone();
+
+    let mut changed_editor = Editor::new(first_project.clone(), 16)?;
+    changed_editor.execute(Command::RemoveInstrument { track })?;
+    changed_editor.execute(Command::InsertInstrument {
+        track,
+        state: hex_project::default_instrument_state()?,
+    })?;
+    let changed_instrument = changed_editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("replacement instrument slot is missing")?
+        .id();
+    if instrument_position == 1 {
+        let before = changed_editor
+            .project()
+            .track(track)
+            .and_then(|track| track.devices().get(1))
+            .map(|device| device.id())
+            .ok_or("instrument suffix anchor is missing")?;
+        changed_editor.execute(Command::MoveTrackDevice {
+            device: changed_instrument,
+            track,
+            before: Some(before),
+        })?;
+    }
+    let changed_project = changed_editor.project().clone();
+    let mut bypassed_editor = Editor::new(changed_project.clone(), 16)?;
+    bypassed_editor.execute(Command::SetDeviceBypass {
+        device: changed_instrument,
+        bypassed: true,
+    })?;
+    let bypassed_project = bypassed_editor.project().clone();
+    let table = Arc::new(SineTable::new());
+    let first_revision = Arc::new(PreparedRevision::prepare(
+        &first_project,
+        &BTreeMap::new(),
+        Arc::clone(&table),
+        None,
+    )?);
+    let changed_revision = Arc::new(PreparedRevision::prepare(
+        &changed_project,
+        &BTreeMap::new(),
+        Arc::clone(&table),
+        Some(first_revision.session()),
+    )?);
+    let bypassed_revision = Arc::new(PreparedRevision::prepare(
+        &bypassed_project,
+        &BTreeMap::new(),
+        Arc::clone(&table),
+        Some(changed_revision.session()),
+    )?);
+
+    let initial = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(initial)
+        .map_err(|_| "initial Arrangement publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    oracle.apply(PlaybackCommand::Play);
+
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = [[0.0; 2]; 128];
+    oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+
+    let mut changed_oracle =
+        Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    changed_oracle
+        .try_inherit_runtime_from(&mut oracle)
+        .map_err(|_| "Arrangement instrument identity handoff was refused")?;
+    let identity_replacement =
+        Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    control
+        .publish(identity_replacement)
+        .map_err(|_| "Arrangement instrument identity publication failed")?;
+    changed_oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+
+    let mut bypassed_oracle =
+        Playback::try_from_prepared_with_session(Arc::clone(&bypassed_revision))?;
+    bypassed_oracle
+        .try_inherit_runtime_from(&mut changed_oracle)
+        .map_err(|_| "Arrangement bypass oracle handoff was refused")?;
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&bypassed_revision))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "Arrangement bypass publication failed")?;
+    bypassed_oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+
+    let mut reenabled_oracle =
+        Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    reenabled_oracle
+        .try_inherit_runtime_from(&mut bypassed_oracle)
+        .map_err(|_| "Arrangement re-enable oracle handoff was refused")?;
+    let reenabled = Playback::try_from_prepared_with_session(Arc::clone(&changed_revision))?;
+    control
+        .publish(reenabled)
+        .map_err(|_| "Arrangement re-enable publication failed")?;
+    reenabled_oracle.render(&mut expected)?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+    assert!(control.status.rejected_revision().is_none());
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
     control.reclaim();
     Ok(())
 }

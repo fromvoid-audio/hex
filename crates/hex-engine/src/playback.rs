@@ -160,6 +160,8 @@ impl PlaybackActionError {
 pub enum PlaybackHandoffError {
     Session(crate::SessionPlaybackError),
     ActiveSessionStateCannotBeDropped,
+    ArrangementStateCannotBeCaptured,
+    ActiveArrangementStateCannotBeDropped,
     PerformanceClockExhausted,
 }
 
@@ -170,6 +172,8 @@ pub enum PlaybackHandoffRejection {
     SessionRuntime = 1,
     ActiveSessionStateCannotBeDropped = 2,
     PerformanceClockExhausted = 3,
+    ArrangementStateCannotBeCaptured = 4,
+    ActiveArrangementStateCannotBeDropped = 5,
 }
 
 impl PlaybackHandoffRejection {
@@ -180,6 +184,12 @@ impl PlaybackHandoffRejection {
                 Self::ActiveSessionStateCannotBeDropped
             }
             PlaybackHandoffError::PerformanceClockExhausted => Self::PerformanceClockExhausted,
+            PlaybackHandoffError::ArrangementStateCannotBeCaptured => {
+                Self::ArrangementStateCannotBeCaptured
+            }
+            PlaybackHandoffError::ActiveArrangementStateCannotBeDropped => {
+                Self::ActiveArrangementStateCannotBeDropped
+            }
         }
     }
 
@@ -188,6 +198,8 @@ impl PlaybackHandoffRejection {
             1 => Some(Self::SessionRuntime),
             2 => Some(Self::ActiveSessionStateCannotBeDropped),
             3 => Some(Self::PerformanceClockExhausted),
+            4 => Some(Self::ArrangementStateCannotBeCaptured),
+            5 => Some(Self::ActiveArrangementStateCannotBeDropped),
             _ => None,
         }
     }
@@ -202,6 +214,12 @@ impl PlaybackHandoffRejection {
             }
             Self::PerformanceClockExhausted => {
                 "session graph handoff was rejected because the legacy performance clock is exhausted"
+            }
+            Self::ArrangementStateCannotBeCaptured => {
+                "session graph handoff was rejected because active arrangement state cannot be captured"
+            }
+            Self::ActiveArrangementStateCannotBeDropped => {
+                "session graph handoff was rejected because active arrangement state cannot be dropped"
             }
         }
     }
@@ -258,20 +276,14 @@ impl Playback {
         }
     }
 
-    /// Retain an accepted artifact while using the legacy Arrangement renderer.
+    /// Retain an accepted artifact with the shared prepared route runtime.
+    /// If Session runtime admission fails, its capability error stays explicit;
+    /// the existing finite fallback remains available where it is safe.
     pub fn from_prepared(prepared_revision: Arc<PreparedRevision>) -> Self {
-        if prepared_revision
-            .arrangement()
-            .tracks()
-            .iter()
-            .any(crate::Track::has_stateful_devices)
-        {
-            return match SessionPlayback::new(Arc::clone(&prepared_revision)) {
-                Ok(runtime) => Self::from_parts(prepared_revision, Some(Box::new(runtime)), None),
-                Err(error) => Self::from_parts(prepared_revision, None, Some(error)),
-            };
+        match SessionPlayback::new(Arc::clone(&prepared_revision)) {
+            Ok(runtime) => Self::from_parts(prepared_revision, Some(Box::new(runtime)), None),
+            Err(error) => Self::from_parts(prepared_revision, None, Some(error)),
         }
-        Self::from_parts(prepared_revision, None, None)
     }
 
     /// Fallibly prepare the bounded Session runtime on a control worker.
@@ -302,13 +314,13 @@ impl Playback {
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
         let project = Arc::clone(prepared_revision.arrangement());
-        let refuses_stateful_fallback = session_runtime.is_none()
+        let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && project
                 .tracks()
                 .iter()
-                .any(crate::Track::has_stateful_devices);
-        let linear_runtime = (session_runtime.is_none() && !refuses_stateful_fallback)
+                .any(|track| track.has_stateful_devices() || track.has_instrument_source());
+        let linear_runtime = (session_runtime.is_none() && !refuses_unowned_prepared_fallback)
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
             project,
@@ -539,6 +551,11 @@ impl Playback {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
                 }
+                next.validate_legacy_transport(previous.performance_frame)
+                    .map_err(PlaybackHandoffError::Session)?;
+                if legacy_arrangement_state_cannot_be_seeded(previous) {
+                    return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
+                }
                 next.seed_legacy_transport(
                     previous.position,
                     previous.performance_frame,
@@ -547,6 +564,14 @@ impl Playback {
                 .map_err(PlaybackHandoffError::Session)?;
             }
             (None, Some(old)) => {
+                if self.linear_runtime.is_none()
+                    && let Some(error) = self.session_unavailable
+                {
+                    return Err(PlaybackHandoffError::Session(error));
+                }
+                if old.has_active_arrangement_voices() {
+                    return Err(PlaybackHandoffError::ActiveArrangementStateCannotBeDropped);
+                }
                 if !old.can_demote_to_arrangement() {
                     return Err(PlaybackHandoffError::ActiveSessionStateCannotBeDropped);
                 }
@@ -592,9 +617,9 @@ impl Playback {
                 .project
                 .tracks()
                 .iter()
-                .any(crate::Track::has_stateful_devices)
+                .any(|track| track.has_stateful_devices() || track.has_instrument_source())
         {
-            return Err(Invalid("stateful native device runtime is unavailable"));
+            return Err(Invalid("prepared native playback runtime is unavailable"));
         }
         if self.playing && !output.is_empty() && self.contains_streamed_sources() {
             return Err(Invalid("streamed playback requires a media page provider"));
@@ -632,9 +657,9 @@ impl Playback {
                 .project
                 .tracks()
                 .iter()
-                .any(crate::Track::has_stateful_devices)
+                .any(|track| track.has_stateful_devices() || track.has_instrument_source())
         {
-            return Err(Invalid("stateful native device runtime is unavailable"));
+            return Err(Invalid("prepared native playback runtime is unavailable"));
         }
         let (next_performance, clock_exhausted) = if self.playing {
             match self.performance_frame.checked_add(
@@ -752,4 +777,30 @@ impl Playback {
             runtime.render_without_pages(&self.project, &mut self.position, self.playing, output)
         }
     }
+}
+
+fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
+    if previous.performance_frame != 0
+        && previous
+            .project
+            .tracks()
+            .iter()
+            .any(crate::Track::has_stateful_devices)
+    {
+        return true;
+    }
+    for track in previous.project.tracks() {
+        if !track.instrument_enabled() {
+            continue;
+        }
+        let mut active = false;
+        if track
+            .for_each_active_midi_span(previous.position, |_, _| active = true)
+            .is_err()
+            || active
+        {
+            return true;
+        }
+    }
+    false
 }

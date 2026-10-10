@@ -371,6 +371,8 @@ fn route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability() {
         .session_command_with_ticket(SessionPlaybackCommand::Stop)
         .unwrap();
     callback.begin_block();
+    let before_unavailable = control.status.session_routes(&mut entries).unwrap();
+    let before_unavailable_entries = entries;
 
     publish(
         &mut control,
@@ -381,12 +383,15 @@ fn route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability() {
     );
     callback.begin_block();
     let unavailable = control.status.session_routes(&mut entries).unwrap();
-    assert_eq!(unavailable.audio_revision, 2);
+    assert_eq!(unavailable, before_unavailable);
+    assert_eq!(entries, before_unavailable_entries);
+    assert_eq!(unavailable.audio_revision, 1);
+    assert_eq!(unavailable.capability, SessionCapabilityStatus::Available);
+    assert_eq!(unavailable.count, before_unavailable.count);
     assert_eq!(
-        unavailable.capability,
-        SessionCapabilityStatus::RevisionMismatch
+        control.status.rejected_revision(),
+        Some((2, PlaybackHandoffRejection::SessionRuntime))
     );
-    assert_eq!(unavailable.count, 0);
     assert_eq!(control.reclaim(), 1);
 
     control.request_shutdown();
@@ -962,9 +967,10 @@ fn unavailable_capability_and_failed_session_action_have_truthful_acknowledgment
 }
 
 #[test]
-fn active_session_state_rejects_legacy_demotion_and_keeps_old_graph() {
+fn ordinary_prepared_replacement_preserves_active_session_state_and_pcm() {
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     let (revision, _track, clip) = session_revision();
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
     publish(
         &mut control,
         Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap(),
@@ -975,10 +981,22 @@ fn active_session_state_rejects_legacy_demotion_and_keeps_old_graph() {
             quantization: hex_engine::LaunchQuantization::Immediate,
         })
         .unwrap();
+    oracle
+        .try_apply_action(hex_engine::PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
+    oracle.apply(PlaybackCommand::Play);
     callback.begin_block();
     let mut before = [[0.0; 2]; 128];
+    let mut expected_before = [[0.0; 2]; 128];
     callback.render(&mut before).unwrap();
+    oracle.render(&mut expected_before).unwrap();
+    assert_eq!(before, expected_before);
     assert!(before.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
     let mut route_entries = [prepared::SessionRouteEntry::default(); 2];
     let accepted_routes = control.status.session_routes(&mut route_entries).unwrap();
@@ -989,19 +1007,23 @@ fn active_session_state_rejects_legacy_demotion_and_keeps_old_graph() {
         2
     );
     callback.begin_block();
-    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status.applied_revision.load(Acquire), 2);
+    assert!(control.status.rejected_revision().is_none());
+    let after_replacement = control.status.session_routes(&mut route_entries).unwrap();
+    assert_eq!(after_replacement.audio_revision, 2);
+    assert_eq!(after_replacement.count, accepted_routes.count);
+    assert_eq!(after_replacement.capability, accepted_routes.capability);
     assert_eq!(
-        control.status.rejected_revision(),
-        Some((
-            2,
-            PlaybackHandoffRejection::ActiveSessionStateCannotBeDropped
-        ))
+        after_replacement.route_state_generation,
+        accepted_routes.route_state_generation + 1
     );
-    let after_rejection = control.status.session_routes(&mut route_entries).unwrap();
-    assert_eq!(after_rejection, accepted_routes);
+    assert_eq!(after_replacement.performance_at_update, 128);
     assert_eq!(route_entries, accepted_entries);
     let mut after = [[0.0; 2]; 128];
+    let mut expected_after = [[0.0; 2]; 128];
     callback.render(&mut after).unwrap();
+    oracle.render(&mut expected_after).unwrap();
+    assert_eq!(after, expected_after);
     assert_ne!(after, [[0.0; 2]; 128]);
     assert_eq!(control.reclaim(), 1);
     assert_eq!(

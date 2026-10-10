@@ -325,7 +325,8 @@ fn compile_project<'a>(
                 effect_plan.suffix,
                 device_chain,
             )?
-            .with_track_id(track.id()),
+            .with_track_id(track.id())
+            .with_instrument_config(track.instrument()),
         );
     }
     let project = Project::with_compiled_tracks(
