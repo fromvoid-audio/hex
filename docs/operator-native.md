@@ -1,7 +1,7 @@
 # registered Operator instrument
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes56 descriptors and opaque version2 state,
+catalog. The control codec exposes57 descriptors and opaque version2 state,
 migrating the prior version1 float prefix to all-sine defaults; storage, history and UI do not have
 Operator-specific branches.
 
@@ -21,6 +21,11 @@ that slot remains an explicit project command. Arrangement, Session, prepared
 revision handoff, shared export and the native prepared callback use the same
 registered definition. Generic opaque state round-trips and project undo/redo
 preserve edits.
+
+The routing preset control is derived from the stored routing matrix and carrier
+weights; it is not an additional serialized mode. Named topology selections
+update the existing routing parameters through the ordinary immutable device
+patch contract. See the [routing preset contract](operator-routing-presets.md).
 
 This milestone does not implement mutable feedback, filters, additional
 waveforms beyond these four, unbounded routing, full Operator controls or Live numerical parity. The injected

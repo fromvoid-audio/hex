@@ -184,7 +184,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
             .expect("Operator catalog entry")
             .parameters
             .len(),
-        56
+        57
     );
 
     let mut renderer = Renderer::new(revision.arrangement());

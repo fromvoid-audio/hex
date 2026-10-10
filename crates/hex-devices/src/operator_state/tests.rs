@@ -12,7 +12,7 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
     assert_eq!(original.payload().len(), 240);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 56);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 57);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -69,7 +69,11 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
                 }
             }
             ParameterKind::Choice { labels } => {
-                assert_eq!(labels, OperatorWaveform::labels());
+                if descriptor.id == parameter::routing_preset() {
+                    assert_eq!(labels, &ROUTING_PRESET_LABELS);
+                } else {
+                    assert_eq!(labels, OperatorWaveform::labels());
+                }
                 for choice in 0..labels.len() as u32 {
                     let changed = OPERATOR_METADATA
                         .patch_parameter(&original, descriptor.id, ParameterValue::Choice(choice))
@@ -106,6 +110,212 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     assert_eq!(
         OperatorSettings::defaults().to_state().expect("defaults"),
         original
+    );
+}
+
+#[test]
+fn routing_presets_are_derived_and_named_choices_replace_only_topology_fields() {
+    let defaults = OPERATOR_METADATA.default_state().expect("defaults");
+    let default_settings = OperatorSettings::from_state(&defaults).expect("default settings");
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&defaults, parameter::routing_preset())
+            .expect("default preset"),
+        ParameterValue::Choice(OperatorRoutingPreset::Custom.choice())
+    );
+
+    let mut with_unrelated_edits = OPERATOR_METADATA
+        .patch_parameter(
+            &defaults,
+            parameter::waveform(4),
+            ParameterValue::Choice(OperatorWaveform::Square.choice()),
+        )
+        .expect("waveform edit");
+    with_unrelated_edits = patch(&with_unrelated_edits, parameter::oscillator_ratio(2), 2.5);
+    with_unrelated_edits = patch(
+        &with_unrelated_edits,
+        parameter::envelope(3, EnvelopeField::Sustain),
+        0.35,
+    );
+    let before = OperatorSettings::from_state(&with_unrelated_edits).expect("edited settings");
+
+    let mut preset_routings = Vec::new();
+    for preset in [
+        OperatorRoutingPreset::Serial,
+        OperatorRoutingPreset::Parallel,
+        OperatorRoutingPreset::TwoPairs,
+    ] {
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &with_unrelated_edits,
+                parameter::routing_preset(),
+                ParameterValue::Choice(preset.choice()),
+            )
+            .expect("named preset");
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&state, parameter::routing_preset())
+                .expect("preset readback"),
+            ParameterValue::Choice(preset.choice())
+        );
+        let settings = OperatorSettings::from_state(&state).expect("preset settings");
+        assert_eq!(state.state_version(), OPERATOR_STATE_VERSION);
+        assert_eq!(state.payload().len(), PAYLOAD_BYTES);
+        assert_eq!(
+            &settings.fields[12..32],
+            &preset.routing_fields().expect("named topology")
+        );
+        assert_eq!(&settings.fields[..12], &before.fields[..12]);
+        assert_eq!(&settings.fields[32..], &before.fields[32..]);
+        assert_eq!(settings.waveforms, before.waveforms);
+        assert_ne!(&settings.fields[12..32], &default_settings.fields[12..32]);
+        assert_eq!(
+            OPERATOR_METADATA
+                .patch_parameter(
+                    &state,
+                    parameter::routing_preset(),
+                    ParameterValue::Choice(preset.choice()),
+                )
+                .expect("idempotent preset"),
+            state
+        );
+        preset_routings.push(settings.fields[12..32].to_vec());
+    }
+    assert_ne!(preset_routings[0], preset_routings[1]);
+    assert_ne!(preset_routings[0], preset_routings[2]);
+    assert_ne!(preset_routings[1], preset_routings[2]);
+}
+
+#[test]
+fn custom_is_a_noop_and_exact_edits_reclassify_the_derived_preset() {
+    let defaults = OPERATOR_METADATA.default_state().expect("defaults");
+    let custom = OPERATOR_METADATA
+        .patch_parameter(
+            &defaults,
+            parameter::routing_preset(),
+            ParameterValue::Choice(OperatorRoutingPreset::Custom.choice()),
+        )
+        .expect("custom is a valid no-op");
+    assert_eq!(custom, defaults);
+
+    let serial = OPERATOR_METADATA
+        .patch_parameter(
+            &defaults,
+            parameter::routing_preset(),
+            ParameterValue::Choice(OperatorRoutingPreset::Serial.choice()),
+        )
+        .expect("serial preset");
+    assert_eq!(
+        OPERATOR_METADATA
+            .patch_parameter(
+                &serial,
+                parameter::routing_preset(),
+                ParameterValue::Choice(OperatorRoutingPreset::Custom.choice()),
+            )
+            .expect("custom is a no-op on named topology"),
+        serial
+    );
+    let unchanged_classification = patch(&serial, parameter::oscillator_ratio(1), 1.5);
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&unchanged_classification, parameter::routing_preset())
+            .expect("unrelated edit keeps preset"),
+        ParameterValue::Choice(OperatorRoutingPreset::Serial.choice())
+    );
+    let waveform_edit = OPERATOR_METADATA
+        .patch_parameter(
+            &unchanged_classification,
+            parameter::waveform(2),
+            ParameterValue::Choice(OperatorWaveform::Triangle.choice()),
+        )
+        .expect("waveform edit");
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&waveform_edit, parameter::routing_preset())
+            .expect("waveform does not change topology"),
+        ParameterValue::Choice(OperatorRoutingPreset::Serial.choice())
+    );
+
+    let near = patch(
+        &serial,
+        parameter::modulation(2, 1),
+        f32::from_bits(0.25_f32.to_bits() + 1),
+    );
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&near, parameter::routing_preset())
+            .expect("one-bit-near topology"),
+        ParameterValue::Choice(OperatorRoutingPreset::Custom.choice())
+    );
+}
+
+#[test]
+fn manual_matrix_or_carrier_edits_become_custom_and_can_select_another_preset() {
+    let defaults = OPERATOR_METADATA.default_state().expect("defaults");
+    let serial = OPERATOR_METADATA
+        .patch_parameter(
+            &defaults,
+            parameter::routing_preset(),
+            ParameterValue::Choice(OperatorRoutingPreset::Serial.choice()),
+        )
+        .expect("serial preset");
+
+    for edited in [
+        patch(&serial, parameter::modulation(2, 1), 0.5),
+        patch(&serial, parameter::carrier(1), 0.5),
+    ] {
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&edited, parameter::routing_preset())
+                .expect("manual route classification"),
+            ParameterValue::Choice(OperatorRoutingPreset::Custom.choice())
+        );
+        let two_pairs = OPERATOR_METADATA
+            .patch_parameter(
+                &edited,
+                parameter::routing_preset(),
+                ParameterValue::Choice(OperatorRoutingPreset::TwoPairs.choice()),
+            )
+            .expect("replace manual route with named topology");
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&two_pairs, parameter::routing_preset())
+                .expect("new preset readback"),
+            ParameterValue::Choice(OperatorRoutingPreset::TwoPairs.choice())
+        );
+        assert_eq!(
+            &OperatorSettings::from_state(&two_pairs)
+                .expect("two-pair settings")
+                .fields[12..32],
+            &OperatorRoutingPreset::TwoPairs
+                .routing_fields()
+                .expect("two-pair topology")
+        );
+    }
+}
+
+#[test]
+fn exact_manual_routing_edits_read_back_as_a_named_preset() {
+    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    for (source, target) in [(2, 1), (3, 2), (4, 3)] {
+        state = patch(&state, parameter::modulation(source, target), 0.25);
+    }
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&state, parameter::routing_preset())
+            .expect("manual exact topology"),
+        ParameterValue::Choice(OperatorRoutingPreset::Serial.choice())
+    );
+
+    let mut parallel = OPERATOR_METADATA.default_state().expect("defaults");
+    for operator in 1..=4 {
+        parallel = patch(&parallel, parameter::carrier(operator), 0.25);
+    }
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&parallel, parameter::routing_preset())
+            .expect("manual parallel topology"),
+        ParameterValue::Choice(OperatorRoutingPreset::Parallel.choice())
     );
 }
 
@@ -328,7 +538,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(61),
+        ParameterId::from_static(62),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -496,7 +706,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 56);
+    assert_eq!(definition.descriptors().len(), 57);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");

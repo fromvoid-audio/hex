@@ -17,8 +17,15 @@ operator order; the next16 are source-major modulation depths, including four
 reserved zero diagonal entries; the next4 are carrier weights. The final24 fields of the original prefix are
 initial, peak, sustain, attack, decay and release for each of four operators.
 Parameter IDs are one-based field indices, excluding reserved diagonals; waveform
-selectors use stable IDs57–60. There are56 editable descriptors:52 floats and
-four choices (`sine`, `saw`, `square`, `triangle`). Existing
+selectors use stable IDs57–60. There are57 editable descriptors:52 floats, four
+waveform choices (`sine`, `saw`, `square`, `triangle`) and one derived routing
+preset choice (`custom`, `serial`, `parallel`, `two pairs`). Routing preset ID61
+is computed from the exact sixteen modulation depths and four carrier weights;
+it adds no serialized field and does not change state version2 or its240-byte
+payload. Named choices replace those twenty routing fields atomically. `custom`
+leaves routing intact and is not a persisted mode; editing the topology changes
+readback to `custom` unless it exactly matches a named layout. See the
+[routing preset contract](operator-routing-presets.md). Existing
 `hex.instrument.fm4` keeps its separate 144-byte state and global ADSR unchanged.
 
 Every decode, migration and patch validates all fields and the acyclic routing

@@ -746,15 +746,29 @@ Operator oscillators through generic Choice metadata and version2 native state.
 The first224 version1 bytes migrate bit-for-bit, including signed zero, with
 all-sine defaults; legacy sine PCM remains exact. Non-sine shapes use a bounded
 control-prepared process-wide harmonic bank, strict per-note Nyquist caps and
-four inline cap indices. Targeted hex-devices tests pass (65), including an
+four inline cap indices. Targeted hex-devices tests pass (66), including an
 independent Fourier/DFT oracle, malformed payload refusal, generic registry mixed
 rendering and100 distinct contexts each under the4 KiB admission ceiling. Context
-size is592 bytes and notes are48 bytes. Table data is245,880 bytes plus40 bytes
-of fixed Box/OnceLock headers before allocator bookkeeping. A reproducible
+size is592 bytes and notes are48 bytes. Table data is245,880 bytes; the measured
+24-byte OnceLock cell includes its Box descriptor, for245,904 bytes before allocator bookkeeping. A reproducible
 release headless profile is added but has not yet been run; project-level mixed
 render/persistence, callback allocation-probe and native listening remain open.
 Full local CI and review remain with the integration owner. See
 [waveform contract](docs/operator-waveforms.md).
+
+Pulse2187 adds a derived Operator routing preset choice, parameter ID61, without
+changing version2 state or its240-byte payload. `serial`, `parallel` and
+`two pairs` atomically replace only the existing routing matrix/carrier fields;
+`custom` is inferred from exact topology equality and selecting it leaves routing
+unchanged. Generic state/view, matrix/carrier classification, invalid input,
+bit-near custom detection, exact manual classification, idempotence, invalid
+choice/type, state size/version preservation and field-preservation tests are
+included. Device tests (70), Operator Arrangement/Session admission tests (2),
+native device view tests (5), strict device/engine Clippy, formatting, architecture
+and style guards pass. One canonical Session preset edit passes exact-state Undo/Redo coverage.
+Arrangement/render/persistence history remains generic because presets write only existing fields. Native UI acceptance and review
+remain open. See
+[routing preset contract](docs/operator-routing-presets.md).
 
 Pulse2173: current architecture orientation now documents one freely positioned
 instrument, actual prefix/instrument/suffix rendering and the canonical prepared
