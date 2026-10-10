@@ -10,9 +10,15 @@ Lowercase text, bundled Ioskeley Mono and accepted compact geometry are preserve
 ## Controls and ownership
 
 The native macOS hex > settings… menu (Command-comma) opens a compact modal.
-Repeated activation focuses the existing draft. The toolbar has no settings button. Each
-color has a swatch, hex readout and RGB sliders with direct numeric channel
-editing. Values are bounded to 0–255. Valid changes preview immediately; Reset
+Repeated activation focuses the existing draft. The toolbar has no settings button.
+Four larger role swatches select background, text, primary or secondary. A shared
+saturation/brightness field and rainbow hue strip edit the selected role. Hue,
+saturation and brightness each have a slider and direct numeric value; the existing
+RGB sliders and hex readout show the same opaque color. Hue is retained while a
+color is gray or black, so raising brightness or saturation can recover its chosen
+hue. RGB/HSV conversions round to 8-bit channels without repeatedly converting
+the saved RGB through HSV. RGB values are bounded to 0–255, hue to 0–359 degrees,
+and saturation/brightness to 0–100 percent. Valid changes preview immediately; Reset
 restores shipped defaults, Cancel/Escape restores the palette present when the
 panel opened, and Save persists the validated draft. Focus returns to the editor
 after cancellation or successful asynchronous saving. Keyboard routing follows
@@ -52,6 +58,17 @@ recovery, contrast-invalid startup preservation, close during save, Escape from
 focused numeric controls and injected text-selection tint. Full clean local CI
 follows integration; no native macOS interaction has been claimed.
 
+Picker implementation evidence (Pulse2116): HSV conversion tests cover primaries,
+hue wrapping, non-finite/range rejection, gray/black hue retention and exact RGB
+round trips for representative palette colors. UI tests cover role selection,
+dragging the field through release outside its bounds, synchronized HSV/RGB preview,
+direct hue entry, contrast-invalid preview retention, Reset, Cancel, Save and
+preference reload. All 26 widget tests and 7 focused theme UI tests pass. A rendered
+GPUI fixture resized to the editor minimum of 880×540 verifies that each role
+swatch, picker surface, HSB/RGB control and modal action fits inside the panel.
+Strict widget/UI Clippy and formatting/style/architecture/GPUI-patch guards pass;
+native macOS layout and interaction remain for user review.
+
 The user's native checklist for the combined build:
 
 - Open settings from the native menu or Command-comma; adjust all four roles and check tracks,
@@ -60,6 +77,12 @@ The user's native checklist for the combined build:
   editor shortcuts should return. Invalid contrast should leave controls readable.
 - Save a valid palette, quit and relaunch; colors should persist independently
   of the project. Reset then Save restores the shipped palette.
+- Select all four larger swatches; drag the saturation/brightness field and hue
+  strip, including release beyond their bounds. Check the HSB and RGB values stay
+  aligned, and changing a gray or black color's brightness preserves its chosen hue.
+- Type HSB and RGB values, then use Escape to restore the palette that was open
+  before editing. Confirm low-contrast drafts keep the last legible preview and
+  show the contrast explanation.
 
 
 Menu access follow-up (Pulse2115): removes the in-window settings button and adds

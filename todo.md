@@ -279,6 +279,10 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   when implementing. Four roles, cached derived tokens, RGB pickers, preview/
   cancel/reset/save and versioned independent preferences are now implemented.
   Focused source checks pass; clean full CI and native acceptance remain open.
+  Pulse2116 adds four clickable role swatches, one shared native saturation/
+  brightness and hue picker, direct HSB values and synchronized RGB controls.
+  Conversion, field-drag/release, role preview, typed hue and preference reload
+  tests pass; native layout/interaction and combined full local CI remain open.
   Contract: [theme settings](docs/theme-settings.md).
 - [ ] **native device model/runtime** — canonical IDs, parameter/state/history
   persistence, one MIDI instrument slot and serial audio effects, with shared

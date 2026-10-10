@@ -1,4 +1,5 @@
 //! Small reusable GPUI controls for compact native audio-device interfaces.
+mod color_picker;
 mod discrete;
 mod frame;
 mod numeric;
@@ -6,6 +7,9 @@ mod numeric_control;
 mod numeric_text;
 mod style;
 
+pub use color_picker::{
+    ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
+};
 pub use discrete::{
     Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
 };
