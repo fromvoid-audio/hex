@@ -5,10 +5,10 @@ use crate::playback::{Playback, PlaybackCommand};
 use crate::{BorrowedMediaPage, MediaPages, StreamSourceKey, StreamedSourceMetadata};
 use crate::{PreparedRevision, PreparedSessionInventory};
 use hex_project::{
-    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, Editor, LoopRegion, Meter,
-    MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
-    SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot,
-    Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, Command, Created, DeviceSnapshot, Editor,
+    LoopRegion, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project,
+    SceneSnapshot, SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot,
+    SessionSnapshot, Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -1833,6 +1833,483 @@ fn registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session(
         assert_eq!(first.as_slice(), &expected[..5]);
         assert_eq!(rest.as_slice(), &expected[5..]);
     }
+}
+
+#[test]
+fn unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_revisions() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+
+    for (session_owner, note_duration, recent_release) in [
+        (false, 8 << 32, false),
+        (true, 8 << 32, false),
+        (false, (1 << 32) / 6_000, true),
+        (true, (1 << 32) / 6_000, true),
+    ] {
+        let base = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
+        let source = if session_owner {
+            session_only_project(&base)
+        } else {
+            base
+        };
+        let initial_revision =
+            revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+        let mut playback = SessionPlayback::new(Arc::clone(&initial_revision)).unwrap();
+        let mut uninterrupted = SessionPlayback::new(initial_revision).unwrap();
+        if session_owner {
+            let clip = playback.revision.session().midi_clips()[0].id;
+            for owner in [&mut playback, &mut uninterrupted] {
+                owner
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
+        }
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
+
+        let mut preroll_frames = 0;
+        loop {
+            let mut actual = [[0.0; 2]; 1];
+            let mut expected = [[0.0; 2]; 1];
+            playback.render(&mut actual).unwrap();
+            uninterrupted.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            preroll_frames += 1;
+            let runtime = playback.mutable_instruments[0].as_ref().unwrap();
+            if recent_release {
+                if runtime.committed_feedback_tail_is_active() {
+                    break;
+                }
+            } else if preroll_frames == 16 {
+                assert!(!runtime.committed_ledger_is_empty());
+                break;
+            }
+            assert!(
+                preroll_frames < 64,
+                "fixture did not reach its test boundary"
+            );
+        }
+
+        let mut editor = Editor::new(source, 8).unwrap();
+        for name in ["first unrelated edit", "second unrelated edit"] {
+            let track = editor.project().tracks()[0].id();
+            let (_, candidate_revision) = editor
+                .execute_prepared(
+                    Command::RenameTrack {
+                        track,
+                        name: name.to_owned(),
+                    },
+                    |candidate| {
+                        Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
+                            candidate,
+                            Arc::clone(&table),
+                            &registry,
+                        ))
+                    },
+                )
+                .unwrap();
+            let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+            candidate.try_inherit_state_from(&mut playback).unwrap();
+            assert!(
+                playback
+                    .tail_mutable_instruments
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert_eq!(
+                candidate.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .next_occurrence_id(),
+                uninterrupted.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .next_occurrence_id()
+            );
+            let mut actual = [[0.0; 2]; 24];
+            let mut expected = [[0.0; 2]; 24];
+            candidate.render(&mut actual).unwrap();
+            uninterrupted.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            playback = candidate;
+        }
+    }
+}
+
+#[test]
+fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let first_track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "short source".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(track) => track,
+        _ => panic!("expected first MIDI track"),
+    };
+    let second_track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "held source".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(track) => track,
+        _ => panic!("expected second MIDI track"),
+    };
+    let scene = match editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    {
+        Created::Scene(scene) => scene,
+        _ => panic!("expected Session scene"),
+    };
+    let mut first_note = None;
+    for (track, pitch, duration) in [
+        (first_track, 60, (1_u64 << 32) / 6_000),
+        (second_track, 64, 4_u64 << 32),
+    ] {
+        let clip = match editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "source".into(),
+                source_length: BeatTime::from_quarters(8).unwrap(),
+            })
+            .unwrap()
+        {
+            Created::SessionClip(clip) => clip,
+            _ => panic!("expected Session MIDI clip"),
+        };
+        let note = match editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_raw(duration),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        {
+            Created::Note(note) => note,
+            _ => panic!("expected Session MIDI note"),
+        };
+        if track == first_track {
+            first_note = Some(note);
+        }
+        let device = editor
+            .project()
+            .track(track)
+            .and_then(|track| track.instrument())
+            .expect("MIDI track has an instrument")
+            .id();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: registry.default_state(id).unwrap(),
+            })
+            .unwrap();
+    }
+    let first_note = first_note.expect("first Session note was created");
+    let original_revision =
+        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+    let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+    let mut uninterrupted = SessionPlayback::new(original_revision).unwrap();
+    for playback in [&mut previous, &mut uninterrupted] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+
+    // The short first source is finished and quiescent; the second Session
+    // route still owns a held mutable occurrence at the source-edit boundary.
+    let mut prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    previous.render(&mut prefix).unwrap();
+    uninterrupted.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+    assert!(
+        previous.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    assert!(
+        !previous.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    editor
+        .execute(Command::UpdateMidiNote {
+            note: first_note,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw((1_u64 << 32) / 6_000),
+            pitch: 61,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(candidate.historical_floor.is_some());
+    let second_index = candidate
+        .routes
+        .iter()
+        .position(|route| route.id == second_track)
+        .unwrap();
+    assert!(
+        candidate.mutable_instruments[second_index]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    assert!(
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .all(Option::is_none)
+    );
+    assert_eq!(
+        candidate.mutable_instruments[second_index]
+            .as_ref()
+            .unwrap()
+            .next_occurrence_id(),
+        uninterrupted.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .next_occurrence_id(),
+        "global source-floor handoff carries the unchanged route's ledger"
+    );
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = [[0.0; 2]; 32];
+    candidate.render(&mut actual).unwrap();
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_removed() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let first_track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "removed mutable track".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(track) => track,
+        _ => panic!("expected first MIDI track"),
+    };
+    let retained_track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "retained mutable track".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(track) => track,
+        _ => panic!("expected second MIDI track"),
+    };
+    for track in [first_track, retained_track] {
+        let instrument = editor
+            .project()
+            .track(track)
+            .and_then(|track| track.instrument())
+            .expect("new MIDI track has an instrument")
+            .id();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument,
+                state: hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap(),
+            })
+            .unwrap();
+        let clip = match editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(8).unwrap(),
+            })
+            .unwrap()
+        {
+            Created::Clip(clip) => clip,
+            _ => panic!("expected Arrangement MIDI clip"),
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(4).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let original_revision =
+        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+    let mut playback = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+    let mut oracle = SessionPlayback::new(original_revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 32];
+    playback.render(&mut prefix).unwrap();
+    oracle.render(&mut prefix).unwrap();
+
+    let (_, candidate_revision) = editor
+        .execute_prepared(Command::RemoveTrack(first_track), |candidate| {
+            Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
+                candidate,
+                Arc::clone(&table),
+                &registry,
+            ))
+        })
+        .unwrap();
+    let mut retained_oracle = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    retained_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut oracle_prefix = [[0.0; 2]; 32];
+    retained_oracle.render(&mut oracle_prefix).unwrap();
+    let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+    candidate.try_inherit_state_from(&mut playback).unwrap();
+    assert_eq!(candidate.routes[0].id, retained_track);
+    assert!(
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .any(Option::is_some)
+    );
+
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = [[0.0; 2]; 32];
+    candidate.render(&mut actual).unwrap();
+    retained_oracle.render(&mut expected).unwrap();
+    assert!(
+        actual[0][0] > expected[0][0],
+        "removed route keeps its old-law tail"
+    );
+    // The removed route's declared release plus feedback tail is 16 frames;
+    // after that, exact PCM must match the retained route's uninterrupted law.
+    assert_eq!(&actual[16..], &expected[16..]);
+}
+
+#[test]
+fn mutable_arrangement_source_change_does_not_take_the_exact_continuity_path() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let mut editor = Editor::new(source, 8).unwrap();
+    let mut playback = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 8];
+    playback.render(&mut prefix).unwrap();
+    let frame_before_handoff = playback.performance_frame();
+
+    let (_, candidate_revision) = editor
+        .execute_prepared(
+            Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_raw(8 << 32),
+                pitch: 61,
+                channel: 0,
+                velocity: 100,
+            },
+            |candidate| {
+                Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
+                    candidate,
+                    Arc::clone(&table),
+                    &registry,
+                ))
+            },
+        )
+        .unwrap();
+    let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut playback),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(playback.performance_frame(), frame_before_handoff);
+    assert!(
+        playback
+            .tail_mutable_instruments
+            .iter()
+            .all(Option::is_none)
+    );
+    assert!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
 }
 
 #[test]

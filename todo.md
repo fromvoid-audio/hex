@@ -618,3 +618,25 @@ repaired with inlining/static shaping; final short paired median0.349→0.352s,
 not native deadline evidence. Full local CI remains pending. No device registry,
 state, UI or mutable voice admission changed; parent2161 native integration is
 open. See [original enveloped FM contract](docs/operator-fm.md).
+
+Pulse2163 exact compatible mutable continuity is implemented on the focused
+engine branch. Prepared revisions retain exact bounded descriptors for mutable
+tracks; unchanged Arrangement and launched Session owners carry both mutable
+runtime twins, occurrence ledgers and next IDs across handoff. A real Editor
+rename preserves held and recently released feedback history, and deleting an
+earlier track verifies stable TrackId mapping while its old-law release tail
+finishes separately. Changed Arrangement source is still refused while a
+candidate occurrence would require chase. All 134 hex-engine unit tests and
+its integration suites pass with the injected instrument seam, as do all 24
+hex-lattice unit tests; all hex-audio
+allocation-probe tests pass, including zero-total and zero-signed-net callback
+checks for unchanged carry/refusal and control-side retirement. Strict affected
+Clippy, formatting and architecture/style guards pass. Full local CI and review
+remain with root. This does not add changed-source/config suppression, mutable
+seek/chase or loop continuity, effect residual-tail quiescence, or a built-in
+mutable instrument. Exact-carry handoff now preflights the complete effect chain
+before copying history; a lattice-level adversarial suffix-compatibility test
+covers rejection. A Session source-edit regression confirms the existing global
+historical floor still carries an unrelated unchanged mutable route. The
+PreparedRevision test seam does not inject effect registries, so the specific
+incompatible-suffix case is not represented as a full compiled handoff fixture.
