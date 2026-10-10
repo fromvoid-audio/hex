@@ -279,6 +279,7 @@ pub struct SessionPlayback {
     performance_frame: u64,
     arrangement_frame: u64,
     playing: bool,
+    linear_arrangement_export: bool,
     route_state_generation: u64,
 }
 
@@ -291,6 +292,7 @@ impl fmt::Debug for SessionPlayback {
             .field("performance_frame", &self.performance_frame)
             .field("arrangement_frame", &self.arrangement_frame)
             .field("playing", &self.playing)
+            .field("linear_arrangement_export", &self.linear_arrangement_export)
             .field("route_state_generation", &self.route_state_generation)
             .finish()
     }
@@ -314,6 +316,24 @@ impl SessionPlayback {
     }
 
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_policy(revision, false)
+    }
+
+    /// Prepare the shared renderer for finite, linear Arrangement export.
+    /// Session route actions are refused, Session-only tempo/loop inventory
+    /// does not affect this owner, and the authored Arrangement tempo map is
+    /// used without transport-loop wrapping. Mutable Arrangement source loops
+    /// and seek destinations that require note chase remain unsupported.
+    pub fn new_linear_arrangement_export(
+        revision: Arc<PreparedRevision>,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_policy(revision, true)
+    }
+
+    fn new_with_policy(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+    ) -> Result<Self, SessionPlaybackError> {
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -324,17 +344,23 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionTrackMismatch);
         }
-        if let Some(error) = revision.session().periodic_tempo_error() {
+        if !linear_arrangement_export && let Some(error) = revision.session().periodic_tempo_error()
+        {
             return Err(SessionPlaybackError::SessionTempoUnavailable(error));
         }
-        let periodic_tempo = revision.session().periodic_tempo();
+        let periodic_tempo = if linear_arrangement_export {
+            None
+        } else {
+            revision.session().periodic_tempo()
+        };
 
         if revision.session().has_mutable_instruments()
-            && (revision
-                .arrangement()
-                .loop_region()
-                .is_some_and(|region| region.enabled())
-                || revision.session().has_mutable_looping_source()
+            && ((!linear_arrangement_export
+                && (revision
+                    .arrangement()
+                    .loop_region()
+                    .is_some_and(|region| region.enabled())
+                    || revision.session().has_mutable_looping_source()))
                 || arrangement_tracks
                     .iter()
                     .any(|track| track.has_mutable_looping_source()))
@@ -523,6 +549,7 @@ impl SessionPlayback {
             performance_frame: 0,
             arrangement_frame: 0,
             playing: false,
+            linear_arrangement_export,
             route_state_generation: 0,
         })
     }
@@ -676,6 +703,12 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        // Linear export is a deliberately fresh Arrangement-only owner. It
+        // cannot inherit route state, Session launches, or a live transport
+        // clock from the interactive playback graph.
+        if self.linear_arrangement_export || previous.linear_arrangement_export {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         self.inherit_state(previous)
     }
 

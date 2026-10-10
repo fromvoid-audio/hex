@@ -25,9 +25,13 @@ ALLOWED = {
     'hex-desktop': {'hex-ui', 'hex-audio'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
-# Canonical publication fixtures need the authored model only in audio tests.
-# This does not grant the production device/callback crate ownership of editing.
-DEV_ALLOWED = {'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice'}}
+# These narrow test-only edges exercise canonical publication and prepared
+# mutable-instrument fixtures. They do not grant production audio/export code
+# ownership of editing or device implementations.
+DEV_ALLOWED = {
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+}
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},

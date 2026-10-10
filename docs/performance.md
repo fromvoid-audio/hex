@@ -1,3 +1,37 @@
+## prepared linear export policy — 10 October 2026
+
+Pulse 2159 adds an Arrangement-only export policy to shared playback. Three
+interleaved before/after release runs checked ordinary shared playback for
+regressions on Apple M5 Pro, macOS 26.6.2, 48 kHz, 100 tracks, two Utility
+suffix devices per track, dense held notes, 100 warm-up and 500 measured blocks.
+The baseline is PR 63's captured release binary; no concurrent Cargo work ran.
+Median total render times:
+
+| Workload | Block frames | Before | After |
+| --- | --- | --- | --- |
+| Sine, 16 notes/track | 128 | 0.280 s | 0.289 s |
+| Sine, 16 notes/track | 512 | 1.101 s | 1.142 s |
+| Default FM4, 1 note/track | 128 | 0.031 s | 0.031 s |
+| Default FM4, 1 note/track | 512 | 0.120 s | 0.119 s |
+| Default FM4, 16 notes/track | 128 | 0.472 s | 0.475 s |
+| Default FM4, 16 notes/track | 512 | 1.863 s | 1.864 s |
+
+All whole-run PCM digests match exactly. Sine medians increased about 3.2–3.7%;
+FM4 medians changed by less than 1%. These short headless samples do not establish
+a sustained regression or physical deadline performance; the new policy branches
+remain a profiling follow-up if that difference reproduces under controlled load.
+This measures ordinary playback, not export throughput.
+
+Evidence: `artifacts/profiles/prepared-export-20261010/paired-results.json`,
+immutable before/after binaries and 18 interleaved logs. Baseline production
+source is `ce44df356eb3ff21381fd4a72a1bc5791b07ef74`; the after capture has that
+base plus tracked diff SHA-256
+`029f13f7f3782204e4bfaf056183c257d2a58c04c28a5d0f74aa835b20f47bbf`.
+After binary SHA-256:
+`671b1daa9a1294d7c6104ccec9a55414d71f34745f50543695d0d3baa193fcd5`.
+Subsequent edits only added documentation and a truncation regression test.
+Commands and timing scope match the mutable-tail comparison below.
+
 # Performance requirements and baseline — 8 October 2026
 
 ## Mutable tail ownership checkpoint — 10 October 2026

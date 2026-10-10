@@ -2589,6 +2589,9 @@ name = "hex-export"
 version = "0.1.0"
 dependencies = [
  "hex-engine",
+ "hex-lattice",
+ "hex-lattice-contract",
+ "hex-project",
 ]
 
 [[package]]

@@ -639,6 +639,10 @@ impl Track {
         self.mutable_looping_source
     }
 
+    pub(crate) fn has_mutable_instrument(&self) -> bool {
+        self.mutable_instrument
+    }
+
     pub(crate) fn instrument_enabled(&self) -> bool {
         self.instrument_id.is_some() && !self.instrument_bypassed && self.instrument.is_some()
     }

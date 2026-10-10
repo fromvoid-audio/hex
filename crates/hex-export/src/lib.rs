@@ -1,13 +1,16 @@
 //! Fixed-block linear PCM16 WAV export with create-new publication.
 
-use hex_engine::{Project, Renderer};
+use hex_engine::{PreparedRevision, Project, Renderer, SessionPlayback, SessionPlaybackCommand};
 use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const FRAMES_PER_BLOCK: usize = 256;
@@ -26,6 +29,7 @@ pub struct ExportReport {
 pub enum ExportError {
     Invalid(&'static str),
     Render(hex_engine::Invalid),
+    SessionRender(hex_engine::SessionPlaybackError),
     Io {
         operation: &'static str,
         source: io::Error,
@@ -43,6 +47,7 @@ impl fmt::Display for ExportError {
         match self {
             Self::Invalid(reason) => write!(f, "invalid wav export: {reason}"),
             Self::Render(source) => write!(f, "could not render wav: {source}"),
+            Self::SessionRender(source) => write!(f, "could not render wav: {source}"),
             Self::Io { operation, source } => write!(f, "could not {operation}: {source}"),
             Self::PublishedButNotDurable {
                 path,
@@ -62,6 +67,7 @@ impl Error for ExportError {
         match self {
             Self::Io { source, .. } | Self::PublishedButNotDurable { source, .. } => Some(source),
             Self::Render(source) => Some(source),
+            Self::SessionRender(source) => Some(source),
             Self::Invalid(_) => None,
         }
     }
@@ -78,7 +84,69 @@ pub fn render_new(
     start: u64,
     frames: u64,
 ) -> Result<ExportReport, ExportError> {
-    let sample_rate = project.sample_rate();
+    publish_new(path, project.sample_rate(), start, frames, || {
+        let mut renderer = Renderer::new(project);
+        renderer.seek(start);
+        renderer.play();
+        Ok(LinearBlockRenderer(renderer))
+    })
+}
+
+/// Render a prepared linear Arrangement range through shared SessionPlayback
+/// and publish it without replacing an existing path. The captured prepared
+/// revision is used directly; no project clone or recompilation occurs here.
+pub fn render_prepared_new(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    start: u64,
+    frames: u64,
+) -> Result<ExportReport, ExportError> {
+    if start != 0 && revision.has_arrangement_mutable_instruments() {
+        return Err(ExportError::Invalid(
+            "nonzero range start with a mutable arrangement instrument is unsupported",
+        ));
+    }
+    let sample_rate = revision.arrangement().sample_rate();
+    publish_new(path, sample_rate, start, frames, || {
+        let mut playback = SessionPlayback::new_linear_arrangement_export(revision)
+            .map_err(ExportError::SessionRender)?;
+        playback
+            .apply(SessionPlaybackCommand::Seek(start))
+            .map_err(ExportError::SessionRender)?;
+        playback
+            .apply(SessionPlaybackCommand::Play)
+            .map_err(ExportError::SessionRender)?;
+        Ok(PreparedBlockRenderer(playback))
+    })
+}
+
+trait BlockRenderer {
+    fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError>;
+}
+
+struct LinearBlockRenderer<'a>(Renderer<'a>);
+
+impl BlockRenderer for LinearBlockRenderer<'_> {
+    fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
+        self.0.render(frames).map_err(ExportError::Render)
+    }
+}
+
+struct PreparedBlockRenderer(SessionPlayback);
+
+impl BlockRenderer for PreparedBlockRenderer {
+    fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
+        self.0.render(frames).map_err(ExportError::SessionRender)
+    }
+}
+
+fn publish_new<R: BlockRenderer>(
+    path: &Path,
+    sample_rate: u32,
+    start: u64,
+    frames: u64,
+    prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
+) -> Result<ExportReport, ExportError> {
     if sample_rate == 0 {
         return Err(ExportError::Invalid("sample rate is zero"));
     }
@@ -115,7 +183,16 @@ pub fn render_new(
         }
     }
     let (file, temporary_path) = create_temporary(path)?;
-    let write_result = write_wav(file, project, start, frames, data_bytes, byte_rate);
+    let write_result = prepare_renderer().and_then(|mut renderer| {
+        write_wav(
+            file,
+            sample_rate,
+            frames,
+            data_bytes,
+            byte_rate,
+            &mut renderer,
+        )
+    });
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary_path);
         return Err(error);
@@ -196,14 +273,13 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
 
 fn write_wav(
     file: File,
-    project: &Project,
-    start: u64,
+    sample_rate: u32,
     frames: u64,
     data_bytes: u32,
     byte_rate: u32,
+    renderer: &mut impl BlockRenderer,
 ) -> Result<(), ExportError> {
     let mut writer = BufWriter::new(file);
-    let sample_rate = project.sample_rate();
     write_all(&mut writer, b"RIFF", "write the RIFF header")?;
     write_all(
         &mut writer,
@@ -233,16 +309,11 @@ fn write_wav(
         "write the WAV data header",
     )?;
 
-    let mut renderer = Renderer::new(project);
-    renderer.seek(start);
-    renderer.play();
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
     while remaining > 0 {
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
-        renderer
-            .render(&mut block[..count])
-            .map_err(ExportError::Render)?;
+        renderer.render_block(&mut block[..count])?;
         for frame in &block[..count] {
             for sample in frame {
                 if !sample.is_finite() {
