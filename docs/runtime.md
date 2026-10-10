@@ -145,12 +145,54 @@ after unlocking, while unread runtime `Playback` destruction stays on the
 worker. A latency-sensitive caller must retain its audible/current prepared
 revision owners across supersede or invalidation until worker ownership drains;
 this API does not guarantee that final immutable graph release avoids the
-caller thread. The candidate uses the
-linear Arrangement-only policy: Session route actions and interactive native
-promotion are unsupported. This remains candidate preparation only: no UI
-handoff, live route ownership, project supersede/Stop fence or audio publication
-is included. The caller must compare generation/revision and use the later
-native admission and promotion contract before installing any result.
+caller thread. The linear candidate API remains Arrangement-only and does not
+support Session route actions. The GPUI editor's stateful Arrangement seek path
+retains the exact prepared revision and captures a fresh runtime fence at
+admission. It refuses admission unless the current canonical revision is
+already audible, every route belongs to Arrangement, and no edit, replacement,
+gesture, recovery, or queued playback action is pending. The same fence is
+carried through preparation and installed with
+`InstallFreshRuntimeIfUnchanged`; it is never recaptured for an admitted
+request. Pointer seek preserves the pending play intent, while Spacebar
+PlayFrom starts playback. A second Spacebar press sees a pending or latched
+play intent as playing and queues Pause even before the callback admits the
+first transport command. Direct analytic seeking requires a retained prepared
+revision that identifies the source as analytic; an unknown active source is
+refused rather than sent through the fast path.
+
+Audio device/render faults and shutdown refuse both initial admission and ready
+candidate publication; the editor tick invalidates retained seek intents after
+reclaim when it observes those flags. Publication is the cancellation boundary:
+before publication, invalidation cancels preparation or returns the uninstalled
+candidate. After publication, the accepted audio owner cannot be withdrawn by
+UI cancellation; the pending request remains until a terminal result, with UI
+success suppressed. Its original audio fence still rejects intervening audio
+revision, route or command-ticket changes. A canonical edit/Open alone is not
+an audio fence change, so a previously published seek can briefly install before
+the newer replacement reaches audio. Stronger post-publication cancellation is
+a separate follow-up; this path does not promise atomic withdrawal.
+
+An unconsumed worker result is replaced through the worker's fixed retirement
+slot. A consumed result that becomes stale is returned intact to that slot; if
+it is occupied, the UI retains one result and retries before admitting more
+work. During editor teardown, the result is handed to the worker's existing
+retired slot, or its empty ready slot, for worker-side shutdown destruction.
+The worker's ready and retired slots are each bounded by the existing 32 MiB
+candidate ceiling. A blocked UI handback may add one retained UI result, so the
+defensive aggregate upper bound is three candidate ceilings (two worker slots
+plus one UI-held result), not only the worker's 64 MiB. The consumed-result/
+teardown flow assumes the
+normal invariant that the ready slot was vacated before the UI retained a
+result and no later seek was submitted; if both worker slots were occupied,
+teardown handback would remain unresolved and must not be treated as a proven
+worker-side drop. This defensive two-full-slot case is refused by the API; it
+is not silently overwritten or converted into another owner queue.
+
+This admission path does not compile or warm a graph on the callback. Existing
+`Control::reclaim` still destroys callback-returned owners on its caller (the
+current editor tick), so this work does not claim that every graph destruction
+is off the UI thread. Native output/listening acceptance and physical-device
+deadline behavior remain open.
 
 `ArrangementSeekMode::LinearArrangement` remains the default and preserves the
 export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
@@ -179,7 +221,8 @@ absolute-frame seeking would omit mutable Arrangement instruments or stateful
 track/return processors. Built-in Sine and Operator remain on the direct path
 because their notes are deterministic functions of note age and gate duration.
 This is a control-side policy query, not a full eligibility or publication
-fence. Native UI integration and measured 100-track readiness remain open.
+fence. Native UI/listening acceptance remains open. A 100-track interactive readiness
+profile is recorded in docs/performance.md; it is not a physical deadline.
 Canonical startup now opens output on the same bounded lifecycle worker. A
 font-validated loading window owns the pending handle; a weak polling task and
 non-owning window handle replace its root with the editor when output is ready.

@@ -62,6 +62,7 @@ pub struct ArrangementSeekResult {
 pub enum ArrangementSeekSubmitError {
     Closed,
     RequestIdsExhausted,
+    RetirementPending,
 }
 
 type Preparer =
@@ -87,6 +88,8 @@ struct Mailbox {
     shutdown: bool,
     #[cfg(test)]
     test_pause_drain: bool,
+    #[cfg(test)]
+    last_result_drop_thread: Option<thread::ThreadId>,
 }
 
 struct Shared {
@@ -125,6 +128,8 @@ impl ArrangementSeekWorker {
                 shutdown: false,
                 #[cfg(test)]
                 test_pause_drain: false,
+                #[cfg(test)]
+                last_result_drop_thread: None,
             }),
             wake: Condvar::new(),
         });
@@ -148,6 +153,9 @@ impl ArrangementSeekWorker {
         let mut mailbox = lock(&self.shared.mailbox);
         if mailbox.shutdown {
             return Err(ArrangementSeekSubmitError::Closed);
+        }
+        if mailbox.retired.is_some() {
+            return Err(ArrangementSeekSubmitError::RetirementPending);
         }
         let Some(request_id) = mailbox.next_request_id else {
             return Err(ArrangementSeekSubmitError::RequestIdsExhausted);
@@ -198,6 +206,48 @@ impl ArrangementSeekWorker {
         } else {
             None
         }
+    }
+
+    /// Return a UI-stale candidate to the worker's bounded retirement slot.
+    /// The result is returned unchanged when the slot is occupied or the
+    /// worker is shutting down, so the caller can retain ownership and retry.
+    #[allow(clippy::result_large_err)] // Preserve the candidate intact on backpressure.
+    pub fn retire_result(
+        &self,
+        result: ArrangementSeekResult,
+    ) -> Result<(), ArrangementSeekResult> {
+        let mut mailbox = lock(&self.shared.mailbox);
+        if mailbox.shutdown || mailbox.retired.is_some() {
+            return Err(result);
+        }
+        mailbox.retired = Some(result);
+        drop(mailbox);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+
+    /// Return a UI-held result during owner teardown. Prefer the normal
+    /// retirement slot; if it is occupied, use the ready slot only when empty.
+    /// The worker's shutdown path drains both slots on its own thread.
+    #[allow(clippy::result_large_err)] // The result remains intact if both bounded slots are occupied.
+    pub fn retire_result_for_shutdown(
+        &self,
+        result: ArrangementSeekResult,
+    ) -> Result<(), ArrangementSeekResult> {
+        let mut mailbox = lock(&self.shared.mailbox);
+        if mailbox.shutdown {
+            return Err(result);
+        }
+        if mailbox.retired.is_none() {
+            mailbox.retired = Some(result);
+        } else if mailbox.ready.is_none() {
+            mailbox.ready = Some(result);
+        } else {
+            return Err(result);
+        }
+        drop(mailbox);
+        self.shared.wake.notify_one();
+        Ok(())
     }
 }
 
@@ -253,6 +303,10 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     let pending = mailbox.pending.take();
                     let ready = mailbox.ready.take();
                     let retired = mailbox.retired.take();
+                    #[cfg(test)]
+                    if ready.is_some() || retired.is_some() {
+                        mailbox.last_result_drop_thread = Some(thread::current().id());
+                    }
                     drop(mailbox);
                     drop(pending);
                     drop(ready);
@@ -265,6 +319,10 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     continue;
                 }
                 if let Some(retired) = mailbox.retired.take() {
+                    #[cfg(test)]
+                    {
+                        mailbox.last_result_drop_thread = Some(thread::current().id());
+                    }
                     drop(mailbox);
                     drop(retired);
                     continue 'worker;
@@ -275,6 +333,10 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     .is_some_and(|ready| mailbox.latest_request_id != Some(ready.request_id))
                 {
                     let stale_ready = mailbox.ready.take();
+                    #[cfg(test)]
+                    {
+                        mailbox.last_result_drop_thread = Some(thread::current().id());
+                    }
                     drop(mailbox);
                     drop(stale_ready);
                     continue 'worker;
@@ -481,6 +543,82 @@ mod tests {
         let result = worker.try_result().expect("second result");
         assert_eq!(result.request_id, second);
         assert_eq!(result.generation, 2);
+    }
+
+    #[test]
+    fn retired_result_owns_backpressure_until_worker_destruction() {
+        let graph = prepared();
+        let worker = ArrangementSeekWorker::new().expect("seek worker");
+        worker.submit(spec(Arc::clone(&graph), 1)).expect("first");
+        wait_for_ready(&worker);
+        let result = worker.try_result().expect("completed result");
+        {
+            let mut mailbox = lock(&worker.shared.mailbox);
+            mailbox.test_pause_drain = true;
+        }
+        assert!(worker.retire_result(result).is_ok());
+        assert!(matches!(
+            worker.submit(spec(Arc::clone(&graph), 2)),
+            Err(ArrangementSeekSubmitError::RetirementPending)
+        ));
+        {
+            let mut mailbox = lock(&worker.shared.mailbox);
+            mailbox.test_pause_drain = false;
+        }
+        worker.shared.wake.notify_one();
+        wait_for_idle(&worker);
+        assert!(worker.submit(spec(Arc::clone(&graph), 3)).is_ok());
+    }
+
+    #[test]
+    fn shutdown_handoff_uses_empty_ready_slot_when_retirement_is_occupied() {
+        let retired_graph = prepared();
+        let held_graph = prepared();
+        let overflow_graph = prepared();
+        let retired_weak = Arc::downgrade(&retired_graph);
+        let held_weak = Arc::downgrade(&held_graph);
+        let worker = ArrangementSeekWorker::new().expect("seek worker");
+        let shared = Arc::clone(&worker.shared);
+        let completed = |graph, generation| {
+            let candidate = ArrangementSeekWorker::new().expect("candidate worker");
+            candidate
+                .submit(spec(graph, generation))
+                .expect("candidate request");
+            wait_for_ready(&candidate);
+            let result = candidate.try_result().expect("candidate result");
+            drop(candidate);
+            result
+        };
+        let retired = completed(Arc::clone(&retired_graph), 1);
+        let held = completed(Arc::clone(&held_graph), 2);
+        let overflow = completed(Arc::clone(&overflow_graph), 3);
+        {
+            let mut mailbox = lock(&worker.shared.mailbox);
+            mailbox.retired = Some(retired);
+        }
+        drop(retired_graph);
+        drop(held_graph);
+
+        assert!(worker.retire_result_for_shutdown(held).is_ok());
+        let overflow = worker
+            .retire_result_for_shutdown(overflow)
+            .expect_err("both bounded worker slots are already occupied");
+        assert!(Arc::ptr_eq(&overflow.prepared_revision, &overflow_graph));
+        drop(overflow);
+        drop(overflow_graph);
+        drop(worker);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while retired_weak.upgrade().is_some() || held_weak.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "worker did not drain teardown results"
+            );
+            thread::yield_now();
+        }
+        let observed_drop_thread = lock(&shared.mailbox)
+            .last_result_drop_thread
+            .expect("shutdown worker recorded result destruction");
+        assert_ne!(observed_drop_thread, thread::current().id());
     }
 
     #[test]

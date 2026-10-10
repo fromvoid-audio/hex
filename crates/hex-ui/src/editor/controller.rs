@@ -89,6 +89,18 @@ impl EditorView {
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.control.reclaim();
+        }
+        if (self.prepared_seek.is_some() || self.latched_seek_intent.is_some())
+            && self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| !super::arrangement_seek::audio_ready_for_seek(&audio.control))
+        {
+            self.invalidate_prepared_seek();
+        }
+        visible_change |= self.tick_prepared_arrangement_seek();
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -98,11 +110,24 @@ impl EditorView {
                 .redraw_gate
                 .should_redraw(visible_change, None, Instant::now());
         };
-        audio.control.reclaim();
-        if self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
+        let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
+            matches!(
+                seek.stage,
+                super::arrangement_seek::SeekStage::Published { .. }
+            )
+        });
+        if !seek_publication_inflight
+            && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
             && let Some(pending) = self.pending_playback.take()
         {
-            let policy = if pending.install_fresh_runtime {
+            let prepared_revision = pending
+                .prepared_revision
+                .clone()
+                .or_else(|| pending.playback.prepared_revision().cloned());
+            let seek_request_id = pending.seek_request_id;
+            let policy = if let Some(fence) = pending.fresh_runtime_fence {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+            } else if pending.install_fresh_runtime {
                 PublicationPolicy::InstallFreshRuntime
             } else {
                 PublicationPolicy::InheritRuntime
@@ -113,7 +138,7 @@ impl EditorView {
                         generation: pending.project_generation,
                         revision: pending.project_revision,
                     };
-                    if pending.device_preview_identity.is_none() {
+                    if pending.device_preview_identity.is_none() && seek_request_id.is_none() {
                         visible_change |= self
                             .audio_admission
                             .published(project_revision, audio_revision);
@@ -122,8 +147,16 @@ impl EditorView {
                         audio_revision,
                         project_generation: pending.project_generation,
                         state: pending.state,
+                        prepared_revision,
+                        seek_request_id,
                         device_preview_identity: pending.device_preview_identity,
                     });
+                    if let Some(seek) = self.prepared_seek.as_mut()
+                        && seek_request_id == Some(seek.request_id)
+                    {
+                        seek.stage =
+                            super::arrangement_seek::SeekStage::Published { audio_revision };
+                    }
                 }
                 Err(rejected) => {
                     self.pending_playback = Some(PendingPlayback {
@@ -239,7 +272,9 @@ impl EditorView {
                     )
                 });
             if preview_source_is_valid {
-                if candidate.project_generation == self.project_generation {
+                if candidate.project_generation == self.project_generation
+                    && candidate.seek_request_id.is_none()
+                {
                     self.applied_project_revision = Some(candidate.state.revision);
                 }
                 self.audible_playback = Some(candidate);
@@ -255,6 +290,13 @@ impl EditorView {
             self.playback_candidates
                 .retain(|candidate| candidate.audio_revision > revision);
         }
+        visible_change |= super::arrangement_seek::resolve_prepared_seek_terminal(
+            &mut self.prepared_seek,
+            &mut self.status,
+            &mut self.error,
+            applied,
+            rejected_revision,
+        );
         while let Some(pending) = self.pending_audio_commands.pop_front() {
             let action_is_current = queued_action_is_current(
                 pending,
@@ -427,6 +469,14 @@ impl EditorView {
         };
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
+        if event.project_replaced
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|previous| previous.revision != revision)
+        {
+            self.invalidate_prepared_seek();
+        }
         if !event.project_replaced
             && self.viewport.is_none()
             && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
@@ -486,7 +536,8 @@ impl EditorView {
             self.pending_time_range_move = None;
             self.suppress_cursor_click = false;
             self.applied_project_revision = None;
-            self.playback_candidates.clear();
+            self.playback_candidates
+                .retain(|candidate| candidate.seek_request_id.is_some());
             self.audible_playback = None;
             self.pending_playback = None;
             self.clear_route_telemetry();
@@ -776,8 +827,12 @@ impl EditorView {
                         && preview.identity.canonical_revision == revision
                 })
                 .map(|preview| preview.identity);
+            // Retain the immutable source identity before Playback ownership can
+            // move into the audio publication queue.
+            let prepared_revision = playback.prepared_revision().cloned();
             let mut pending =
                 pending_playback_for_state(source_state, self.project_generation, playback);
+            pending.prepared_revision = prepared_revision;
             pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
                 event.project_replaced,
@@ -910,6 +965,29 @@ impl EditorView {
         }
         if matches!(
             &request,
+            Request::DeviceGesture(_)
+                | Request::DropNativeDevice { .. }
+                | Request::AddNativeDevice { .. }
+                | Request::ReplaceNativeDevice { .. }
+                | Request::SetDeviceParameter { .. }
+                | Request::Import(_)
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToSession { .. }
+                | Request::Open(_)
+                | Request::Edit(_)
+                | Request::CutTimeRange(_)
+                | Request::PasteTimeRange { .. }
+                | Request::InsertTimeRange { .. }
+                | Request::Undo
+                | Request::Redo
+                | Request::RestorePlayback { .. }
+        ) {
+            self.invalidate_prepared_seek();
+        }
+        if matches!(
+            &request,
             Request::Open(_)
                 | Request::Undo
                 | Request::Redo
@@ -990,6 +1068,21 @@ impl EditorView {
             });
             return;
         }
+        match self.current_seek_requires_preroll() {
+            Some(true) => {
+                let start_playing = self.audio.as_ref().is_some_and(|audio| {
+                    self.desired_playing(audio.control.status.playing.load(Acquire))
+                });
+                self.request_prepared_seek(frame, start_playing);
+                return;
+            }
+            Some(false) => {}
+            None if self.audio.is_none() => {}
+            None => {
+                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                return;
+            }
+        }
         if self.seek_pending() {
             self.error = Some("seek pending · wait for the cursor".into());
             return;
@@ -1032,7 +1125,11 @@ impl EditorView {
     }
 
     pub(super) fn seek_pending(&self) -> bool {
-        if self.recovery.generation().is_some() {
+        if self.recovery.generation().is_some()
+            || self.prepared_seek.is_some()
+            || self.latched_seek_intent.is_some()
+            || self.retired_seek_result.is_some()
+        {
             return true;
         }
         let queued = self.pending_audio_commands.iter().any(|pending| {
@@ -1177,6 +1274,7 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.invalidate_prepared_seek();
         if !matches!(
             command,
             hex_engine::SessionPlaybackCommand::LaunchClip { .. }
@@ -1246,6 +1344,7 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        self.invalidate_prepared_seek();
         if self.audio.is_none() {
             self.error = Some("audio output is unavailable".into());
             return;
@@ -1381,6 +1480,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
         self.pending_audio_commands.clear();
@@ -1421,7 +1521,8 @@ fn latest_applied_canonical_candidate(
     candidates
         .iter()
         .rfind(|candidate| {
-            candidate.audio_revision <= applied_high_water
+            candidate.seek_request_id.is_none()
+                && candidate.audio_revision <= applied_high_water
                 && Some(candidate.audio_revision) != rejected_audio_revision
                 && candidate.device_preview_identity.is_none()
         })
@@ -1444,6 +1545,7 @@ fn rejected_candidate_project(
         .iter()
         .find(|candidate| {
             candidate.audio_revision == audio_revision
+                && candidate.seek_request_id.is_none()
                 && candidate.device_preview_identity.is_none()
         })
         .map(|candidate| super::audio_admission::ProjectRevision {
@@ -1500,6 +1602,9 @@ fn pending_playback_for_state(
         state,
         playback,
         install_fresh_runtime: false,
+        fresh_runtime_fence: None,
+        prepared_revision: None,
+        seek_request_id: None,
         device_preview_identity: None,
     }
 }
@@ -1892,6 +1997,8 @@ mod tests {
                 unsaved: false,
                 document_path: None,
             }),
+            prepared_revision: None,
+            seek_request_id: None,
             device_preview_identity: None,
         }
     }
