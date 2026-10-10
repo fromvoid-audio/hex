@@ -35,6 +35,9 @@ impl SessionPlayback {
         let result = self.render_playing(output, pages);
         if result.is_err() {
             output.fill([0.0; 2]);
+            for runtime in self.mutable_instruments.iter_mut().flatten() {
+                runtime.rollback_block();
+            }
         }
         result
     }
@@ -51,6 +54,9 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         for chain in &mut self.device_chains {
             chain.begin_block();
+        }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -143,6 +149,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.commit_block();
         }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.commit_block();
+        }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();
         }
@@ -173,6 +182,14 @@ impl SessionPlayback {
                 continue;
             };
             let owner = self.route_scratch[index].owner;
+            if self
+                .mutable_instruments
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|runtime| !runtime.speculative_is_quiescent())
+            {
+                return Err(SessionPlaybackError::MutableInstrumentActive);
+            }
             if transition_captures(owner, pending.target) {
                 self.capture_outgoing(index, owner, arrangement_frame, performance_frame)?;
                 captured_release = true;
@@ -214,10 +231,16 @@ impl SessionPlayback {
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let mix = track.mix();
-            let stateful = self
+            let stateful_effects = self
                 .device_chains
                 .get(index)
                 .is_some_and(|chain| !chain.is_empty());
+            let mutable_active = self.mutable_instruments.get(index).is_some_and(|runtime| {
+                runtime
+                    .as_ref()
+                    .is_some_and(|runtime| !runtime.committed_is_quiescent())
+            });
+            let buffered = stateful_effects || mutable_active;
             let ordered = track.requires_ordered_processing();
             while self
                 .release_scratch
@@ -238,7 +261,7 @@ impl SessionPlayback {
                 .iter()
                 .any(|entry| entry.tail_group.is_none());
             let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence);
-            if (stateful || ordered) && (has_current_route || has_current_release) {
+            if (buffered || ordered) && (has_current_route || has_current_release) {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
                 if ordered {
@@ -259,7 +282,7 @@ impl SessionPlayback {
                         pages.as_deref_mut(),
                         SourceStage::Audio,
                     )?;
-                    if stateful {
+                    if stateful_effects {
                         self.device_chains[index]
                             .process_range(0..track.instrument_position(), render_output)
                             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -288,7 +311,22 @@ impl SessionPlayback {
                         pages.as_deref_mut(),
                         SourceStage::Instrument,
                     )?;
-                    if stateful {
+                    render_mutable_instrument_chunk(
+                        MutableInstrumentChunkContext {
+                            revision: &self.revision,
+                            routes: &self.route_scratch,
+                            runtimes: &mut self.mutable_instruments,
+                            onsets: &mut self.mutable_onsets,
+                            events: &mut self.mutable_events,
+                            spans: &mut self.spans,
+                            performance_frame,
+                            arrangement_frame,
+                            timing: &timing,
+                        },
+                        index,
+                        render_output,
+                    )?;
+                    if stateful_effects {
                         let chain = self
                             .device_chains
                             .get_mut(index)
@@ -421,6 +459,143 @@ impl SessionPlayback {
     }
 }
 
+struct MutableInstrumentChunkContext<'a, T: ?Sized> {
+    revision: &'a PreparedRevision,
+    routes: &'a [super::TrackRoute],
+    runtimes: &'a mut [Option<MutableInstrumentTrackRuntime>],
+    onsets: &'a mut MutableOnsetBuffer,
+    events: &'a mut Vec<hex_lattice::NativeInstrumentEvent>,
+    spans: &'a mut MidiSpanBuffer,
+    performance_frame: u64,
+    arrangement_frame: u64,
+    timing: &'a T,
+}
+
+fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
+    context: MutableInstrumentChunkContext<'_, T>,
+    index: usize,
+    output: &mut [Frame],
+) -> Result<(), SessionPlaybackError> {
+    let MutableInstrumentChunkContext {
+        revision,
+        routes,
+        runtimes,
+        onsets,
+        events,
+        spans,
+        performance_frame,
+        arrangement_frame,
+        timing,
+    } = context;
+    if runtimes.get(index).and_then(Option::as_ref).is_none() {
+        return Ok(());
+    }
+    let track = revision
+        .arrangement()
+        .tracks()
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let track_id = track
+        .canonical_track_id()
+        .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+    let source_end = performance_frame
+        .checked_add(
+            u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?,
+        )
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    onsets.clear();
+    match routes
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?
+        .owner
+    {
+        RouteOwner::Arrangement => {
+            let mut event_error = false;
+            track
+                .for_each_mutable_midi_span(
+                    arrangement_frame,
+                    arrangement_frame
+                        .checked_add(
+                            u64::try_from(output.len())
+                                .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?,
+                        )
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                    |span| {
+                        event_error |= onsets
+                            .push(crate::mutable_instrument::MutableNoteOnset {
+                                key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                                    track_id,
+                                    span.clip,
+                                    span.note,
+                                    span.iteration,
+                                    0,
+                                ),
+                                source_start: span.start,
+                                source_gate_end: span.gate_end,
+                                pitch: span.pitch,
+                                velocity: span.velocity,
+                            })
+                            .is_err();
+                    },
+                )
+                .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+            if event_error {
+                return Err(SessionPlaybackError::MutableInstrumentEvents);
+            }
+        }
+        RouteOwner::Session { clip, launch } => {
+            let prepared = revision
+                .session()
+                .midi_clip(clip)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
+            if prepared.track != routes[index].id {
+                return Err(SessionPlaybackError::ClipTrackMismatch);
+            }
+            if prepared.instrument_enabled() {
+                prepared
+                    .instrument_template()
+                    .query(launch, timing, performance_frame, source_end, spans)
+                    .map_err(SessionPlaybackError::Midi)?;
+                for span in spans.spans() {
+                    onsets
+                        .push(crate::mutable_instrument::MutableNoteOnset {
+                            key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                                prepared.track,
+                                span.clip,
+                                span.note,
+                                span.iteration,
+                                0,
+                            ),
+                            source_start: span.start_frame,
+                            source_gate_end: span.gate_end_frame,
+                            pitch: span.pitch,
+                            velocity: span.velocity,
+                        })
+                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                }
+            }
+        }
+        RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
+    }
+    let runtime = runtimes
+        .get_mut(index)
+        .and_then(Option::as_mut)
+        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+    runtime
+        .process_segment(
+            routes[index].id,
+            performance_frame,
+            match routes[index].owner {
+                RouteOwner::Arrangement => arrangement_frame,
+                _ => performance_frame,
+            },
+            output,
+            onsets,
+            events,
+        )
+        .map_err(SessionPlaybackError::from)
+}
+
 struct RouteSourceContext<'a, T> {
     revision: &'a PreparedRevision,
     route: super::TrackRoute,
@@ -515,7 +690,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             if prepared.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
-            if prepared.instrument_enabled() {
+            if prepared.instrument_enabled() && !prepared.instrument_template().is_event_source() {
                 let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
                 let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
                 let context = context.with_suppressions(suppressions);

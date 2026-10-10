@@ -555,3 +555,23 @@ workloads improved in the observed samples, while the fully audible four-stage
 case showed a small noisy cost. These timings are not callback deadline proof;
 see [FM4 performance evidence](docs/performance.md). Targeted checks and full
 local CI remain before review; native listening remains separate.
+
+Pulse2158: an injected mutable-only feedback instrument now exercises the real
+shared Arrangement/Session event path with transactional runtime history, checked
+occurrence IDs, canonically ordered note-off/on batches and additive instrument-gap mixing.
+The test seam refuses unsupported mutable loops, active-state seeks/handoffs,
+legacy Arrangement rendering, inherited future route changes and candidate
+pre-cut notes (including on newly added tracks); Back to Arrangement checks the
+candidate's Arrangement notes rather than the old Session owner. Stop is the explicit reset;
+mutable retirement tails and prepared export remain separate prerequisites.
+Source tests cover short-note partitioning, the 128-onset/256-edge query bound,
+hybrid audio plus an ordered suffix, atomic refusal/retry and injected registry
+preparation. Onsets sort by source frame and full occurrence key before ID
+assignment, and emitted events use frame, off-before-on phase, then ID. The
+varied-velocity/pitch oracle confirms stable same-frame voice order across
+query partitions. The checked mutable-event host component is 1,889,848 bytes per
+maximal 256-track SessionPlayback on this 64-bit arm64 build, separate from the
+2 MiB declared twin-storage budget per graph and not a process-wide bound. See
+[lattice instrument lifecycle](docs/lattice-instruments.md). Full local CI,
+including the protected cache-ownership runner, remains with root; this does not
+admit a built-in mutable instrument or establish export support.

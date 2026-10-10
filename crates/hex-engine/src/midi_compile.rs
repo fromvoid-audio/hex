@@ -179,6 +179,8 @@ pub(crate) struct CompiledNoteSpan {
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
     pub(crate) sampler_index: u16,
+    pub(crate) pitch: u8,
+    pub(crate) velocity: u8,
     pub(crate) clip: ClipId,
     pub(crate) note: hex_project::NoteId,
     pub(crate) iteration: u64,
@@ -236,11 +238,22 @@ pub(crate) fn compile_instrument_track(
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
-    let bank = instrument
-        .map(|instrument| {
-            crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None)
-        })
-        .transpose()?;
+    let mutable_tail_frames = instrument
+        .map(|instrument| instrument.prepare_mutable_runtime())
+        .transpose()
+        .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+        .flatten()
+        .map(|runtime| runtime.max_release_tail_frames());
+    let bank = if instrument.is_some() && mutable_tail_frames.is_none() {
+        instrument
+            .map(|instrument| {
+                crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let mutable = mutable_tail_frames.is_some();
     let mut spans = Vec::new();
     spans
         .try_reserve_exact(if instrument.is_some() { span_count } else { 0 })
@@ -287,23 +300,39 @@ pub(crate) fn compile_instrument_track(
                 .checked_add(1)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
             if instrument.is_some() {
-                let bank = bank
-                    .as_ref()
-                    .ok_or(Invalid("midi note bank is missing after preparation"))?;
-                let sampler_index = bank
-                    .index(note.pitch(), note.velocity())
-                    .ok_or(Invalid("midi note sampler key is missing from its bank"))?;
-                let voice = bank
-                    .sampler(sampler_index)
-                    .ok_or(Invalid("midi note sampler index is invalid"))?;
-                let end = gate_end
-                    .checked_add(voice.release_frames())
-                    .ok_or(Invalid("midi release end frame overflow"))?;
+                let (sampler_index, end) = if mutable {
+                    let tail = mutable_tail_frames
+                        .ok_or(Invalid("mutable instrument tail declaration is missing"))?;
+                    (
+                        u16::MAX,
+                        gate_end
+                            .checked_add(tail)
+                            .ok_or(Invalid("midi release end frame overflow"))?,
+                    )
+                } else {
+                    let bank = bank
+                        .as_ref()
+                        .ok_or(Invalid("midi note bank is missing after preparation"))?;
+                    let sampler_index = bank
+                        .index(note.pitch(), note.velocity())
+                        .ok_or(Invalid("midi note sampler key is missing from its bank"))?;
+                    let voice = bank
+                        .sampler(sampler_index)
+                        .ok_or(Invalid("midi note sampler index is invalid"))?;
+                    (
+                        sampler_index,
+                        gate_end
+                            .checked_add(voice.release_frames())
+                            .ok_or(Invalid("midi release end frame overflow"))?,
+                    )
+                };
                 spans.push(CompiledNoteSpan {
                     start,
                     gate_end,
                     end,
                     sampler_index,
+                    pitch: note.pitch(),
+                    velocity: note.velocity(),
                     clip: clip.id(),
                     note: note.id(),
                     iteration,
@@ -344,6 +373,7 @@ pub(crate) fn compile_instrument_track(
         root,
         timeline_end,
         bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+        mutable,
     }))
 }
 

@@ -66,6 +66,8 @@ pub struct PreparedMidiInstrumentTemplate {
     max_query_visits: usize,
     max_period_windows: usize,
     bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+    release_frames: u64,
+    event_source: bool,
 }
 
 struct SilentInstrument;
@@ -108,7 +110,7 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: PreparedAnalyticNote,
+    voice: Option<PreparedAnalyticNote>,
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
@@ -144,22 +146,25 @@ impl MidiRenderSpan {
         if cut_frame < self.start_frame || cut_frame >= self.end_frame {
             return Ok(None);
         }
+        let Some(voice) = self.voice else {
+            return Ok(None);
+        };
         if cut_frame < self.gate_end_frame {
             let end_frame = cut_frame
-                .checked_add(self.voice.release_frames())
+                .checked_add(voice.release_frames())
                 .ok_or(ReleaseVoiceError::ArithmeticOverflow)?;
             Ok(Some(MidiReleaseVoice {
                 start_frame: self.start_frame,
                 gate_end_frame: cut_frame,
                 end_frame,
-                voice: self.voice,
+                voice,
             }))
         } else {
             Ok(Some(MidiReleaseVoice {
                 start_frame: self.start_frame,
                 gate_end_frame: self.gate_end_frame,
                 end_frame: self.end_frame,
-                voice: self.voice,
+                voice,
             }))
         }
     }
@@ -178,14 +183,17 @@ impl MidiRenderSpan {
         let Some(gate_end_frame) = remapped_gate_end.filter(|frame| *frame > cut_frame) else {
             return self.release_at(cut_frame);
         };
+        let Some(voice) = self.voice else {
+            return Ok(None);
+        };
         let end_frame = gate_end_frame
-            .checked_add(self.voice.release_frames())
+            .checked_add(voice.release_frames())
             .ok_or(ReleaseVoiceError::ArithmeticOverflow)?;
         Ok(Some(MidiReleaseVoice {
             start_frame: self.start_frame,
             gate_end_frame,
             end_frame,
-            voice: self.voice,
+            voice,
         }))
     }
 }
@@ -480,25 +488,53 @@ impl PreparedMidiInstrumentTemplate {
         source: &PreparedMidiSourceTemplate,
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
     ) -> Result<Self, MidiTemplateError> {
+        Self::prepare_with_bank_mode(source, bank, None, false)
+    }
+
+    /// Prepare a timing-only source for a mutable instrument event owner.
+    /// This contains no analytic sampler and cannot be rendered by the legacy
+    /// analytic path.
+    pub(crate) fn prepare_events(
+        source: &PreparedMidiSourceTemplate,
+        release_frames: u64,
+    ) -> Result<Self, MidiTemplateError> {
+        let bank = crate::midi_note_bank::PreparedMidiNoteBank::empty();
+        Self::prepare_with_bank_mode(source, bank, Some(release_frames), true)
+    }
+
+    pub(crate) fn is_event_source(&self) -> bool {
+        self.event_source
+    }
+
+    fn prepare_with_bank_mode(
+        source: &PreparedMidiSourceTemplate,
+        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+        event_release_frames: Option<u64>,
+        event_source: bool,
+    ) -> Result<Self, MidiTemplateError> {
         let intro = prepare_spans(
             &source.intro_spans,
             source.sample_rate,
             source.admitted_max_micro_bpm,
             &bank,
+            event_release_frames,
         )?;
         let repeats = prepare_spans(
             &source.repeat_spans,
             source.sample_rate,
             source.admitted_max_micro_bpm,
             &bank,
+            event_release_frames,
         )?;
-        let release_frames = intro
-            .iter()
-            .chain(&repeats)
-            .filter_map(|span| bank.sampler(span.sampler_index))
-            .map(|sampler| sampler.release_frames())
-            .max()
-            .unwrap_or_else(|| u64::from(source.sample_rate / 20).max(1));
+        let release_frames = event_release_frames.unwrap_or_else(|| {
+            intro
+                .iter()
+                .chain(&repeats)
+                .filter_map(|span| bank.sampler(span.sampler_index))
+                .map(|sampler| sampler.release_frames())
+                .max()
+                .unwrap_or_else(|| u64::from(source.sample_rate / 20).max(1))
+        });
         let release_raw = release_window_raw(
             release_frames,
             source.sample_rate,
@@ -582,6 +618,8 @@ impl PreparedMidiInstrumentTemplate {
             },
             max_period_windows,
             bank,
+            release_frames,
+            event_source,
         })
     }
 
@@ -599,6 +637,9 @@ impl PreparedMidiInstrumentTemplate {
     }
 
     pub(crate) fn index_reference_count(&self) -> Result<usize, MidiTemplateError> {
+        if self.event_source {
+            return Ok(0);
+        }
         self.intro
             .len()
             .checked_add(self.repeats.len())
@@ -691,6 +732,11 @@ impl PreparedMidiInstrumentTemplate {
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        if self.event_source {
+            output.fill([0.0; 2]);
+            buffer.len = 0;
+            return Err(MidiTemplateError::MutableEventsNotAnalytic);
+        }
         let width = match u64::try_from(output.len()) {
             Ok(width) => width,
             Err(_) => {
@@ -714,7 +760,8 @@ impl PreparedMidiInstrumentTemplate {
             let mut sample = [0.0_f32; 2];
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
-                    let contribution = span.voice.sample(
+                    let Some(voice) = span.voice else { continue };
+                    let contribution = voice.sample(
                         frame - span.start_frame,
                         span.gate_end_frame - span.start_frame,
                     );
@@ -740,6 +787,10 @@ impl PreparedMidiInstrumentTemplate {
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        if self.event_source {
+            buffer.len = 0;
+            return Err(MidiTemplateError::MutableEventsNotAnalytic);
+        }
         let width = match u64::try_from(output.len()) {
             Ok(width) => width,
             Err(_) => {
@@ -771,13 +822,15 @@ impl PreparedMidiInstrumentTemplate {
             let frame = start_frame + frame_offset as u64;
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
-                    mix.add_frame(
-                        output_frame,
-                        span.voice.sample(
-                            frame - span.start_frame,
-                            span.gate_end_frame - span.start_frame,
-                        ),
-                    );
+                    if let Some(voice) = span.voice {
+                        mix.add_frame(
+                            output_frame,
+                            voice.sample(
+                                frame - span.start_frame,
+                                span.gate_end_frame - span.start_frame,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1022,13 +1075,15 @@ impl PreparedMidiInstrumentTemplate {
             .beat_to_frame(BeatTime::from_raw(gate_raw))
             .map_err(|_| MidiTemplateError::TempoConversion)?;
         let voice =
-            self.bank
-                .sampler(span.sampler_index)
-                .ok_or(MidiTemplateError::InvalidSource(
-                    "midi note sampler index is invalid",
-                ))?;
+            if self.event_source {
+                None
+            } else {
+                Some(self.bank.sampler(span.sampler_index).ok_or(
+                    MidiTemplateError::InvalidSource("midi note sampler index is invalid"),
+                )?)
+            };
         let end = gate_end
-            .checked_add(voice.release_frames())
+            .checked_add(self.release_frames)
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         if onset >= context.end_frame || end <= context.start_frame {
             return Ok(());
@@ -1071,6 +1126,7 @@ fn prepare_spans(
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     bank: &crate::midi_note_bank::PreparedMidiNoteBank,
+    event_release_frames: Option<u64>,
 ) -> Result<Vec<VoiceSpan>, MidiTemplateError> {
     if source.len() > MIDI_SPAN_MAX_SOURCE_NOTES {
         return Err(MidiTemplateError::TooManySourceNotes);
@@ -1080,18 +1136,24 @@ fn prepare_spans(
         .try_reserve_exact(source.len())
         .map_err(|_| MidiTemplateError::Allocation)?;
     for span in source {
-        let sampler_index =
+        let sampler_index = if event_release_frames.is_some() {
+            0
+        } else {
             bank.index(span.pitch, span.velocity)
                 .ok_or(MidiTemplateError::InvalidSource(
                     "midi note sampler is missing from bank",
-                ))?;
-        let voice = bank
-            .sampler(sampler_index)
-            .ok_or(MidiTemplateError::InvalidSource(
-                "midi note sampler index is invalid",
-            ))?;
-        let release_raw =
-            release_window_raw(voice.release_frames(), sample_rate, admitted_max_micro_bpm)?;
+                ))?
+        };
+        let release_frames = if let Some(release_frames) = event_release_frames {
+            release_frames
+        } else {
+            bank.sampler(sampler_index)
+                .ok_or(MidiTemplateError::InvalidSource(
+                    "midi note sampler index is invalid",
+                ))?
+                .release_frames()
+        };
+        let release_raw = release_window_raw(release_frames, sample_rate, admitted_max_micro_bpm)?;
         let raw_end = u128::from(span.gate_end)
             .checked_add(u128::from(release_raw))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
