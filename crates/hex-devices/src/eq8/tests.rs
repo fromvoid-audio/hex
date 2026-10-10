@@ -671,6 +671,7 @@ fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
     let mut split = new.runtime();
     assert!(whole.inherit_history_from(&source));
     assert!(split.inherit_history_from(&source));
+    assert!(whole.can_retarget_parameters_from(&source));
     assert_eq!(whole.audition_selection, source.audition_selection);
     assert_eq!(whole.audition_mix, source.audition_mix);
     assert_eq!(whole.audition_history, source.audition_history);
@@ -715,6 +716,60 @@ fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
     assert_eq!(retarget_whole.history, retarget_split.history);
     assert_eq!(retarget_whole.audition_selection, None);
     assert_eq!(retarget_split.audition_selection, None);
+}
+
+#[test]
+fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabled_topology() {
+    let mut state = EQ8_DEFINITION.default_state().unwrap();
+    state = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::enabled(0, 1), ParameterValue::Bool(true))
+        .unwrap();
+    state = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::enabled(1, 1), ParameterValue::Bool(true))
+        .unwrap();
+    let source = PreparedEq8::new(decode(&state).unwrap(), 48_000)
+        .unwrap()
+        .runtime();
+
+    let mut filter_edit = state.clone();
+    for (parameter, value) in [
+        (parameter::gain(0, 1), ParameterValue::Float(4.0)),
+        (parameter::q(0, 1), ParameterValue::Float(1.4)),
+        (parameter::kind(0, 1), ParameterValue::Choice(1)),
+    ] {
+        filter_edit = EQ8_DEFINITION
+            .patch_parameter(&filter_edit, parameter, value)
+            .unwrap();
+    }
+    let candidate = PreparedEq8::new(decode(&filter_edit).unwrap(), 48_000)
+        .unwrap()
+        .runtime();
+    assert!(candidate.can_retarget_parameters_from(&source));
+
+    let mode_changed = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::MODE, ParameterValue::Choice(1))
+        .unwrap();
+    let mode_candidate = PreparedEq8::new(decode(&mode_changed).unwrap(), 48_000)
+        .unwrap()
+        .runtime();
+    assert!(!mode_candidate.can_retarget_parameters_from(&source));
+
+    let enabled_changed = EQ8_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::enabled(0, 1),
+            ParameterValue::Bool(false),
+        )
+        .unwrap();
+    let enabled_candidate = PreparedEq8::new(decode(&enabled_changed).unwrap(), 48_000)
+        .unwrap()
+        .runtime();
+    assert!(!enabled_candidate.can_retarget_parameters_from(&source));
+
+    let wrong_rate = PreparedEq8::new(decode(&filter_edit).unwrap(), 44_100)
+        .unwrap()
+        .runtime();
+    assert!(!wrong_rate.can_retarget_parameters_from(&source));
 }
 
 #[test]

@@ -282,6 +282,58 @@ fn prepared_return_project_with_bus(
     Project::from_snapshot(snapshot).unwrap()
 }
 
+fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
+    let mut snapshot = super::tests::project(1.0, 0, 8 << 32).snapshot();
+    let return_id = snapshot.next_id;
+    snapshot.next_id += 1;
+    snapshot.tracks[0]
+        .sends
+        .push(hex_project::SendLevelSnapshot {
+            return_track: return_id,
+            gain: 1.0,
+        });
+    let mut state = hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap();
+    for parameter in [
+        hex_devices::eq8::parameter::enabled(0, 0),
+        hex_devices::eq8::parameter::enabled(1, 0),
+    ] {
+        state = hex_devices::eq8::EQ8_DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Bool(true))
+            .unwrap();
+    }
+    for (parameter, value) in [
+        (
+            hex_devices::eq8::parameter::gain(0, 0),
+            ParameterValue::Float(gain_db),
+        ),
+        (
+            hex_devices::eq8::parameter::q(0, 0),
+            ParameterValue::Float(q),
+        ),
+        (
+            hex_devices::eq8::parameter::kind(0, 0),
+            ParameterValue::Choice(kind),
+        ),
+    ] {
+        state = hex_devices::eq8::EQ8_DEFINITION
+            .patch_parameter(&state, parameter, value)
+            .unwrap();
+    }
+    snapshot.return_tracks.push(ReturnTrackSnapshot {
+        id: return_id,
+        name: "eq8 return".into(),
+        gain: 1.0,
+        muted: false,
+        devices: vec![DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed: false,
+            state,
+        }],
+    });
+    snapshot.next_id += 1;
+    Project::from_snapshot(snapshot).unwrap()
+}
+
 fn prepared_matrix_return_project(master_gain: f32) -> Project {
     let mut snapshot = prepared_return_project(true, master_gain).snapshot();
     let state = &mut snapshot.return_tracks[0].devices[0].state;
@@ -423,6 +475,54 @@ fn unchanged_chain_inherits_history_once_without_a_duplicate_tail() {
     candidate.render(&mut actual).unwrap();
     previous.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn eq8_return_parameter_edits_inherit_history_once_without_a_duplicate_tail() {
+    let mut previous = playback(&eq8_return_project(3.0, 1.0, 0));
+    let mut expected_previous = playback(&eq8_return_project(3.0, 1.0, 0));
+    warm(&mut previous);
+    warm(&mut expected_previous);
+    assert!(!previous.return_chains[0].committed_range_is_quiescent(0..1));
+
+    let mut output = [[0.0; 2]; 128];
+    let mut expected = output;
+    for (gain_db, q, kind) in [(6.0, 1.0, 0), (6.0, 2.0, 0), (6.0, 2.0, 1)] {
+        let project = eq8_return_project(gain_db, q, kind);
+        let mut candidate = playback(&project);
+        let mut expected_candidate = playback(&project);
+        candidate.try_inherit_state_from(&mut previous).unwrap();
+        expected_candidate
+            .try_inherit_state_from(&mut expected_previous)
+            .unwrap();
+        // Build the PCM oracle from the independently advanced old runtime,
+        // explicitly copying only the EQ8 history into the new settings.
+        expected_candidate.return_chains[0].reset();
+        expected_candidate.return_chains[0].inherit_from(&expected_previous.return_chains[0]);
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        assert!(
+            expected_candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        assert!(!candidate.return_chains[0].committed_range_is_quiescent(0..1));
+
+        candidate.render(&mut output).unwrap();
+        expected_candidate.render(&mut expected).unwrap();
+        assert_eq!(output, expected, "retargeted Return EQ8 PCM oracle");
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        previous = candidate;
+        expected_previous = expected_candidate;
+    }
 }
 
 #[test]

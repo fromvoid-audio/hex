@@ -1882,6 +1882,16 @@ fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free
 #[test]
 fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
+    stateful_return_handoff_allocations(false)
+}
+
+#[test]
+fn stateful_eq8_return_parameter_handoffs_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    stateful_return_handoff_allocations(true)
+}
+
+fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let asset = match editor.execute(Command::AddAsset {
         path: "memory/return-callback.wav".into(),
@@ -1922,15 +1932,38 @@ fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
         return_track,
         gain: 0.5,
     })?;
-    let utility = hex_engine::patch_native_device_parameter(
-        &hex_engine::default_native_device_state(DeviceTypeId::new("hex.utility")?)?,
-        ParameterId::new(11)?,
-        ParameterValue::Bool(true),
-    )?;
+    let effect = hex_engine::NativeDeviceClass::Effect;
+    let device_state = if eq8_enabled {
+        let mut state = hex_engine::default_native_device_state_for_class(
+            effect,
+            DeviceTypeId::from_static("hex.eq8"),
+        )?;
+        for (parameter, value) in [
+            (1, ParameterValue::Bool(true)),
+            (2, ParameterValue::Choice(0)),
+            (3, ParameterValue::Float(1_200.0)),
+            (4, ParameterValue::Float(3.0)),
+            (5, ParameterValue::Float(1.2)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                effect,
+                &state,
+                ParameterId::new(parameter)?,
+                value,
+            )?;
+        }
+        state
+    } else {
+        hex_engine::patch_native_device_parameter(
+            &hex_engine::default_native_device_state(DeviceTypeId::new("hex.utility")?)?,
+            ParameterId::new(11)?,
+            ParameterValue::Bool(true),
+        )?
+    };
     editor.execute(Command::InsertReturnDevice {
         return_track,
         before: None,
-        state: utility,
+        state: device_state,
     })?;
     let media = BTreeMap::from([(
         asset,
@@ -1944,13 +1977,14 @@ fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
                 .collect(),
         )?,
     )]);
-    let first_revision = Arc::new(PreparedRevision::prepare(
+    let table = Arc::new(SineTable::new());
+    let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::new(SineTable::new()),
+        Arc::clone(&table),
         None,
     )?);
-    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
     oracle.apply(PlaybackCommand::Play);
     let mut expected = [[0.0; 2]; 256];
     oracle.render(&mut expected)?;
@@ -1958,7 +1992,7 @@ fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(Playback::try_from_prepared_with_session(Arc::clone(
-            &first_revision,
+            &revision,
         ))?)
         .map_err(|_| "initial Return graph publication failed")?;
     control
@@ -1976,30 +2010,97 @@ fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
         .ok_or("expected return track")?
         .devices()[0]
         .id();
-    editor.execute(Command::SetDeviceBypass {
-        device: changed_return,
-        bypassed: true,
-    })?;
-    let second_revision = Arc::new(PreparedRevision::prepare(
-        editor.project(),
-        &media,
-        Arc::new(SineTable::new()),
-        Some(first_revision.session()),
-    )?);
-    let mut replacement_oracle =
-        Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
-    replacement_oracle
-        .try_inherit_runtime_from(&mut oracle)
-        .map_err(|_| "compatible Return handoff was refused")?;
-    let mut expected_handoff = [[0.0; 2]; 256];
-    replacement_oracle.render(&mut expected_handoff)?;
-    control
-        .publish(Playback::try_from_prepared_with_session(Arc::clone(
-            &second_revision,
-        ))?)
-        .map_err(|_| "Return replacement publication failed")?;
-    measured_block(&mut callback, &mut actual);
-    compare_output(&actual, &expected_handoff);
+    let edits: &[(u32, ParameterValue)] = if eq8_enabled {
+        &[
+            (4, ParameterValue::Float(10.0)),
+            (5, ParameterValue::Float(2.4)),
+            (2, ParameterValue::Choice(1)),
+        ]
+    } else {
+        &[]
+    };
+    if !eq8_enabled {
+        editor.execute(Command::SetDeviceBypass {
+            device: changed_return,
+            bypassed: true,
+        })?;
+    }
+    for &(parameter, value) in edits {
+        let current = editor
+            .project()
+            .return_tracks()
+            .iter()
+            .find(|item| item.id() == return_track)
+            .ok_or("expected return track")?
+            .devices()[0]
+            .state();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            effect,
+            current,
+            ParameterId::new(parameter)?,
+            value,
+        )?;
+        editor.execute(Command::ReplaceDeviceState {
+            device: changed_return,
+            state,
+        })?;
+        let next_revision = Arc::new(PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::clone(&table),
+            Some(revision.session()),
+        )?);
+        let mut replacement_oracle =
+            Playback::try_from_prepared_with_session(Arc::clone(&next_revision))?;
+        replacement_oracle
+            .try_inherit_runtime_from(&mut oracle)
+            .map_err(|_| "compatible Return handoff was refused")?;
+        let mut expected_handoff = [[0.0; 2]; 256];
+        replacement_oracle.render(&mut expected_handoff)?;
+        let accepted_revision = control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                &next_revision,
+            ))?)
+            .map_err(|_| "Return replacement publication failed")?;
+        measured_block(&mut callback, &mut actual);
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            accepted_revision
+        );
+        compare_output(&actual, &expected_handoff);
+        control.reclaim();
+        oracle = replacement_oracle;
+        revision = next_revision;
+    }
+    if !eq8_enabled {
+        // The Utility path retains its original bypass transition and generic
+        // retired-tail ownership coverage; it does not use EQ8 retargeting.
+        let next_revision = Arc::new(PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::clone(&table),
+            Some(revision.session()),
+        )?);
+        let mut replacement_oracle =
+            Playback::try_from_prepared_with_session(Arc::clone(&next_revision))?;
+        replacement_oracle
+            .try_inherit_runtime_from(&mut oracle)
+            .map_err(|_| "compatible Utility Return handoff was refused")?;
+        let mut expected_handoff = [[0.0; 2]; 256];
+        replacement_oracle.render(&mut expected_handoff)?;
+        let accepted_revision = control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                &next_revision,
+            ))?)
+            .map_err(|_| "Utility Return replacement publication failed")?;
+        measured_block(&mut callback, &mut actual);
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            accepted_revision
+        );
+        compare_output(&actual, &expected_handoff);
+        control.reclaim();
+    }
 
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut actual);

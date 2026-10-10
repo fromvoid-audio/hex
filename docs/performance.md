@@ -2240,3 +2240,47 @@ quiet-machine certificate, sustained native callback proof or a Live comparison.
 Preparation and handoff/render timings are separate, construction/retirement stays
 outside render timing; raw p99/max and outliers remain. Quiet dense throughput and
 physical deadlines remain Pulse2226/2108, not inferred from this optimization.
+
+
+## 11 October 2026 — compatible EQ8 parameter history (Pulse2296)
+
+Registered headless `SessionPlayback` fixture, one held MIDI/sine track and an
+EQ8 bell, 48 kHz, 128/256-frame blocks, alternating audible gain/Q settings.
+Preparation and retired-owner destruction stay outside the separately timed
+handoff and following render. Base engine `faa8903`, original identical profiler
+added; repaired implementation `74c446f`. M5 Pro, 24 GiB, macOS26.6.2,
+rustc1.98.1; release optimization and 200 warmup blocks on both binaries.
+
+The original 2,000-measured-block rapid-edit run refuses with `ReleaseBankFull`
+(128 frames); its error/raw evidence is retained. It is not a completed timing
+baseline. For a comparison both versions can finish, three alternating rounds
+use 100 measured blocks per version/block size. Repeated PCM checksums match
+within each version. They intentionally differ across the repair: the old
+configuration's residual tails overlap fresh candidate output, whereas the
+repair adopts one current filter history. Independent registered-DSP Arrangement
+and separately copied-history Return regressions establish the desired PCM,
+not a claim that the previous broken output must be preserved.
+
+| frames | handoff p50 range before → after (µs) | following render p50 range before → after (µs) |
+| --- | --- | --- |
+| 128 | 2.709–2.833 → 2.167–2.209 | 109.667–115.542 → 8.500–8.667 |
+| 256 | 2.625–2.667 → 2.125–2.167 | 157.750–164.125 → 15.917–16.041 |
+
+The repaired version also completes all six longer runs: three repetitions at
+both block sizes, 200 warmups plus 2,000 measured rapid handoffs each. Per-size
+PCM checksums repeat exactly; p50 handoff ranges are2.166–2.208µs/128 and
+2.167–2.208µs/256, following renders8.459–8.541µs/128 and15.958–16.083µs/256.
+No tail/runtime capacity was raised. Actual prepared callback probes separately
+cover Track and Return parameter handoffs with zero total and signed-net
+allocation counts/bytes; original Utility Return coverage is retained.
+
+Evidence: `artifacts/profiles/eq8-parameter-history-2296/74c446f/` contains all
+matched/long JSONL runs, summaries, original refusal and hardware/process/source
+metadata. Before executableSHA256
+`b0ce71108d9baf8ff325b0f5353679b81c71935876e4a3d15bd4bb2e6ceb5ff8`;
+after `5d8258919c27583cab385e5b2b2e02e33df1ce6ad8b154bd642c050851e9f755`.
+No concurrent Hex Cargo/profiler; a separate Yield application is active and
+process snapshots are retained. This is not a quiet-machine certificate, native
+listening acceptance, physical callback deadline proof or 100-track benchmark.
+The large render difference reflects removed accumulation of old configuration
+tails in this rapid-edit workload, not faster EQ coefficient mathematics.
