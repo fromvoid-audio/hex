@@ -1469,6 +1469,7 @@ mod tests {
                 matrix,
                 bypassed,
                 sample_rate: 48_000,
+                configuration: None,
                 definition: Some(std::sync::Arc::clone(&prepared)),
             }])
             .unwrap()
