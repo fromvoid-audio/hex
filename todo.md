@@ -782,16 +782,23 @@ Pulse2178 pinned return UI: return rows are pinned immediately above Main and
 scroll internally within a 67 px cap; return focus preserves regular-track
 selection and project-wide time scope. Return effect controls reuse the regular
 device descriptor/gesture lifecycle and reject instrument/cross-owner drops.
-Per-track send menus show named destinations and current linear values with
-validated 0.1 steps; continuous drag/type editing with one undo step is deferred
-to Pulse2179. Return-only rail and device rendering are extracted into focused
-editor modules; step arithmetic clamps roundoff to exact 0/2 endpoints without
-rounding interior saved levels. Acceptance now includes the service PCM/send and
+Per-track send menus show named destinations with a bounded 0..2 slider and
+numeric value field. Pulse2179 extends this to a single-active typed send gesture:
+pointer movement and valid text entry update transient previews and produce one
+canonical history edit at the terminal action. A source track scrolling out of
+view finalizes only its send draft; invalid text cancels back to canonical state
+with a lowercase error, and refused commits keep the draft accessible by scrolling
+the owner back into view. Closing for scroll/removal restores editor focus and
+removed owner IDs retire cached controls. The top-level popup is clamped to live
+window bounds, checked at 880×540, and each NumericControl is mounted once to keep
+hit/focus ownership unique. Return-only rail and device rendering are extracted
+into focused editor modules. Acceptance includes the service PCM/send and
 Utility workflow, undo/redo, bypass/reorder/remove, active-gesture cancellation,
 schema-17 save/reopen, regular-chain instrument positioning, removed-return
-numeric-draft cancellation and clip/sample drop-target clearing. The 2 send-step,
-9 Arrangement/Main, 19 device-panel, 1 clip/sample drop UI and 2 session integration
-tests pass, as do affected strict Clippy, format and source guards. Full clean-head
+numeric-draft cancellation and clip/sample drop-target clearing. The 6 focused
+send-gesture UI tests, 25 device-panel UI tests, 9 Arrangement/Main UI tests, 1
+clip/sample drop UI test and 5 return service integration tests pass, as do affected
+strict Clippy, format and source guards. Full clean-head
 local CI and native user UI/listening acceptance remain open. The 100-track/16-return
 audio profile has three additional clean-commit repetitions with matching PCM
 digest; see [return-track performance evidence](docs/performance.md) and

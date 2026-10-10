@@ -2310,7 +2310,7 @@ mod service_tests {
             .submit(Request::DeviceGesture(
                 crate::device_gesture::GestureRequest::Begin {
                     key: gesture_key,
-                    target: crate::device_gesture::GestureTarget {
+                    target: crate::device_gesture::GestureTarget::DeviceParameter {
                         device: id,
                         parameter: ParameterId::new(1).expect("parameter id"),
                     },
@@ -2830,7 +2830,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -2951,7 +2951,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -3021,7 +3021,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -3154,7 +3154,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -3197,7 +3197,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key: next_key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -3237,7 +3237,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key: replace_key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: gain,
                 },
@@ -3310,7 +3310,7 @@ mod service_tests {
         service
             .submit(Request::DeviceGesture(GestureRequest::Begin {
                 key,
-                target: GestureTarget {
+                target: GestureTarget::DeviceParameter {
                     device,
                     parameter: ParameterId::new(1).unwrap(),
                 },
@@ -3635,7 +3635,7 @@ mod service_tests {
             .submit(Request::DeviceGesture(
                 crate::device_gesture::GestureRequest::Begin {
                     key: gesture,
-                    target: crate::device_gesture::GestureTarget {
+                    target: crate::device_gesture::GestureTarget::DeviceParameter {
                         device,
                         parameter: hex_lattice_contract::ParameterId::new(1).unwrap(),
                     },

@@ -19,6 +19,12 @@ use hex_widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod send_controls;
+pub(super) use send_controls::return_send_numeric_control;
+pub(super) use send_controls::{
+    commit_owned_numeric_edit, dispatch_numeric_gesture, finalize_send_controls_for_track,
+};
+
 const DEVICE_PANEL_HEIGHT: f32 = 188.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
@@ -36,6 +42,17 @@ const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
 struct ParameterKey {
     device: DeviceId,
     parameter: hex_lattice_contract::ParameterId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SendControlKey {
+    track: TrackId,
+    return_track: hex_project::ReturnId,
+}
+
+struct SendControl {
+    entity: Entity<NumericControl>,
+    _subscription: Subscription,
 }
 
 #[derive(Clone, Copy)]
@@ -73,6 +90,7 @@ pub(super) struct DevicePanelState {
     owner: Option<DevicePanelOwner>,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
+    send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
         DeviceId,
         (
@@ -106,6 +124,10 @@ impl DevicePanelState {
                 control.is_interacting() || control.is_editing()
             }),
             ParameterControl::Bool { .. } | ParameterControl::Choice { .. } => false,
+        }) || self.send_controls.values().any(|control| {
+            control.entity.read_with(cx, |control, _| {
+                control.is_interacting() || control.is_editing()
+            })
         })
     }
 }
@@ -131,25 +153,37 @@ pub(super) fn control_style() -> ControlStyle {
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    retire_removed_send_controls(view, cx);
     let mut first_error = None;
     let active = view
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
-    let mut keys: Vec<_> = view.device_panel.controls.keys().copied().collect();
-    keys.sort_by_key(|key| {
-        u8::from(
-            !active.is_some_and(|target| {
-                target.device == key.device && target.parameter == key.parameter
-            }),
-        )
-    });
-    for key in keys {
-        let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key)
-        else {
-            continue;
-        };
-        let entity = entity.clone();
+    let mut controls = Vec::new();
+    for (key, control) in &view.device_panel.controls {
+        if let ParameterControl::Float { entity, .. } = control {
+            controls.push((
+                GestureTarget::DeviceParameter {
+                    device: key.device,
+                    parameter: key.parameter,
+                },
+                entity.clone(),
+                Some(*key),
+            ));
+        }
+    }
+    for (key, control) in &view.device_panel.send_controls {
+        controls.push((
+            GestureTarget::ReturnSend {
+                track: key.track,
+                return_track: key.return_track,
+            },
+            control.entity.clone(),
+            None,
+        ));
+    }
+    controls.sort_by_key(|(target, _, _)| u8::from(Some(*target) != active));
+    for (target, entity, parameter_key) in controls {
         let finalized =
             match entity.update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx)) {
                 Ok(value) => value,
@@ -159,19 +193,21 @@ pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorVi
                 }
             };
         if let Some(finalized) = finalized {
-            let active_gesture_matches = view.device_gesture.snapshot().is_some_and(|snapshot| {
-                snapshot.target.device == key.device
-                    && snapshot.target.parameter == key.parameter
-                    && !view.device_gesture.has_pending_terminal()
-            });
+            let active_gesture_matches = view
+                .device_gesture
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.target == target)
+                && !view.device_gesture.has_pending_terminal();
             if finalized.previous != finalized.value || active_gesture_matches {
-                if let Err(error) = commit_owned_numeric_edit(view, key, &finalized) {
+                if let Err(error) = commit_owned_numeric_edit(view, target, &finalized) {
                     first_error.get_or_insert_with(|| error.to_owned());
                     continue;
                 }
-                view.device_panel
-                    .pending_values
-                    .insert(key, ParameterValue::Float(finalized.value as f32));
+                if let Some(key) = parameter_key {
+                    view.device_panel
+                        .pending_values
+                        .insert(key, ParameterValue::Float(finalized.value as f32));
+                }
             }
             entity.update(cx, |control, cx| {
                 control.accept_finish_edit_for_owner(finalized, cx)
@@ -186,6 +222,45 @@ pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorVi
     }
 }
 
+pub(super) fn retire_removed_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    let tracks: HashSet<_> = state
+        .project
+        .tracks()
+        .iter()
+        .map(hex_project::Track::id)
+        .collect();
+    let returns: HashSet<_> = state
+        .project
+        .return_tracks()
+        .iter()
+        .map(hex_project::ReturnTrack::id)
+        .collect();
+    let stale: Vec<_> = view
+        .device_panel
+        .send_controls
+        .keys()
+        .filter(|key| !tracks.contains(&key.track) || !returns.contains(&key.return_track))
+        .copied()
+        .collect();
+    for key in stale {
+        let target = GestureTarget::ReturnSend {
+            track: key.track,
+            return_track: key.return_track,
+        };
+        if let Some(control) = view.device_panel.send_controls.remove(&key) {
+            control.entity.update(cx, |control, cx| control.cancel(cx));
+        }
+        if view.device_gesture.snapshot().is_some_and(|snapshot| {
+            snapshot.target == target && !view.device_gesture.has_pending_terminal()
+        }) {
+            let _ = view.cancel_device_gesture();
+        }
+    }
+}
+
 /// Serialize a return-owned project edit after any active native parameter edit.
 pub(super) fn enqueue_return_edit(
     view: &mut EditorView,
@@ -195,46 +270,13 @@ pub(super) fn enqueue_return_edit(
     finalize_controls(view, cx) && view.enqueue_device_barrier(Request::Edit(command))
 }
 
-fn commit_owned_numeric_edit(
-    view: &mut EditorView,
-    key: ParameterKey,
-    finalized: &hex_widgets::NumericControlFinalValue,
-) -> Result<(), &'static str> {
-    let target = GestureTarget {
-        device: key.device,
-        parameter: key.parameter,
-    };
-    let value = ParameterValue::Float(finalized.value as f32);
-    let active = view.device_gesture.snapshot();
-    if active.is_some_and(|snapshot| snapshot.target != target)
-        || view.device_gesture.has_pending_terminal()
-    {
-        if view.enqueue_device_barrier(Request::SetDeviceParameter {
-            device: target.device,
-            parameter: target.parameter,
-            value,
-        }) {
-            return Ok(());
-        }
-        return Err("device edit queue is full");
-    }
-    if active.is_some() {
-        view.change_device_gesture(value)?;
-        view.finish_device_gesture(value)?;
-        return Ok(());
-    }
-    view.begin_device_gesture(target, ParameterValue::Float(finalized.previous as f32))?;
-    if finalized.value != finalized.previous {
-        view.change_device_gesture(value)?;
-    }
-    view.finish_device_gesture(value)
-}
-
 pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Stateful<Div> {
+    retire_removed_send_controls(view, cx);
     if view.device_panel.generation != view.project_generation {
         // Project replacement retires the worker gesture. Drop old subscriptions
         // before stale controls can send events into the replacement project.
         cancel_all_controls(view, cx);
+        cancel_send_controls(view, cx);
         view.device_panel.controls.clear();
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
@@ -326,6 +368,13 @@ fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
     view.device_panel.pending_values.clear();
 }
 
+fn cancel_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    let controls = std::mem::take(&mut view.device_panel.send_controls);
+    for (_, control) in controls {
+        control.entity.update(cx, |control, cx| control.cancel(cx));
+    }
+}
+
 fn render_track(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -355,16 +404,18 @@ fn render_track(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
-    let stale_target_has_work = active_target.is_some_and(|target| !alive.contains(&target.device))
-        || stale_keys.iter().any(|key| {
-            matches!(
-                view.device_panel.controls.get(key),
-                Some(ParameterControl::Float { entity, .. })
-                    if entity.read_with(cx, |control, _| {
-                        control.is_interacting() || control.is_editing()
-                    })
-            )
-        });
+    let stale_target_has_work = active_target.is_some_and(|target| match target {
+        GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+        GestureTarget::ReturnSend { .. } => false,
+    }) || stale_keys.iter().any(|key| {
+        matches!(
+            view.device_panel.controls.get(key),
+            Some(ParameterControl::Float { entity, .. })
+                if entity.read_with(cx, |control, _| {
+                    control.is_interacting() || control.is_editing()
+                })
+        )
+    });
     if !stale_keys.is_empty() {
         for key in stale_keys {
             if let Some(mut control) = view.device_panel.controls.remove(&key) {
@@ -1653,7 +1704,11 @@ fn parameter_control(
     };
     let descriptor = parameter.descriptor;
     let gesture_value = view.device_gesture.snapshot().filter(|snapshot| {
-        snapshot.target.device == key.device && snapshot.target.parameter == key.parameter
+        snapshot.target
+            == (GestureTarget::DeviceParameter {
+                device: key.device,
+                parameter: key.parameter,
+            })
     });
     let pending_value = view.device_panel.pending_values.get(&key).copied();
     if pending_value.is_some()
@@ -1827,34 +1882,17 @@ fn create_parameter_control(
             )
             .ok()?;
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
-            let target = GestureTarget {
+            let target = GestureTarget::DeviceParameter {
                 device: key.device,
                 parameter: key.parameter,
             };
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
                     let value = ParameterValue::Float(event.value as f32);
-                    match event.phase {
-                        NumericEventPhase::Begin => {
-                            if let Err(error) = view.begin_device_gesture(target, value) {
-                                view.error = Some(error.to_owned());
-                            }
-                        }
-                        NumericEventPhase::Change => {
-                            if let Err(error) = view.change_device_gesture(value) {
-                                view.error = Some(error.to_owned());
-                            }
-                        }
-                        NumericEventPhase::Commit => {
-                            if let Err(error) = view.finish_device_gesture(value) {
-                                view.error = Some(error.to_owned());
-                            }
-                        }
-                        NumericEventPhase::Cancel => {
-                            if let Err(error) = view.cancel_device_gesture() {
-                                view.error = Some(error.to_owned());
-                            }
-                        }
+                    if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
+                        && event.phase != NumericEventPhase::Cancel
+                    {
+                        view.error = Some(error.to_owned());
                     }
                     cx.notify();
                 });
@@ -1944,7 +1982,11 @@ fn cancel_control(
     if let ParameterControl::Float { entity, .. } = control {
         entity.update(cx, |control, cx| control.cancel(cx));
         if view.device_gesture.snapshot().is_some_and(|snapshot| {
-            snapshot.target.device == key.device && snapshot.target.parameter == key.parameter
+            snapshot.target
+                == (GestureTarget::DeviceParameter {
+                    device: key.device,
+                    parameter: key.parameter,
+                })
         }) {
             let _ = view.cancel_device_gesture();
         }

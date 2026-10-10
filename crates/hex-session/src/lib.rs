@@ -569,6 +569,68 @@ impl Session {
             .map(|(_, prepared)| prepared)
     }
 
+    /// Prepare a sparse return-send overlay without changing canonical project
+    /// state, dirty metadata or history.
+    pub fn preview_return_send(
+        &self,
+        track: hex_project::TrackId,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            return Err(SessionError::Invalid(
+                "return send gain must be finite and between zero and two",
+            ));
+        }
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let sine_table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared(
+            Command::SetReturnSend {
+                track,
+                return_track,
+                gain,
+            },
+            |candidate| {
+                hex_engine::PreparedRevision::prepare(
+                    candidate,
+                    &media,
+                    Arc::clone(&sine_table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
+    /// Commit one return-send value onto the latest canonical project as one
+    /// undoable command after the transient preview has been accepted.
+    pub fn commit_return_send(
+        &mut self,
+        track: hex_project::TrackId,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            return Err(SessionError::Invalid(
+                "return send gain must be finite and between zero and two",
+            ));
+        }
+        self.command_prepared_revision(
+            Command::SetReturnSend {
+                track,
+                return_track,
+                gain,
+            },
+            previous,
+        )
+        .map(|(_, prepared)| prepared)
+    }
+
     /// Commit one prepared import. All resource checks and fallible reservations
     /// happen before the canonical project edit, so the commit cannot orphan it.
     pub fn import(&mut self, prepared: PreparedImport) -> Result<Created, SessionError> {
