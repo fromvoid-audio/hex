@@ -86,7 +86,7 @@ WAV export clamps to the 16-bit range. Listening acceptance remains pending.
 - `crates/hex-desktop`: startup and composition only.
 - `crates/hex-export`: shared fixed-block linear PCM16 WAV export and create-new publication.
 - `crates/hex-cli`: generated audio and headless WAV export through hex-export.
-- [Pulse](http://localhost:7437/): active project and issue planning for Hex.
+- [Pulse](https://pulse.iocore.dev/): active project and issue planning for Hex.
 - [Plan](docs/plan.md): milestone contracts and acceptance gates.
 - [Architecture](docs/architecture.md): implemented contracts and future boundaries.
 - [Research workflow](docs/research/workflow.md): evidence and decompilation process.

@@ -381,12 +381,19 @@ create mandatory pipelines, swarms, duplicate investigations, or overlapping edi
 ## 7. Where things are tracked
 
 **Pulse owns all project and issue planning**, as requested on 9 October 2026.
-Use the installed Pulse Codex plugin/MCP tools first. The local Streamable HTTP
-endpoint is `http://127.0.0.1:7437/mcp`; the human interface is
-http://localhost:7437/. These interfaces share the existing SQLite data; do not
-create a separate planner database. This supersedes earlier Pages-first or
-Linear-first planning, unless the user explicitly selects another tracker for
-the task.
+Use the installed Pulse Codex plugin/MCP tools first. The live authority is
+`https://pulse.iocore.dev`, with its authenticated Streamable HTTP endpoint at
+`https://pulse.iocore.dev/mcp` and human interface at `https://pulse.iocore.dev/`.
+On this Mac, the installed plugin uses its stdio adapter with explicit
+`--remote-config ~/.config/pulse/remote.json`; it reads the existing private
+credential and accesses live directly. Never expose credentials in instructions,
+plugin manifests, Git or logs. Do not use the retired localhost service, create
+a local planner database, silently fall back to SQLite, or restore a stale
+snapshot over live. Pulse source is `/Users/portalsurfer/dev/pulse-iocore`; the
+local plugin marketplace source is `/Users/portalsurfer/dev/pulse-live-mcp`.
+These source checkouts are not separate planning authorities. This supersedes
+earlier Pages-first or Linear-first planning, unless the user explicitly selects
+another tracker for the task.
 
 Before planning, call `list_projects`, `list_versions` and `list_tags` to discover
 IDs. Read existing work with `list_tickets` and check duplicates before creating
@@ -395,20 +402,24 @@ per page). Reuse matching records. Tickets describe actionable outcomes,
 acceptance criteria, dependencies and source/PR links; use discovered feature,
 bug, improvement, documentation, maintenance or testing tags.
 
-Keep ticket states accurate: `todo`, `in_progress`, `blocked`, `done` or
-`cancelled`. Move active work to `in_progress` and explain blockers in the
-description. Before every update, call `get_ticket` and pass its current revision
-as `expected_revision`; on conflict, re-read and reconsider. Update fields
-selectively, preserving descriptions, tags and source context. Mark `done` only
-when acceptance criteria are met; source-complete work with pending native/user
-validation remains open. Record unrelated discoveries during an active PR as
-follow-up tickets instead of expanding that PR.
+Keep ticket states accurate: `todo`, `in_progress`, `blocked`,
+`ready_for_review`, `in_review`, `done` or `cancelled`. Move active work to
+`in_progress`; use `ready_for_review` after implementation and source checks are
+complete but review or native/user acceptance remains, and `in_review` while
+review is underway. Explain blockers in the description. Before every update,
+call `get_ticket` and pass its current revision as `expected_revision`; on
+conflict, re-read and reconsider. Update fields selectively, preserving
+descriptions, tags and source context. Mark `done` only when acceptance criteria
+are met; source-complete work with pending native/user validation remains open.
+Record unrelated discoveries during an active PR as follow-up tickets instead
+of expanding that PR.
 
-Preserve existing external tracker records and links. This policy does not
-authorize bulk migration, deletion, archival, synchronization or writes to other
-trackers. If Pulse tools or the local service are unavailable, report the
-limitation and keep a clearly labeled temporary plan in chat; do not silently
-switch trackers or claim unsaved tickets were created.
+Preserve existing Pages/Linear records, imported context and source links. This
+policy does not authorize bulk migration, deletion, archival, synchronization or
+writes to other trackers. If Pulse tools, live connectivity or authentication
+are unavailable, report the limitation and keep a clearly labeled temporary
+plan in chat; do not silently switch trackers or claim that unsaved tickets were
+created.
 
 Repository documents retain technical contracts, request order and evidence:
 
