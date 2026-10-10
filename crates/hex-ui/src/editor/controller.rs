@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::EnqueuedNativeDeviceDrop;
 use super::duplicate::Press;
 use super::play_intent::AdmissionError;
 use super::refresh::AudioFrame;
@@ -922,14 +924,14 @@ impl EditorView {
             replace,
         } = &request
         {
-            self.last_enqueued_native_device_drop = Some((
-                *project_generation,
-                *revision,
-                *source,
-                *track,
-                *before,
-                *replace,
-            ));
+            self.last_enqueued_native_device_drop = Some(EnqueuedNativeDeviceDrop {
+                project_generation: *project_generation,
+                revision: *revision,
+                source: *source,
+                track: *track,
+                before: *before,
+                replace: *replace,
+            });
         }
         #[cfg(test)]
         match &request {

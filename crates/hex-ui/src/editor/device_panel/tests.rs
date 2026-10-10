@@ -597,6 +597,21 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
+        let drop = view
+            .last_enqueued_native_device_drop
+            .expect("replacement drop request");
+        assert_eq!(drop.project_generation, view.project_generation);
+        assert_eq!(drop.revision, initial_revision);
+        assert_eq!(drop.track, track);
+        assert_eq!(drop.before, None);
+        assert_eq!(drop.replace, Some(instrument));
+        assert!(matches!(
+            drop.source,
+            hex_session::service::NativeDeviceDropSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                type_id,
+            } if type_id.as_str() == Ok("hex.instrument.operator")
+        ));
         let current = view.state.as_ref().expect("state");
         let current_track = current.project.track(track).expect("track");
         assert_eq!(
