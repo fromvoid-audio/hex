@@ -8,7 +8,7 @@ use super::{Envelope, OPERATORS, Oscillator, PreparedFm4, Routing};
 use hex_lattice::{NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
+    ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 
 pub const FM4_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.fm4");
@@ -85,6 +85,7 @@ const fn float_parameter(
         label,
         kind: ParameterKind::Float { min, max, unit },
         default: ParameterValue::Float(default),
+        presentation: ParameterPresentation::Linear,
     }
 }
 

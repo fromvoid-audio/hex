@@ -27,6 +27,8 @@ actions!(
         NumericEscape,
         NumericUp,
         NumericDown,
+        NumericUpFine,
+        NumericDownFine,
     ]
 );
 
@@ -53,6 +55,8 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new("escape", NumericEscape, Some("hex_numeric_control")),
         KeyBinding::new("up", NumericUp, Some("hex_numeric_control")),
         KeyBinding::new("down", NumericDown, Some("hex_numeric_control")),
+        KeyBinding::new("shift-up", NumericUpFine, Some("hex_numeric_control")),
+        KeyBinding::new("shift-down", NumericDownFine, Some("hex_numeric_control")),
     ]);
 }
 
@@ -460,8 +464,7 @@ impl NumericControl {
         if !self.enabled || self.editing {
             return;
         }
-        let delta = if fine { 0.001 } else { 0.01 } * direction;
-        if let Ok(value) = self.spec.adjust(self.draft, delta)
+        if let Ok(value) = self.spec.step(self.draft, direction, fine)
             && value != self.draft
         {
             cx.emit(NumericControlEvent {
@@ -1052,6 +1055,14 @@ impl gpui::Render for NumericControl {
             .on_action(cx.listener(|view, _: &NumericDown, _, cx| {
                 cx.stop_propagation();
                 view.emit_step(-1.0, false, cx)
+            }))
+            .on_action(cx.listener(|view, _: &NumericUpFine, _, cx| {
+                cx.stop_propagation();
+                view.emit_step(1.0, true, cx)
+            }))
+            .on_action(cx.listener(|view, _: &NumericDownFine, _, cx| {
+                cx.stop_propagation();
+                view.emit_step(-1.0, true, cx)
             }));
 
         if self.press.is_some() {

@@ -66,6 +66,18 @@ settled Utility and sine removal now avoid the stale-target warning and empty
 instrument card; Undo restores both. Eleven targeted device-panel UI tests pass,
 including existing active/draft target-loss coverage. Full local CI and native
 review remain open.
+- [x] **Utility gain dB presentation** — Pulse2151: descriptor metadata presents
+  linear-amplitude Utility GAIN in dB while retaining canonical linear bounds,
+  edits and saved state. Zero displays as `-inf db`, unity as `0.00 db`, and
+  maximum as `+35.00 db`; malformed, non-finite, underflowing and out-of-range
+  typed input is refused. The normalized control curve and Shift increment are
+  provisional original choices, not measured Live behavior. Source checks pass:
+  23 widget tests (including rendered arrow/fine/reset/cancel/type), two
+  contract tests, the Utility metadata test and 16 device-panel UI tests
+  (including canonical dB-to-linear typing/arrow/cancel behavior), strict
+  affected Clippy, architecture/style guards, formatting and diff check. Full
+  local CI and native numeric-feel/audible acceptance remain open. See
+  [device controls](docs/device-controls.md).
 Pinned main 12 is source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30),
 all 14 clean CI steps passed on `3ee1edd` (270.703 s). Main-project selection 14 is source-complete in
 [PR31](https://github.com/PORTALSURFER/hex/pull/31); all 14 clean CI checks passed

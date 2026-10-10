@@ -111,6 +111,7 @@ pub enum ParameterKind {
     Float {
         min: f32,
         max: f32,
+        /// Unit of the canonical value and range, before any presentation mapping.
         unit: Option<&'static str>,
     },
     Bool,
@@ -119,12 +120,25 @@ pub enum ParameterKind {
     },
 }
 
+/// How a parameter's canonical value is presented to generic controls.
+/// This changes UI input/display only; descriptors, edits and persisted values
+/// remain in the domain and unit declared by [`ParameterKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParameterPresentation {
+    /// Display and edit the canonical value directly.
+    #[default]
+    Linear,
+    /// Canonical values are linear amplitudes presented and entered in dB.
+    LinearAmplitudeDecibels,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParameterDescriptor {
     pub id: ParameterId,
     pub label: &'static str,
     pub kind: ParameterKind,
     pub default: ParameterValue,
+    pub presentation: ParameterPresentation,
 }
 impl ParameterDescriptor {
     pub fn validate_descriptor(self) -> Result<(), DeviceContractError> {
@@ -132,6 +146,11 @@ impl ParameterDescriptor {
         if self.label.is_empty()
             || self.label.len() > MAX_PARAMETER_LABEL_BYTES
             || !self.label.bytes().all(|byte| !byte.is_ascii_uppercase())
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if self.presentation == ParameterPresentation::LinearAmplitudeDecibels
+            && !matches!(self.kind, ParameterKind::Float { min, max, .. } if min >= 0.0 && max > min)
         {
             return Err(DeviceContractError::InvalidDescriptor);
         }
@@ -325,6 +344,7 @@ mod tests {
                 unit: Some("linear"),
             },
             default: ParameterValue::Float(1.0),
+            presentation: ParameterPresentation::Linear,
         };
         assert!(good.validate_descriptor().is_ok());
         assert!(
@@ -334,6 +354,37 @@ mod tests {
                     max: 1.0,
                     unit: None
                 },
+                ..good
+            }
+            .validate_descriptor()
+            .is_err()
+        );
+
+        assert!(
+            ParameterDescriptor {
+                presentation: ParameterPresentation::LinearAmplitudeDecibels,
+                ..good
+            }
+            .validate_descriptor()
+            .is_ok()
+        );
+        assert!(
+            ParameterDescriptor {
+                kind: ParameterKind::Float {
+                    min: -0.1,
+                    max: 2.0,
+                    unit: Some("db"),
+                },
+                presentation: ParameterPresentation::LinearAmplitudeDecibels,
+                ..good
+            }
+            .validate_descriptor()
+            .is_err()
+        );
+        assert!(
+            ParameterDescriptor {
+                kind: ParameterKind::Bool,
+                presentation: ParameterPresentation::LinearAmplitudeDecibels,
                 ..good
             }
             .validate_descriptor()
