@@ -586,7 +586,6 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         assert!(bounds.origin.x >= body.origin.x);
         assert!(bounds.origin.x + bounds.size.width <= body.origin.x + body.size.width);
     }
-    drop(parameter_bounds);
     let mode_knob = Box::leak(
         format!(
             "device-{}-parameter-{}-knob",
@@ -625,7 +624,6 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     };
     assert!(parameter_bounds(3, "-knob").size.width >= px(24.0));
     assert!(parameter_bounds(3, "-value").size.width >= px(60.0));
-    drop(parameter_bounds);
     let gain_value =
         Box::leak(format!("device-{}-parameter-1-value", device.value()).into_boxed_str());
     let gain_bounds = visual.debug_bounds(gain_value).expect("gain readout");
