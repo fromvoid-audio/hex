@@ -1123,3 +1123,14 @@ Ordinary inherited publication is unchanged. Race/queue failure/Stop/successor
 unit tests, two callback allocation probes and the actual UI invalidation helper
 test pass. Full local CI and native edit/Open/seek acceptance remain pending.
 See [the contract](docs/prepared-seek-cancellation.md).
+
+## 10 October2026 — review58 source checkpoint
+
+PR38–95 are combined in this checkout, including native stateful seek (91),
+Operator fixed tuning (92), captured track effect residuals (93), live Session
+effect draining after source stop (94), and prepared seek cancellation (95).
+PR91–93 and95 each passed their exact-head16-check local pipelines. PR94 passed
+focused PCM, callback allocation and strict affected source checks; full combined
+validation is next. Pulse2204 Return-chain residual ownership remains a separate
+active change and is not included. No native acceptance, merge or new test bundle
+is claimed at this source checkpoint.
