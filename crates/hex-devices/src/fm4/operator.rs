@@ -1,6 +1,8 @@
 //! Standalone original four-operator DSP with independently shaped amplitudes.
 use super::{Invalid, OPERATORS, Oscillator, PreparedFmCore, Routing, SineTable};
 use crate::operator_envelope::{OperatorEnvelope, PreparedOperatorEnvelopes};
+mod context;
+pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
 
 /// Original immutable acyclic FM note, not a registered native device.
 /// Each envelope shapes its oscillator before modulation and carrier routing.

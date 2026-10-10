@@ -174,6 +174,11 @@ fn control_fields_drive_each_operator_against_an_independent_pcm_oracle() {
             .expect("decode")
             .prepare_note(8000, 60, 100)
             .expect("prepare");
+        let context = OperatorSettings::from_state(&state)
+            .expect("decode")
+            .prepare_configuration(8000)
+            .expect("context");
+        let compact = context.prepare_note(60, 100).expect("compact note");
         let held = |age: u64| {
             let initial = f64::from(0.2_f32);
             let peak = f64::from(0.9_f32);
@@ -199,6 +204,10 @@ fn control_fields_drive_each_operator_against_an_independent_pcm_oracle() {
                 let expected =
                     (turns * std::f64::consts::TAU).sin() * 0.5 * amplitude * 100.0 / 127.0;
                 let actual = f64::from(note.sample(&table, age, gate));
+                assert_eq!(
+                    context.sample(&table, &compact, age, gate).to_bits(),
+                    note.sample(&table, age, gate).to_bits()
+                );
                 assert!(
                     (actual - expected).abs() < 2e-6,
                     "operator {operator}, age {age}, gate {gate}: {actual} != {expected}"
