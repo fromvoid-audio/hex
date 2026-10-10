@@ -74,6 +74,7 @@ pub enum NumericControlAppearance {
     #[default]
     Standard,
     CompactDial,
+    MiniDial,
     InlineValue,
 }
 
@@ -896,38 +897,26 @@ impl gpui::Render for NumericControl {
         }
 
         let mut root = match (self.kind, self.appearance) {
-            (NumericControlKind::Knob, NumericControlAppearance::CompactDial) => {
+            (NumericControlKind::Knob, NumericControlAppearance::MiniDial) => {
                 let quarter_turn = std::f32::consts::FRAC_PI_4;
                 let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
                     .clamp(-5.0 * quarter_turn, quarter_turn);
                 div()
                     .id(self.id.clone())
                     .flex()
-                    .flex_col()
-                    .w(px(64.0))
-                    .h(px(52.0))
-                    .gap(px(1.0))
+                    .w(px(46.0))
+                    .h(px(40.0))
                     .items_center()
+                    .gap(px(2.0))
                     .track_focus(&self.focus)
                     .key_context("hex_numeric_control")
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .h(px(10.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(9.0))
-                            .text_color(rgb(if enabled { style.muted } else { style.border }))
-                            .overflow_hidden()
-                            .child(label),
-                    )
                     .child(
                         div()
                             .id(SharedString::from(format!("{}-knob", self.id)))
                             .debug_selector(|| format!("{}-knob", self.id))
                             .relative()
-                            .size(px(26.0))
+                            .size(px(18.0))
+                            .flex_shrink_0()
                             .rounded_full()
                             .border_1()
                             .border_color(rgb(if enabled { style.border } else { style.rail }))
@@ -943,18 +932,141 @@ impl gpui::Render for NumericControl {
                                     |_, _, _| (),
                                     move |bounds, _, window, _| {
                                         let center = point(
-                                            bounds.origin.x + px(13.0),
-                                            bounds.origin.y + px(13.0),
+                                            bounds.origin.x + px(9.0),
+                                            bounds.origin.y + px(9.0),
                                         );
                                         let end = point(
-                                            center.x + px(angle.cos() * 9.0),
-                                            center.y + px(angle.sin() * 9.0),
+                                            center.x + px(angle.cos() * 6.0),
+                                            center.y + px(angle.sin() * 6.0),
                                         );
                                         let top = point(
-                                            bounds.origin.x + px(13.0),
-                                            bounds.origin.y + px(2.0),
+                                            bounds.origin.x + px(9.0),
+                                            bounds.origin.y + px(1.0),
                                         );
-                                        let tick_end = point(top.x, top.y + px(3.0));
+                                        let mut needle = PathBuilder::stroke(px(1.0));
+                                        needle.move_to(center);
+                                        needle.line_to(end);
+                                        if let Ok(path) = needle.build() {
+                                            window.paint_path(path, rgb(style.accent));
+                                        }
+                                        let mut marker = PathBuilder::stroke(px(1.0));
+                                        marker.move_to(top);
+                                        marker.line_to(point(top.x, top.y + px(2.0)));
+                                        if let Ok(path) = marker.build() {
+                                            window.paint_path(path, rgb(style.muted));
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(26.0))
+                            .h(px(24.0))
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .h(px(8.0))
+                                    .w_full()
+                                    .overflow_hidden()
+                                    .text_size(px(8.0))
+                                    .text_color(rgb(if enabled {
+                                        style.muted
+                                    } else {
+                                        style.border
+                                    }))
+                                    .child(label),
+                            )
+                            .child(value_field_sized(
+                                self.id.clone(),
+                                value_text,
+                                ValueFieldPresentation {
+                                    invalid: self.invalid_text,
+                                    editing: self.editing,
+                                    enabled,
+                                    style,
+                                    width: px(26.0),
+                                    height: px(14.0),
+                                },
+                                self.value_mouse_down_listener(cx),
+                            )),
+                    )
+            }
+            (NumericControlKind::Knob, NumericControlAppearance::CompactDial) => {
+                let width = 64.0;
+                let height = 52.0;
+                let label_height = 10.0;
+                let label_size = 9.0;
+                let knob_size = 26.0;
+                let center_px = knob_size / 2.0;
+                let needle_radius = 9.0;
+                let marker_top = 2.0;
+                let marker_length = 3.0;
+                let value_height = 14.0;
+                let quarter_turn = std::f32::consts::FRAC_PI_4;
+                let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
+                    .clamp(-5.0 * quarter_turn, quarter_turn);
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .flex_col()
+                    .w(px(width))
+                    .h(px(height))
+                    .gap(px(1.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context("hex_numeric_control")
+                    .child(
+                        div()
+                            .w(px(width))
+                            .h(px(label_height))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(label_size))
+                            .text_color(rgb(if enabled { style.muted } else { style.border }))
+                            .overflow_hidden()
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{}-knob", self.id)))
+                            .debug_selector(|| format!("{}-knob", self.id))
+                            .relative()
+                            .size(px(knob_size))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(rgb(if enabled { style.border } else { style.rail }))
+                            .bg(rgb(style.surface))
+                            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
+                            .cursor(if enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::Arrow
+                            })
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        let center = point(
+                                            bounds.origin.x + px(center_px),
+                                            bounds.origin.y + px(center_px),
+                                        );
+                                        let end = point(
+                                            center.x + px(angle.cos() * needle_radius),
+                                            center.y + px(angle.sin() * needle_radius),
+                                        );
+                                        let top = point(
+                                            bounds.origin.x + px(center_px),
+                                            bounds.origin.y + px(marker_top),
+                                        );
+                                        let tick_end = point(top.x, top.y + px(marker_length));
                                         let mut needle = PathBuilder::stroke(px(1.0));
                                         needle.move_to(center);
                                         needle.line_to(end);
@@ -982,8 +1094,8 @@ impl gpui::Render for NumericControl {
                             editing: self.editing,
                             enabled,
                             style,
-                            width: px(64.0),
-                            height: px(14.0),
+                            width: px(width),
+                            height: px(value_height),
                         },
                         self.value_mouse_down_listener(cx),
                     ))

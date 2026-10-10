@@ -1,6 +1,6 @@
 use crate::{
-    ControlStyle, NumericControl, NumericControlConfig, NumericControlKind, NumericScale,
-    NumericSpec, Selector, Toggle,
+    ControlStyle, NumericControl, NumericControlAppearance, NumericControlConfig,
+    NumericControlKind, NumericScale, NumericSpec, Selector, Toggle,
 };
 use gpui::{
     AppContext, Context, Empty, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers,
@@ -217,6 +217,65 @@ fn open_numeric_control_with_spec(
         })
         .expect("test window");
     (handle, control)
+}
+
+fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
+    let spec = NumericSpec::new(
+        0.0,
+        1.0,
+        0.5,
+        NumericScale::Linear,
+        2,
+        None::<std::sync::Arc<str>>,
+    )
+    .expect("valid MiniDial domain");
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    cx.update_window(handle, |_, window, cx| {
+        let control = cx.new(|cx| {
+            let config = NumericControlConfig::new(
+                "test-control",
+                "level",
+                NumericControlKind::Knob,
+                spec,
+                0.5,
+                STYLE,
+            )
+            .expect("valid MiniDial config")
+            .with_appearance(NumericControlAppearance::MiniDial);
+            NumericControl::from_config(cx, config)
+        });
+        window.replace_root(cx, |_, cx| TestRoot {
+            control,
+            outside_focus: cx.focus_handle(),
+        });
+    })
+    .expect("MiniDial test window");
+    handle
+}
+
+#[gpui::test]
+fn mini_dial_keeps_compact_bounds_and_shared_numeric_gesture(cx: &mut TestAppContext) {
+    let handle = open_mini_dial(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(260.0), px(100.0)));
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let dial = visual
+        .debug_bounds("test-control")
+        .expect("MiniDial bounds");
+    assert_eq!(dial.size.width, px(46.0));
+    assert_eq!(dial.size.height, px(40.0));
+    let ring = visual
+        .debug_bounds("test-control-knob")
+        .expect("MiniDial ring");
+    assert_eq!(ring.size.width, px(18.0));
+    assert_eq!(ring.size.height, px(18.0));
+    let readout = visual
+        .debug_bounds("test-control-value")
+        .expect("MiniDial readout");
+    assert_eq!(readout.size.width, px(26.0));
+    assert_eq!(readout.size.height, px(14.0));
 }
 
 fn open_discrete_controls(
