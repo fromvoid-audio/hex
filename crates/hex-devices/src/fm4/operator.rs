@@ -10,6 +10,7 @@ mod retarget;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
 pub use feedback::PreparedOperatorFeedbackVoice;
+pub(crate) use retarget::OperatorFeedbackRetargetFrame;
 pub use retarget::{OperatorFeedbackParameters, PreparedOperatorFeedbackRetarget};
 pub use tuning::OperatorTuning;
 
