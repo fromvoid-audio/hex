@@ -202,6 +202,14 @@ fn compile_project<'a>(
     let mut midi_bank_bytes = 0_usize;
     let mut midi_bank_references = 0_usize;
     for track in snapshot.tracks() {
+        if track
+            .instrument_position()
+            .is_some_and(|position| position != 0)
+        {
+            return Err(Invalid(
+                "playback does not support an instrument after serial effects",
+            ));
+        }
         // Validate a present slot even when it is bypassed or has no current
         // MIDI clips; unknown/future definitions must refuse graph publication.
         let instrument_config = track

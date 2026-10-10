@@ -37,6 +37,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,

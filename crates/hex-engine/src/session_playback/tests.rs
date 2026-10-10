@@ -54,7 +54,7 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     assert!(current_bytes < 16 * 1024 * 1024);
 }
 
-/// These hand-authored fixtures predate schema 15 and model the schema 1–14
+/// These hand-authored fixtures model the schema 1–14
 /// migration that installs a default sine slot on every track carrying MIDI.
 fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_project::Invalid> {
     let state = hex_project::default_instrument_state()?;
@@ -77,6 +77,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 bypassed: false,
                 state: state.clone(),
             });
+            track.instrument_position = Some(0);
         }
     }
     Project::from_snapshot(snapshot)
@@ -117,6 +118,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
         }],
         session: SessionSnapshot {
@@ -176,6 +178,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         soloed: false,
         devices: Vec::new(),
         instrument: None,
+        instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
             id: 8,
             start_raw: 0,
@@ -253,6 +256,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         soloed: false,
         devices: Vec::new(),
         instrument: None,
+        instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
             id: 15,
             asset: 4,
@@ -283,6 +287,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: 2,
                 start_raw: 0,
@@ -1920,6 +1925,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
@@ -2107,6 +2113,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
         soloed: false,
         devices: Vec::new(),
         instrument: None,
+        instrument_position: None,
         content: TrackContentSnapshot::Instrument(Vec::new()),
     });
     snapshot.session.cells[0].track = 7;
