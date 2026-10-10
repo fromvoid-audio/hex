@@ -2069,3 +2069,61 @@ size bounds are not measured memory traffic. Idle-host confirmation is Pulse2219
 these samples do not establish native callback deadlines or justify an exact
 configuration semantics change. Pulse2108 retains control-side transition
 certificates as a separate possible optimization with exact fallback.
+
+## registered Operator feedback profiler — Pulse2289
+
+The release harness in `crates/hex-engine/examples/profile_operator_feedback.rs`
+now measures the actual registered nonzero-feedback Operator through
+`PreparedRevision` and `SessionPlayback`, including steady rendering and
+supported level/feedback live history handoffs. It keeps candidate edit /
+preparation/runtime creation, handoff and following render samples separate,
+and checks exact PCM partition equality before timing. The documented default
+is 48 kHz, 1 track × 1 held note, 128-frame blocks, 100 warmup and 2,000 measured
+blocks. `docs/operator-feedback.md` has the invocation and capture protocol.
+PCM checks reject silence and non-finite samples; warmup plus measured frames
+are validated against the fixture's 60-second held-note gate. Retarget checksum
+coverage excludes warmup. Each handoff changes one track; with 512-frame blocks
+the changed track ramps for 240 frames and renders 272 frames at its target in
+that following block.
+
+Three interleaved workload rounds completed successfully on 10 October 2026,
+21:40:46–21:45:57 UTC: Apple M5 Pro (15 cores), 24 GB, macOS 26.6.2 (25G83),
+rustc 1.98.1, optimized aarch64 build. Each run uses 48 kHz, 100 warmup and
+2,000 measured blocks in each scenario. Source commit
+`f5783c5f75d32977fc8bd20dcad052da9d6e9cff`, tree
+`4331bb04326a73ae0bf6e82a8b1d93dc93202fb3`; executable SHA-256
+`caaacdbd7a711a233b0c8f575165e9aed14028e5487fed077d583f13d1a3436d`.
+No concurrent Cargo or other profiler process was running; normal OS activity
+was uncontrolled. All 18 runs passed finite/audible partition equality and
+17-voice refusal. Checksums match across repeats for each workload.
+
+The table reports the range of each statistic across the three runs; maxima
+are retained, including scheduling outliers. Full per-run p50/p95/p99/max,
+totals, setup timings, commands, metadata and checksums are in
+`artifacts/profiles/operator-feedback-2289/` (ignored local evidence).
+
+| tracks × voices | frames | steady p50 / p95 / max (ms) | retarget handoff p50 / p95 / max (ms) | following render p50 / p95 / max (ms) |
+| --- | --- | --- | --- | --- |
+| 1 × 1 | 128 | 0.004–0.004 / 0.004–0.007 / 0.105–1.062 | 0.005–0.007 / 0.011–0.018 / 0.160–0.500 | 0.012–0.013 / 0.019–0.034 / 0.106–0.598 |
+| 1 × 16 | 128 | 0.030–0.033 / 0.049–0.060 / 0.263–0.621 | 0.018–0.018 / 0.029–0.037 / 0.153–0.578 | 0.171–0.174 / 0.241–0.274 / 0.713–1.108 |
+| 100 × 16 | 128 | 3.186–3.323 / 3.966–4.270 / 6.595–9.319 | 4.819–5.001 / 6.133–6.368 / 20.007–84.139 | 3.739–3.808 / 4.811–4.953 / 31.637–80.895 |
+| 1 × 1 | 512 | 0.013–0.014 / 0.022–0.026 / 0.197–0.458 | 0.005–0.006 / 0.010–0.013 / 0.174–0.243 | 0.028–0.028 / 0.045–0.061 / 0.242–0.559 |
+| 1 × 16 | 512 | 0.116–0.119 / 0.180–0.184 / 0.531–0.751 | 0.018–0.019 / 0.029–0.039 / 0.151–0.724 | 0.379–0.394 / 0.539–0.600 / 1.103–1.133 |
+| 100 × 16 | 512 | 12.789–13.656 / 16.107–18.376 / 47.898–1234.485 | 4.845–5.069 / 5.934–6.754 / 12.585–18.026 | 13.487–14.438 / 16.210–18.777 / 34.852–74.375 |
+
+Nominal block durations are 2.667 ms (128 frames) and 10.667 ms (512 frames).
+The 100×16 fixture exceeds these durations even at its median steady render;
+one-track retargeting also performs whole-project history preservation. This
+baseline does **not** meet a dense native deadline gate or justify increasing
+polyphony. Pulse2226 retains capacity/performance work; Pulse2291 separately
+removes DSP sampling from retarget compatibility checks without weakening
+validation. A source review also identified repeated layered history checks;
+Pulse2108 retains transition-certificate work as a separate optimization.
+The 1,234.485 ms maximum is an uncontrolled-host scheduling outlier, not a
+claim that one DSP block intrinsically needs that duration.
+
+Public declarations report a 4,032-byte twin, 8,064-byte pair and 112-byte target
+proof; whole playback host bytes have no public accounting API and are explicitly
+not inferred. This offline profile does not establish CPAL deadlines, sustained
+device behavior, listening acceptance or Ableton Live parity. Existing debug
+smoke and strict example Clippy checks remain correctness evidence only.

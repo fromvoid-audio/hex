@@ -1680,3 +1680,24 @@ native visual acceptance remain pending. See [Operator shell context contract]
   partitioned PCM, wrong-target and incompatible-law refusal, and twin atomicity.
 - Full final-tree local CI is the PR merge gate. Native listening, physical
   callback deadlines and manual control acceptance remain open in Pulse2229.
+
+## 10 October 2026 — registered Operator feedback profiler (Pulse2289)
+
+- Added a reusable actual `PreparedRevision` + `SessionPlayback` release
+  profiler for steady nonzero-feedback playback and supported level/feedback
+  history handoffs. Setup, handoff and render samples are reported separately;
+  PCM partition equivalence and optional density refusal are checked.
+- Debug smoke passed for 1×1 and the requested 100×16 held-note workload; the
+  intentional 17-note-per-track negative fixture is refused during revision
+  preparation. Strict example Clippy and formatting checks passed.
+- All 18 release runs (three interleaved workload rounds) passed partition PCM
+  and density checks; raw timings/source/binary/hardware metadata are retained
+  in `artifacts/profiles/operator-feedback-2289/`. The 100×16 median render
+  exceeds both nominal block budgets; capacity work remains open in Pulse2226
+  and sample-free retarget preflight is separate Pulse2291. See
+  [performance evidence](docs/performance.md). Whole playback host bytes are
+  explicitly unavailable through the public contract.
+- Review refinements add a finite/audible partition PCM guard, reject run lengths
+  that exceed the fixture's held-note gate, and scope retarget checksums to
+  measured blocks. The 512-frame retarget block includes 240 ramp and 272 target
+  frames for its single edited track.

@@ -131,9 +131,69 @@ explicitly. The compact voice measured 152 bytes; configuration remained
 
 These short runs were taken on a shared, uncontrolled host and do not establish
 a speedup, regression, deadline or native callback behavior. The existing
-profile does not time `process_frame` with nonzero feedback. That recurrence is
-covered by unit oracles only; measure it separately before making performance
-claims.
+generic profile does not time `process_frame` with nonzero feedback. That
+recurrence was covered by unit oracles until a registered-host profile is
+captured under the protocol below; do not infer live performance from those
+older samples.
+
+## registered Operator feedback profiler (Pulse2289)
+
+`crates/hex-engine/examples/profile_operator_feedback.rs` is a reusable
+release-mode harness for the actual registered Operator through canonical
+`PreparedRevision` and `SessionPlayback`. Its fixture sets nonzero effective
+self-feedback, admits held MIDI notes, and exercises supported level/feedback
+state replacements through the same prepared revision and history-handoff
+interfaces used by Arrangement/Session playback. It records distinct candidate
+edit/preparation/runtime setup, history handoff and following render timings.
+Steady-state rendering has its own setup interval. Retargeting rotates across
+tracks and continues to measure held voices while updates are applied.
+
+Default workload is 48 kHz, one track, one held note, 128-frame blocks, 100
+warmup blocks, 2,000 measured blocks and both steady/retarget scenarios. The
+bounded options select 1 or 100 tracks, 1 or 16 simultaneous notes per track,
+128- or 512-frame blocks, scenario, warmup and measured counts. A density check
+may be enabled to confirm 17 simultaneous notes are rejected against the current
+16-voice limit. Before timing, the harness verifies exact PCM equality for one
+512-frame render versus four 128-frame renders and records its checksum.
+The partition guard also rejects non-finite or entirely silent output. Its
+one-track/one-note fixture verifies silence rejection directly. Measured
+warmup-plus-run frames are checked against the fixture's 120-beat (60-second at
+the default tempo) note gate, so the reported notes remain held during every
+requested block.
+Retarget samples alternate the registered state between feedback 0.24 / level
+0.82 and feedback 0.63 / level 0.57; both use the default 5 ms ramp.
+Each retarget handoff edits one track, rotating across a 100-track workload.
+At 512-frame blocks, an edited track's following render contains the first 240
+ramp frames and then 272 frames at the target values; other tracks remain on
+their current steady state. At 128 frames that following block remains within
+the ramp. The retarget checksum covers measured iterations only, excluding
+warmup.
+
+For example, after a quiet release build:
+
+```sh
+CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target cargo build --release -p hex-engine --example profile_operator_feedback --locked
+target/release/examples/profile_operator_feedback --tracks=100 --notes=16 --block=128 --warmup-blocks=100 --measured-blocks=2000 --scenario=both --density-check
+```
+
+The executable prints setup, handoff and render sample totals and p50/p95/p99/max
+values, a PCM checksum, workload/build platform options, and the registered
+runtime twin/pair plus target-proof storage declared by the public contracts.
+It explicitly reports whole `SessionPlayback` host bytes as unavailable because
+there is no public accounting API. Do not infer that total from the device pair
+or add a runtime API solely to improve profiler output. Per-render wall-clock
+measurements include `Instant` timing overhead. Candidate preparation is timed
+separately and is not part of the handoff or render sample.
+
+Capture `rustc -Vv`, the exact source commit and tree digest, release binary
+SHA-256, hardware/OS identity, full command, logs and timestamp with each
+measurement. Run the profile with no concurrent compilation or unrelated CPU
+load where practical; repeat runs and retain each raw log. Three repeated release workload rounds are retained under
+`artifacts/profiles/operator-feedback-2289/`; the accepted baseline and its
+limitations are recorded in `docs/performance.md`. This offline microbenchmark does not prove CPAL
+callback deadlines, device stress, listening quality, or parity/performance
+against Ableton Live. See `docs/performance.md` for accepted measurements and
+open gates.
 
 ## retarget kernel timing sample — 10 October 2026
 
