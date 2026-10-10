@@ -228,6 +228,22 @@ fn compile_project<'a>(
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
+        let mutable_instrument = track
+            .instrument()
+            .filter(|device| !device.bypassed())
+            .and(instrument_config.as_ref())
+            .map(|instrument| {
+                instrument
+                    .prepare_mutable_runtime()
+                    .map(|runtime| runtime.is_some())
+                    .map_err(|_| Invalid("mutable instrument runtime is unsupported"))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let mutable_looping_source = track
+            .midi_clips()
+            .iter()
+            .any(|clip| clip.source().looping());
         let clips = track
             .clips()
             .iter()
@@ -326,7 +342,8 @@ fn compile_project<'a>(
                 device_chain,
             )?
             .with_track_id(track.id())
-            .with_instrument_config(track.instrument()),
+            .with_instrument_config(track.instrument())
+            .with_mutable_instrument(mutable_instrument, mutable_looping_source),
         );
     }
     let project = Project::with_compiled_tracks(

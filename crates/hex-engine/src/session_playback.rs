@@ -10,6 +10,7 @@ use crate::{
     Frame, PreparedRevision,
     midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
     midi_template::{MidiOccurrenceSuppression, MidiReleaseVoice, MidiSpanBuffer},
+    mutable_instrument::{MutableInstrumentTrackRuntime, MutableOnsetBuffer},
 };
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
@@ -99,6 +100,12 @@ pub enum SessionPlaybackError {
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
     DeviceRuntime,
+    MutableInstrumentRuntime,
+    MutableInstrumentEvents,
+    MutableInstrumentLoopUnsupported,
+    MutableInstrumentActive,
+    MutableInstrumentRouteBoundary,
+    MutableInstrumentChase,
     MediaPagesUnavailable,
     Midi(crate::MidiTemplateError),
     Arrangement(&'static str),
@@ -123,6 +130,24 @@ impl fmt::Display for SessionPlaybackError {
                 Self::TempoConversion => "session playback timing conversion failed",
                 Self::ReleaseBankFull => "session playback outgoing release bank is full",
                 Self::DeviceRuntime => "session playback native device runtime is unavailable",
+                Self::MutableInstrumentRuntime => {
+                    "session playback mutable instrument runtime is unavailable"
+                }
+                Self::MutableInstrumentEvents => {
+                    "session playback mutable instrument event query is invalid"
+                }
+                Self::MutableInstrumentLoopUnsupported => {
+                    "mutable instrument loops are not admitted by this playback runtime"
+                }
+                Self::MutableInstrumentActive => {
+                    "mutable instrument must become quiescent before this route change"
+                }
+                Self::MutableInstrumentRouteBoundary => {
+                    "quantized route changes are not admitted for mutable instruments"
+                }
+                Self::MutableInstrumentChase => {
+                    "mutable instrument seek or revision requires unsupported note history"
+                }
                 Self::MediaPagesUnavailable => {
                     "streamed session playback requires a media page provider"
                 }
@@ -233,6 +258,9 @@ pub struct SessionPlayback {
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+    mutable_onsets: MutableOnsetBuffer,
+    mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -298,6 +326,19 @@ impl SessionPlayback {
         }
         let periodic_tempo = revision.session().periodic_tempo();
 
+        if revision.session().has_mutable_instruments()
+            && (revision
+                .arrangement()
+                .loop_region()
+                .is_some_and(|region| region.enabled())
+                || revision.session().has_mutable_looping_source()
+                || arrangement_tracks
+                    .iter()
+                    .any(|track| track.has_mutable_looping_source()))
+        {
+            return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
+        }
+
         let release_capacity = SESSION_RELEASE_CAPACITY;
         let mut routes = Vec::new();
         routes
@@ -311,6 +352,81 @@ impl SessionPlayback {
                 owner: RouteOwner::Arrangement,
                 pending: None,
             });
+        }
+        let mut mutable_count = 0_usize;
+        let mut mutable_bytes = 0_usize;
+        let mut existing_stateful_count = 0_usize;
+        let mut existing_stateful_bytes = 0_usize;
+        for track in arrangement_tracks {
+            existing_stateful_count = existing_stateful_count
+                .checked_add(track.stateful_device_count())
+                .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+            existing_stateful_bytes = existing_stateful_bytes
+                .checked_add(
+                    track
+                        .stateful_device_declared_bytes()
+                        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?,
+                )
+                .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+            if let Some(factory) = revision.session().mutable_instrument_factory(
+                track
+                    .canonical_track_id()
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?,
+            ) {
+                mutable_count = mutable_count
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+                mutable_bytes = mutable_bytes
+                    .checked_add(
+                        factory
+                            .declared_twin_bytes()
+                            .checked_mul(2)
+                            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?,
+                    )
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+            }
+        }
+        crate::mutable_instrument::validate_mutable_graph_budget(
+            existing_stateful_count,
+            existing_stateful_bytes,
+            mutable_count,
+            mutable_bytes,
+        )
+        .map_err(SessionPlaybackError::from)?;
+        if mutable_count > 0 {
+            crate::mutable_instrument::host_storage_upper_bound(MAX_TRACKS)
+                .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+        }
+        let mut mutable_instruments = Vec::new();
+        mutable_instruments
+            .try_reserve_exact(arrangement_tracks.len())
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        if mutable_instruments.capacity() > MAX_TRACKS {
+            return Err(SessionPlaybackError::MutableInstrumentRuntime);
+        }
+        for track in arrangement_tracks {
+            let id = track
+                .canonical_track_id()
+                .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+            let runtime = revision
+                .session()
+                .mutable_instrument_factory(id)
+                .map(|factory| {
+                    MutableInstrumentTrackRuntime::new(
+                        factory,
+                        revision.arrangement().sample_rate(),
+                    )
+                })
+                .transpose()
+                .map_err(SessionPlaybackError::from)?;
+            mutable_instruments.push(runtime);
+        }
+        let mut mutable_events = Vec::new();
+        mutable_events
+            .try_reserve_exact(crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        if mutable_events.capacity() > crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY {
+            return Err(SessionPlaybackError::MutableInstrumentRuntime);
         }
         let mut route_scratch = Vec::new();
         route_scratch
@@ -380,6 +496,9 @@ impl SessionPlayback {
             routes,
             route_scratch,
             device_chains,
+            mutable_instruments,
+            mutable_onsets: MutableOnsetBuffer::default(),
+            mutable_events,
             tail_groups,
             tail_mixes,
             tail_suffix_starts,
