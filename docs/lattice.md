@@ -67,10 +67,13 @@ tracks used the captured mix, while retained-track tails used the current mix.
 A neutral chain has an exact identity
 path; preparation rejects non-finite coefficients or composition overflow.
 
-This first implementation declares zero algorithmic latency. It does not remove
-interface latency or implement general device latency compensation. Processing
-does not introduce clipping or a limiter; extreme finite inputs and gains can
-still overflow, as in the existing renderer.
+Memoryless `StereoMatrix` transforms declare exact zero algorithmic latency.
+Prepared stateful processors declare `Option<u32>` frames: the default `None`
+means unknown, while registered Utility filters report `Some(0)` because they
+use no fixed buffering or lookahead. Their IIR phase/group delay is separate.
+This metadata does not remove interface latency or implement general device
+latency compensation. Processing does not introduce clipping or a limiter;
+extreme finite inputs and gains can still overflow, as in the existing renderer.
 
 ## Delivery and acceptance
 

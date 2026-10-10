@@ -637,6 +637,10 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
         Box::new(crate::utility_filters::UtilityFilterProcessor::new(self.0))
     }
+
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(self.0.algorithmic_latency_frames())
+    }
 }
 
 pub static UTILITY_DEFINITION: UtilityDefinition = UtilityDefinition;
@@ -811,6 +815,32 @@ mod tests {
         assert_eq!(output[0].to_bits(), input[0].to_bits());
         assert_eq!(output[1].to_bits(), input[1].to_bits());
         assert_eq!(utility.latency_frames(), 0);
+    }
+
+    #[test]
+    fn prepared_utility_filter_variants_declare_zero_algorithmic_latency() {
+        let default_state = UTILITY_DEFINITION.default_state().unwrap();
+        for (dc_remove, bass_mono) in [(true, false), (false, true), (true, true)] {
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    &default_state,
+                    parameter::DC_REMOVE,
+                    ParameterValue::Bool(dc_remove),
+                )
+                .and_then(|state| {
+                    UTILITY_DEFINITION.patch_parameter(
+                        &state,
+                        parameter::BASS_MONO,
+                        ParameterValue::Bool(bass_mono),
+                    )
+                })
+                .unwrap();
+            let prepared = UTILITY_DEFINITION
+                .prepare_processor(&state, 48_000)
+                .unwrap()
+                .unwrap();
+            assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
+        }
     }
 
     #[test]

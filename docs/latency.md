@@ -4,9 +4,10 @@
 
 Hex must keep device chains, tracks, parallel racks, sends/returns and sidechains
 sample-aligned, while avoiding unnecessary host-added latency and transport waits.
-Native devices must expose their processing latency in samples. External devices
-report latency to the host; the host propagates cumulative latency through the
-compiled graph and presents correctly timed audio/events to subsequent devices.
+Native devices must expose known algorithmic latency in frames or identify it as
+unknown. External devices report latency to the host; the host propagates
+cumulative latency through the compiled graph and presents correctly timed
+audio/events to subsequent devices.
 
 Compensation cannot remove causal processing delay, lookahead or audio-interface
 latency. Shorter paths are delayed to align at a merge, or known timeline material
@@ -20,6 +21,15 @@ pause. Arbitrary lookahead plugins processing unpredictable live input cannot
 provide both their exact normal result and zero audible delay. Transport
 acknowledgment, first audible sample, hardware latency and intrinsic DSP latency
 must be measured and reported separately.
+
+The current native seam exposes `PreparedNativeProcessor::algorithmic_latency_frames`
+as `Option<u32>`: a frame count is known latency, while `None` is unknown. The
+default is unknown. `StereoMatrix` declares exact zero latency, and registered
+Utility filter processors declare zero fixed buffering/lookahead delay. IIR
+phase/group delay is not algorithmic buffering latency and is not included.
+This metadata is descriptive; it does not yet drive compensation or admission.
+When a future return-track compiler is added, it must refuse unknown or nonzero
+processor latency until path compensation is implemented.
 
 ## Host graph contract — planned
 

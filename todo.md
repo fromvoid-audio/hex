@@ -252,7 +252,10 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
 - [ ] **return tracks above main** — add/remove return tracks pinned immediately
   above main, below the scrollable regular-track region. Implement canonical
   return routing, sends, history and persistence, not decorative rows. Keep both
-  sections usable at small heights and prevent implicit feedback cycles.
+  sections usable at small heights and prevent implicit feedback cycles. The
+  prepared native processor seam now declares known algorithmic latency in
+  frames or unknown; a future return compiler must refuse unknown/nonzero
+  processor latency until path compensation is implemented and validated.
 - [ ] **project-wide time selection on main/master** — separate feature PR
   after the pinned main row. Selecting time there addresses every project track
   as one rectangle, including returns when implemented, gaps and every supported
@@ -287,7 +290,9 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   native/offline behavior. Define mutable DSP lifecycle, prepared graph ownership,
   bounded events, latency and callback retirement before stateful devices.
   Paired stateful effects and Utility v2 now pass affected source/probe checks;
-  integrated full CI and native acceptance remain open. Contract:
+  prepared processor latency metadata now distinguishes known frames from
+  unknown, with Utility filters declaring zero fixed buffering/lookahead delay.
+  Integrated full CI and native acceptance remain open. Contract:
   [stateful lattice](docs/stateful-lattice.md). Large-chain timing/admission is
   tracked separately as Pulse 2108; instruments remain a separate prerequisite.
 - [ ] **bottom device panel** — compact horizontal device chain for the focused
