@@ -70,7 +70,7 @@ enum ParameterControl {
 
 #[derive(Default)]
 pub(super) struct DevicePanelState {
-    track: Option<TrackId>,
+    owner: Option<DevicePanelOwner>,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
     views: HashMap<
@@ -86,6 +86,12 @@ pub(super) struct DevicePanelState {
     pending_values: HashMap<ParameterKey, ParameterValue>,
     add_menu_open: bool,
     message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DevicePanelOwner {
+    Track(TrackId),
+    Return(hex_project::ReturnId),
 }
 
 impl DevicePanelState {
@@ -180,6 +186,15 @@ pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorVi
     }
 }
 
+/// Serialize a return-owned project edit after any active native parameter edit.
+pub(super) fn enqueue_return_edit(
+    view: &mut EditorView,
+    command: Command,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    finalize_controls(view, cx) && view.enqueue_device_barrier(Request::Edit(command))
+}
+
 fn commit_owned_numeric_edit(
     view: &mut EditorView,
     key: ParameterKey,
@@ -223,63 +238,81 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.controls.clear();
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
-        view.device_panel.track = None;
+        view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
-    let Some(selected_track) = view.selected_track else {
-        if let Some(previous_track) = view.device_panel.track {
-            if state.project.track(previous_track).is_none() {
+    let desired_owner = view
+        .focused_return
+        .filter(|id| {
+            state
+                .project
+                .return_tracks()
+                .iter()
+                .any(|track| track.id() == *id)
+        })
+        .map(DevicePanelOwner::Return)
+        .or_else(|| view.selected_track.map(DevicePanelOwner::Track));
+    if desired_owner != view.device_panel.owner {
+        if let Some(previous) = view.device_panel.owner {
+            if !owner_exists(&state, previous) {
+                // A history restore or external project replacement can remove
+                // an owner while its view is focused. Cancel its drafts before
+                // switching; never commit an edit against a stale device ID.
                 cancel_all_controls(view, cx);
-                view.device_panel.message = Some("device target is no longer available".into());
+                if view.device_gesture.snapshot().is_some() {
+                    let _ = view.cancel_device_gesture();
+                    view.device_panel.message = Some("canceling removed device edit".into());
+                    return empty_panel("canceling removed device edit");
+                }
             } else if !finalize_controls(view, cx) {
                 view.device_panel.message = Some("finish the active device value first".into());
-                return render_track(view, cx, &state, previous_track);
+                return render_owner(view, cx, &state, previous);
             } else if view.device_gesture.snapshot().is_some() {
                 view.device_panel.message = Some("finishing device edit".into());
-                return render_track(view, cx, &state, previous_track);
+                return render_owner(view, cx, &state, previous);
             }
-            view.device_panel.controls.clear();
-            view.device_panel.views.clear();
-            view.device_panel.pending_values.clear();
-            view.device_panel.track = None;
         }
-        return empty_panel("select a track to view devices");
-    };
+        view.device_panel.controls.clear();
+        view.device_panel.views.clear();
+        view.device_panel.pending_values.clear();
+        view.device_panel.owner = desired_owner;
+        view.device_panel.message = None;
+    }
+    match view.device_panel.owner {
+        Some(DevicePanelOwner::Track(track)) => render_track(view, cx, &state, track),
+        Some(DevicePanelOwner::Return(return_track)) => {
+            return_view::render(view, cx, &state, return_track)
+        }
+        None => empty_panel("select a track or return to view devices"),
+    }
+}
 
-    if view.device_panel.track != Some(selected_track) {
-        if let Some(previous_track) = view.device_panel.track
-            && state.project.track(previous_track).is_none()
-        {
-            cancel_all_controls(view, cx);
-            view.device_panel.message = Some("device target is no longer available".into());
-            view.device_panel.track = Some(selected_track);
-        } else if !finalize_controls(view, cx) {
-            view.device_panel.message = Some("finish the active device value first".into());
-            if let Some(previous_track) = view.device_panel.track
-                && state.project.track(previous_track).is_some()
-            {
-                return render_track(view, cx, &state, previous_track);
-            }
-        } else {
-            if view.device_gesture.snapshot().is_some()
-                && let Some(previous_track) = view.device_panel.track
-                && state.project.track(previous_track).is_some()
-            {
-                view.device_panel.message = Some("finishing device edit".into());
-                return render_track(view, cx, &state, previous_track);
-            }
-            view.device_panel.controls.clear();
-            view.device_panel.views.clear();
-            view.device_panel.pending_values.clear();
-            view.device_panel.track = Some(selected_track);
-            view.device_panel.message = None;
+fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
+    match owner {
+        DevicePanelOwner::Track(track) => state.project.track(track).is_some(),
+        DevicePanelOwner::Return(return_track) => state
+            .project
+            .return_tracks()
+            .iter()
+            .any(|candidate| candidate.id() == return_track),
+    }
+}
+
+fn render_owner(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    state: &ViewState,
+    owner: DevicePanelOwner,
+) -> Stateful<Div> {
+    match owner {
+        DevicePanelOwner::Track(track) => render_track(view, cx, state, track),
+        DevicePanelOwner::Return(return_track) => {
+            return_view::render(view, cx, state, return_track)
         }
     }
-    let track = view.device_panel.track.unwrap_or(selected_track);
-    render_track(view, cx, &state, track)
 }
 
 fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
@@ -945,6 +978,95 @@ fn render_effect(
 }
 
 impl EditorView {
+    fn drop_native_device_to_return(
+        &mut self,
+        drag: &drag::NativeDeviceDrag,
+        return_track: hex_project::ReturnId,
+        window: &mut Window,
+        cx: &mut Context<EditorView>,
+    ) {
+        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+        let current = self.native_device_drag_is_current(drag)
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == drag.revision
+                    && state
+                        .project
+                        .return_tracks()
+                        .iter()
+                        .any(|candidate| candidate.id() == return_track)
+            });
+        if !current {
+            self.error = Some("device drag canceled · project or source changed".into());
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+            || !self.device_gesture_barriers.is_empty()
+            || self.device_gesture.snapshot().is_some()
+            || !finalize_controls(self, cx)
+        {
+            self.error = Some("device edit is still applying; drag again".into());
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        let command = match drag.source {
+            drag::NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Effect,
+                type_id,
+            } => hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Effect,
+                type_id,
+            )
+            .map(|state| Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            })
+            .map_err(|error| error.to_string().to_lowercase()),
+            drag::NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                ..
+            } => Err("return tracks accept effects only".to_owned()),
+            drag::NativeDeviceDragSource::Existing { device, .. } => {
+                let owns_device = self.state.as_ref().is_some_and(|state| {
+                    state.project.return_tracks().iter().any(|candidate| {
+                        candidate.id() == return_track
+                            && candidate
+                                .devices()
+                                .iter()
+                                .any(|effect| effect.id() == device)
+                    })
+                });
+                if owns_device {
+                    Ok(Command::MoveReturnDevice {
+                        device,
+                        before: None,
+                    })
+                } else {
+                    Err("devices can only be reordered within their current owner".to_owned())
+                }
+            }
+        };
+        self.clear_native_device_drag(drag);
+        match command {
+            Ok(command) => {
+                if self.enqueue_device_barrier(Request::Edit(command)) {
+                    self.error = None;
+                    self.device_panel.message = None;
+                    self.status = "updating return effects".into();
+                }
+            }
+            Err(reason) => {
+                self.error = Some(reason.clone());
+                self.device_panel.message = Some(reason);
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn drop_native_device(
         &mut self,
         drag: &drag::NativeDeviceDrag,
@@ -1866,6 +1988,8 @@ fn empty_panel(message: &str) -> Stateful<Div> {
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(message))
 }
+
+mod return_view;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;

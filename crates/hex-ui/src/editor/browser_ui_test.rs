@@ -1,6 +1,6 @@
 use super::{
     BrowserSection, EditorView,
-    drag::{BrowserAudioDrag, BrowserDropDestination},
+    drag::{BrowserAudioDrag, BrowserDropDestination, ClipDrag, ClipDropDestination, ClipPosition},
 };
 use gpui::{
     AppContext, Empty, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
@@ -1658,6 +1658,178 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             length: viewport.length / 2,
         });
         assert!(!view.browser_audio_drag_is_current(&payload));
+    });
+}
+
+#[gpui::test]
+fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestAppContext) {
+    use hex_session::service::AudioPreview;
+    use hex_session::{CachedPeak as Peak, CachedWaveform as Waveform};
+    use std::cell::Cell;
+
+    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let (return_id, browser_drag, clip_drag) = editor.update(cx, |view, cx| {
+        let current = Arc::clone(view.state.as_ref().expect("project state"));
+        let mut project = Editor::new((*current.project).clone(), 8).expect("editor");
+        let Created::ReturnTrack(return_id) = project
+            .execute(Command::AddReturnTrack {
+                name: "send bus".into(),
+            })
+            .expect("return track")
+        else {
+            panic!("return track expected")
+        };
+        let Created::Clip(clip_id) = project
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(4).expect("clip length"),
+            })
+            .expect("midi clip")
+        else {
+            panic!("midi clip expected")
+        };
+        let clip = project.project().midi_clip(clip_id).expect("clip");
+        view.state = Some(Arc::new(ViewState {
+            project: Arc::new(project.project().clone()),
+            waveforms: current.waveforms.clone(),
+            midi_preview: current.midi_preview.clone(),
+            timeline_frames: current.timeline_frames,
+            can_undo: current.can_undo,
+            can_redo: current.can_redo,
+            revision: current.revision.saturating_add(1),
+            unsaved: current.unsaved,
+            document_path: current.document_path.clone(),
+        }));
+        let viewport = view.visible_viewport(current.timeline_frames);
+        let browser_drag = BrowserAudioDrag {
+            project_generation: view.project_generation,
+            revision: current.revision.saturating_add(1),
+            browser_generation: view.browser.scan_generation(),
+            sample_rate: current.project.sample_rate(),
+            path,
+            label: "loop.wav".into(),
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            snap_grid: view.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
+            metadata: Rc::new(RefCell::new(Some(Rc::new(AudioPreview {
+                playback_frames: 480,
+                sample_rate: current.project.sample_rate(),
+                waveform: Arc::new(
+                    Waveform::from_peaks(
+                        480,
+                        vec![
+                            [Peak {
+                                min: -0.2,
+                                max: 0.2
+                            }; 2];
+                            48
+                        ],
+                    )
+                    .expect("sample waveform"),
+                ),
+            })))),
+            metadata_error: Rc::new(RefCell::new(None)),
+            preview: Rc::new(Cell::new(None)),
+            destination: Rc::new(Cell::new(None)),
+            insertion_line_y: Rc::new(Cell::new(None)),
+            lane_hovered: Rc::new(Cell::new(false)),
+            last_pointer: Rc::new(Cell::new(None)),
+        };
+        let clip_drag = ClipDrag {
+            project_generation: view.project_generation,
+            revision: current.revision.saturating_add(1),
+            source_track: track,
+            clip: clip_id,
+            position: ClipPosition::Midi {
+                start: clip.start(),
+                length: clip.length(),
+            },
+            grab_offset: Rc::new(Cell::new(Some(0))),
+            origin_pointer_x: Rc::new(Cell::new(None)),
+            viewport_start: viewport.start,
+            viewport_length: viewport.length,
+            snap_grid: view.snap_grid,
+            snap_modifier: Rc::new(Cell::new(false)),
+            copy_modifier: Rc::new(Cell::new(false)),
+            preview: Rc::new(Cell::new(None)),
+            destination: Rc::new(Cell::new(None)),
+            insertion_line_y: Rc::new(Cell::new(None)),
+            ghost_label: "clip".into(),
+            ghost_waveform: None,
+            lane_hovered: Rc::new(Cell::new(false)),
+            last_pointer: Rc::new(Cell::new(None)),
+        };
+        cx.notify();
+        (return_id, browser_drag, clip_drag)
+    });
+    visual.run_until_parked();
+    let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(lane_selector).expect("track lane");
+    let return_selector =
+        Box::leak(format!("return-track-row-{}", return_id.value()).into_boxed_str());
+    let return_row = visual
+        .debug_bounds(return_selector)
+        .expect("pinned return row");
+    let lane_point = point(lane.origin.x + px(120.0), lane.center().y);
+    let return_point = point(lane_point.x, return_row.center().y);
+
+    editor.update(cx, |view, _| {
+        view.begin_browser_audio_drag(&browser_drag);
+        let (preview, _) = view.browser_audio_drop_position(
+            &browser_drag,
+            f32::from(lane_point.x),
+            f32::from(lane_point.y),
+        );
+        assert!(
+            preview.is_some(),
+            "sample should preview over a regular track"
+        );
+        assert!(matches!(
+            browser_drag.destination.get(),
+            Some(BrowserDropDestination::ExistingTrack { track: target, .. }) if target == track
+        ));
+        browser_drag.preview.set(preview);
+        let (preview, lane_hovered) = view.browser_audio_drop_position(
+            &browser_drag,
+            f32::from(return_point.x),
+            f32::from(return_point.y),
+        );
+        browser_drag.preview.set(preview);
+        assert!(preview.is_none());
+        assert!(!lane_hovered);
+        assert!(browser_drag.destination.get().is_none());
+        assert!(browser_drag.insertion_line_y.get().is_none());
+
+        view.begin_clip_drag(&clip_drag);
+        let (preview, _) = view.clip_drag_drop_position(
+            &clip_drag,
+            f32::from(lane_point.x),
+            f32::from(lane_point.y),
+        );
+        assert!(
+            preview.is_some(),
+            "clip should preview over a regular track"
+        );
+        assert_eq!(
+            clip_drag.destination.get(),
+            Some(ClipDropDestination::ExistingTrack(track))
+        );
+        clip_drag.preview.set(preview);
+        let (preview, lane_hovered) = view.clip_drag_drop_position(
+            &clip_drag,
+            f32::from(return_point.x),
+            f32::from(return_point.y),
+        );
+        clip_drag.preview.set(preview);
+        assert!(preview.is_none());
+        assert!(!lane_hovered);
+        assert!(clip_drag.destination.get().is_none());
+        assert!(clip_drag.insertion_line_y.get().is_none());
     });
 }
 

@@ -1,6 +1,6 @@
 use super::clip_drag_ui_test::editor_window;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
-use hex_project::{Command, Created, Editor, Project};
+use hex_project::{Command, Created, Editor, Project, ReturnId};
 use hex_session::service::{Event, ViewState};
 use std::sync::Arc;
 
@@ -17,6 +17,23 @@ fn project_with_tracks(count: usize) -> Project {
         };
     }
     editor.project().clone()
+}
+
+fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+    let mut ids = Vec::with_capacity(count);
+    for index in 0..count {
+        let Created::ReturnTrack(id) = editor
+            .execute(Command::AddReturnTrack {
+                name: format!("return {index}"),
+            })
+            .expect("add return")
+        else {
+            panic!("return result")
+        };
+        ids.push(id);
+    }
+    (editor.project().clone(), ids)
 }
 
 fn completed_event(state: &ViewState) -> Event {
@@ -48,6 +65,81 @@ fn completed_event(state: &ViewState) -> Event {
         gesture_request: false,
         active_device_gesture: None,
     }
+}
+
+#[gpui::test]
+fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut TestAppContext) {
+    let (project, _) = project_with_returns(16);
+    let (handle, _) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+
+    let returns = visual
+        .debug_bounds("pinned-return-tracks")
+        .expect("pinned return section");
+    let main = visual
+        .debug_bounds("pinned-main-track")
+        .expect("pinned main track");
+    let content = visual
+        .debug_bounds("arrangement-content")
+        .expect("regular tracks remain independently scrollable");
+    let detail = visual
+        .debug_bounds("clip-view-toggle-row")
+        .expect("detail pane remains available");
+    assert_eq!(returns.size.height, px(67.0));
+    assert!(
+        returns.origin.y >= content.origin.y + content.size.height - px(1.0),
+        "returns={returns:?}, content={content:?}"
+    );
+    assert!(returns.origin.y + returns.size.height <= main.origin.y + px(1.0));
+    assert!(main.origin.y + main.size.height <= detail.origin.y + px(1.0));
+    assert!(content.size.height > px(1.0));
+    assert!(visual.debug_bounds("return-track-row-1").is_some());
+}
+
+#[gpui::test]
+fn focusing_a_return_keeps_regular_selection_and_project_scope(cx: &mut TestAppContext) {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .expect("track")
+    else {
+        panic!("track result")
+    };
+    let Created::ReturnTrack(return_track) = editor
+        .execute(Command::AddReturnTrack {
+            name: "return a".into(),
+        })
+        .expect("return")
+    else {
+        panic!("return result")
+    };
+    let (handle, view) = editor_window(cx, editor.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    view.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.time_selection_project_scope = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector =
+        Box::leak(format!("return-track-focus-{}", return_track.value()).into_boxed_str());
+    let focus = visual.debug_bounds(selector).expect("return focus target");
+    let point = point(focus.center().x, focus.center().y);
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track, Some(track));
+        assert_eq!(view.focused_return, Some(return_track));
+        assert!(view.time_selection_project_scope);
+        assert!(view.device_panel_active);
+        assert!(view.clip_view_open);
+    });
+    assert!(visual.debug_bounds("device-panel").is_some());
 }
 
 #[gpui::test]

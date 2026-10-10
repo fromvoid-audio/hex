@@ -48,6 +48,7 @@ mod recovery;
 mod recovery_state;
 mod refresh;
 mod render;
+mod return_tracks;
 mod save;
 mod seek;
 mod selection;
@@ -433,6 +434,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
     track_scroll: gpui::UniformListScrollHandle,
+    focused_return: Option<hex_project::ReturnId>,
+    send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
     pub(in crate::editor) project_generation: u64,
@@ -691,6 +694,8 @@ impl EditorView {
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             track_scroll: gpui::UniformListScrollHandle::new(),
+            focused_return: None,
+            send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
             project_generation: 0,
@@ -782,6 +787,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
     }

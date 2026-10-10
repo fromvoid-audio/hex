@@ -51,4 +51,47 @@ Return cuts that bus at the boundary and retires its runtime on control. This
 bounded policy does not claim Live-equivalent send-tail routing. Allocation
 probes cover effectful Return rendering, compatible replacement and control-side
 retirement; they do not establish physical-device deadlines or listening
-acceptance. UI2178 still owns the pinned rows and native interactions above Main.
+acceptance. Pinned return controls and device interactions are described below.
+
+The Pulse2178 UI puts a compact, internally scrollable return section directly
+above the pinned Main row and below the independently scrolling Arrangement
+tracks. It caps the section at 67 logical pixels (header plus two rows), so a
+16-return project preserves usable Arrangement space at 880×540 with the detail
+pane open; all returns remain reachable by scrolling inside the section. Return
+focus selects its device view without changing the selected regular track or
+project-wide time-selection scope. Returns can be added, removed, muted and
+gain-adjusted. Regular-track send menus list named returns and expose bounded
+0..2 linear gain steps with the current linear value; setting zero removes the
+sparse send. Continuous drag/type send editing with one undo step is tracked
+separately as Pulse2179, because the current project command is one history edit
+per value and must not be called for every pointer update. The bounded step helper
+snaps floating-point roundoff near 0 and 2 to exact endpoints while preserving
+interior values such as 0.375 without quantization.
+
+Return device view accepts native effects, uses the same descriptor-driven
+parameter controls and device-gesture finalization/acknowledgement as regular
+effects, and supports bypass, removal and same-return reordering. Return-only
+arrangement controls and device-rail rendering live in focused editor modules,
+keeping the shared device panel and Arrangement modules from accumulating another
+large return-specific branch. Browser
+instrument drops and cross-owner device moves are refused with a visible reason.
+The audio dependency is integrated into this branch. Session service acceptance
+now covers add/send, undo/redo, Utility insertion and parameter patches, bypass,
+same-return reorder/removal, stale gesture cancellation, and schema-17
+save/reopen with PCM comparisons. UI fixtures cover stale numeric drafts when a
+return is removed and ensure clip/sample drops over the pinned return area clear
+their target and preview rather than resolving a regular track. The regular
+track's single instrument remains freely movable in its chain. Focused UI/session
+tests, affected strict Clippy, formatting and source guards pass. Full clean-head
+local CI and native UI/listening acceptance remain open; the user performs the
+native interaction and audition checks.
+
+The initial three-run 100-track/16-return routing profile was repeated at clean
+audio commit `5c8d3e5`; all runs retain PCM digest
+`2d913f742d1d6255`. The repeated p50 values are 211.1–226.0 µs, p99 values
+267.5–295.3 µs and maxima 308.2–335.6 µs. These are short release microbench
+samples and do not establish physical audio deadline or listening acceptance.
+Logs and manifest are retained at
+`artifacts/profiles/return-routing-20261010/committed-5c8d3e5/` in the primary
+checkout; they supplement, rather than replace, the original dirty-source
+profile evidence.
