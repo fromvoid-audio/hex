@@ -389,6 +389,7 @@ mod window_tests {
         service
             .submit(Request::AddNativeDevice {
                 track,
+                class: hex_engine::NativeDeviceClass::Effect,
                 type_id: Box::new(type_id),
                 before: None,
             })
@@ -489,6 +490,7 @@ mod window_tests {
             service
                 .submit(Request::AddNativeDevice {
                     track,
+                    class: hex_engine::NativeDeviceClass::Effect,
                     type_id: Box::new(type_id),
                     before: None,
                 })
