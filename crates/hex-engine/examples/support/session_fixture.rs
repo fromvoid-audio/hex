@@ -150,7 +150,11 @@ pub fn finite_oracle(
                 looping: clip.source.looping,
                 notes: clip.source.notes.clone(),
             }]);
-        } else if let TrackContentSnapshot::Instrument(clips) = &mut track.content {
+        } else if let TrackContentSnapshot::Instrument(clips)
+        | TrackContentSnapshot::Hybrid {
+            midi_clips: clips, ..
+        } = &mut track.content
+        {
             for clip in clips {
                 clip.source_length_raw = 3 << 32;
                 clip.loop_end_raw = 3 << 32;
