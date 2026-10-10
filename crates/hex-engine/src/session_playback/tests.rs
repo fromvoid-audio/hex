@@ -6662,14 +6662,18 @@ fn stopping_after_handoff_cuts_carried_held_voice_without_requerying_history() {
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut first = [[0.0; 2]; 64];
+    old.render(&mut first).unwrap();
+    assert!(first.iter().any(|frame| frame[0] != 0.0));
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
         quantization: LaunchQuantization::Immediate,
     })
     .unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut first = [[0.0; 2]; 64];
-    old.render(&mut first).unwrap();
+    let mut session_block = [[0.0; 2]; 64];
+    old.render(&mut session_block).unwrap();
+    assert!(session_block.iter().any(|frame| frame[0] != 0.0));
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, table)).unwrap();
@@ -6779,14 +6783,18 @@ fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
     let original = project(0.5, 0, 8 << 32);
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut block = [[0.0; 2]; 64];
+    old.render(&mut block).unwrap();
+    assert!(block.iter().any(|frame| frame[0] != 0.0));
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
         quantization: LaunchQuantization::Immediate,
     })
     .unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut block = [[0.0; 2]; 64];
-    old.render(&mut block).unwrap();
+    let mut session_block = [[0.0; 2]; 64];
+    old.render(&mut session_block).unwrap();
+    assert!(session_block.iter().any(|frame| frame[0] != 0.0));
     let old_frame = old.performance_frame;
     let old_release_count = old.release_voice_count();
 
@@ -7594,14 +7602,18 @@ fn deleting_the_last_track_keeps_its_copied_session_voice_tail() {
     let table = Arc::new(hex_devices::SineTable::new());
     let original = project(0.5, 0, 8 << 32);
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    old.render(&mut before).unwrap();
+    assert!(before.iter().any(|frame| frame[0] != 0.0));
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip: old.revision.session().midi_clips()[0].id,
         quantization: LaunchQuantization::Immediate,
     })
     .unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut before = [[0.0; 2]; 64];
-    old.render(&mut before).unwrap();
+    let mut session_block = [[0.0; 2]; 64];
+    old.render(&mut session_block).unwrap();
+    assert!(session_block.iter().any(|frame| frame[0] != 0.0));
     let mut snapshot = original.snapshot();
     snapshot.tracks.clear();
     snapshot.session.cells.clear();
@@ -7817,14 +7829,18 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let old_track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    old.render(&mut before).unwrap();
+    assert!(before.iter().any(|frame| frame[0] != 0.0));
     old.apply(SessionPlaybackCommand::LaunchClip {
         clip,
         quantization: LaunchQuantization::Immediate,
     })
     .unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut before = [[0.0; 2]; 64];
-    old.render(&mut before).unwrap();
+    let mut session_block = [[0.0; 2]; 64];
+    old.render(&mut session_block).unwrap();
+    assert!(session_block.iter().any(|frame| frame[0] != 0.0));
 
     let mut snapshot = original.snapshot();
     snapshot.tracks.push(TrackSnapshot {
