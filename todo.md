@@ -1482,3 +1482,23 @@ gestures, pending-value retirement, mode popup and regular/Return consistency.
 The screenshot's logical scale is inferred; exact visual acceptance remains
 with the user. Fresh source checks and a signed combined build follow the
 refinement; Operator UI2233 remains a separate subsequent PR.
+
+## 10 October 2026 — review67 Utility proportions checkpoint
+
+User rejected review66's visual sizing; PR105 now uses a 144×184px Utility
+frame,14px header/12px actions,64px columns,26px rings and14px rounded
+controls/readouts. Explicit header top-corner rounding accounts for GPUI's
+rectangular overflow masks. Theme/font/lowercase and canonical editing remain.
+The device rail is213px. Regular and Return Utility reuse the same body.
+
+Focused source2bc1d7b and combineda814194 passed all16 localCI checks
+(20261010T123840Z-a3aca843 and20261010T123840Z-946d808b), clean/stale=false.
+Earlier drop_non_drop test lint failure was fixed without suppressions;
+superseded runs remain recorded. Optimized release45.19s, independently verified
+strict ad-hoc signature and binarySHA256
+c2e9915d23a3533405e855c57bdfac472dd9781dd69ad1f8acec4ca8142aff7a.
+App: artifacts/hex-lattice-utility-ui-review-20261010-a814194.app.
+Adjacent manifest retains68 integrated PR links. Pulse2232 is ready for review;
+compare sizing/corners with Live and exercise gain/width/mode editing. Native
+acceptance stays open. No app launch or automatic merge; Operator2233 follows
+separately. Previous review apps remain unchanged.
