@@ -127,7 +127,7 @@ fn session_expanded_oracle_project() -> Project {
 }
 
 fn arrangement_loop_project() -> Project {
-    let mut snapshot = project(1.0, 0, 4 * Q).snapshot();
+    let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
     let track = snapshot.tracks.first_mut().expect("fixture track");
     track.instrument.as_mut().expect("fixture instrument").state =
         hex_lattice_contract::NativeDeviceState::new(
@@ -142,8 +142,8 @@ fn arrangement_loop_project() -> Project {
         panic!("fixture Arrangement MIDI clip")
     };
     let clip = midi_clips.first_mut().expect("fixture Arrangement clip");
-    clip.length_raw = 5 * Q / 2;
-    clip.source_length_raw = 4 * Q;
+    clip.length_raw = 9 * Q / 2;
+    clip.source_length_raw = 5 * Q;
     clip.source_start_raw = Q / 2;
     clip.loop_start_raw = Q;
     clip.loop_end_raw = 2 * Q;
@@ -157,6 +157,36 @@ fn arrangement_loop_project() -> Project {
         velocity: 100,
     }];
     legacy_project_from_snapshot(snapshot).expect("valid Arrangement source-loop project")
+}
+
+fn arrangement_expanded_oracle_project() -> Project {
+    let mut snapshot = arrangement_loop_project().snapshot();
+    let first_note_id = snapshot.next_id;
+    let track = snapshot.tracks.first_mut().expect("fixture track");
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut track.content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let clip = midi_clips.first_mut().expect("fixture Arrangement clip");
+    clip.length_raw = 9 * Q / 2;
+    clip.source_length_raw = 5 * Q;
+    clip.source_start_raw = 0;
+    clip.loop_start_raw = 0;
+    clip.loop_end_raw = 5 * Q;
+    clip.looping = false;
+    clip.notes = (0..4)
+        .map(|iteration| MidiNoteSnapshot {
+            id: first_note_id + iteration,
+            start_raw: (u64::from(iteration) + 1) * Q,
+            duration_raw: Q / 2,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .collect();
+    snapshot.next_id = first_note_id + 4;
+    legacy_project_from_snapshot(snapshot).expect("valid expanded Arrangement oracle")
 }
 
 fn try_prepare_mutable(project: &Project) -> Result<Arc<PreparedRevision>, crate::Invalid> {
@@ -208,6 +238,30 @@ fn render_session_project(
         playback
             .render(&mut output[offset..end])
             .expect("render Session source loop");
+        offset = end;
+        partition += 1;
+    }
+    (output, playback)
+}
+
+fn render_arrangement_project(
+    project: &Project,
+    partitions: &[usize],
+) -> (Vec<Frame>, SessionPlayback) {
+    let revision = prepare_mutable(project);
+    let mut playback = SessionPlayback::new(revision).expect("mutable Arrangement admitted");
+    playback
+        .apply(SessionPlaybackCommand::Play)
+        .expect("start Arrangement playback");
+    let mut output = vec![[0.0; 2]; 120_001];
+    let mut offset = 0;
+    let mut partition = 0;
+    while offset < output.len() {
+        let requested = partitions[partition % partitions.len()].max(1);
+        let end = offset.saturating_add(requested).min(output.len());
+        playback
+            .render(&mut output[offset..end])
+            .expect("render Arrangement source loop");
         offset = end;
         partition += 1;
     }
@@ -296,29 +350,42 @@ fn mutable_arrangement_source_loops_admit_finite_occurrences_and_clip_gate_at_lo
     let track = revision.arrangement().tracks().first().expect("track");
     let mut spans = Vec::new();
     track
-        .for_each_mutable_midi_span(0, 3 * 24_000 + 1, |span| {
+        .for_each_mutable_midi_span(0, 5 * 24_000, |span| {
             spans.push((span.start, span.gate_end, span.iteration));
         })
         .expect("finite mutable Arrangement loop spans");
-    assert_eq!(spans, [(24_000, 36_000, 0), (48_000, 60_000, 1)]);
+    assert_eq!(
+        spans,
+        [
+            (24_000, 36_000, 0),
+            (48_000, 60_000, 1),
+            (72_000, 84_000, 2),
+            (96_000, 108_000, 3),
+        ]
+    );
 
-    let mut playback = SessionPlayback::new(revision).expect("Arrangement source loop admitted");
-    playback
-        .apply(SessionPlaybackCommand::Play)
-        .expect("start Arrangement playback");
-    let mut output = vec![[0.0; 2]; 72_001];
-    playback
-        .render(&mut output)
-        .expect("render finite Arrangement loop");
-    assert!(output[24_000].iter().any(|sample| *sample > 0.0));
-    assert!(output[48_000].iter().any(|sample| *sample > 0.0));
-    assert!(output[71_999].iter().all(|sample| *sample == 0.0));
+    let whole = render_arrangement_project(&arrangement_loop_project(), &[120_001]).0;
+    let oracle = render_arrangement_project(&arrangement_expanded_oracle_project(), &[120_001]).0;
+    let (partitioned, playback) =
+        render_arrangement_project(&arrangement_loop_project(), &[1, 17, 127, 256]);
+    assert_eq!(whole, oracle);
+    assert_eq!(whole, partitioned);
+    for frame in [24_000, 48_000, 72_000, 96_000] {
+        assert!(whole[frame].iter().any(|sample| *sample > 0.0));
+    }
+    assert!(whole[107_999].iter().any(|sample| *sample > 0.0));
+    assert!(
+        whole[108_032..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
     assert_eq!(
         playback.mutable_instruments[0]
             .as_ref()
             .expect("mutable runtime")
             .next_occurrence_id(),
-        2
+        4
     );
 }
 
