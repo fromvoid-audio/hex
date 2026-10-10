@@ -103,6 +103,19 @@ short samples per build with uncontrolled machine load; they do not establish
 a general speedup or regression. Both profiles exclude preparation, render
 oracles and retired-owner destruction from the handoff timer.
 
+Exact clean repaired head `90dae895705b27b207a6af3493590734575fdffd`
+was repeated three times with no other Hex Cargo process running. Suppression
+handoff p50/p95/p99/max samples (µs) were 72.500/82.750/138.459/157.166,
+31.708/34.375/36.459/44.959 and 31.500/34.167/38.833/58.375. The first
+sample includes a substantial outlier; no speedup is inferred. The unchanged
+100-track profile gave 18.250/22.958/29.583/64.542,
+18.083/20.792/23.041/26.000 and 18.042/22.042/23.708/95.750 with the same
+checksum. Logs, exact source, hardware, commands and release binary hashes are
+retained in the primary checkout at
+`artifacts/profiles/mutable-occurrence-20261010/committed-90dae89/`.
+Earlier samples above were captured only in tool output and have no retained
+raw logs or binary hashes; these new samples supplement their limited provenance.
+
 On this 64-bit build, the fixed mutable proof ledger occupies 13,312 bytes per
 runtime's two twins. The measured maximal 256-track host component increases
 from 3,761,744 to 6,910,544 bytes (+3,148,800 bytes) because both active and

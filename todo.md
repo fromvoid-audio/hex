@@ -806,3 +806,15 @@ local CI and native user UI/listening acceptance remain open. The 100-track/16-r
 audio profile has three additional clean-commit repetitions with matching PCM
 digest; see [return-track performance evidence](docs/performance.md) and
 [return-track contract](docs/return-tracks.md).
+
+
+2026-10-10 review51 integration checkpoint: mutable occurrence suppression and
+its zero-tail NoteOff repair passed all16 clean-head local CI at `90dae89`
+(report `20261010T050643Z-055f49b7`) and are published as PR80. Continuous
+return-send gestures and the popup input fix are integrated from `4f2d141`;
+source-focused tests pass and that branch's full local CI is running. The
+combined source retains the single freely positioned instrument contract.
+Combined exact-head validation, a fresh signed build and native user acceptance
+remain open at this documentation checkpoint. Pulse is the live review authority;
+this paragraph supplements earlier source checkpoints rather than marking the
+parent Lattice/Operator/return workflows complete.
