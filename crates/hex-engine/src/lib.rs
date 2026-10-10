@@ -5,8 +5,9 @@ use std::{fmt, sync::Arc};
 
 mod native_device_view;
 pub use native_device_view::{
-    NativeDeviceCatalogEntry, NativeDeviceParameterView, NativeDeviceView, native_device_catalog,
-    native_device_view,
+    NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
+    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
+    native_device_parameter_for_class, native_device_view, native_device_view_for_class,
 };
 
 mod streamed;
@@ -95,11 +96,24 @@ impl std::error::Error for Invalid {}
 pub fn default_native_device_state(
     type_id: hex_lattice_contract::DeviceTypeId,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    registry
-        .default_state(type_id)
-        .map_err(|_| Invalid("native device default state is invalid"))
+    default_native_device_state_for_class(NativeDeviceClass::Effect, type_id)
+}
+
+/// Construct a metadata-only default from exactly one native class registry.
+pub fn default_native_device_state_for_class(
+    class: NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    match class {
+        NativeDeviceClass::Effect => hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?
+            .default_state(type_id)
+            .map_err(|_| Invalid("native device default state is invalid")),
+        NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?
+            .default_state(type_id)
+            .map_err(|_| Invalid("native instrument default state is invalid")),
+    }
 }
 
 pub fn patch_native_device_parameter(
@@ -107,58 +121,57 @@ pub fn patch_native_device_parameter(
     parameter: hex_lattice_contract::ParameterId,
     value: hex_lattice_contract::ParameterValue,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    registry
-        .patch_parameter(state, parameter, value)
-        .map_err(|error| {
-            use hex_lattice_contract::DeviceContractError as Error;
-            Invalid(match error {
-                Error::InvalidId => "device parameter id is invalid",
-                Error::InvalidStateVersion => "device state version is invalid",
-                Error::StateTooLarge => "native device state exceeds its size limit",
-                Error::WrongDeviceType => "device state has the wrong type",
-                Error::UnsupportedStateVersion => "device state version is unsupported",
-                Error::MalformedState => "native device state is malformed",
-                Error::UnknownParameter => "device parameter is unknown",
-                Error::InvalidParameterValue => "device parameter value is invalid",
-                Error::InvalidDescriptor => "native device parameter descriptor is invalid",
-                Error::DuplicateDeviceType => "native device registry contains a duplicate type",
-                Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
-                Error::RuntimeAllocation => "native device runtime allocation failed",
-                Error::UnsupportedProcessingClass => {
-                    "native device processing class is not admitted"
-                }
-            })
-        })
+    patch_native_device_parameter_for_class(NativeDeviceClass::Effect, state, parameter, value)
+}
+
+/// Patch a validated state through exactly one native class registry.
+pub fn patch_native_device_parameter_for_class(
+    class: NativeDeviceClass,
+    state: &hex_lattice_contract::NativeDeviceState,
+    parameter: hex_lattice_contract::ParameterId,
+    value: hex_lattice_contract::ParameterValue,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    let result = match class {
+        NativeDeviceClass::Effect => hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?
+            .patch_parameter(state, parameter, value),
+        NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?
+            .patch_parameter(state, parameter, value),
+    };
+    result.map_err(map_device_contract_error)
 }
 
 pub fn native_device_parameter(
     state: &hex_lattice_contract::NativeDeviceState,
     parameter: hex_lattice_contract::ParameterId,
 ) -> Result<hex_lattice_contract::ParameterValue, Invalid> {
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    let definition = registry
-        .definition(state.type_id())
-        .ok_or(Invalid("native device type is unavailable"))?;
-    let migrated = registry
-        .migrate_state(state)
-        .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
-    definition
-        .read_parameter(&migrated, parameter)
-        .map_err(|_| Invalid("native device parameter is unavailable"))
+    native_device_parameter_for_class(NativeDeviceClass::Effect, state, parameter)
 }
 
 pub fn native_device_descriptors(
     type_id: hex_lattice_contract::DeviceTypeId,
 ) -> Result<&'static [hex_lattice_contract::ParameterDescriptor], Invalid> {
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    registry
-        .definition(type_id)
-        .map(|definition| definition.descriptors())
-        .ok_or(Invalid("native device type is unavailable"))
+    native_device_descriptors_for_class(NativeDeviceClass::Effect, type_id)
+}
+
+fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -> Invalid {
+    use hex_lattice_contract::DeviceContractError as Error;
+    Invalid(match error {
+        Error::InvalidId => "device parameter id is invalid",
+        Error::InvalidStateVersion => "device state version is invalid",
+        Error::StateTooLarge => "native device state exceeds its size limit",
+        Error::WrongDeviceType => "device state has the wrong type",
+        Error::UnsupportedStateVersion => "device state version is unsupported",
+        Error::MalformedState => "native device state is malformed",
+        Error::UnknownParameter => "device parameter is unknown",
+        Error::InvalidParameterValue => "device parameter value is invalid",
+        Error::InvalidDescriptor => "native device parameter descriptor is invalid",
+        Error::DuplicateDeviceType => "native device registry contains a duplicate type",
+        Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
+        Error::RuntimeAllocation => "native device runtime allocation failed",
+        Error::UnsupportedProcessingClass => "native device processing class is not admitted",
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
