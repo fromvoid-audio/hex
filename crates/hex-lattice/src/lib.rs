@@ -58,6 +58,14 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn declared_runtime_bytes(&self) -> usize;
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime>;
 
+    /// Return prepared linear magnitudes for the processor's two working lanes
+    /// at one frequency, when available. Lane meaning is processor-defined
+    /// (for example, mid/side); this is not necessarily a physical L/R transfer
+    /// matrix. This control-side visualization query must not run in callbacks.
+    fn frequency_response_at_hz(&self, _frequency_hz: f32) -> Option<[f32; 2]> {
+        None
+    }
+
     /// Describe the processor's residual-output contract after its final
     /// nonzero input frame. Finite values are sample frames at this prepared
     /// processor's sample rate. A host must validate the value against its own
