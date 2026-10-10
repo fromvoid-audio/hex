@@ -2,7 +2,8 @@ use crate::{Command, DeviceId, Invalid, Project, TrackId};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 
 pub const MAX_DEVICES_PER_TRACK: usize = 64;
-pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1);
+pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
+    + crate::MAX_RETURN_TRACKS * MAX_DEVICES_PER_TRACK;
 pub const DEFAULT_INSTRUMENT_TYPE_ID: DeviceTypeId =
     DeviceTypeId::from_static("hex.instrument.sine");
 
@@ -54,15 +55,31 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
-            let (track, index) = locate_device(project, id)?;
-            project.tracks[track].devices.remove(index);
-            if project.tracks[track]
-                .instrument_position
-                .is_some_and(|position| index < position)
-            {
-                project.tracks[track].instrument_position = project.tracks[track]
+            if let Ok((track, index)) = locate_device(project, id) {
+                project.tracks[track].devices.remove(index);
+                if project.tracks[track]
                     .instrument_position
-                    .and_then(|position| position.checked_sub(1));
+                    .is_some_and(|position| index < position)
+                {
+                    project.tracks[track].instrument_position = project.tracks[track]
+                        .instrument_position
+                        .and_then(|position| position.checked_sub(1));
+                }
+            } else if let Some((track, index)) =
+                project
+                    .returns
+                    .iter()
+                    .enumerate()
+                    .find_map(|(track, item)| {
+                        item.devices
+                            .iter()
+                            .position(|device| device.id == id)
+                            .map(|index| (track, index))
+                    })
+            {
+                project.returns[track].devices.remove(index);
+            } else {
+                return Err(Invalid("device no longer exists"));
             }
             Ok(crate::Created::None)
         }
@@ -107,15 +124,7 @@ fn insert_instrument(
     if target.instrument.is_some() {
         return Err(Invalid("instrument slot is already occupied"));
     }
-    let total_devices = project
-        .tracks
-        .iter()
-        .try_fold(0_usize, |count, candidate| {
-            count
-                .checked_add(candidate.devices.len())
-                .and_then(|sum| sum.checked_add(usize::from(candidate.instrument.is_some())))
-                .ok_or(Invalid("device count overflow"))
-        })?;
+    let total_devices = crate::returns::device_count(project)?;
     if total_devices >= MAX_DEVICES {
         return Err(Invalid("project device limit reached"));
     }
@@ -143,15 +152,7 @@ fn insert(
     if target.devices.len() >= MAX_DEVICES_PER_TRACK {
         return Err(Invalid("track device limit reached"));
     }
-    let total_devices = project
-        .tracks
-        .iter()
-        .try_fold(0_usize, |count, candidate| {
-            count
-                .checked_add(candidate.devices.len())
-                .and_then(|sum| sum.checked_add(usize::from(candidate.instrument.is_some())))
-                .ok_or(Invalid("device count overflow"))
-        })?;
+    let total_devices = crate::returns::device_count(project)?;
     if total_devices >= MAX_DEVICES {
         return Err(Invalid("project device limit reached"));
     }

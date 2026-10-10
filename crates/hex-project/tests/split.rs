@@ -180,6 +180,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
                     })
                     .collect(),
             ),
+            sends: Vec::new(),
         }],
         session: Default::default(),
         loop_region: None,
@@ -192,6 +193,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             hex_project::BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     })
     .expect("valid full project");
     let full_clip = full_project.tracks()[0].clips()[0].id();
@@ -256,6 +258,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
                 source_phase: 0,
                 fade: hex_project::ClipFade::neutral(8).unwrap(),
             }]),
+            sends: Vec::new(),
         }],
         session: Default::default(),
         loop_region: None,
@@ -268,6 +271,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             hex_project::BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     })
     .expect("valid project with exhausted ID highwater");
     let clip = project.tracks()[0].clips()[0].id();

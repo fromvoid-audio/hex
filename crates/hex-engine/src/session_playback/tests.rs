@@ -770,6 +770,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
+            sends: Vec::new(),
         }],
         session: SessionSnapshot {
             scenes: vec![SceneSnapshot {
@@ -792,6 +793,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })
     .expect("valid Session audio project")
 }
@@ -847,6 +849,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
                 velocity: 100,
             }],
         }]),
+        sends: Vec::new(),
     });
     snapshot.session.scenes[0].name = "audio and keys".into();
     snapshot.session.cells.push(SessionCellSnapshot {
@@ -918,6 +921,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
             source_phase: 0,
             fade: ClipFade::neutral(32).unwrap(),
         }]),
+        sends: Vec::new(),
     });
     legacy_project_from_snapshot(snapshot)
         .expect("mixed Session and Arrangement audio/MIDI project")
@@ -956,6 +960,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                     velocity: 100,
                 }],
             }]),
+            sends: Vec::new(),
         }],
         session: SessionSnapshot {
             scenes: vec![SceneSnapshot {
@@ -990,6 +995,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, tempo)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })
     .unwrap()
 }
@@ -4718,6 +4724,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                     velocity: 100,
                 }],
             }]),
+            sends: Vec::new(),
         });
         snapshot.session.cells.push(SessionCellSnapshot {
             track,
@@ -6676,6 +6683,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
                     velocity: 90,
                 }],
             }]),
+            sends: Vec::new(),
         });
     }
     let original = legacy_project_from_snapshot(snapshot).unwrap();
@@ -6851,6 +6859,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(Vec::new()),
+        sends: Vec::new(),
     });
     snapshot.session.cells[0].track = 7;
     let moved = legacy_project_from_snapshot(snapshot).unwrap();

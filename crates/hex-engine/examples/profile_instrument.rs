@@ -148,6 +148,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 looping: false,
                 notes,
             }]),
+            sends: Vec::new(),
         });
     }
     Ok(Project::from_snapshot(Snapshot {
@@ -160,6 +161,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })?)
 }
 

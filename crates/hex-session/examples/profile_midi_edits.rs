@@ -49,6 +49,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 looping: false,
                 notes,
             }]),
+            sends: Vec::new(),
         });
     }
     Project::from_snapshot(Snapshot {
@@ -61,6 +62,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })
 }
 

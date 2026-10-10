@@ -119,7 +119,7 @@ asset IDs remain unique across undo/redo branches. Names and paths retain origin
 case; display normalization belongs only to the UI. Referenced assets cannot be
 removed. Limits and known resource costs are in [issues.md](issues.md).
 
-Each track stores up to 64 serial effects and one optional instrument. The
+Each regular track stores up to 64 serial effects and one optional instrument. The
 instrument's canonical chain position is a validated gap in the effect vector,
 persisted in schema16 and changed through stable-ID transactional edits. A
 borrowed ordered-chain view reports explicit node class/slot references. The
@@ -130,6 +130,13 @@ MIDI at the gap,
 and the suffix processes their sum. An absent or bypassed instrument adds no
 instrument audio while source audio continues through the effects. See the
 [instrument ordering and release contract](lattice-instruments.md).
+
+Schema17 adds ordered return buses with separate typed `ReturnId`s, generic
+effect chains, mix gain/mute, and sparse regular-track sends. The return model
+does not depend on a device registry and does not admit clips, instruments,
+Session cells or return-to-return routing. Until the Pulse2177 audio integration,
+engine compilation rejects projects containing returns or sends; it never
+publishes a graph that silently drops them. See [return tracks](return-tracks.md).
 
 `hex_engine::compile::project` resolves the snapshot's asset IDs through a decoded
 PCM bank, checks exact rate/frame metadata, and produces immutable playback data.

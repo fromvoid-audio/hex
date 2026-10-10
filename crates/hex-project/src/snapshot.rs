@@ -17,6 +17,7 @@ pub struct Snapshot {
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
     pub tracks: Vec<TrackSnapshot>,
+    pub return_tracks: Vec<ReturnTrackSnapshot>,
     pub session: SessionSnapshot,
     pub loop_region: Option<LoopRegion>,
     pub master_gain: f32,
@@ -93,6 +94,22 @@ pub struct TrackSnapshot {
     /// Number of effects before `instrument`; required exactly when present.
     pub instrument_position: Option<usize>,
     pub content: TrackContentSnapshot,
+    pub sends: Vec<SendLevelSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnTrackSnapshot {
+    pub id: u64,
+    pub name: String,
+    pub gain: f32,
+    pub muted: bool,
+    pub devices: Vec<DeviceSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SendLevelSnapshot {
+    pub return_track: u64,
+    pub gain: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +277,33 @@ impl Project {
                             })
                             .collect(),
                     },
+                    sends: track
+                        .sends
+                        .iter()
+                        .map(|send| SendLevelSnapshot {
+                            return_track: send.return_track.value(),
+                            gain: send.gain,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            return_tracks: self
+                .returns
+                .iter()
+                .map(|track| ReturnTrackSnapshot {
+                    id: track.id.value(),
+                    name: track.name.clone(),
+                    gain: track.gain,
+                    muted: track.muted,
+                    devices: track
+                        .devices
+                        .iter()
+                        .map(|device| DeviceSnapshot {
+                            id: device.id.value(),
+                            bypassed: device.bypassed,
+                            state: device.state.clone(),
+                        })
+                        .collect(),
                 })
                 .collect(),
             session: SessionSnapshot {
@@ -341,6 +385,9 @@ impl Project {
         if snapshot.tracks.len() > MAX_TRACKS {
             return Err(Invalid("track limit reached"));
         }
+        if snapshot.return_tracks.len() > crate::MAX_RETURN_TRACKS {
+            return Err(Invalid("return track limit reached"));
+        }
         if snapshot.session.scenes.len() > crate::MAX_SCENES {
             return Err(Invalid("scene limit reached"));
         }
@@ -383,6 +430,41 @@ impl Project {
         let mut total_clips = 0_usize;
         let mut total_devices = 0_usize;
         let mut total_notes = 0_usize;
+        let mut return_ids = BTreeSet::new();
+        let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
+        for return_track in snapshot.return_tracks {
+            insert_id(return_track.id, &mut ids, &mut max_id)?;
+            return_ids.insert(return_track.id);
+            name_valid(&return_track.name)?;
+            if !return_track.gain.is_finite() || !(0.0..=2.0).contains(&return_track.gain) {
+                return Err(Invalid("gain must be finite and within 0..2"));
+            }
+            if return_track.devices.len() > MAX_DEVICES_PER_TRACK {
+                return Err(Invalid("return device limit reached"));
+            }
+            let mut devices = Vec::with_capacity(return_track.devices.len());
+            for device in return_track.devices {
+                insert_id(device.id, &mut ids, &mut max_id)?;
+                total_devices = total_devices
+                    .checked_add(1)
+                    .ok_or(Invalid("device count overflow"))?;
+                if total_devices > MAX_DEVICES {
+                    return Err(Invalid("project device limit reached"));
+                }
+                devices.push(Device {
+                    id: DeviceId(device.id),
+                    state: device.state,
+                    bypassed: device.bypassed,
+                });
+            }
+            returns.push(crate::ReturnTrack {
+                id: crate::ReturnId(return_track.id),
+                name: return_track.name,
+                gain: return_track.gain,
+                muted: return_track.muted,
+                devices,
+            });
+        }
         let mut tracks = Vec::with_capacity(snapshot.tracks.len());
         for track in snapshot.tracks {
             insert_id(track.id, &mut ids, &mut max_id)?;
@@ -545,6 +627,28 @@ impl Project {
                 audio_clips: compiled_audio,
                 midi_clips: compiled_midi,
             };
+            if track.sends.len() > crate::MAX_RETURN_SENDS_PER_TRACK {
+                return Err(Invalid("track return send limit reached"));
+            }
+            let mut send_targets = BTreeSet::new();
+            let mut sends = Vec::with_capacity(track.sends.len());
+            for send in track.sends {
+                if !return_ids.contains(&send.return_track) {
+                    return Err(Invalid("send return target is missing"));
+                }
+                if !send_targets.insert(send.return_track) {
+                    return Err(Invalid("track return send targets must be unique"));
+                }
+                if !send.gain.is_finite() || !(0.0..=2.0).contains(&send.gain) || send.gain == 0.0 {
+                    return Err(Invalid(
+                        "send gain must be finite, nonzero, and within 0..2",
+                    ));
+                }
+                sends.push(crate::SendLevel {
+                    return_track: crate::ReturnId(send.return_track),
+                    gain: send.gain,
+                });
+            }
             tracks.push(Track {
                 id: TrackId(track.id),
                 name: track.name,
@@ -556,6 +660,7 @@ impl Project {
                 instrument,
                 instrument_position: track.instrument_position,
                 content,
+                sends,
             });
         }
 
@@ -690,6 +795,7 @@ impl Project {
         project.next_id = snapshot.next_id;
         project.assets = assets;
         project.tracks = tracks;
+        project.returns = returns;
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;

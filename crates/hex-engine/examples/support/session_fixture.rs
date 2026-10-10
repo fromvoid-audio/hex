@@ -63,6 +63,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                 looping: true,
                 notes: arrangement_notes,
             }]),
+            sends: Vec::new(),
         });
         if index % 2 == 0 {
             let clip = next;
@@ -114,6 +115,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)]
         },
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })?;
     Ok(project)
 }

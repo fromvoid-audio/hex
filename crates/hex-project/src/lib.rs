@@ -19,6 +19,7 @@ pub use time_range::{RangeClipboard, TimeRange};
 mod midi;
 mod midi_batch;
 mod midi_playback;
+mod returns;
 mod session;
 mod snapshot;
 mod split_tracks;
@@ -32,11 +33,12 @@ pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity,
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
+pub use returns::{MAX_RETURN_SENDS_PER_TRACK, MAX_RETURN_TRACKS, ReturnTrack, SendLevel};
 pub use snapshot::{
     AssetSnapshot, ClipSnapshot, DeviceSnapshot, MidiClipSnapshot, MidiNoteSnapshot,
-    MidiSourceSnapshot, SceneSnapshot, SessionAudioClipSnapshot, SessionCellContentSnapshot,
-    SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot,
-    TrackSnapshot,
+    MidiSourceSnapshot, ReturnTrackSnapshot, SceneSnapshot, SendLevelSnapshot,
+    SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
+    SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 pub use timebase::{
@@ -69,6 +71,7 @@ identifier!(ClipId);
 identifier!(NoteId);
 identifier!(SceneId);
 identifier!(DeviceId);
+identifier!(ReturnId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +322,7 @@ pub struct Track {
     /// `None` exactly when `instrument` is absent.
     pub(crate) instrument_position: Option<usize>,
     pub(crate) content: TrackContent,
+    pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
     pub fn id(&self) -> TrackId {
@@ -372,6 +376,9 @@ impl Track {
     pub fn midi_clips(&self) -> &[MidiClip] {
         self.content.midi_clips()
     }
+    pub fn sends(&self) -> &[SendLevel] {
+        &self.sends
+    }
 }
 
 /// Explicit class/slot reference into a track's canonical ordered device chain.
@@ -412,6 +419,7 @@ pub struct Project {
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
     pub(crate) tracks: Vec<Track>,
+    pub(crate) returns: Vec<ReturnTrack>,
     pub(crate) session: SessionGrid,
     pub(crate) loop_region: Option<LoopRegion>,
     pub(crate) master_gain: f32,
@@ -428,6 +436,7 @@ impl Project {
             next_id: 1,
             assets: BTreeMap::new(),
             tracks: Vec::new(),
+            returns: Vec::new(),
             session: SessionGrid::default(),
             loop_region: None,
             master_gain: 1.0,
@@ -451,12 +460,7 @@ impl Project {
         if missing == 0 {
             return Ok(());
         }
-        let total_devices = self.tracks.iter().try_fold(0_usize, |count, track| {
-            count
-                .checked_add(track.devices.len())
-                .and_then(|sum| sum.checked_add(usize::from(track.instrument.is_some())))
-                .ok_or(Invalid("device count overflow"))
-        })?;
+        let total_devices = crate::returns::device_count(self)?;
         if total_devices
             .checked_add(missing)
             .ok_or(Invalid("device count overflow"))?
@@ -485,6 +489,10 @@ impl Project {
 
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
+    }
+    /// Return tracks are stored in pinned display order.
+    pub fn return_tracks(&self) -> &[ReturnTrack] {
+        &self.returns
     }
     pub fn session(&self) -> &SessionGrid {
         &self.session
@@ -612,6 +620,7 @@ impl Project {
         self.tracks
             .iter()
             .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
+            .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
@@ -623,6 +632,11 @@ impl Project {
                     .iter_mut()
                     .find(|device| device.id == id)
                     .or_else(|| track.instrument.as_mut().filter(|device| device.id == id))
+            })
+            .or_else(|| {
+                self.returns
+                    .iter_mut()
+                    .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
             })
             .ok_or(Invalid("device no longer exists"))
     }
