@@ -559,19 +559,25 @@ local CI remain before review; native listening remains separate.
 Pulse2158: an injected mutable-only feedback instrument now exercises the real
 shared Arrangement/Session event path with transactional runtime history, checked
 occurrence IDs, canonically ordered note-off/on batches and additive instrument-gap mixing.
-The test seam refuses unsupported mutable loops, active-state seeks/handoffs,
-legacy Arrangement rendering, inherited future route changes and candidate
-pre-cut notes (including on newly added tracks); Back to Arrangement checks the
-candidate's Arrangement notes rather than the old Session owner. Stop is the explicit reset;
-mutable retirement tails and prepared export remain separate prerequisites.
+The test seam refuses unsupported mutable loops, active-state seeks, legacy
+Arrangement rendering, inherited future route changes and candidate pre-cut
+notes (including on newly added tracks); Back to Arrangement checks the
+candidate's Arrangement notes rather than the old Session owner. Stop is the explicit reset.
+Pulse2160 now carries nonquiescent mutable owners across revision handoffs with
+their original gate deadlines and old effect suffix, or clamps held gates at
+the cut when the candidate instrument is absent/bypassed. Mutable tail/seek/loop
+chase limits and prepared export remain separate prerequisites.
 Source tests cover short-note partitioning, the 128-onset/256-edge query bound,
 hybrid audio plus an ordered suffix, atomic refusal/retry and injected registry
 preparation. Onsets sort by source frame and full occurrence key before ID
 assignment, and emitted events use frame, off-before-on phase, then ID. The
 varied-velocity/pitch oracle confirms stable same-frame voice order across
-query partitions. The checked mutable-event host component is 1,889,848 bytes per
-maximal 256-track SessionPlayback on this 64-bit arm64 build, separate from the
-2 MiB declared twin-storage budget per graph and not a process-wide bound. See
+query partitions. With the 2160 tail owner/ledger bank included, the checked
+mutable-event host component is 3,761,744 bytes per maximal 256-track
+SessionPlayback on this 64-bit arm64 build, separate from the 2 MiB active and
+2 MiB retained-tail declared payload limits. An active/candidate pair is
+7,523,488 bytes for this component; older and retired publications can coexist,
+so this is not a process-wide bound. See
 [lattice instrument lifecycle](docs/lattice-instruments.md). Full local CI,
 including the protected cache-ownership runner, remains with root; this does not
 admit a built-in mutable instrument or establish export support.
