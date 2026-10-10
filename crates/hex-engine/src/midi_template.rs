@@ -47,6 +47,7 @@ pub enum MidiTemplateError {
     TooManySpans,
     TooManyVoices,
     TempoConversion,
+    MutableEventsNotAnalytic,
 }
 
 impl std::fmt::Display for MidiTemplateError {
@@ -85,6 +86,9 @@ impl std::fmt::Display for MidiTemplateError {
             Self::TooManySpans => "ongoing midi instrument query exceeds 192 sounding spans",
             Self::TooManyVoices => "ongoing midi source exceeds 64 simultaneous sounding voices",
             Self::TempoConversion => "ongoing midi edge exceeds tempo conversion range",
+            Self::MutableEventsNotAnalytic => {
+                "mutable midi event source cannot use analytic note rendering"
+            }
         })
     }
 }

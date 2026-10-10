@@ -316,10 +316,11 @@ impl Playback {
         let project = Arc::clone(prepared_revision.arrangement());
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
-            && project
-                .tracks()
-                .iter()
-                .any(|track| track.has_stateful_devices() || track.has_instrument_source());
+            && (prepared_revision.session().has_mutable_instruments()
+                || project
+                    .tracks()
+                    .iter()
+                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()));
         let linear_runtime = (session_runtime.is_none() && !refuses_unowned_prepared_fallback)
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
@@ -613,11 +614,15 @@ impl Playback {
                 .map_err(|_| Invalid("session playback render failed"));
         }
         if self.session_unavailable.is_some()
-            && self
-                .project
-                .tracks()
-                .iter()
-                .any(|track| track.has_stateful_devices() || track.has_instrument_source())
+            && (self
+                .prepared_revision
+                .as_ref()
+                .is_some_and(|revision| revision.session().has_mutable_instruments())
+                || self
+                    .project
+                    .tracks()
+                    .iter()
+                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }
@@ -653,11 +658,15 @@ impl Playback {
                 .map_err(|_| Invalid("session playback render failed"));
         }
         if self.session_unavailable.is_some()
-            && self
-                .project
-                .tracks()
-                .iter()
-                .any(|track| track.has_stateful_devices() || track.has_instrument_source())
+            && (self
+                .prepared_revision
+                .as_ref()
+                .is_some_and(|revision| revision.session().has_mutable_instruments())
+                || self
+                    .project
+                    .tracks()
+                    .iter()
+                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }

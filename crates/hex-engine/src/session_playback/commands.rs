@@ -48,6 +48,9 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.reset();
+        }
         for route in &mut self.routes {
             changed |= route.pending.take().is_some();
             if let RouteOwner::Session { clip, launch } = route.owner {
@@ -69,6 +72,22 @@ impl SessionPlayback {
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        for index in 0..self.mutable_instruments.len() {
+            let Some(runtime) = self.mutable_instruments[index].as_ref() else {
+                continue;
+            };
+            if !runtime.committed_is_quiescent() {
+                return Err(SessionPlaybackError::MutableInstrumentActive);
+            }
+            let owner = self
+                .routes
+                .get(index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?
+                .owner;
+            if self.mutable_destination_has_active_occurrence(index, owner, frame)? {
+                return Err(SessionPlaybackError::MutableInstrumentChase);
+            }
+        }
         let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo);
         let beat = base_timing
             .frame_to_beat(frame)
@@ -97,6 +116,9 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.reset();
+        }
         for route in &mut self.routes {
             route.pending = None;
             if let RouteOwner::Session { clip, .. } = route.owner {
@@ -113,6 +135,57 @@ impl SessionPlayback {
             self.advance_route_state_generation();
         }
         Ok(())
+    }
+
+    fn mutable_destination_has_active_occurrence(
+        &mut self,
+        index: usize,
+        owner: RouteOwner,
+        frame: u64,
+    ) -> Result<bool, SessionPlaybackError> {
+        let end = frame
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        match owner {
+            RouteOwner::Arrangement => {
+                let track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let mut active = false;
+                track
+                    .for_each_mutable_midi_span(frame, end, |span| {
+                        active |= span.start < frame && span.end > frame;
+                    })
+                    .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                Ok(active)
+            }
+            RouteOwner::Session { clip, launch } => {
+                let prepared = self
+                    .revision
+                    .session()
+                    .midi_clip(clip)
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                if !prepared.instrument_enabled()
+                    || !prepared.instrument_template().is_event_source()
+                {
+                    return Ok(false);
+                }
+                let timing =
+                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                prepared
+                    .instrument_template()
+                    .query(launch, &timing, frame, end, &mut self.spans)
+                    .map_err(SessionPlaybackError::Midi)?;
+                Ok(self
+                    .spans
+                    .spans()
+                    .any(|span| span.start_frame < frame && span.end_frame > frame))
+            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => Ok(false),
+        }
     }
 
     fn route_index(&self, track: TrackId) -> Result<usize, SessionPlaybackError> {
@@ -302,6 +375,35 @@ impl SessionPlayback {
             .get(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?
             .owner;
+        if self
+            .mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some()
+        {
+            let next_owner =
+                self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
+            if next_owner != owner {
+                if moment.target_frame > self.performance_frame && self.playing {
+                    return Err(SessionPlaybackError::MutableInstrumentRouteBoundary);
+                }
+                if self.mutable_instruments[index]
+                    .as_ref()
+                    .is_some_and(|runtime| !runtime.committed_is_quiescent())
+                {
+                    return Err(SessionPlaybackError::MutableInstrumentActive);
+                }
+                if matches!(next_owner, RouteOwner::Arrangement)
+                    && self.mutable_destination_has_active_occurrence(
+                        index,
+                        next_owner,
+                        moment.source_frame,
+                    )?
+                {
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                }
+            }
+        }
         if moment.immediate {
             if transition_captures(owner, target) {
                 self.capture_outgoing(index, owner, moment.source_frame, moment.performance_frame)?;

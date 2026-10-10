@@ -6,7 +6,7 @@ use crate::{
     midi_template::MIDI_SPAN_BUFFER_CAPACITY,
 };
 use hex_devices::SineTable;
-use hex_lattice::PreparedNativeInstrument;
+use hex_lattice::{PreparedMutableInstrumentRuntime, PreparedNativeInstrument};
 use hex_project::{
     AssetId, ClipId, DeviceId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
 };
@@ -21,6 +21,12 @@ struct PreparedTrackInstrumentConfig {
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
     note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
+    mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+}
+
+struct PreparedMutableTrackInstrument {
+    track: TrackId,
+    factory: Box<dyn PreparedMutableInstrumentRuntime>,
 }
 
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
@@ -252,6 +258,8 @@ pub struct PreparedSessionInventory {
     scene_cell_ranges: Vec<PreparedSessionSceneCellRange>,
     tracks: Vec<PreparedSessionTrack>,
     midi_clips: Vec<PreparedSessionMidiClip>,
+    mutable_instruments: Vec<PreparedMutableTrackInstrument>,
+    has_mutable_looping_source: bool,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -377,6 +385,16 @@ impl PreparedSessionInventory {
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
                 })
                 .transpose()?;
+            let mutable_runtime = if slot.is_some_and(|device| !device.bypassed()) {
+                config
+                    .as_deref()
+                    .map(PreparedNativeInstrument::prepare_mutable_runtime)
+                    .transpose()
+                    .map_err(|_| crate::Invalid("mutable instrument runtime is unsupported"))?
+                    .flatten()
+            } else {
+                None
+            };
             instrument_configs.push(PreparedTrackInstrumentConfig {
                 track: track.id(),
                 config,
@@ -384,6 +402,7 @@ impl PreparedSessionInventory {
                 state: slot.map(|device| device.state().clone()),
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
+                mutable_runtime,
             });
             instrument_track_indices.insert(track.id(), instrument_configs.len() - 1);
         }
@@ -536,7 +555,7 @@ impl PreparedSessionInventory {
                 );
                 continue;
             }
-            if keys.is_empty() {
+            if keys.is_empty() || config.mutable_runtime.is_some() {
                 config.note_bank = Some(crate::midi_note_bank::PreparedMidiNoteBank::empty());
                 continue;
             }
@@ -640,24 +659,34 @@ impl PreparedSessionInventory {
             .map_err(|_| crate::Invalid("could not reserve Session audio inventory"))?;
 
         let mut contains_streamed_sources = false;
+        let mut has_mutable_looping_source = false;
         for cell in project.session_cells() {
             let content = match cell.content() {
                 SessionCellContent::Stop => PreparedSessionCellContent::Stop,
                 SessionCellContent::Midi(clip) => {
                     let source_identity = clip.source_identity();
-                    let (instrument_id, instrument_state, instrument_enabled, instrument_bank) =
-                        instrument_configs
-                            .iter()
-                            .find(|config| config.track == cell.track())
-                            .map(|config| {
-                                (
-                                    config.device_id,
-                                    config.state.clone(),
-                                    config.config.is_some() && !config.bypassed,
-                                    config.note_bank.as_ref(),
-                                )
-                            })
-                            .ok_or(crate::Invalid("Session cell track is missing"))?;
+                    let (
+                        instrument_id,
+                        instrument_state,
+                        instrument_enabled,
+                        instrument_bank,
+                        mutable_tail_frames,
+                    ) = instrument_configs
+                        .iter()
+                        .find(|config| config.track == cell.track())
+                        .map(|config| {
+                            (
+                                config.device_id,
+                                config.state.clone(),
+                                config.config.is_some() && !config.bypassed,
+                                config.note_bank.as_ref(),
+                                config
+                                    .mutable_runtime
+                                    .as_ref()
+                                    .map(|factory| factory.max_release_tail_frames()),
+                            )
+                        })
+                        .ok_or(crate::Invalid("Session cell track is missing"))?;
                     let cached = can_reuse
                         .then(|| previous.and_then(|old| old.midi_clip(clip.id())))
                         .flatten()
@@ -683,10 +712,19 @@ impl PreparedSessionInventory {
                     };
                     let bank = instrument_bank
                         .ok_or(crate::Invalid("Session MIDI note bank is missing"))?;
-                    let instrument = if let Some(old) =
-                        cached.filter(|old| Arc::ptr_eq(old.instrument.note_bank(), bank))
-                    {
+                    if mutable_tail_frames.is_some() && clip.source().looping() {
+                        has_mutable_looping_source = true;
+                    }
+                    let instrument = if let Some(old) = cached.filter(|old| {
+                        Arc::ptr_eq(old.instrument.note_bank(), bank)
+                            && old.instrument.is_event_source() == mutable_tail_frames.is_some()
+                    }) {
                         Arc::clone(&old.instrument)
+                    } else if let Some(tail_frames) = mutable_tail_frames {
+                        Arc::new(
+                            PreparedMidiInstrumentTemplate::prepare_events(&source, tail_frames)
+                                .map_err(template_error)?,
+                        )
                     } else {
                         Arc::new(
                             PreparedMidiInstrumentTemplate::prepare_with_bank(
@@ -696,9 +734,10 @@ impl PreparedSessionInventory {
                             .map_err(template_error)?,
                         )
                     };
-                    let work = if let Some(old) =
-                        cached.filter(|old| Arc::ptr_eq(old.instrument.note_bank(), bank))
-                    {
+                    let work = if let Some(old) = cached.filter(|old| {
+                        Arc::ptr_eq(old.instrument.note_bank(), bank)
+                            && old.instrument.is_event_source() == mutable_tail_frames.is_some()
+                    }) {
                         old.work
                     } else {
                         work_for(&source, &instrument)?
@@ -847,6 +886,22 @@ impl PreparedSessionInventory {
         for track in &tracks {
             work = work.checked_sum(track.work)?;
         }
+        let mutable_count = instrument_configs
+            .iter()
+            .filter(|config| config.mutable_runtime.is_some())
+            .count();
+        let mut mutable_instruments = Vec::new();
+        mutable_instruments
+            .try_reserve_exact(mutable_count)
+            .map_err(|_| crate::Invalid("could not reserve mutable instrument factories"))?;
+        for config in &mut instrument_configs {
+            if let Some(factory) = config.mutable_runtime.take() {
+                mutable_instruments.push(PreparedMutableTrackInstrument {
+                    track: config.track,
+                    factory,
+                });
+            }
+        }
         Ok(Self {
             timing,
             periodic_tempo,
@@ -859,6 +914,8 @@ impl PreparedSessionInventory {
             scene_cell_ranges,
             tracks,
             midi_clips,
+            mutable_instruments,
+            has_mutable_looping_source,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -958,6 +1015,24 @@ impl PreparedSessionInventory {
     /// Number of compact indices stored by all Session source templates.
     pub fn midi_note_bank_reference_count(&self) -> usize {
         self.midi_note_bank_reference_count
+    }
+
+    pub(crate) fn mutable_instrument_factory(
+        &self,
+        track: TrackId,
+    ) -> Option<&dyn PreparedMutableInstrumentRuntime> {
+        self.mutable_instruments
+            .iter()
+            .find(|instrument| instrument.track == track)
+            .map(|instrument| instrument.factory.as_ref())
+    }
+
+    pub(crate) fn has_mutable_instruments(&self) -> bool {
+        !self.mutable_instruments.is_empty()
+    }
+
+    pub(crate) fn has_mutable_looping_source(&self) -> bool {
+        self.has_mutable_looping_source
     }
 }
 

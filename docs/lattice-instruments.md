@@ -293,6 +293,59 @@ compatibility, actual twin storage, additive output over nonzero caller PCM, and
 quiescence within its declared release/output-tail bound. The proof feedback law
 uses a finite tail counter to clear residual output. These tests inspect the
 bounded proof runtime but do not instrument production engine callbacks. No
-built-in instrument uses this runtime yet. Engine event/tail integration and the
-prepared shared-playback export adapter remain separate prerequisites (Pulse
-2158 and 2159).
+built-in instrument uses this runtime yet. Old-runtime suffix-tail ownership and
+the prepared shared-playback export adapter remain separate prerequisites
+(Pulse 2160 and 2159).
+
+## Test-only shared engine integration (Pulse 2158)
+
+The engine can compose an injected instrument registry into both Arrangement
+compilation and Session inventory, then drive a mutable-only feedback proof
+instrument through the shared SessionPlayback scheduler. It does not register
+that instrument in hex-devices or expose mutable instruments to the UI. Events
+use checked `(track, clip, note, iteration, loop-pass)` keys mapped to bounded
+runtime IDs; the shared onset/span scratch buffer holds at most 192 entries,
+while source-density validation limits actual note onsets to 128 per 256-frame
+query. The ordered event buffer holds at most 256 events, with at most 64
+simultaneous occurrences per track. Onsets are sorted
+by source frame and the complete occurrence key before checked IDs are assigned;
+events use frame offset, NoteOff-before-NoteOn, then occurrence ID as a total
+order. This keeps voice-slot assignment stable across query partitions and
+source iterator order. Note-offs at an onset's in-query gate end are included
+in the same ordered batch. The complete
+project remains subject to the existing compiled occurrence cap.
+
+Mutable processing participates in the same whole-block transaction as audio,
+effect history, routes and transport. Any later segment failure discards the
+mutable scratch ledger and runtime history with the rest of the candidate block.
+The feedback test covers Arrangement and Session scheduling, block partitioning,
+short in-query notes, event limits and hybrid additive prefix/instrument/suffix
+rendering. Legacy finite Arrangement renderers refuse an enabled mutable track
+before advancing time or emitting audio. Mutable Arrangement loops, Session
+source loops, live-state seeks, active-state graph replacement and quantized
+mutable route changes are explicitly refused; Stop is the hard reset. A
+candidate mutable Arrangement owner also refuses a pre-cut sounding note,
+including a newly added track. Route commands check the actual candidate
+Arrangement owner, so returning from a quiet Session route refuses while an
+Arrangement note is already sounding. A future pending route inherited from an
+analytic graph is refused before handoff. These are finite proof gates, not
+general mutable instrument behavior.
+
+Host storage is accounted separately from the declared DSP runtime budget. On
+the current 64-bit arm64 build, each mutable route's primary/scratch occurrence
+ledgers reserve 7,168 bytes; the per-track `Option` owner slot is 136 bytes; the
+shared onset buffer is 13,832 bytes; and each event is 24 bytes. A checked
+worst-case formula for 256 tracks, two 64-entry ledgers per track, one shared
+192-entry onset buffer, a 256-event vector and its two vector headers is
+1,889,848 bytes per SessionPlayback. Runtime pair payloads are separately
+limited with all stateful processors to 256 instances and 2 MiB of declared twin
+storage per graph. An active/candidate graph pair can therefore account for up
+to 3,779,696 bytes of this host component plus 4 MiB of declared twin payload;
+this is not a whole-process maximum and excludes allocator overhead, prepared
+MIDI banks and other prepared/retired owners.
+
+This engine path remains a test-only admission seam. Mutable runtime retirement
+with old suffix settings, musical chase/partial-note continuity, a production
+mutable instrument, and prepared shared-playback export are deferred to Pulses
+2160, later Operator work, and 2159 respectively. Do not claim full mutable
+instrument or export support from these tests.

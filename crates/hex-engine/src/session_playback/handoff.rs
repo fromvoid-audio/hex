@@ -6,6 +6,14 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if previous
+            .mutable_instruments
+            .iter()
+            .flatten()
+            .any(|runtime| !runtime.committed_is_quiescent())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -64,6 +72,111 @@ impl SessionPlayback {
                 SessionTimingView::Anchored(AnchoredSessionTempoView::new(new_base_view, anchor))
             },
         );
+
+        // Mutable runtimes have no authored-age chase yet. Refuse a candidate
+        // whose active owner would require starting a pre-cut note midstream.
+        for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
+            if runtime.is_none() {
+                continue;
+            }
+            let new_route = self
+                .routes
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let old_index = previous
+                .routes
+                .iter()
+                .position(|route| route.id == new_route.id);
+            let candidate_owner = if let Some(old_index) = old_index {
+                let old_route = previous.routes[old_index];
+                if old_route
+                    .pending
+                    .is_some_and(|pending| pending.frame > previous.performance_frame)
+                {
+                    return Err(SessionPlaybackError::MutableInstrumentRouteBoundary);
+                }
+                match old_route.owner {
+                    RouteOwner::Arrangement => RouteOwner::Arrangement,
+                    RouteOwner::Silence => RouteOwner::Silence,
+                    RouteOwner::Session { clip, launch } => {
+                        if self
+                            .revision
+                            .session()
+                            .midi_clip(clip)
+                            .is_some_and(|prepared| prepared.track == new_route.id)
+                        {
+                            RouteOwner::Session { clip, launch }
+                        } else {
+                            RouteOwner::Silence
+                        }
+                    }
+                    RouteOwner::SessionAudio { clip, launch_frame } => {
+                        if self
+                            .revision
+                            .session()
+                            .audio_clip(clip)
+                            .is_some_and(|prepared| prepared.track == new_route.id)
+                        {
+                            RouteOwner::SessionAudio { clip, launch_frame }
+                        } else {
+                            RouteOwner::Silence
+                        }
+                    }
+                }
+            } else {
+                // New tracks start on Arrangement. Inspect that effective
+                // candidate owner too: a pre-cut note cannot be chased merely
+                // because there was no old route to match.
+                new_route.owner
+            };
+            let active = match candidate_owner {
+                RouteOwner::Arrangement => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(new_index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let frame = previous.arrangement_frame;
+                    let end = frame
+                        .checked_add(1)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    let mut active = false;
+                    track
+                        .for_each_mutable_midi_span(frame, end, |span| {
+                            active |= span.start < frame && span.end > frame;
+                        })
+                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                    active
+                }
+                RouteOwner::Session { clip, launch } => {
+                    let Some(prepared) = self.revision.session().midi_clip(clip) else {
+                        continue;
+                    };
+                    if !prepared.instrument_enabled()
+                        || !prepared.instrument_template().is_event_source()
+                    {
+                        false
+                    } else {
+                        let frame = previous.performance_frame;
+                        let end = frame
+                            .checked_add(1)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        prepared
+                            .instrument_template()
+                            .query(launch, &candidate_timing, frame, end, &mut self.spans)
+                            .map_err(SessionPlaybackError::Midi)?;
+                        self.spans
+                            .spans()
+                            .any(|span| span.start_frame < frame && span.end_frame > frame)
+                    }
+                }
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            if active {
+                return Err(SessionPlaybackError::MutableInstrumentChase);
+            }
+        }
 
         self.route_scratch.copy_from_slice(&self.routes);
         let mut candidate_route_floors = [None; MAX_TRACKS];
