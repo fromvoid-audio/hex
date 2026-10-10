@@ -315,8 +315,7 @@ impl Fm4Settings {
     }
 }
 
-/// Standalone FM4 native instrument definition. It is available for explicit
-/// caller-owned registries but is not included in the built-in registry.
+/// Original FM4 native instrument definition admitted by the built-in registry.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Fm4Definition;
 

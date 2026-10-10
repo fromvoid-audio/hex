@@ -1,4 +1,4 @@
-//! Original native DSP: registered sine/Utility and custom-registry FM4 support.
+//! Original native DSP: registered sine/FM4 instruments and Utility effects.
 pub mod fm4;
 pub mod utility;
 pub mod utility_filters;
@@ -14,7 +14,8 @@ use std::sync::OnceLock;
 
 static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 1] =
     [&utility::UTILITY_DEFINITION];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 1] = [&SINE_INSTRUMENT];
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 2] =
+    [&SINE_INSTRUMENT, &fm4::device::FM4_DEFINITION];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 

@@ -351,6 +351,105 @@ fn streamed_session_one_shot_mixes_pages_and_keeps_cold_misses_local() {
 }
 
 #[test]
+fn streamed_arrangement_audio_mixes_with_builtin_fm4_midi() {
+    let project = project_with_arrangement_midi(0, 8_192);
+    let stream_asset = project
+        .assets()
+        .find(|asset| asset.id().value() == STREAM_ASSET)
+        .expect("stream asset id")
+        .id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let midi_track = editor
+        .project()
+        .tracks()
+        .iter()
+        .find(|track| track.instrument().is_some())
+        .expect("Arrangement MIDI track")
+        .id();
+    let instrument = editor
+        .project()
+        .track(midi_track)
+        .and_then(|track| track.instrument())
+        .expect("instrument slot")
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let stream_track = editor
+        .project()
+        .tracks()
+        .iter()
+        .find(|track| track.id().value() == SESSION_TRACK)
+        .expect("streamed audio source track")
+        .id();
+    editor
+        .execute(Command::PlaceClip {
+            track: stream_track,
+            asset: stream_asset,
+            start: 0,
+            duration: 512,
+            source_offset: 0,
+            source_length: 512,
+            looping: false,
+        })
+        .unwrap();
+    let project = editor.project().clone();
+    let generation = 85;
+    let source_metadata = metadata(&project, generation, [9; 32]);
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            &project,
+            &sources(&project, source_metadata),
+            generation,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let source_key = StreamSourceKey::new(generation, stream_asset);
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(PlaybackCommand::Play);
+    let mut pages = MemoryPages::with_source(source_key);
+    let mut actual = [[0.0; 2]; 256];
+    playback.render_with_pages(&mut actual, &mut pages).unwrap();
+
+    for (frame_index, actual_frame) in actual.iter().enumerate() {
+        let age = frame_index as u64;
+        let frequency = 440.0 * 2.0_f64.powf((60.0 - 69.0) / 12.0);
+        let step = (frequency / f64::from(RATE) * 18_446_744_073_709_551_616.0).round() as u64;
+        let turns = step.wrapping_mul(age) as f64 / 18_446_744_073_709_551_616.0;
+        let envelope = if age < 240 {
+            age as f64 / 240.0
+        } else {
+            1.0 - (age - 240) as f64 / 4_800.0 * 0.3
+        };
+        let fm4 = (((turns * std::f64::consts::TAU).sin() as f32) as f64
+            * envelope
+            * (100.0 / 127.0)) as f32;
+        let mut expected = sample(age);
+        expected[0] += fm4;
+        expected[1] += fm4;
+        if age < 12 {
+            let resident_bed = sample(age + 2);
+            expected[0] += resident_bed[0];
+            expected[1] += resident_bed[1];
+        }
+        assert!(
+            (actual_frame[0] - expected[0]).abs() < 0.000_02
+                && (actual_frame[1] - expected[1]).abs() < 0.000_02,
+            "streamed hybrid frame {age}: {actual_frame:?} != {expected:?}"
+        );
+    }
+}
+
+#[test]
 fn streamed_session_audio_uses_registered_native_device_matrix() {
     let original = project(4_094, 4_102);
     let mut editor = Editor::new(original, 16).unwrap();
