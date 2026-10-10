@@ -289,19 +289,26 @@ impl PreparedOperatorFeedbackVoice {
         )
     }
 
-    /// Render one frame against a prepared shared ramp. The exact target
-    /// configuration identity is checked in constant time before any voice
-    /// state changes. Each frame uses the immutable shared ramp coefficients,
-    /// keeps oscillator feedback history continuous, then records the effective
-    /// feedback value so normal processing resumes at the target endpoint.
+    /// Validate one shared-ramp frame without sampling or mutating voice state.
+    /// This is the same compatibility preflight used by the renderer.
     #[inline]
-    pub fn process_frame_with_retarget(
-        &mut self,
+    pub(crate) fn validate_retarget_frame(
+        &self,
         configuration: &PreparedOperatorConfiguration,
-        table: &crate::SineTable,
         retarget: &PreparedOperatorFeedbackRetarget,
         elapsed_frames: u32,
-    ) -> Result<f32, Invalid> {
+    ) -> Result<(), Invalid> {
+        self.preflight_retarget_frame(configuration, retarget, elapsed_frames)
+            .map(|_| ())
+    }
+
+    #[inline]
+    fn preflight_retarget_frame(
+        &self,
+        configuration: &PreparedOperatorConfiguration,
+        retarget: &PreparedOperatorFeedbackRetarget,
+        elapsed_frames: u32,
+    ) -> Result<RetargetFrame, Invalid> {
         if elapsed_frames >= retarget.frames
             || configuration.configuration_id() != retarget.target_configuration_id
             || !configuration.note_matches_configuration(&self.note)
@@ -316,20 +323,43 @@ impl PreparedOperatorFeedbackVoice {
             .checked_add(1)
             .ok_or(Invalid("operator feedback voice age overflow"))?;
         let parameters = retarget.values_at(elapsed_frames)?;
+        let next_boundary = elapsed_frames.saturating_add(1).min(retarget.frames);
+        let next_feedback_turns = retarget.values_at(next_boundary)?.feedback_turns;
+        Ok(RetargetFrame {
+            next_age,
+            parameters,
+            next_feedback_turns,
+            next_boundary,
+        })
+    }
+
+    /// Render one frame against a prepared shared ramp. The exact target
+    /// configuration identity is checked in constant time before any voice
+    /// state changes. Each frame uses the immutable shared ramp coefficients,
+    /// keeps oscillator feedback history continuous, then records the effective
+    /// feedback value so normal processing resumes at the target endpoint.
+    #[inline]
+    pub fn process_frame_with_retarget(
+        &mut self,
+        configuration: &PreparedOperatorConfiguration,
+        table: &crate::SineTable,
+        retarget: &PreparedOperatorFeedbackRetarget,
+        elapsed_frames: u32,
+    ) -> Result<f32, Invalid> {
+        let frame = self.preflight_retarget_frame(configuration, retarget, elapsed_frames)?;
         let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
         let (sample, outputs) = configuration.sample_with_feedback_parameters(
             table,
             &self.note,
             self.age_frames,
             gate_frame,
-            parameters,
+            frame.parameters,
             self.previous_outputs,
         );
         self.previous_outputs = outputs;
-        let next_boundary = elapsed_frames.saturating_add(1).min(retarget.frames);
-        self.feedback_turns = retarget.values_at(next_boundary)?.feedback_turns;
-        self.age_frames = next_age;
-        let ramp_active = next_boundary < retarget.frames;
+        self.feedback_turns = frame.next_feedback_turns;
+        self.age_frames = frame.next_age;
+        let ramp_active = frame.next_boundary < retarget.frames;
         self.configuration_id = (retarget.target_configuration_id << 1) | u64::from(ramp_active);
         Ok(sample)
     }
@@ -502,6 +532,14 @@ fn validate_rebind_boundary(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct RetargetFrame {
+    next_age: u64,
+    parameters: OperatorFeedbackParameters,
+    next_feedback_turns: [f64; OPERATORS],
+    next_boundary: u32,
+}
+
 fn voice_matches_ramp_boundary(
     voice: &PreparedOperatorFeedbackVoice,
     retarget: &PreparedOperatorFeedbackRetarget,
@@ -640,6 +678,127 @@ mod tests {
             .map(|(signal, carrier)| signal * carrier)
             .sum::<f64>()
             * (f64::from(VELOCITY) / 127.0)) as f32
+    }
+
+    fn assert_preflight_matches_render(
+        voice: PreparedOperatorFeedbackVoice,
+        configuration: &PreparedOperatorConfiguration,
+        ramp: &PreparedOperatorFeedbackRetarget,
+        elapsed: u32,
+    ) -> bool {
+        let unchanged = voice;
+        let validation = voice.validate_retarget_frame(configuration, ramp, elapsed);
+        assert_eq!(voice, unchanged, "read-only validation mutated voice");
+
+        let mut render_candidate = voice;
+        let rendered = render_candidate.process_frame_with_retarget(
+            configuration,
+            &SineTable::new(),
+            ramp,
+            elapsed,
+        );
+        assert_eq!(validation.is_ok(), rendered.is_ok());
+        if validation.is_err() {
+            assert_eq!(render_candidate, unchanged, "refused render mutated voice");
+        }
+        validation.is_ok()
+    }
+
+    #[test]
+    fn sample_free_preflight_matches_render_for_ramp_boundaries_and_refusals() {
+        let a = standard_config(LEVELS_A, CARRIERS_A);
+        let b = standard_config(LEVELS_B, CARRIERS_B);
+        let c = standard_config([0.3, 0.45, 0.85, 0.6], [0.2, 0.1, -0.5, 0.7]);
+        let mut voice = a
+            .prepare_feedback_voice(PITCH, VELOCITY, FEEDBACK_A)
+            .expect("prepared voice");
+        let first = voice
+            .prepare_retarget(&a, &b, FEEDBACK_B, 12)
+            .expect("prepared ramp");
+
+        // Fresh source and successive carried-voice boundaries use the same
+        // identity, harmonic-cap, feedback and age validation in both paths.
+        assert!(assert_preflight_matches_render(voice, &b, &first, 0));
+        for elapsed in 0..5 {
+            assert!(assert_preflight_matches_render(voice, &b, &first, elapsed));
+            voice
+                .process_frame_with_retarget(&b, &SineTable::new(), &first, elapsed)
+                .expect("advance first ramp");
+        }
+
+        // A rapid continuation starts at the actual boundary and validates
+        // the carried source identity before its first sample.
+        let second = first
+            .retarget(&voice, &b, &c, [0.33, 0.0, 0.0, 0.71], 5, 9)
+            .expect("prepared rapid continuation");
+        assert!(assert_preflight_matches_render(voice, &c, &second, 0));
+        let mut wrong_boundary = voice;
+        wrong_boundary.feedback_turns = FEEDBACK_B;
+        assert!(!assert_preflight_matches_render(
+            wrong_boundary,
+            &c,
+            &second,
+            0
+        ));
+        let mut advanced = voice;
+        advanced
+            .process_frame_with_retarget(&c, &SineTable::new(), &second, 0)
+            .expect("first continued sample");
+        assert!(assert_preflight_matches_render(advanced, &c, &second, 1));
+        let mut missing_participant = advanced;
+        missing_participant.configuration_id &= !1;
+        assert!(!assert_preflight_matches_render(
+            missing_participant,
+            &c,
+            &second,
+            1
+        ));
+
+        // New notes are explicitly enrolled at the same shared boundary.
+        let mut joined = c
+            .prepare_feedback_voice(PITCH, VELOCITY, [0.33, 0.0, 0.0, 0.71])
+            .expect("new target voice");
+        joined
+            .enroll_in_retarget(&c, &second, 3)
+            .expect("enroll at shared boundary");
+        assert!(assert_preflight_matches_render(joined, &c, &second, 3));
+
+        // The read-only path refuses stale target identity, endpoint/expired
+        // offsets, and age overflow without changing the voice.
+        assert!(!assert_preflight_matches_render(voice, &b, &second, 0));
+        assert!(!assert_preflight_matches_render(
+            voice,
+            &c,
+            &second,
+            second.frames()
+        ));
+        let mut overflow = voice;
+        overflow.age_frames = u64::MAX;
+        let before_overflow = overflow;
+        assert!(overflow.validate_retarget_frame(&c, &second, 0).is_err());
+        assert_eq!(overflow, before_overflow);
+        assert!(!assert_preflight_matches_render(overflow, &c, &second, 0));
+
+        // Exact active-ramp copy changes only prepared target identity; the
+        // same sample-free checks accept the rebound voice and ramp together.
+        let replacement = standard_config(LEVELS_B, CARRIERS_B);
+        let rebound = first
+            .rebind_target_after_exact_history_copy(&b, &replacement, 5)
+            .expect("rebound ramp");
+        let mut rebound_voice = voice;
+        rebound_voice
+            .rebind_after_exact_history_copy_with_ramp(
+                &b,
+                &replacement,
+                Some((&first, &rebound, 5)),
+            )
+            .expect("rebound voice");
+        assert!(assert_preflight_matches_render(
+            rebound_voice,
+            &replacement,
+            &rebound,
+            5
+        ));
     }
 
     #[test]

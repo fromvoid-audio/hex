@@ -1701,3 +1701,17 @@ native visual acceptance remain pending. See [Operator shell context contract]
   that exceed the fixture's held-note gate, and scope retarget checksums to
   measured blocks. The 512-frame retarget block includes 240 ramp and 272 target
   frames for its single edited track.
+
+## 10 October 2026 — sample-free Operator retarget preflight (Pulse2291)
+
+- Retarget compatibility now uses the renderer's readonly boundary validation
+  without evaluating DSP. Existing identity, note/ramp boundary, checked age,
+  atomic refusal and both-twin checks remain; runtime storage is unchanged.
+- All 117 device tests, strict device Clippy, formatting and both actual Operator
+  callback allocation probes pass. New regressions cover fresh/carried/joined/
+  rebound/rapid voices and explicit stale-target/expired/overflow refusal.
+- All 18 interleaved before/after release runs have identical partition and
+  retarget PCM checksums. Single-track/16-note handoff medians improve; dense
+  project timings overlap and remain over budget. See
+  [performance evidence](docs/performance.md); Pulse2226 stays open.
+- Full exact-final-tree local CI and primary diff review are the merge gates.

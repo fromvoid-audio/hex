@@ -2087,7 +2087,7 @@ the changed track ramps for 240 frames and renders 272 frames at its target in
 that following block.
 
 Three interleaved workload rounds completed successfully on 10 October 2026,
-21:40:46–21:45:57 UTC: Apple M5 Pro (15 cores), 24 GB, macOS 26.6.2 (25G83),
+21:40:46–21:45:58 UTC: Apple M5 Pro (15 cores), 24 GB, macOS 26.6.2 (25G83),
 rustc 1.98.1, optimized aarch64 build. Each run uses 48 kHz, 100 warmup and
 2,000 measured blocks in each scenario. Source commit
 `f5783c5f75d32977fc8bd20dcad052da9d6e9cff`, tree
@@ -2127,3 +2127,37 @@ proof; whole playback host bytes have no public accounting API and are explicitl
 not inferred. This offline profile does not establish CPAL deadlines, sustained
 device behavior, listening acceptance or Ableton Live parity. Existing debug
 smoke and strict example Clippy checks remain correctness evidence only.
+
+## sample-free Operator retarget preflight — Pulse2291
+
+The same boundary validator now serves rendering and readonly compatibility
+preflight; probing a copied voice no longer evaluates an oscillator sample.
+No runtime fields, limits or exact-history rules changed. Three repeated rounds
+alternate before/after order at 48 kHz, 128 frames, 100 warmup and 2,000 measured
+retarget blocks per executable/workload. Both binaries use the Pulse2289 fixture;
+only one track changes per handoff. All 18 runs succeeded, and partition and
+retarget PCM checksums match across binaries and repeats.
+
+Before source `f5783c5f75d32977fc8bd20dcad052da9d6e9cff` and binary SHA-256
+`caaacdbd7a711a233b0c8f575165e9aed14028e5487fed077d583f13d1a3436d`;
+after source `4d64565c6acc800d65addc8b725b89201bc2c533`, tree
+`d2355eb8ea6d6eb7a95ff9b0748c1ba13b2853ff`, binary SHA-256
+`d19487b26d0682930a4a06b8737b5227a74cf43c0ef2e5c65e1797ad5b835747`.
+Measurements ran 10 October 2026, 21:50:03–21:52:10 UTC, on the same M5 Pro /
+macOS 26.6.2 / rustc 1.98.1 host as the baseline. No concurrent Cargo or profiler
+ran; normal OS activity was uncontrolled. Raw samples' statistics (including
+p99, max and totals), setup timings, commands, hashes and checksums are retained
+under `artifacts/profiles/operator-preflight-2291/`. The table gives statistic
+ranges across three runs, in microseconds.
+
+| tracks × voices | handoff before p50 / p95 (µs) | handoff after p50 / p95 (µs) | render before p50 / p95 (µs) | render after p50 / p95 (µs) |
+| --- | --- | --- | --- | --- |
+| 1 × 1 | 5.33–5.42 / 7.50–8.62 | 4.79–4.83 / 6.54–8.08 | 11.75–11.83 / 16.17–17.67 | 11.88–11.92 / 14.17–17.25 |
+| 1 × 16 | 17.46–18.12 / 26.92–34.25 | 7.75–8.17 / 14.12–17.46 | 167.88–174.88 / 232.46–280.58 | 171.46–177.83 / 230.58–265.79 |
+| 100 × 16 | 4553.21–4820.17 / 5555.79–6566.38 | 4554.83–4829.12 / 5458.21–6980.83 | 3548.54–3782.33 / 4301.54–5180.08 | 3588.54–3727.50 / 4335.38–5238.29 |
+
+For one track with 16 held notes, the measured handoff median range drops from
+17.46–18.12 µs to 7.75–8.17 µs. Dense handoff and render ranges overlap; this
+change does not solve the 100-track deadline gap. Whole-project history copying
+and repeated layered compatibility checks remain separate work. No statistical
+speedup, CPAL deadline, native listening or Ableton parity claim is inferred.

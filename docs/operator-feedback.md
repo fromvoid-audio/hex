@@ -254,6 +254,16 @@ interpolated boundary. Exact copy during an active ramp rebinds configuration
 identities while preserving future PCM. Unsupported or stale proofs refuse
 before changing either twin or the owning track.
 
+The registered-runtime compatibility preflight uses the same read-only per-voice
+retarget validator as sample rendering. It checks target identity, note harmonic
+caps, source/participant identity, feedback at the current and next ramp
+boundaries, elapsed offset and checked voice-age advancement without evaluating
+an oscillator sample or mutating voice history. Rendering consumes the validated
+fixed frame data and then advances DSP state. This removes DSP work from the
+compatibility probe by construction. Three interleaved before/after release
+rounds retain identical PCM and lower single-track/16-note handoff medians;
+dense timings overlap. See `docs/performance.md` for measured scope and limits.
+
 An active same-device transition between analytic and mutable classes is
 conservatively refused on Arrangement and retained Session MIDI routes. The
 already committed desired project edit remains canonical; the currently
