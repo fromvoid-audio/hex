@@ -63,6 +63,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.reset();
         }
+        self.return_effect_tails.reset();
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
@@ -148,6 +149,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.reset();
         }
+        self.return_effect_tails.reset();
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }

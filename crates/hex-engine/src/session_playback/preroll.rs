@@ -251,6 +251,10 @@ impl SessionPlayback {
         for chain in &self.return_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
+        checked_add(
+            &mut total,
+            self.return_effect_tails.accounted_storage_bytes()?,
+        )?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch.capacity())?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
@@ -340,6 +344,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         return_buses.len(),
         std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
     )?;
+    checked_add(&mut total, ReturnEffectTailBank::preflight_storage_bytes()?)?;
     add_vec(
         &mut total,
         track_count,

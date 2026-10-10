@@ -611,3 +611,19 @@ Those PRs are merged. This records acceptance of the reviewed editing/menu
 behavior, not physical timing measurements or exhaustive listening. Dragging time
 selections beyond visible lanes/window edges is a separately reported defect and
 the active follow-up.
+
+### retained return effect output
+
+A revision that changes or removes an audible nonquiescent Return captures the
+complete old native processor chain into a separately preallocated64-slot bank.
+It receives zero input once per256-frame render chunk and feeds the current Main
+before the current master stage, using the old bus matrix/gain; old sends are not
+replayed. Exact unchanged chains inherit once under candidate bus controls.
+Transfer planning shares the existing track-tail ceilings (256 stateful
+processors,2MiB paired payload,4096 entries and a checked finite10-second
+horizon) and completes before any owner moves. Exhaustion is retryable and
+preserves the previous runtime. Failed render blocks keep committed history;
+Stop/Seek reset tails and Pause freezes them. Quiescent owners stay in their
+Playback for control reclamation. See [the contract](return-effect-tails.md).
+Focused PCM/boundary/rollback and callback allocation checks pass; full local CI
+and native listening remain pending at this source checkpoint.

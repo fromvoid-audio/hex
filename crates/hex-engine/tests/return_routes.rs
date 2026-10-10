@@ -333,7 +333,7 @@ fn compatible_return_filter_history_survives_prepared_revision_handoff() {
 }
 
 #[test]
-fn removed_return_is_cut_at_revision_boundary() {
+fn removed_return_keeps_zero_fed_filter_residual_at_revision_boundary() {
     let source = [[1.0, 1.0]; 16];
     let mut fixture = fixture(&source, 1.0, 1.0, 1.0);
     let filter = UTILITY_DEFINITION
@@ -345,27 +345,52 @@ fn removed_return_is_cut_at_revision_boundary() {
         .unwrap();
     add_return_device(&mut fixture, filter);
     let table = Arc::new(SineTable::new());
-    let media = media(&fixture, &source);
+    let decoded = media(&fixture, &source);
     let mut previous = SessionPlayback::new(Arc::new(
-        PreparedRevision::prepare(fixture.editor.project(), &media, Arc::clone(&table), None)
+        PreparedRevision::prepare(fixture.editor.project(), &decoded, Arc::clone(&table), None)
             .unwrap(),
     ))
     .unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     previous.render(&mut [[0.0; 2]; 4]).unwrap();
 
+    // Independent oracle keeps its Return and ends the send input after the
+    // same four priming frames. It never performs a revision handoff.
+    let mut reference_source = source;
+    reference_source[4..].fill([0.0; 2]);
+    let mut reference = SessionPlayback::new(Arc::new(
+        PreparedRevision::prepare(
+            fixture.editor.project(),
+            &media(&fixture, &reference_source),
+            Arc::clone(&table),
+            None,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.render(&mut [[0.0; 2]; 4]).unwrap();
+    let mut expected = [[0.0; 2]; 32];
+    reference.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|value| value.abs() > 1.0e-6));
+    // The real track continues its authored dry input until frame16.
+    for frame in &mut expected[..12] {
+        frame[0] += 1.0;
+        frame[1] += 1.0;
+    }
+
     let mut revised = Editor::new(fixture.editor.project().clone(), 32).unwrap();
     revised
         .execute(Command::RemoveReturnTrack(fixture.return_track))
         .unwrap();
     let mut next = SessionPlayback::new(Arc::new(
-        PreparedRevision::prepare(revised.project(), &media, table, None).unwrap(),
+        PreparedRevision::prepare(revised.project(), &decoded, table, None).unwrap(),
     ))
     .unwrap();
     next.try_inherit_state_from(&mut previous).unwrap();
-    let mut output = [[0.0; 2]; 1];
+    let mut output = [[0.0; 2]; 32];
     next.render(&mut output).unwrap();
-    assert_eq!(output[0], [1.0, 1.0]);
+    assert_eq!(output, expected);
 }
 
 #[test]

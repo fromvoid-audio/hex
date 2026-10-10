@@ -46,12 +46,17 @@ commit editor history, and SessionPlayback repeats it defensively before
 constructing runtimes.
 
 At a revision boundary, sends from a removed regular track stop immediately;
-its existing release tails keep the current Main-only behavior. Removing a
-Return cuts that bus at the boundary and retires its runtime on control. This
-bounded policy does not claim Live-equivalent send-tail routing. Allocation
-probes cover effectful Return rendering, compatible replacement and control-side
-retirement; they do not establish physical-device deadlines or listening
-acceptance. Pinned return controls and device interactions are described below.
+its existing release tails keep the current Main-only behavior. An audible
+removed or changed Return retains its whole old effect chain and captured bus
+matrix/gain/mute as a Main-only residual tail; old sends are not replayed. An
+unchanged chain transfers its history once, including for a gain/mute-only bus
+edit. The 64-slot Return tail bank shares processor, paired-runtime-byte and
+chain-entry limits with Arrangement effect tails. See
+[Return effect residual tails](return-effect-tails.md) for the handoff, reset,
+capacity and transaction contract. Allocation probes cover effectful Return
+rendering, replacement and control-side retirement; they do not establish
+physical-device deadlines or listening acceptance. Pinned return controls and
+device interactions are described below.
 
 The Pulse2178 UI puts a compact, internally scrollable return section directly
 above the pinned Main row and below the independently scrolling Arrangement

@@ -179,34 +179,6 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
-        for (new_index, bus) in self
-            .revision
-            .arrangement()
-            .return_buses()
-            .iter()
-            .enumerate()
-        {
-            let Some(old_index) = previous
-                .revision
-                .arrangement()
-                .return_buses()
-                .iter()
-                .position(|old_bus| old_bus.id == bus.id)
-            else {
-                continue;
-            };
-            let candidate = self
-                .return_chains
-                .get(new_index)
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            let old = previous
-                .return_chains
-                .get(old_index)
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            if !candidate.can_inherit_from(old) {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-        }
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
@@ -746,30 +718,6 @@ impl SessionPlayback {
                 }
             }
         }
-        for (new_index, bus) in self
-            .revision
-            .arrangement()
-            .return_buses()
-            .iter()
-            .enumerate()
-        {
-            let Some(old_index) = previous
-                .revision
-                .arrangement()
-                .return_buses()
-                .iter()
-                .position(|old_bus| old_bus.id == bus.id)
-            else {
-                continue;
-            };
-            if let (Some(candidate), Some(old)) = (
-                self.return_chains.get_mut(new_index),
-                previous.return_chains.get(old_index),
-            ) {
-                candidate.inherit_from(old);
-            }
-        }
-
         // Source/timing edits retain the historical global-floor policy: all
         // currently active Session MIDI routes need copied voices to bridge
         // that floor. Instrument-only edits leave this global flag false and
@@ -1408,6 +1356,17 @@ impl SessionPlayback {
         let mut tail_runtime_bytes = 0_usize;
         let mut suffix_entry_count = 0_usize;
         let sample_rate = self.revision.arrangement().sample_rate();
+        let return_tail_plan = ReturnEffectTailPlan::preflight(
+            previous.revision.arrangement().return_buses(),
+            &previous.return_chains,
+            &previous.return_effect_tails,
+            self.revision.arrangement().return_buses(),
+            &self.return_chains,
+            sample_rate,
+            &mut tail_processor_count,
+            &mut tail_runtime_bytes,
+            &mut suffix_entry_count,
+        )?;
         for (slot, active) in active_tail_groups.iter().copied().enumerate() {
             if !active {
                 continue;
@@ -1816,6 +1775,31 @@ impl SessionPlayback {
         // may partially mutate candidate state before returning an error, so it
         // permanently consumes this candidate's single admission opportunity.
         self.candidate_admission_open = false;
+        for (new_index, bus) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .enumerate()
+        {
+            let Some(old_index) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old_bus| old_bus.id == bus.id)
+            else {
+                continue;
+            };
+            if return_tail_plan.inherit_bus(new_index)
+                && let (Some(candidate), Some(old)) = (
+                    self.return_chains.get_mut(new_index),
+                    previous.return_chains.get(old_index),
+                )
+            {
+                candidate.inherit_from(old);
+            }
+        }
         for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
                 continue;
@@ -1872,10 +1856,25 @@ impl SessionPlayback {
                 }
             }
         }
-        // Last fallible phase: retain one strong reference per needed immutable
-        // context while the previous playback keeps every owner. A refusal
-        // cannot invalidate its releases. No owner move below can fail.
+        // Stage shared-context leases before moving any owner. The Return plan
+        // validates every destination below; owner moves then use only these
+        // prevalidated private indices.
         self.stage_shared_context_leases(previous)?;
+        return_tail_plan.validate_commit(
+            &self.return_effect_tails,
+            &previous.return_effect_tails,
+            &previous.return_chains,
+            previous.revision.arrangement().return_buses(),
+        )?;
+        return_tail_plan.apply_carry(
+            &mut self.return_effect_tails,
+            &mut previous.return_effect_tails,
+        )?;
+        return_tail_plan.capture_buses(
+            &mut self.return_effect_tails,
+            &mut previous.return_chains,
+            previous.revision.arrangement().return_buses(),
+        )?;
         for slot in 0..previous.tail_groups.len() {
             if active_tail_groups.get(slot).copied().unwrap_or(false)
                 && previous.tail_groups[slot].is_some()
