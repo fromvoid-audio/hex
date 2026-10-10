@@ -60,3 +60,32 @@ and hotspot APIs, and avoid repeated construction on hover. Other platforms
 fall back to native directional resize cursors. This grants no unsafe Hex
 exception or general vendor expansion; exact files/hashes stay verified.
 Physical appearance, scaling and hotspot acceptance are user native checks.
+
+## custom window controls — 9 October 2026 boundary decision
+
+Pulse ticket 11 and the user's explicit custom-traffic-light request authorize
+this focused extension of the existing excluded GPUI dependency. Hex workspace
+crates continue to forbid unsafe code. Add only an opt-in titlebar flag, default
+false, which hides the standard macOS close/minimize/zoom buttons using public
+AppKit APIs. Retain the native titled, movable and resizable transparent window;
+reapply hiding through the existing traffic-light layout/transition path. Keep
+all default/non-opt-in behavior and the generated demo's native controls.
+
+App circles use current safe GPUI minimize/fullscreen/zoom APIs. Custom Close
+must invoke the editor's `request_window_close` and remove the window only when
+it returns true; asynchronous Cancel/Discard continues to own dirty/pending work.
+The same close guard remains installed for OS close requests. Bootstrap has no
+editable project and follows the existing clean-window close lifecycle.
+
+Retain native titlebar dragging and system double-click behavior. Do not add an
+app FFI bridge, event monitor, manual position loop or synthetic release. GPUI's
+current `start_window_move` is a no-op on macOS. Apple's separate
+[performDrag API](https://developer.apple.com/documentation/appkit/nswindow/performdrag%28with%3A%29?language=objc)
+may omit mouse-up delivery; adding it would require an additional input-lifecycle
+design and is outside this change.
+
+The source scope is GPUI `platform.rs` and `platform/mac/window.rs`, already in
+the pinned patch set. Preserve baseline checksums and license notices, regenerate
+the cumulative diff and patched hashes, and retain the source guard. Native
+button hit-testing, dragging, resizing, minimizing, fullscreen transitions and
+Cancel/Discard remain user acceptance; source tests cannot prove AppKit behavior.

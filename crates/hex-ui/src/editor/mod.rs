@@ -315,6 +315,7 @@ fn editor_window_options(cx: &App) -> WindowOptions {
         titlebar: Some(gpui::TitlebarOptions {
             title: Some("hex".into()),
             appears_transparent: true,
+            hide_native_window_controls: cfg!(target_os = "macos"),
             ..Default::default()
         }),
         window_bounds: Some(WindowBounds::Windowed(bounds)),

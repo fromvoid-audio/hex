@@ -151,16 +151,22 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   and shortcuts retained. [PR #16](https://github.com/PORTALSURFER/hex/pull/16)
   passed all 14 local CI steps on clean source `045201e`; user accepted the
   combined review build and authorized merge. Merged.
-- [ ] **compact header composition** — Pulse ticket 10, in progress, separate PR.
+- [ ] **compact header composition** — Pulse ticket 10, [PR #19](https://github.com/PORTALSURFER/hex/pull/19), source complete.
   Separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
   title dragging and useful space at minimum window sizes. Source implemented:
   shared 22 px title/26 px toolbar, 20 px icon controls. Long-title/minimum-size
   layout and title-data tests, strict UI Clippy and source guards pass; final
-  local CI and native review remain separate. Custom controls are next.
-- [ ] **custom traffic lights** — replace native macOS controls with smaller
+  local CI passed all 14 steps on clean `751b2d2`. Native review remains open
+  in `hex-compact-header-20261009.app`. Custom controls are next.
+- [ ] **custom traffic lights** — Pulse ticket 11, in progress, separate PR.
+  Replace native macOS controls with smaller
   app controls. Preserve unsaved-close protection, minimize, zoom/fullscreen and
-  window lifecycle. Document any required native boundary before implementation.
+  window lifecycle. The focused [native boundary](docs/native-input.md) decision is documented.
+  Source implemented; 283 UI tests (2 ignored), strict UI Clippy, desktop check
+  and guards pass; cumulative vendor patch independently verified against its
+  published archive. Full CI and native control/close/drag/fullscreen acceptance
+  remain separate gates.
 - [ ] **pinned main track** — always-visible main row glued to the bottom of the
   Arrangement track region. Regular tracks and their trailing empty drop space
   scroll above it; the detail/device panel remains below the track region.

@@ -315,3 +315,27 @@ while smaller controls recover horizontal workspace. Long-title centering and
 left/right toolbar bounds pass at 880×540; title/path and session minimum-width
 regressions, strict UI Clippy, formatting and source guards pass. Full local CI
 evidence belongs to the focused PR; native geometry and dragging remain open.
+
+## custom macOS traffic lights — source implemented, 9 October 2026
+
+Pulse ticket 11: canonical startup/editor title rows draw original 10 px gray
+circles within 16 px hitboxes, with close/minimize/fullscreen hover colors and
+lowercase tooltips. They occupy the existing left title reservation; the title
+stays centered and header heights remain unchanged. Other platforms and the
+separate generated demo retain their native chrome. Option-click on the green
+control invokes native zoom; ordinary click toggles fullscreen.
+
+Custom Close invokes the existing guarded window-close contract, including
+pending work and repeated requests. Native controls are hidden only through the
+opt-in excluded-GPUI option documented in [native input](native-input.md). The
+native titlebar and movement/resizing flags remain; no programmatic window-drag
+emulation is introduced.
+
+Source validation: 283 UI tests passed (2 ignored), including clean custom close,
+repeated dirty close/Cancel/Discard, startup close and minimum-size control bounds.
+Strict UI Clippy, desktop check, formatting and guards pass. The cumulative GPUI
+patch applies exactly to the checksum-verified published archive and reproduces
+all recorded patched file hashes. Full local CI belongs to the focused PR.
+Native acceptance remains open: hidden standard buttons, custom hover/clicks,
+minimize, fullscreen/Option-zoom and transitions, title dragging/resizing and
+unsaved Close/Cmd-Q on the actual review app.

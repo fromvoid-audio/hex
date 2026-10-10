@@ -3,7 +3,18 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
-## active work unit — compact header composition, 9 October 2026
+## active work unit — custom traffic lights, 9 October 2026
+
+Pulse ticket 11: replace canonical macOS native window buttons with compact
+app circles in the existing title reservation. Keep the native titled window,
+resizing and dragging, and all unsaved-close protections. The documented narrow
+GPUI boundary decision is in [native input](native-input.md); no unsafe Hex code
+or programmatic drag emulation. Test actual close-button routing, startup and
+minimum geometry, preserve default vendor behavior, compile macOS selectors and
+verify provenance. Full local CI precedes a fresh user review build. Native
+window controls/fullscreen/hit-testing acceptance remains an explicit open gate.
+
+## source-complete work unit — compact header composition, 9 October 2026
 
 Pulse ticket 10: a slim title row centers `hex` or the current document filename
 stem above a smaller, dense toolbar. Preserve the native traffic-light reservation

@@ -774,7 +774,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &Quit, window, cx| {
                 view.request_quit(window, cx);
             }))
-            .child(self.title_bar())
+            .child(self.title_bar(cx))
             .child(self.transport(cx))
             .child(workspace)
             .child(self.status_bar())

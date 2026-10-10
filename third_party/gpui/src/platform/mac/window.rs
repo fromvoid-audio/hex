@@ -413,6 +413,7 @@ struct MacWindowState {
     last_key_equivalent: Option<KeyDownEvent>,
     synthetic_drag_counter: usize,
     traffic_light_position: Option<Point<Pixels>>,
+    hide_native_window_controls: bool,
     transparent_titlebar: bool,
     previous_modifiers_changed_event: Option<PlatformInput>,
     keystroke_for_do_command: Option<Keystroke>,
@@ -431,6 +432,25 @@ struct MacWindowState {
 
 impl MacWindowState {
     fn move_traffic_light(&self) {
+        if self.hide_native_window_controls {
+            unsafe {
+                for button_kind in [
+                    NSWindowButton::NSWindowCloseButton,
+                    NSWindowButton::NSWindowMiniaturizeButton,
+                    NSWindowButton::NSWindowZoomButton,
+                ] {
+                    let button: id = msg_send![
+                        self.native_window,
+                        standardWindowButton: button_kind
+                    ];
+                    if button != nil {
+                        let _: () = msg_send![button, setHidden: YES];
+                    }
+                }
+            }
+            return;
+        }
+
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() {
                 // Moving traffic lights while fullscreen doesn't work,
@@ -718,6 +738,9 @@ impl MacWindow {
                 traffic_light_position: titlebar
                     .as_ref()
                     .and_then(|titlebar| titlebar.traffic_light_position),
+                hide_native_window_controls: titlebar
+                    .as_ref()
+                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
                 transparent_titlebar: titlebar
                     .as_ref()
                     .is_none_or(|titlebar| titlebar.appears_transparent),

@@ -1,6 +1,6 @@
 //! Shared compact title and toolbar rows for editor startup and loaded projects.
 use crate::theme::{self, Palette};
-use gpui::{Div, Stateful, div, prelude::*, px, rgb};
+use gpui::{App, ClickEvent, Div, Stateful, Window, div, prelude::*, px, rgb};
 use std::path::Path;
 
 pub(super) const TITLE_HEIGHT: f32 = 22.0;
@@ -15,7 +15,75 @@ pub(super) fn project_title(document_path: Option<&Path>) -> String {
         .unwrap_or_else(|| "hex".into())
 }
 
-pub(super) fn title_bar(title: impl AsRef<str>) -> Stateful<Div> {
+#[derive(Clone, Copy)]
+pub(super) enum TitlebarControl {
+    Close,
+    Minimize,
+    Fullscreen,
+}
+
+pub(super) fn title_bar(
+    title: impl AsRef<str>,
+    on_control: impl Fn(TitlebarControl) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+) -> Stateful<Div> {
+    let controls = [
+        (TitlebarControl::Close, "close window", 0xe65c4f),
+        (TitlebarControl::Minimize, "minimize window", 0xd8a63b),
+        (TitlebarControl::Fullscreen, "toggle fullscreen", 0x57a86b),
+    ];
+    let mut lights = div()
+        .id("window-controls")
+        .absolute()
+        .left_2()
+        .h_full()
+        .flex()
+        .items_center()
+        .gap(px(4.0));
+    for (control, tooltip, hover_color) in
+        controls.into_iter().filter(|_| cfg!(target_os = "macos"))
+    {
+        let on_control = on_control(control);
+        lights = lights.child(
+            div()
+                .id(match control {
+                    TitlebarControl::Close => "window-control-close",
+                    TitlebarControl::Minimize => "window-control-minimize",
+                    TitlebarControl::Fullscreen => "window-control-fullscreen",
+                })
+                .debug_selector(move || match control {
+                    TitlebarControl::Close => "window-control-close".into(),
+                    TitlebarControl::Minimize => "window-control-minimize".into(),
+                    TitlebarControl::Fullscreen => "window-control-fullscreen".into(),
+                })
+                .size(px(16.0))
+                .group("window-control")
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .tooltip(move |_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        description: tooltip.into(),
+                    })
+                    .into()
+                })
+                .child(
+                    div()
+                        .size(px(10.0))
+                        .rounded_full()
+                        .bg(rgb(Palette::MUTED))
+                        .group_hover("window-control", move |style| style.bg(rgb(hover_color))),
+                )
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    on_control(event, window, cx);
+                }),
+        );
+    }
+
     div()
         .id("project-title-bar")
         .debug_selector(|| "project-title-bar".into())
@@ -30,6 +98,7 @@ pub(super) fn title_bar(title: impl AsRef<str>) -> Stateful<Div> {
         .border_b_1()
         .border_color(rgb(Palette::BORDER))
         .bg(rgb(Palette::SURFACE))
+        .child(lights)
         .child(
             div()
                 .id("project-title-label")
@@ -101,6 +170,9 @@ mod ui_tests {
     fn compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights(
         cx: &mut TestAppContext,
     ) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).expect("project"),
@@ -144,6 +216,15 @@ mod ui_tests {
         let output_status = visual
             .debug_bounds("audio output status")
             .expect("output status remains visible");
+        let close = visual
+            .debug_bounds("window-control-close")
+            .expect("custom close control");
+        let minimize = visual
+            .debug_bounds("window-control-minimize")
+            .expect("custom minimize control");
+        let fullscreen = visual
+            .debug_bounds("window-control-fullscreen")
+            .expect("custom fullscreen control");
         let window = visual.update(|window, _| window.bounds());
         let title_bottom = f32::from(title.origin.y + title.size.height);
         let toolbar_top = f32::from(toolbar.origin.y);
@@ -166,5 +247,12 @@ mod ui_tests {
                 <= f32::from(toolbar.origin.x + toolbar.size.width)
         );
         assert!(f32::from(output_status.size.width) > 0.0);
+        assert!((f32::from(close.size.width) - 16.0).abs() < 1.0);
+        assert!((f32::from(minimize.size.width) - 16.0).abs() < 1.0);
+        assert!((f32::from(fullscreen.size.width) - 16.0).abs() < 1.0);
+        assert!(f32::from(close.origin.x) < f32::from(minimize.origin.x));
+        assert!(f32::from(minimize.origin.x) < f32::from(fullscreen.origin.x));
+        assert!(f32::from(fullscreen.origin.x + fullscreen.size.width) < window_center);
+        assert!(!gpui::TitlebarOptions::default().hide_native_window_controls);
     }
 }

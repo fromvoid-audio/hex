@@ -132,7 +132,10 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod window_tests {
     use super::*;
-    use gpui::{AnyWindowHandle, Empty, Entity, TestAppContext};
+    use gpui::{
+        AnyWindowHandle, Empty, Entity, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext,
+        VisualTestContext, point,
+    };
     use hex_session::service::{Service, ViewState};
     use std::sync::Arc;
 
@@ -165,6 +168,85 @@ mod window_tests {
             })
             .expect("bootstrap window");
         (handle, editor)
+    }
+
+    fn click_custom_close(visual: &mut VisualTestContext) {
+        let bounds = visual
+            .debug_bounds("window-control-close")
+            .expect("custom close hitbox");
+        let position = point(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+    }
+
+    #[gpui::test]
+    fn custom_close_button_removes_a_clean_editor_window(cx: &mut TestAppContext) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (handle, editor) = dirty_replaced_window(cx);
+        editor.update(cx, |view, cx| {
+            if let Some(state) = view.state.as_ref() {
+                view.state = Some(Arc::new(ViewState {
+                    project: Arc::clone(&state.project),
+                    waveforms: state.waveforms.clone(),
+                    midi_preview: Arc::clone(&state.midi_preview),
+                    timeline_frames: state.timeline_frames,
+                    can_undo: state.can_undo,
+                    can_redo: state.can_redo,
+                    revision: state.revision,
+                    unsaved: false,
+                    document_path: state.document_path.clone(),
+                }));
+            }
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click_custom_close(&mut visual);
+        visual.run_until_parked();
+        assert!(cx.windows().is_empty());
+    }
+
+    #[gpui::test]
+    fn custom_close_button_keeps_cancelled_dirty_window_and_discards_on_second_close(
+        cx: &mut TestAppContext,
+    ) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (handle, _) = dirty_replaced_window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click_custom_close(&mut visual);
+        assert!(cx.has_pending_prompt());
+        click_custom_close(&mut visual);
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(cx.windows().len(), 1);
+
+        visual.run_until_parked();
+        click_custom_close(&mut visual);
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("discard");
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
     }
 
     #[gpui::test]

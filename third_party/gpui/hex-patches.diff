@@ -47,6 +47,40 @@
  }
  
  impl Sealed for ScrollWheelEvent {}
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1226,6 +1226,7 @@
+                 title: Default::default(),
+                 appears_transparent: Default::default(),
+                 traffic_light_position: Default::default(),
++                hide_native_window_controls: Default::default(),
+             }),
+             focus: true,
+             show: true,
+@@ -1255,6 +1256,10 @@
+ 
+     /// The position of the macOS traffic light buttons
+     pub traffic_light_position: Option<Point<Pixels>>,
++
++    /// Hide the standard macOS close, minimize, and zoom buttons.
++    /// This does not change the native titlebar or window movement/resizing flags.
++    pub hide_native_window_controls: bool,
+ }
+ 
+ /// The kind of window to create
+@@ -1436,6 +1441,12 @@
+     /// A resize right cursor
+     /// corresponds to the CSS cursor value `e-resize`
+     ResizeRight,
++
++    /// A bracket cursor for trimming an item from its left edge.
++    ResizeLeftBracket,
++
++    /// A bracket cursor for trimming an item from its right edge.
++    ResizeRightBracket,
+ 
+     /// A resize cursor to the left and right
+     /// corresponds to the CSS cursor value `ew-resize`
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
 @@ -710,6 +710,8 @@
@@ -58,6 +92,17 @@
              CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
              CursorStyle::ResizeUp => &["n-resize", "top_side"],
              CursorStyle::ResizeDown => &["s-resize", "bottom_side"],
+--- a/src/platform/linux/wayland.rs
++++ b/src/platform/linux/wayland.rs
+@@ -22,6 +22,8 @@
+             CursorStyle::PointingHand => Shape::Pointer,
+             CursorStyle::ResizeLeft => Shape::WResize,
+             CursorStyle::ResizeRight => Shape::EResize,
++            CursorStyle::ResizeLeftBracket => Shape::WResize,
++            CursorStyle::ResizeRightBracket => Shape::EResize,
+             CursorStyle::ResizeLeftRight => Shape::EwResize,
+             CursorStyle::ResizeUp => Shape::NResize,
+             CursorStyle::ResizeDown => Shape::SResize,
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
 @@ -1788,6 +1788,7 @@
@@ -76,17 +121,6 @@
                              position: state.mouse_location.unwrap(),
                              delta: ScrollDelta::Lines(discrete),
                              modifiers: state.modifiers,
---- a/src/platform/linux/wayland.rs
-+++ b/src/platform/linux/wayland.rs
-@@ -22,6 +22,8 @@
-             CursorStyle::PointingHand => Shape::Pointer,
-             CursorStyle::ResizeLeft => Shape::WResize,
-             CursorStyle::ResizeRight => Shape::EResize,
-+            CursorStyle::ResizeLeftBracket => Shape::WResize,
-+            CursorStyle::ResizeRightBracket => Shape::EResize,
-             CursorStyle::ResizeLeftRight => Shape::EwResize,
-             CursorStyle::ResizeUp => Shape::NResize,
-             CursorStyle::ResizeDown => Shape::SResize,
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
 @@ -2215,6 +2215,7 @@
@@ -298,6 +332,50 @@
                      handle_view_event as extern "C" fn(&Object, Sel, id),
                  );
                  decl.add_method(
+@@ -405,6 +413,7 @@
+     last_key_equivalent: Option<KeyDownEvent>,
+     synthetic_drag_counter: usize,
+     traffic_light_position: Option<Point<Pixels>>,
++    hide_native_window_controls: bool,
+     transparent_titlebar: bool,
+     previous_modifiers_changed_event: Option<PlatformInput>,
+     keystroke_for_do_command: Option<Keystroke>,
+@@ -423,6 +432,25 @@
+ 
+ impl MacWindowState {
+     fn move_traffic_light(&self) {
++        if self.hide_native_window_controls {
++            unsafe {
++                for button_kind in [
++                    NSWindowButton::NSWindowCloseButton,
++                    NSWindowButton::NSWindowMiniaturizeButton,
++                    NSWindowButton::NSWindowZoomButton,
++                ] {
++                    let button: id = msg_send![
++                        self.native_window,
++                        standardWindowButton: button_kind
++                    ];
++                    if button != nil {
++                        let _: () = msg_send![button, setHidden: YES];
++                    }
++                }
++            }
++            return;
++        }
++
+         if let Some(traffic_light_position) = self.traffic_light_position {
+             if self.is_fullscreen() {
+                 // Moving traffic lights while fullscreen doesn't work,
+@@ -710,6 +738,9 @@
+                 traffic_light_position: titlebar
+                     .as_ref()
+                     .and_then(|titlebar| titlebar.traffic_light_position),
++                hide_native_window_controls: titlebar
++                    .as_ref()
++                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
+                 transparent_titlebar: titlebar
+                     .as_ref()
+                     .is_none_or(|titlebar| titlebar.appears_transparent),
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
 @@ -553,6 +553,7 @@
@@ -327,18 +405,3 @@
          | CursorStyle::ResizeLeftRight
          | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
          CursorStyle::ResizeUp
---- a/src/platform.rs
-+++ b/src/platform.rs
-@@ -1437,6 +1437,12 @@
-     /// corresponds to the CSS cursor value `e-resize`
-     ResizeRight,
- 
-+    /// A bracket cursor for trimming an item from its left edge.
-+    ResizeLeftBracket,
-+
-+    /// A bracket cursor for trimming an item from its right edge.
-+    ResizeRightBracket,
-+
-     /// A resize cursor to the left and right
-     /// corresponds to the CSS cursor value `ew-resize`
-     ResizeLeftRight,
