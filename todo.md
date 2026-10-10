@@ -1470,3 +1470,15 @@ No agent app launch, automatic merge or DSP parity claim. Earlier review apps
 remain intact. Attachment limit100 prevented attaching PR105; verified link is
 preserved in Pulse and this ledger. Operator panel2233 follows separately;
 live Operator parameter work2229 remains todo.
+
+## 10 October 2026 — Utility native visual refinement
+
+User reviewed PR105's review66 build: parameter behavior is retained, but the
+panel remains too wide and its controls too tall/thick. Pulse2232 returns to
+in_progress. Refine the same PR against the supplied Live Utility screenshot:
+narrower Input/Output columns, shorter controls, thin outlines and rounded
+frames/buttons/readouts. Preserve Hex colors, lowercase/font rules, canonical
+gestures, pending-value retirement, mode popup and regular/Return consistency.
+The screenshot's logical scale is inferred; exact visual acceptance remains
+with the user. Fresh source checks and a signed combined build follow the
+refinement; Operator UI2233 remains a separate subsequent PR.

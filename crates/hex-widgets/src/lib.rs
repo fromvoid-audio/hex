@@ -15,7 +15,8 @@ pub use discrete::{
     ToggleConfig,
 };
 pub use frame::{
-    DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT, device_frame, rounded_device_frame,
+    COMPACT_DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT,
+    compact_rounded_device_frame, device_frame, rounded_device_frame,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{

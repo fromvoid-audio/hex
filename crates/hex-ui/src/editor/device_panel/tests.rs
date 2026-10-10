@@ -277,7 +277,7 @@ fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mu
         "removing the instrument leaves the chain without a placeholder block"
     );
     let panel_after_instrument = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel_after_instrument.size.height, px(228.0));
+    assert_eq!(panel_after_instrument.size.height, px(213.0));
     assert_eq!(panel_after_instrument.size.height, panel_before.size.height);
 
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -405,7 +405,7 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
     let panel_before = visual
         .debug_bounds("device-panel")
         .expect("fixed device panel");
-    assert_eq!(panel_before.size.height, px(228.0));
+    assert_eq!(panel_before.size.height, px(213.0));
     let source = visual
         .debug_bounds("browser-device-instrument-hex.instrument.fm4")
         .expect("registered FM4 browser entry after sine");
@@ -481,7 +481,7 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
         "FM4's real carrier descriptor is rendered"
     );
     let panel_after = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel_after.size.height, px(228.0));
+    assert_eq!(panel_after.size.height, px(213.0));
     assert_eq!(panel_after.size.height, panel_before.size.height);
 }
 
@@ -538,19 +538,55 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(228.0));
+    assert_eq!(panel.size.height, px(213.0));
     let frame_selector = Box::leak(format!("effect-device-{}", device.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("utility frame");
-    assert_eq!(frame.size.width, px(184.0));
+    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.height, px(184.0));
     let input_selector = Box::leak(format!("utility-input-{}", device.value()).into_boxed_str());
     let output_selector = Box::leak(format!("utility-output-{}", device.value()).into_boxed_str());
     let input = visual.debug_bounds(input_selector).expect("input column");
     let output = visual.debug_bounds(output_selector).expect("output column");
-    assert_eq!(input.size.width, px(82.0));
-    assert_eq!(output.size.width, px(82.0));
+    assert_eq!(input.size.width, px(64.0));
+    assert_eq!(output.size.width, px(64.0));
     let body_selector = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Utility body");
-    assert_eq!(body.size.height, px(179.0));
+    assert_eq!(body.size.width, px(140.0));
+    assert_eq!(body.size.height, px(168.0));
+    let mut parameter_bounds = |id: u32, suffix: &str| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{id}{suffix}", device.value()).into_boxed_str(),
+            ))
+            .unwrap_or_else(|| panic!("Utility parameter {id}{suffix} is rendered"))
+    };
+    for id in [1, 2, 10] {
+        let dial = parameter_bounds(id, "-knob");
+        assert!(dial.size.width >= px(24.0) && dial.size.width <= px(26.0));
+        assert!(dial.size.height >= px(24.0) && dial.size.height <= px(26.0));
+        let readout = parameter_bounds(id, "-value");
+        assert_eq!(readout.size.width, px(64.0));
+        assert_eq!(readout.size.height, px(14.0));
+    }
+    let cutoff = parameter_bounds(13, "");
+    assert_eq!(cutoff.size.width, px(46.0));
+    assert_eq!(cutoff.size.height, px(14.0));
+    assert_eq!(parameter_bounds(13, "-value").size.height, px(14.0));
+    for (id, width) in [
+        (5, 31.0),
+        (6, 31.0),
+        (7, 64.0),
+        (8, 31.0),
+        (11, 31.0),
+        (12, 64.0),
+    ] {
+        let bounds = parameter_bounds(id, "");
+        assert_eq!(bounds.size.width, px(width));
+        assert_eq!(bounds.size.height, px(14.0));
+        assert!(bounds.origin.x >= body.origin.x);
+        assert!(bounds.origin.x + bounds.size.width <= body.origin.x + body.size.width);
+    }
+    drop(parameter_bounds);
     let mode_knob = Box::leak(
         format!(
             "device-{}-parameter-{}-knob",
@@ -580,6 +616,16 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         visual.debug_bounds(width_knob).is_some(),
         "canonical width mode is shown after pending state clears"
     );
+    let mut parameter_bounds = |id: u32, suffix: &str| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{id}{suffix}", device.value()).into_boxed_str(),
+            ))
+            .unwrap_or_else(|| panic!("Utility parameter {id}{suffix} is rendered"))
+    };
+    assert!(parameter_bounds(3, "-knob").size.width >= px(24.0));
+    assert!(parameter_bounds(3, "-value").size.width >= px(60.0));
+    drop(parameter_bounds);
     let gain_value =
         Box::leak(format!("device-{}-parameter-1-value", device.value()).into_boxed_str());
     let gain_bounds = visual.debug_bounds(gain_value).expect("gain readout");
@@ -607,12 +653,21 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
             format!("utility-bass-mono-audition-{}", device.value()).into_boxed_str(),
         ))
         .expect("headphone audition control");
-    assert_eq!(audition.size.width, px(24.0));
-    for suffix in ["device-bypass", "device-remove"] {
+    assert_eq!(audition.size.width, px(14.0));
+    for suffix in [
+        "device-bypass",
+        "device-up",
+        "device-down",
+        "device-remove",
+        "device-drag-grip",
+    ] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
         assert!(action.origin.x + action.size.width <= frame.origin.x + frame.size.width);
+        assert_eq!(action.size.height, px(12.0));
+        assert!(action.origin.y >= frame.origin.y);
+        assert!(action.origin.y + action.size.height <= frame.origin.y + px(14.0));
     }
 
     let dial = visual
@@ -928,13 +983,31 @@ fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(228.0));
+    assert_eq!(panel.size.height, px(213.0));
     let frame = visual
         .debug_bounds(Box::leak(
             format!("effect-device-{}", device.value()).into_boxed_str(),
         ))
         .expect("return Utility frame");
-    assert_eq!(frame.size.width, px(184.0));
+    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.height, px(184.0));
+    let body = visual
+        .debug_bounds(Box::leak(
+            format!("device-body-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("return Utility body");
+    assert_eq!(body.size.height, px(168.0));
+    for suffix in ["device-bypass", "return-device-remove"] {
+        let action = visual
+            .debug_bounds(Box::leak(
+                format!("{suffix}-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("return Utility header action");
+        assert_eq!(action.size.height, px(12.0));
+        assert!(action.origin.x >= frame.origin.x);
+        assert!(action.origin.x + action.size.width <= frame.origin.x + frame.size.width);
+        assert!(action.origin.y + action.size.height <= frame.origin.y + px(14.0));
+    }
     assert!(
         visual
             .debug_bounds(Box::leak(
