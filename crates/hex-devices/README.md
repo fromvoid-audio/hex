@@ -10,7 +10,9 @@ registered analytic instrument definition. FM4 is selectable as a bounded
 acyclic native instrument; mutable feedback and full Operator behavior remain
 outside this crate's current runtime contract. The standalone original
 [oscillator envelope kernel](../../docs/operator-envelopes.md) prepares four
-independent finite amplitude laws; it is not connected to the registered FM4.
+independent finite amplitude laws. A separate
+[standalone enveloped FM composition](../../docs/operator-fm.md) shares the
+oscillator core; neither changes the registered FM4 envelope or state.
 
 ## Dependencies
 
