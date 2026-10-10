@@ -2161,3 +2161,15 @@ For one track with 16 held notes, the measured handoff median range drops from
 change does not solve the 100-track deadline gap. Whole-project history copying
 and repeated layered compatibility checks remain separate work. No statistical
 speedup, CPAL deadline, native listening or Ableton parity claim is inferred.
+
+### eq8 selected-band audition kernel (11 october 2026)
+
+Pulse2292 adds 160 bytes per EQ8 runtime (3632 → 3792 bytes), keeping the existing
+4096-byte per-twin limit. Registered standalone processing/selection/handoff/reset
+probes report zero total and signed-net allocations and bytes. Three interleaved
+48 khz/128-frame release rounds on M5 Pro measured normal p50 21.54–21.67 μs
+before and 21.63–21.67 μs after; active audition p50 was 23.54 μs. Normal PCM
+checksums matched. This eight-enabled-band standalone fixture does not measure
+CPAL, graph lease dispatch, native interaction or physical deadline behavior.
+See [the kernel contract and evidence](eq-eight-audition.md#local-kernel-evidence-11-october)
+for exact source, timing window, raw evidence and limitations.

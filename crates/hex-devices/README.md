@@ -28,7 +28,9 @@ pitch-independent tuning through generic versioned state and metadata.
 The [standalone and registered feedback contract](../../docs/operator-feedback.md)
 defines the per-note recurrence, fixed 16-voice runtime, and current class-change
 handoff limits. Larger native polyphony and broader seek/loop/export proof remain
-separate work.
+separate work. The independent [EQ band audition kernel](../../docs/eq-eight-audition.md)
+provides a transient, bounded selected-band monitor without adding authored
+device state or changing the ordinary EQ cascade.
 
 ## Dependencies
 

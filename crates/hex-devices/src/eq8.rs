@@ -17,6 +17,7 @@ use std::sync::Arc;
 pub const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
 pub const BAND_COUNT: usize = 8;
 pub const EQ8_RUNTIME_BYTES: usize = std::mem::size_of::<Eq8Runtime>();
+pub const EQ8_AUDITION_CROSSFADE_FRAMES: u16 = 256;
 const STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 1 + 4 + 5 * BAND_COUNT * 14;
 const MIN_HZ: f32 = 20.0;
@@ -27,6 +28,34 @@ const MAX_Q: f32 = 18.0;
 const HISTORY_FLOOR: f64 = 1.0e-30;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const MIN_SAMPLE_RATE: u32 = 8_000;
+
+/// A transient EQ band audition target. `edit_lane` selects left/right or
+/// mid/side in those modes; stereo mode auditions the band on both channels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Eq8AuditionSelection {
+    band: u8,
+    edit_lane: u8,
+}
+
+impl Eq8AuditionSelection {
+    pub fn new(band: usize, edit_lane: usize) -> Result<Self, DeviceContractError> {
+        if band >= BAND_COUNT || edit_lane >= 2 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        Ok(Self {
+            band: band as u8,
+            edit_lane: edit_lane as u8,
+        })
+    }
+
+    pub const fn band(self) -> usize {
+        self.band as usize
+    }
+
+    pub const fn edit_lane(self) -> usize {
+        self.edit_lane as usize
+    }
+}
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -342,6 +371,7 @@ struct PreparedEq8 {
     mode: ChannelMode,
     output_gain: f64,
     target: Arc<[[[Coefficients; 4]; BAND_COUNT]; 2]>,
+    enabled_bands: [[bool; BAND_COUNT]; 2],
 }
 
 impl PreparedEq8 {
@@ -364,14 +394,19 @@ impl PreparedEq8 {
             ChannelMode::MidSide => [3, 4],
         };
         let mut target = [[[Coefficients::IDENTITY; 4]; BAND_COUNT]; 2];
-        for channel in 0..2 {
-            target[channel] = banks[selected[channel]];
+        let mut enabled_bands = [[false; BAND_COUNT]; 2];
+        for (channel, bank_index) in selected.into_iter().enumerate() {
+            target[channel] = banks[bank_index];
+            for (band, enabled) in enabled_bands[channel].iter_mut().enumerate() {
+                *enabled = settings.banks[bank_index][band].enabled;
+            }
         }
         Ok(Self {
             sample_rate,
             mode: settings.mode,
             output_gain: f64::from(settings.output_gain),
             target: Arc::new(target),
+            enabled_bands,
         })
     }
 
@@ -386,6 +421,11 @@ impl PreparedEq8 {
             smooth_remaining: 0,
             active_bands: active_band_flags(&self.target),
             history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
+            enabled_bands: self.enabled_bands,
+            audition_selection: None,
+            audition_request: None,
+            audition_mix: 0.0,
+            audition_history: [[[0.0; 2]; 4]; 2],
         }
     }
 }
@@ -441,13 +481,33 @@ pub struct Eq8Runtime {
     smooth_remaining: u16,
     active_bands: [[bool; BAND_COUNT]; 2],
     history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
+    enabled_bands: [[bool; BAND_COUNT]; 2],
+    audition_selection: Option<Eq8AuditionSelection>,
+    audition_request: Option<Eq8AuditionSelection>,
+    audition_mix: f64,
+    audition_history: [[[f64; 2]; 4]; 2],
 }
 
 const COEFFICIENT_SMOOTH_FRAMES: u16 = 256;
 
 impl Eq8Runtime {
+    /// Request a transient band audition. Invalid or disabled bands leave the
+    /// current audition request untouched. Mode- or lane changes crossfade
+    /// through the normal cascade and clear the parallel history at the switch.
+    pub fn set_audition_selection(
+        &mut self,
+        selection: Option<Eq8AuditionSelection>,
+    ) -> Result<(), DeviceContractError> {
+        if selection.is_some_and(|selection| !self.selection_is_enabled(selection)) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.audition_request = selection;
+        Ok(())
+    }
+
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
         self.advance_coefficients();
+        self.advance_audition();
         let source = match self.mode {
             ChannelMode::Stereo | ChannelMode::LeftRight => {
                 [f64::from(input[0]), f64::from(input[1])]
@@ -463,17 +523,11 @@ impl Eq8Runtime {
                 if !self.active_bands[channel][band] {
                     continue;
                 }
-                for stage in 0..4 {
-                    let coefficients = self.coefficients[channel][band][stage];
-                    let history = &mut self.history[channel][band][stage];
-                    let output = coefficients.b0 * *filtered_channel + history[0];
-                    history[0] = quiet(
-                        coefficients.b1 * *filtered_channel - coefficients.a1 * output + history[1],
-                    );
-                    history[1] =
-                        quiet(coefficients.b2 * *filtered_channel - coefficients.a2 * output);
-                    *filtered_channel = quiet(output);
-                }
+                *filtered_channel = process_band(
+                    *filtered_channel,
+                    &self.coefficients[channel][band],
+                    &mut self.history[channel][band],
+                );
                 self.active_bands[channel][band] = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
                         || self.target[channel][band][stage] != Coefficients::IDENTITY
@@ -487,9 +541,47 @@ impl Eq8Runtime {
             ChannelMode::Stereo | ChannelMode::LeftRight => filtered,
             ChannelMode::MidSide => [filtered[0] + filtered[1], filtered[0] - filtered[1]],
         };
-        [
+        let normal = [
             finite_f32(output[0] * self.current_gain),
             finite_f32(output[1] * self.current_gain),
+        ];
+        let Some(selection) = self.audition_selection else {
+            return normal;
+        };
+        let mut audition = source;
+        let channels: &[usize] = match self.mode {
+            ChannelMode::Stereo => &[0, 1],
+            ChannelMode::LeftRight | ChannelMode::MidSide => {
+                if selection.edit_lane() == 0 {
+                    &[0]
+                } else {
+                    &[1]
+                }
+            }
+        };
+        for &channel in channels {
+            audition[channel] = process_band(
+                audition[channel],
+                &self.coefficients[channel][selection.band()],
+                &mut self.audition_history[channel],
+            );
+        }
+        let audition = match self.mode {
+            ChannelMode::Stereo | ChannelMode::LeftRight => audition,
+            ChannelMode::MidSide => [audition[0] + audition[1], audition[0] - audition[1]],
+        };
+        let mix = self.audition_mix;
+        [
+            finite_f32(
+                (f64::from(normal[0])
+                    + (audition[0] * self.current_gain - f64::from(normal[0])) * mix)
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)),
+            ),
+            finite_f32(
+                (f64::from(normal[1])
+                    + (audition[1] * self.current_gain - f64::from(normal[1])) * mix)
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)),
+            ),
         ]
     }
 
@@ -501,10 +593,14 @@ impl Eq8Runtime {
 
     pub fn reset(&mut self) {
         self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
+        self.audition_history = [[[0.0; 2]; 4]; 2];
         self.coefficients = *self.target;
         self.current_gain = self.target_gain;
         self.smooth_remaining = 0;
         self.active_bands = active_band_flags(&self.target);
+        self.audition_selection = None;
+        self.audition_request = None;
+        self.audition_mix = 0.0;
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
@@ -529,8 +625,62 @@ impl Eq8Runtime {
             self.coefficients = previous.coefficients;
             self.history = previous.history;
             self.refresh_active_bands();
+            if previous
+                .audition_selection
+                .is_none_or(|selection| self.selection_is_enabled(selection))
+                && previous
+                    .audition_request
+                    .is_none_or(|selection| self.selection_is_enabled(selection))
+            {
+                self.audition_selection = previous.audition_selection;
+                self.audition_request = previous.audition_request;
+                self.audition_mix = previous.audition_mix;
+                self.audition_history = previous.audition_history;
+            } else {
+                self.clear_audition();
+            }
             true
         }
+    }
+
+    fn selection_is_enabled(&self, selection: Eq8AuditionSelection) -> bool {
+        match self.mode {
+            ChannelMode::Stereo => {
+                self.enabled_bands[0][selection.band()] && self.enabled_bands[1][selection.band()]
+            }
+            ChannelMode::LeftRight | ChannelMode::MidSide => {
+                self.enabled_bands[selection.edit_lane()][selection.band()]
+            }
+        }
+    }
+
+    fn advance_audition(&mut self) {
+        if self.audition_selection != self.audition_request {
+            if self.audition_mix > 0.0 {
+                self.audition_mix =
+                    (self.audition_mix - 1.0 / f64::from(EQ8_AUDITION_CROSSFADE_FRAMES)).max(0.0);
+                if self.audition_mix == 0.0 {
+                    self.audition_selection = self.audition_request;
+                    self.audition_history = [[[0.0; 2]; 4]; 2];
+                }
+                return;
+            }
+            self.audition_selection = self.audition_request;
+            self.audition_history = [[[0.0; 2]; 4]; 2];
+        }
+        if self.audition_selection.is_some() {
+            self.audition_mix =
+                (self.audition_mix + 1.0 / f64::from(EQ8_AUDITION_CROSSFADE_FRAMES)).min(1.0);
+        } else {
+            self.audition_mix = 0.0;
+        }
+    }
+
+    fn clear_audition(&mut self) {
+        self.audition_selection = None;
+        self.audition_request = None;
+        self.audition_mix = 0.0;
+        self.audition_history = [[[0.0; 2]; 4]; 2];
     }
 
     fn advance_coefficients(&mut self) {
@@ -576,13 +726,36 @@ impl Eq8Runtime {
     }
 
     pub fn is_quiescent(&self) -> bool {
-        self.history
-            .iter()
-            .flatten()
-            .flatten()
-            .flatten()
-            .all(|value| *value == 0.0)
+        self.audition_selection.is_none()
+            && self.audition_request.is_none()
+            && self.audition_mix == 0.0
+            && self
+                .audition_history
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|value| *value == 0.0)
+            && self
+                .history
+                .iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .all(|value| *value == 0.0)
     }
+}
+
+fn process_band(mut input: f64, coefficients: &BandStages, history: &mut [[f64; 2]; 4]) -> f64 {
+    for stage in 0..4 {
+        let coefficients = coefficients[stage];
+        let stage_history = &mut history[stage];
+        let output = coefficients.b0 * input + stage_history[0];
+        stage_history[0] =
+            quiet(coefficients.b1 * input - coefficients.a1 * output + stage_history[1]);
+        stage_history[1] = quiet(coefficients.b2 * input - coefficients.a2 * output);
+        input = quiet(output);
+    }
+    input
 }
 
 fn active_band_flags(
