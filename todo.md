@@ -1091,3 +1091,12 @@ Root acceptance adds fault/shutdown admission gates and verifies all8 prepared
 seek UI tests. After publication, cancellation suppresses UI completion but
 cannot withdraw the accepted audio owner; canonical edits alone are not an audio
 fence. A stronger cancellation barrier remains follow-up work.
+
+## 10 October2026 — Pulse2205 Operator fixed tuning
+
+Original per-oscillator Fixed mode, frequency and multiplier now use the generic
+Lattice metadata/state contract. Version3 preserves old prefixes, uses288 bytes
+and69 descriptors; shared context/note sizes are688/48 bytes. Independent PCM,
+canonical refusal/history, opaque persistence and callback allocation checks pass.
+See [the contract](docs/operator-fixed-tuning.md). Full local CI, focused PR and
+combined native review/listening are pending; no full Operator parity claim.
