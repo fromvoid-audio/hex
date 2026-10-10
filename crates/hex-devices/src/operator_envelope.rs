@@ -93,7 +93,7 @@ impl OperatorEnvelope {
 /// Heap-free immutable sample law. Absolute note age and gate duration are frames.
 /// A note's gate is fixed for this pure query; an event-driven voice must latch
 /// its actual NoteOff age before using the released part of this law.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedOperatorEnvelope {
     initial: f64,
     peak: f64,
@@ -147,7 +147,7 @@ impl PreparedOperatorEnvelope {
 }
 
 /// Four independently prepared oscillator envelopes, without a voice scheduler.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedOperatorEnvelopes {
     envelopes: [PreparedOperatorEnvelope; OPERATOR_ENVELOPES],
 }

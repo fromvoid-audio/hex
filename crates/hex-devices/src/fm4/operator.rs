@@ -6,9 +6,11 @@ use crate::operator_waveform::{
 };
 mod context;
 mod feedback;
+mod retarget;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
 pub use feedback::PreparedOperatorFeedbackVoice;
+pub use retarget::{OperatorFeedbackParameters, PreparedOperatorFeedbackRetarget};
 pub use tuning::OperatorTuning;
 
 /// Original immutable acyclic FM note, not a registered native device.

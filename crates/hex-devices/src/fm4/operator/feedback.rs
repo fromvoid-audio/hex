@@ -4,13 +4,14 @@ use crate::{Invalid, SineTable, fm4::OPERATORS};
 
 /// One stateful note. Process with the immutable configuration that prepared it.
 /// This compact value owns note phase data, gate age and four feedback memories.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedOperatorFeedbackVoice {
-    note: PreparedOperatorNote,
-    feedback_turns: [f64; OPERATORS],
-    age_frames: u64,
-    gate_frame: Option<u64>,
-    previous_outputs: [f64; OPERATORS],
+    pub(super) note: PreparedOperatorNote,
+    pub(super) configuration_id: u64,
+    pub(super) feedback_turns: [f64; OPERATORS],
+    pub(super) age_frames: u64,
+    pub(super) gate_frame: Option<u64>,
+    pub(super) previous_outputs: [f64; OPERATORS],
 }
 
 impl PreparedOperatorConfiguration {
@@ -33,6 +34,7 @@ impl PreparedOperatorConfiguration {
         let note = self.prepare_note(pitch, velocity)?;
         Ok(PreparedOperatorFeedbackVoice {
             note,
+            configuration_id: self.configuration_id() << 1,
             feedback_turns,
             age_frames: 0,
             gate_frame: None,
@@ -52,6 +54,14 @@ impl PreparedOperatorFeedbackVoice {
         self.gate_frame
     }
 
+    pub(super) const fn configuration_id(&self) -> u64 {
+        self.configuration_id >> 1
+    }
+
+    pub(super) const fn is_ramp_participant(&self) -> bool {
+        self.configuration_id & 1 != 0
+    }
+
     /// Latch NoteOff at the next frame to be rendered. A second NoteOff is an
     /// explicit error and leaves the voice unchanged.
     pub fn note_off(&mut self) -> Result<(), Invalid> {
@@ -63,20 +73,26 @@ impl PreparedOperatorFeedbackVoice {
     }
 
     /// Render one frame with the prior sample's shaped oscillator outputs.
-    /// Frame overflow and a mismatched waveform configuration are refused
+    /// Frame overflow and a mismatched prepared configuration are refused
     /// before advancing age or feedback history.
+    #[inline]
     pub fn process_frame(
         &mut self,
         configuration: &PreparedOperatorConfiguration,
         table: &SineTable,
     ) -> Result<f32, Invalid> {
+        if self.is_ramp_participant() {
+            return Err(Invalid(
+                "operator feedback voice has an active retarget ramp",
+            ));
+        }
         let next_age = self
             .age_frames
             .checked_add(1)
             .ok_or(Invalid("operator feedback voice age overflow"))?;
         if !configuration.note_matches_configuration(&self.note) {
             return Err(Invalid(
-                "operator feedback voice does not match its waveform configuration",
+                "operator feedback voice does not match its prepared configuration",
             ));
         }
         let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
@@ -99,6 +115,28 @@ impl PreparedOperatorFeedbackVoice {
         self.previous_outputs = outputs;
         self.age_frames = next_age;
         Ok(sample)
+    }
+
+    /// Rebind a quiescent retarget identity after a caller has already proved
+    /// exact native history compatibility. This rejects active ramp voices;
+    /// their shared ramp object must be copied and rebound with them.
+    pub fn rebind_after_exact_history_copy(
+        &mut self,
+        source: &PreparedOperatorConfiguration,
+        replacement: &PreparedOperatorConfiguration,
+    ) -> Result<(), Invalid> {
+        if self.is_ramp_participant()
+            || self.configuration_id() != source.configuration_id()
+            || !source.identical_to(replacement)
+            || !source.note_matches_configuration(&self.note)
+            || !replacement.note_matches_configuration(&self.note)
+        {
+            return Err(Invalid(
+                "Operator voice cannot rebind without exact inactive history compatibility",
+            ));
+        }
+        self.configuration_id = replacement.configuration_id() << 1;
+        Ok(())
     }
 }
 
@@ -314,7 +352,7 @@ mod tests {
     fn sine_feedback_matches_independent_full_output_oracle_across_noteoff_and_partitions() {
         let config = fixture([OperatorWaveform::Sine; OPERATORS]);
         assert!(std::mem::size_of::<PreparedOperatorFeedbackVoice>() <= 192);
-        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 704);
+        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 744);
         println!(
             "feedback voice={}B, compact note={}B, configuration={}B",
             std::mem::size_of::<PreparedOperatorFeedbackVoice>(),

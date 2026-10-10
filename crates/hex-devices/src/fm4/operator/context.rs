@@ -1,10 +1,15 @@
 //! Shared original DSP configuration with compact, independently prepared notes.
+use super::retarget::OperatorFeedbackParameters;
 use super::*;
 use crate::fm4::PreparedFmConfiguration;
 use crate::operator_waveform::{
     OperatorWaveform, OperatorWaveformBank, harmonic_cap_index, is_canonical_harmonic_cap,
     prepared_bank,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_CONFIGURATION_ID: AtomicU64 = AtomicU64::new(1);
+const MAX_CONFIGURATION_ID: u64 = u64::MAX >> 1;
 
 /// Immutable rate-specific original Operator configuration, with no heap owners.
 /// The caller keeps it alive for every note prepared against it. Native host
@@ -12,9 +17,11 @@ use crate::operator_waveform::{
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
+    configuration_id: u64,
     ratios: [f64; OPERATORS],
     tuning: [OperatorTuning; OPERATORS],
     configuration: PreparedFmConfiguration,
+    oscillator_levels: [f64; OPERATORS],
     envelopes: PreparedOperatorEnvelopes,
     waveforms: [OperatorWaveform; OPERATORS],
     amplitude_velocity: [f32; OPERATORS],
@@ -23,7 +30,7 @@ pub struct PreparedOperatorConfiguration {
 
 /// Compact pitch/velocity data. Sample only against its preparing configuration.
 /// No oscillator graph or envelope is copied into an individual note.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedOperatorNote {
     steps: [u64; OPERATORS],
     velocity: f64,
@@ -118,11 +125,22 @@ impl PreparedOperatorConfiguration {
         } else {
             None
         };
+        let configuration_id = NEXT_CONFIGURATION_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                if current < MAX_CONFIGURATION_ID {
+                    current.checked_add(1)
+                } else {
+                    None
+                }
+            })
+            .map_err(|_| Invalid("operator configuration identity exhausted"))?;
         Ok(Self {
             sample_rate,
+            configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
             tuning,
             configuration: PreparedFmConfiguration::new(oscillators, routing),
+            oscillator_levels: oscillators.map(|oscillator| oscillator.level),
             envelopes,
             waveforms,
             amplitude_velocity,
@@ -224,6 +242,42 @@ impl PreparedOperatorConfiguration {
         })
     }
 
+    pub(super) fn feedback_parameters(
+        &self,
+        feedback_turns: [f64; OPERATORS],
+    ) -> Result<OperatorFeedbackParameters, Invalid> {
+        if !self.feedback_amounts_are_valid(feedback_turns) {
+            return Err(Invalid("invalid Operator feedback retarget values"));
+        }
+        Ok(OperatorFeedbackParameters {
+            oscillator_levels: self.oscillator_levels,
+            carrier_weights: self.configuration.routing.carriers,
+            feedback_turns,
+        })
+    }
+
+    pub(super) const fn configuration_id(&self) -> u64 {
+        self.configuration_id
+    }
+
+    pub(super) fn retarget_compatible_with(&self, target: &PreparedOperatorConfiguration) -> bool {
+        self.sample_rate == target.sample_rate
+            && self.ratios == target.ratios
+            && self.tuning == target.tuning
+            && self.configuration.phases == target.configuration.phases
+            && self.configuration.routing.modulation == target.configuration.routing.modulation
+            && self.configuration.routing.order == target.configuration.routing.order
+            && self.envelopes == target.envelopes
+            && self.waveforms == target.waveforms
+            && self.amplitude_velocity == target.amplitude_velocity
+    }
+
+    pub(super) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
+        self.retarget_compatible_with(target)
+            && self.oscillator_levels == target.oscillator_levels
+            && self.configuration.routing.carriers == target.configuration.routing.carriers
+    }
+
     pub(super) fn sample_with_feedback(
         &self,
         table: &SineTable,
@@ -261,6 +315,52 @@ impl PreparedOperatorConfiguration {
                     (&self.waveforms, &harmonic_caps),
                     phase_modulation,
                 )
+        } else {
+            return (0.0, [0.0; OPERATORS]);
+        };
+        ((routed * note.velocity) as f32, signals)
+    }
+
+    #[inline]
+    pub(super) fn sample_with_feedback_parameters(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        gate_frames: u64,
+        parameters: OperatorFeedbackParameters,
+        previous_outputs: [f64; OPERATORS],
+    ) -> (f32, [f64; OPERATORS]) {
+        let mut configuration = self.configuration;
+        configuration.levels = parameters.oscillator_levels;
+        configuration.routing.carriers = parameters.carrier_weights;
+        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
+            return (0.0, [0.0; OPERATORS]);
+        }
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
+        }
+        let phase_modulation =
+            std::array::from_fn(|index| previous_outputs[index] * parameters.feedback_turns[index]);
+        let (routed, signals) = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
+            configuration.routed_output_with_feedback::<true>(
+                table,
+                age_frames,
+                &note.steps,
+                amplitudes,
+                phase_modulation,
+            )
+        } else if let Some(bank) = self.waveform_bank {
+            let harmonic_caps = unpack_caps(note.harmonic_caps);
+            configuration.routed_output_with_waveforms_and_feedback(
+                table,
+                bank,
+                (age_frames, &note.steps),
+                amplitudes,
+                (&self.waveforms, &harmonic_caps),
+                phase_modulation,
+            )
         } else {
             return (0.0, [0.0; OPERATORS]);
         };

@@ -22,7 +22,10 @@ native visual acceptance remains pending.
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`
-occupies704 bytes and owns no per-context allocations. Each
+occupies744 bytes and owns no per-context allocations. The standalone feedback
+retarget kernel adds a checked configuration identity and prepared oscillator
+levels for a shared control-side ramp; see the
+[feedback contract](operator-feedback.md). Each
 `PreparedOperatorNote` is64 bytes, with four phase increments, one velocity
 coefficient, four packed cap indices and four prepared amplitude scales. The
 caller must sample a note against its preparing configuration. The engine's
@@ -47,7 +50,7 @@ the prior sampling route and exact PCM. Non-sine shapes use a process-wide bank
 whose table data is245,880 bytes; the fixed OnceLock cell occupies24 bytes on this64-bit target, including
 the16-byte Box descriptor (245,904 bytes total before allocator bookkeeping). Each
 non-sine context holds only a static reference. For100 notes sharing one
-configuration, the shared configuration and compact-note storage is7,104 bytes; this excludes
+configuration, the shared configuration and compact-note storage is7,144 bytes; this excludes
 host note records, banks, references and graph/retirement storage.
 
 The current79 device tests pass. Exact-bit comparisons cover arbitrary/reverse acyclic

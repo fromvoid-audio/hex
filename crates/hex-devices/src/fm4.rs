@@ -9,8 +9,9 @@
 pub mod device;
 mod operator;
 pub use operator::{
-    OperatorTuning, PreparedOperatorConfiguration, PreparedOperatorFeedbackVoice,
-    PreparedOperatorFm4, PreparedOperatorNote,
+    OperatorFeedbackParameters, OperatorTuning, PreparedOperatorConfiguration,
+    PreparedOperatorFeedbackRetarget, PreparedOperatorFeedbackVoice, PreparedOperatorFm4,
+    PreparedOperatorNote,
 };
 
 use crate::operator_waveform::{OperatorWaveform, OperatorWaveformBank};

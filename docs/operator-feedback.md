@@ -34,6 +34,46 @@ The caller must keep using the configuration that prepared the voice. This API
 is standalone; source inspection and unit tests do not prove native audio
 callback admission or allocation behavior.
 
+## standalone parameter retarget kernel (Pulse2284)
+
+`PreparedOperatorFeedbackRetarget` is a fixed, copyable control-prepared value
+borrowed while processing the voices that existed at the edit. It linearly
+interpolates oscillator levels, carrier weights and effective self-feedback in
+their authored domains. The default duration is five milliseconds rounded to
+the nearest sample (221 frames at 44.1 kHz; 240 at 48 kHz). Callers may select
+1–4,096 frames. The first rendered sample uses the exact old values, and after
+the final ramp sample the voice contains the exact new feedback values and
+continues through ordinary processing without a parameter jump. Phase, age,
+NoteOff, waveform, tuning, envelopes, modulation, velocity and oscillator
+history remain unchanged.
+
+Preparation refuses unsupported configuration edits and changes into or out of
+the mutable-feedback processing class before altering voice state. Retargeting
+an active ramp starts from its interpolated value at the caller-provided sample
+boundary; the caller must advance one shared ramp clock consistently for all
+participating voices. New voices created under the target configuration during
+an active ramp are not members of that ramp. Their admission/playback behavior
+is intentionally left for the native host integration contract (Pulse2229).
+Each voice records the unique identity of the configuration that prepared it,
+so the kernel can pair it with that exact source and the ramp's exact target.
+The identity is not content-derived. A future host history-copy path that moves
+an exact voice to a separately constructed but equal configuration must call
+`rebind_after_exact_history_copy` after proving the copied voice history and
+configuration are identical. Legacy `process_frame` remains permissive to
+support its prior history-copy semantics, and refuses a voice while its ramp is
+active.
+
+On this 64-bit arm64 build, the standalone configuration is 744 bytes (40 bytes
+larger for retarget preparation data and identity), a feedback voice is 160
+bytes (8 bytes for its configuration/active-ramp token), and one shared ramp is
+216 bytes. Sixteen voices plus one shared ramp occupy 2,776 bytes. The existing
+registered runtime without an integrated ramp declares a measured 3,808-byte
+twin and 7,616 bytes for its pair. One shared ramp per twin would add 216 bytes,
+for 4,024 bytes per twin and 8,048 bytes per pair under the established 8,192-
+byte ceiling. The runtime continues to admit sixteen voices. These are storage
+measurements, not callback allocation or deadline claims. The standalone
+kernel is not yet wired to live registered parameter edits.
+
 NoteOff latches at the next frame to render. The envelope is evaluated at that
 same age, so it begins release from its instantaneous attack/decay/sustain
 level. A second NoteOff is refused without changing state. There is no feedback
@@ -80,6 +120,25 @@ profile does not time `process_frame` with nonzero feedback. That recurrence is
 covered by unit oracles only; measure it separately before making performance
 claims.
 
+## retarget kernel timing sample — 10 October 2026
+
+A single release comparison on Apple M5 Pro, macOS26.6.2 and rustc1.98.1
+used48kHz,16 voices,100 warmups and2,000 measured episodes. Each episode
+contains256 frames (two128-frame blocks); fresh voices and the shared ramp
+were prepared outside timing. The ramp episode uses240 ramp frames followed
+by16 ordinary frames. Ordinary processing took0.603s total with episode
+median/p95/p99 of259.6/450.7/701.9µs; ramp processing took1.007s with
+438.6/723.6/1,044.4µs. Totals include warmups; percentiles exclude them.
+The paths ran sequentially, without interleaving or controlling host load.
+
+The exact probe source, output, binary hash, compiler, hardware and base
+revision metadata are retained in
+`artifacts/profiles/operator-retarget-kernel-2284/`. The probe was built from
+the isolated kernel change on base100a623 before this branch's documentation
+integration. This sample demonstrates additional ramp work; it does not
+establish sustained held-note throughput, native callback deadlines or a
+Live performance comparison. Native integration remains Pulse2229.
+
 ## registered native runtime
 
 Pulse2225 exposes four authored amounts through Operator state version5. The
@@ -91,9 +150,11 @@ removing the edge reactivates the saved value. If every effective amount is
 zero, the existing shared analytic path remains selected.
 
 Any nonzero effective amount selects a fixed-array mutable runtime. It declares
-16 active occurrences, 256 events per block, and a 3,640-byte twin on the current
-64-bit arm64 build. The paired runtime uses 7,280 declared bytes, within the
-existing 8,192-byte pair ceiling. It does not claim 64-voice Operator support.
+16 active occurrences, 256 events per block, and a measured 3,808-byte twin on
+the current 64-bit arm64 build. The paired runtime uses 7,616 declared bytes,
+within the existing 8,192-byte pair ceiling. Before the standalone retarget
+kernel's identity and voice state, the baseline was 3,640 bytes per twin and
+7,280 bytes paired. It does not claim 64-voice Operator support.
 Density admission uses the declared 16-voice capacity, so a denser source is
 refused before the runtime is published. There is no stealing, truncation,
 callback allocation, lazy table initialization, device construction, locking or

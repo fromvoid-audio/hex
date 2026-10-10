@@ -1596,3 +1596,18 @@ invalid drafts, one-step drag/Undo, focused Up-key editing, stationary typing an
 neighboring Utility state. Focused test passes; full local CI, PR review and
 native visual acceptance remain pending. See [Operator shell context contract]
 (docs/operator-context.md#shell-to-detail-selection-contract).
+
+## 10 October 2026 — Operator retarget kernel (Pulse2284)
+
+- Added bounded shared ramps for oscillator level, carrier weight and effective
+  feedback depth, preserving phase, feedback memory, age and NoteOff.
+- Unsupported laws and transitions into/out of the mutable feedback class
+  refuse before mutation; active-ramp continuation and exact endpoint handoff
+  have focused regression coverage. Exact history copy remains separate.
+- Isolated crate validation:106 device tests, formatting and strict all-target
+  crate Clippy passed. Primary reviewed the integrated diff; full final-tree
+  local CI follows on this focused branch.
+- Measured current runtime3,808B/twin; future shared ramp216B projects to
+ 8,048B/pair within the existing8,192B ceiling. No native retarget wiring yet.
+- Original release timing sample and limitations:docs/operator-feedback.md.
+  Host integration/admission, callback probes and native listening remain2229.
