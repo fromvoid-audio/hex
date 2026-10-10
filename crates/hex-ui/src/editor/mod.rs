@@ -19,6 +19,7 @@ mod edit_cursor;
 mod edit_cursor_ui_test;
 mod export;
 mod fades;
+mod header;
 mod loop_region;
 mod menus;
 mod midi;

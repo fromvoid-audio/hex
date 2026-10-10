@@ -63,12 +63,12 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   fresh native review build and authorized merging [PR #17](https://github.com/PORTALSURFER/hex/pull/17);
   merged as `a250f83`. Pulse ticket 38 is done; measured timing remains separate.
 
-- [ ] **persistent recent projects** — Pulse ticket 39, in progress, separate PR.
+- [ ] **persistent recent projects** — Pulse ticket 39, [PR #18](https://github.com/PORTALSURFER/hex/pull/18), source complete.
   Native File submenu lists up to ten successfully opened paths, most recent first,
   preserving paths and existing open protections. Background bounded preferences
   survive restart; failed opens do not promote entries, malformed preferences are
-  preserved. Targeted preference/UI checks and strict Clippy pass; full local CI evidence
-  belongs to the PR. Fresh native menu/restart acceptance remains open.
+  preserved. Targeted preference/UI checks and strict Clippy pass. Full 14-step local CI
+  passed clean `c9e7ae4`; release `hex-recent-projects-20261009.app` is ready. Fresh native menu/restart acceptance remains open.
   See [recent projects](docs/recent-projects.md).
 
 - [x] **queue cleanup** — [PR #7](https://github.com/PORTALSURFER/hex/pull/7):
@@ -151,9 +151,13 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   and shortcuts retained. [PR #16](https://github.com/PORTALSURFER/hex/pull/16)
   passed all 14 local CI steps on clean source `045201e`; user accepted the
   combined review build and authorized merge. Merged.
-- [ ] **compact header composition** — separate slim title row with centered
+- [ ] **compact header composition** — Pulse ticket 10, in progress, separate PR.
+  Separate slim title row with centered
   `hex` or loaded project name; smaller toolbar controls below. Preserve shortcuts,
-  title dragging and useful space at minimum window sizes.
+  title dragging and useful space at minimum window sizes. Source implemented:
+  shared 22 px title/26 px toolbar, 20 px icon controls. Long-title/minimum-size
+  layout and title-data tests, strict UI Clippy and source guards pass; final
+  local CI and native review remain separate. Custom controls are next.
 - [ ] **custom traffic lights** — replace native macOS controls with smaller
   app controls. Preserve unsaved-close protection, minimize, zoom/fullscreen and
   window lifecycle. Document any required native boundary before implementation.

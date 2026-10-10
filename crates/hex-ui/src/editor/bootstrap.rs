@@ -1,7 +1,9 @@
 //! An immediately visible window with a weak task waiting for injected output.
-use super::{EditorView, MAX_RESIDENT_FRAMES, Quit, editor_window_options, install_close_guard};
+use super::{
+    EditorView, MAX_RESIDENT_FRAMES, Quit, editor_window_options, header, install_close_guard,
+};
 use crate::theme::{self, Palette};
-use gpui::{App, AppContext, Context, FocusHandle, Window, div, prelude::*, px, rgb};
+use gpui::{App, AppContext, Context, FocusHandle, Window, div, prelude::*, rgb};
 use hex_audio::{PreparedOutput, RecoveryOpen};
 use hex_session::service::Service;
 use std::time::Duration;
@@ -88,31 +90,47 @@ impl Render for Bootstrap {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(Palette::BACKGROUND))
             .text_color(rgb(Palette::TEXT))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
             .key_context("hex_bootstrap")
             .on_action(cx.listener(|_, _: &Quit, _, cx| cx.quit()))
-            .child(
-                div()
-                    .h(px(38.0))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl(px(theme::TITLEBAR_LEADING_INSET))
-                    .pr_2()
-                    .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
-                    .bg(rgb(Palette::SURFACE))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(Palette::CORAL))
-                            .child(theme::text("hex")),
-                    )
-                    .child(div().text_xs().child(theme::text(&self.message))),
-            )
+            .child(header::title_bar("hex"))
+            .child(header::loading_toolbar(&self.message))
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests {
+    use super::Bootstrap;
+    use gpui::{AppContext, Empty, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn bootstrap_stacks_shared_title_and_toolbar_rows(cx: &mut TestAppContext) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        cx.update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |_, cx| Bootstrap {
+                request: None,
+                message: "preparing audio output".into(),
+                focus: cx.focus_handle(),
+            });
+        })
+        .expect("bootstrap window");
+
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let title = visual
+            .debug_bounds("project-title-bar")
+            .expect("startup title row");
+        let toolbar = visual
+            .debug_bounds("editor-toolbar")
+            .expect("startup toolbar row");
+        let title_bottom = f32::from(title.origin.y + title.size.height);
+        assert!((f32::from(toolbar.origin.y) - title_bottom).abs() < 1.0);
     }
 }
 

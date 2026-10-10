@@ -27,6 +27,7 @@ widgets = (
     'super::waveform::waveform_source_segment_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
+    'self.title_bar()', 'header::title_bar(', 'header::loading_toolbar(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
@@ -42,11 +43,21 @@ for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
-# Every transparent-titlebar entry point shares the native window-control inset.
-for top_row in ('editor/bootstrap.rs', 'editor/transport.rs', 'layout/transport.rs'):
+# The shared compact title row reserves balanced space for native controls;
+# editor startup and the loaded editor both use that component. The generated
+# demo still owns its separate toolbar and retains the same leading inset.
+header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
+if '.px(px(theme::TITLEBAR_LEADING_INSET))' not in header:
+    errors.append('editor/header.rs: center title with balanced native-control insets')
+for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
-    if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in source:
-        errors.append(f'{top_row}: reserve the shared native titlebar leading inset')
+    if 'header::title_bar' not in source and 'self.title_bar()' not in source:
+        errors.append(f'{top_row}: use the shared title row')
+if 'header::loading_toolbar' not in (ROOT / 'crates/hex-ui/src/editor/bootstrap.rs').read_text():
+    errors.append('editor/bootstrap.rs: align startup toolbar with editor toolbar geometry')
+demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
+if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
+    errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')
 for key in ('CFBundleName', 'CFBundleDisplayName'):
     source = (ROOT / 'scripts/bundle-macos.sh').read_text()
     if f'<key>{key}</key><string>hex</string>' not in source:
