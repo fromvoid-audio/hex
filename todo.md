@@ -1239,3 +1239,18 @@ delivered cd71021 app. See [the contract](docs/mutable-transport-loops.md).
 Pulse2220 tracks a pre-existing aggregate event-capacity gap for finite
 Arrangement and Session/source-loop admission. That reliability fix remains a
 separate PR from transport2215. No hosted CI or automatic merge is used.
+
+## 10 October 2026 — Pulse2220 device-capacity admission
+
+Finite Arrangement and Session/source-loop mutable MIDI preparation now checks
+aggregate NoteOn/NoteOff density and release-inclusive voices against the prepared
+device declarations. Cached Session templates and runtime handoff eligibility
+include those copied event, voice and release limits. Same-source lower-capacity
+and changed-release regressions prove fresh admission rather than stale reuse.
+
+Targeted engine tests passed (208, 3 ignored), audio allocation probes remained
+zero, strict engine Clippy and repository guards passed. Candidate rejection
+preserves project/history/redo and previous nonzero PCM in an Editor regression;
+service dirty/revision updates remain success-only by inspection and existing
+transactional tests. Full exact-head local CI, PR publication and a fresh combined
+build remain pending. No schema changes or callback preparation were added.
