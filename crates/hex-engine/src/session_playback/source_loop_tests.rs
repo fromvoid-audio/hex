@@ -178,7 +178,7 @@ fn arrangement_expanded_oracle_project() -> Project {
     clip.notes = (0..4)
         .map(|iteration| MidiNoteSnapshot {
             id: first_note_id + iteration,
-            start_raw: (u64::from(iteration) + 1) * Q,
+            start_raw: (iteration + 1) * Q,
             duration_raw: Q / 2,
             pitch: 60,
             channel: 0,
