@@ -4779,7 +4779,7 @@ fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail
 }
 
 #[test]
-fn mutable_prepared_playback_refuses_arrangement_transport_loops() {
+fn mutable_prepared_playback_admits_bounded_arrangement_transport_loops() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -4802,10 +4802,7 @@ fn mutable_prepared_playback_refuses_arrangement_transport_loops() {
     let arrangement_loop = legacy_project_from_snapshot(arrangement_loop).unwrap();
     let prepared =
         revision_with_instrument_registry(&arrangement_loop, Arc::clone(&table), &registry);
-    assert!(matches!(
-        SessionPlayback::new(prepared),
-        Err(SessionPlaybackError::MutableInstrumentLoopUnsupported)
-    ));
+    assert!(SessionPlayback::new(prepared).is_ok());
 
     let mut session_loop = session_only_project(&project(0.5, 0, 1 << 24)).snapshot();
     session_loop.tracks[0].instrument.as_mut().unwrap().state =
@@ -9658,3 +9655,6 @@ mod silence_effect_tests;
 
 #[path = "source_loop_tests.rs"]
 mod source_loop_tests;
+
+#[path = "transport_loop_tests.rs"]
+mod transport_loop_tests;

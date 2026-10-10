@@ -324,8 +324,11 @@ short in-query notes, event limits and hybrid additive prefix/instrument/suffix
 rendering. Legacy finite Arrangement renderers refuse an enabled mutable track
 before advancing time or emitting audio. The shared SessionPlayback path admits
 finite Arrangement source loops and Session source loops with distinct occurrence
-iterations; enabled Arrangement transport-loop wrapping, live-state seeks and
-quantized mutable route changes remain explicitly refused. Stop is the hard
+iterations. Enabled Arrangement transport loops are admitted only after bounded
+onset, periodic-voice and first-wrap release-seam proofs; wrap chases preserve
+authored remaining gates and use a monotonically checked loop pass. See
+`docs/mutable-transport-loops.md` for the contract and evidence. Live-state seeks
+and quantized mutable route changes remain explicitly refused. Stop is the hard
 reset. Live mutable state can cross a revision handoff
 when the bounded tail preflight succeeds. A
 candidate mutable Arrangement owner also refuses a pre-cut sounding note,
@@ -367,10 +370,11 @@ each graph admits up to 2 MiB active pairs and up to 2 MiB retained tails. Old,
 candidate and retired publication owners can coexist, so these figures are not
 a process-wide peak bound and omit allocator overhead and other graph assets.
 
-This is still a proof-only path. Exact compatible mutable-owner continuity is
-implemented separately below; changed-route suppression, seek/chase and loop
-behavior, effect residual-tail quiescence and built-in mutable admission remain
-deferred to Pulses 2166, 2164, 2165, 2162 and later Operator work. Pulse 2159 adds
+This is still a restricted, proof-gated path. Exact compatible mutable-owner
+continuity is implemented separately below; changed-route suppression,
+seek/preroll chase, effect residual-tail quiescence and built-in mutable
+admission remain deferred to Pulses 2166, 2164, 2165, 2162 and later Operator
+work. Pulse 2159 adds
 prepared linear Arrangement WAV export through shared SessionPlayback, but
 nonzero range starts are refused whenever the compiled Arrangement contains an
 enabled mutable instrument; those ranges could require mutable history/chase.
