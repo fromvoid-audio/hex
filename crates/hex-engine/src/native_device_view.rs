@@ -397,8 +397,9 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 1);
-        assert_eq!(effects[0].name, "utility");
+        assert_eq!(effects.len(), 2);
+        assert!(effects.iter().any(|entry| entry.name == "utility"));
+        assert!(effects.iter().any(|entry| entry.name == "eq eight"));
         assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()
