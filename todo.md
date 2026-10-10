@@ -1042,3 +1042,14 @@ Root acceptance adds fault/shutdown admission gates and verifies all8 prepared
 seek UI tests. After publication, cancellation suppresses UI completion but
 cannot withdraw the accepted audio owner; canonical edits alone are not an audio
 fence. A stronger cancellation barrier remains follow-up work.
+
+## 10 October2026 — Pulse2208 prepared seek cancellation barrier
+
+Conditional fresh publications now arbitrate UI cancellation against the
+callback's final apply CAS using a revision-keyed control-allocated token.
+Cancellation before apply preserves old PCM and returns the candidate for
+control reclamation; a callback winner completes before the canonical successor.
+Ordinary inherited publication is unchanged. Race/queue failure/Stop/successor
+unit tests, two callback allocation probes and the actual UI invalidation helper
+test pass. Full local CI and native edit/Open/seek acceptance remain pending.
+See [the contract](docs/prepared-seek-cancellation.md).

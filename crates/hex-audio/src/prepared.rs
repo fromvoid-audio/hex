@@ -141,6 +141,7 @@ fn command_cut(entry_ticket: u64, stop_marker: u64) -> CommandCut {
 struct Publication {
     revision: u64,
     policy: PublicationPolicy,
+    fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
 }
 
@@ -156,6 +157,84 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
+}
+
+const FRESH_PUBLICATION_PENDING: u32 = 0;
+const FRESH_PUBLICATION_APPLYING: u32 = 1;
+const FRESH_PUBLICATION_CANCELLED: u32 = 2;
+const FRESH_PUBLICATION_COMPLETE: u32 = 3;
+
+/// Control-side result of cancelling a conditionally published fresh runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshRuntimeCancellationResult {
+    /// Cancellation won before the callback began installing the candidate.
+    Cancelled,
+    /// The callback had already crossed its final installation decision.
+    Applying,
+    /// The callback has already returned or installed this candidate.
+    Complete,
+    /// There is no currently retained cancellation decision for this revision.
+    UnknownRevision,
+}
+
+/// A per-publication decision cell binds a full revision to its own atomic
+/// state. The immutable key and CAS live in the same allocation, so there is
+/// no split key/state ABA window and no truncated-revision encoding.
+struct FreshRuntimeCancellation {
+    revision: u64,
+    decision: AtomicU32,
+}
+
+impl FreshRuntimeCancellation {
+    fn request_cancel(&self) -> FreshRuntimeCancellationResult {
+        loop {
+            match self.decision.load(Acquire) {
+                FRESH_PUBLICATION_PENDING => {
+                    if self
+                        .decision
+                        .compare_exchange(
+                            FRESH_PUBLICATION_PENDING,
+                            FRESH_PUBLICATION_CANCELLED,
+                            AcqRel,
+                            Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return FreshRuntimeCancellationResult::Cancelled;
+                    }
+                }
+                FRESH_PUBLICATION_APPLYING => {
+                    return FreshRuntimeCancellationResult::Applying;
+                }
+                FRESH_PUBLICATION_CANCELLED => {
+                    return FreshRuntimeCancellationResult::Cancelled;
+                }
+                FRESH_PUBLICATION_COMPLETE => {
+                    return FreshRuntimeCancellationResult::Complete;
+                }
+                _ => return FreshRuntimeCancellationResult::Complete,
+            }
+        }
+    }
+
+    fn finish(&self) {
+        self.decision.store(FRESH_PUBLICATION_COMPLETE, Release);
+    }
+
+    fn finish_for_shutdown(&self) -> bool {
+        self.decision.swap(FRESH_PUBLICATION_COMPLETE, AcqRel) == FRESH_PUBLICATION_CANCELLED
+    }
+
+    fn begin_apply(&self) -> bool {
+        self.decision
+            .compare_exchange(
+                FRESH_PUBLICATION_PENDING,
+                FRESH_PUBLICATION_APPLYING,
+                AcqRel,
+                Acquire,
+            )
+            .is_ok()
+    }
 }
 
 /// Control-side freshness proof for a candidate prepared from an observed
@@ -519,6 +598,7 @@ pub struct Control {
     rate: u32,
     revision: u64,
     command_ticket: u64,
+    latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
 
 pub struct Callback {
@@ -541,6 +621,10 @@ pub struct Callback {
     test_transient_handoff_refusals: usize,
     #[cfg(test)]
     test_after_fresh_fence_validation: Option<std::sync::Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    test_before_fresh_runtime_apply: Option<std::sync::Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
@@ -570,6 +654,7 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             rate,
             revision: 0,
             command_ticket: 0,
+            latest_fresh_runtime_cancellation: None,
         },
         Callback {
             publications: incoming,
@@ -590,6 +675,10 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             test_transient_handoff_refusals: 0,
             #[cfg(test)]
             test_after_fresh_fence_validation: None,
+            #[cfg(test)]
+            test_before_fresh_runtime_apply: None,
+            #[cfg(test)]
+            test_after_fresh_runtime_apply_decision: None,
         },
     ))
 }
@@ -642,9 +731,17 @@ impl Control {
             });
         }
         let revision = self.revision + 1;
+        let cancellation = matches!(policy, PublicationPolicy::InstallFreshRuntimeIfUnchanged(_))
+            .then(|| {
+                Arc::new(FreshRuntimeCancellation {
+                    revision,
+                    decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
+                })
+            });
         let publication = Publication {
             revision,
             policy,
+            fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback),
         };
         if let Err(PushError::Full(publication)) = self.publications.push(publication) {
@@ -655,7 +752,26 @@ impl Control {
             });
         }
         self.revision = revision;
+        self.latest_fresh_runtime_cancellation = cancellation;
         Ok(revision)
+    }
+
+    /// Cancel a conditional fresh-runtime publication until the callback's
+    /// final Pending-to-Applying CAS. A successful result means the candidate
+    /// will be returned through the normal retirement queue without becoming
+    /// active. Once Applying wins, callers must wait for its exact terminal
+    /// revision and publish any successor from the resulting canonical state.
+    pub fn cancel_fresh_runtime_publication(
+        &self,
+        revision: u64,
+    ) -> FreshRuntimeCancellationResult {
+        let Some(cancellation) = self.latest_fresh_runtime_cancellation.as_ref() else {
+            return FreshRuntimeCancellationResult::UnknownRevision;
+        };
+        if cancellation.revision != revision {
+            return FreshRuntimeCancellationResult::UnknownRevision;
+        }
+        cancellation.request_cancel()
     }
     /// Caller retains a rejected command; Stop uses the independent priority path.
     pub fn command(&mut self, command: PlaybackCommand) -> Result<(), PlaybackCommand> {
@@ -771,6 +887,14 @@ impl Callback {
         if self.closing.load(Acquire) {
             if !self.retired.is_full() {
                 if let Some(publication) = self.deferred.take() {
+                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
+                        if cancellation.finish_for_shutdown() {
+                            self.status.publish_rejected_revision(
+                                publication.revision,
+                                PlaybackHandoffRejection::FreshRuntimeCancelled,
+                            );
+                        }
+                    }
                     self.return_graph(publication);
                     self.publication_pending.store(false, Release);
                 }
@@ -782,6 +906,14 @@ impl Callback {
             }
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
+                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
+                        if cancellation.finish_for_shutdown() {
+                            self.status.publish_rejected_revision(
+                                publication.revision,
+                                PlaybackHandoffRejection::FreshRuntimeCancelled,
+                            );
+                        }
+                    }
                     self.return_graph(publication);
                     self.publication_pending.store(false, Release);
                 }
@@ -876,6 +1008,9 @@ impl Callback {
                     self.deferred = Some(next);
                 }
                 Some(Err(error)) => {
+                    if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                        cancellation.finish();
+                    }
                     if let Some(reason) = error.rejection() {
                         self.status.publish_rejected_revision(next.revision, reason);
                     }
@@ -883,12 +1018,54 @@ impl Callback {
                     self.publication_pending.store(false, Release);
                 }
                 _ => {
+                    #[cfg(test)]
+                    if matches!(
+                        next.policy,
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    ) && let Some(barrier) = self.test_before_fresh_runtime_apply.take()
+                    {
+                        barrier.wait();
+                        barrier.wait();
+                    }
+                    let applying = next
+                        .fresh_runtime_cancellation
+                        .as_ref()
+                        .is_none_or(|cancellation| cancellation.begin_apply());
+                    if !applying {
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.status.publish_rejected_revision(
+                            next.revision,
+                            PlaybackHandoffRejection::FreshRuntimeCancelled,
+                        );
+                        self.return_graph(next);
+                        self.publication_pending.store(false, Release);
+                        self.consume_commands();
+                        return;
+                    }
+                    #[cfg(test)]
+                    if matches!(
+                        next.policy,
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    ) && let Some(barrier) = self.test_after_fresh_runtime_apply_decision.take()
+                    {
+                        barrier.wait();
+                        barrier.wait();
+                    }
                     let revision = next.revision;
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
                     if let Some(previous) = self.active.replace(next) {
                         self.return_graph(previous);
+                    }
+                    if let Some(cancellation) = self
+                        .active
+                        .as_ref()
+                        .and_then(|active| active.fresh_runtime_cancellation.as_ref())
+                    {
+                        cancellation.finish();
                     }
                     self.publish_active_routes(true);
                     self.status.render_fault.store(false, Relaxed);
@@ -1077,6 +1254,203 @@ mod tests {
         assert_eq!(control.status.rejected_revision(), None);
         assert!(!control.publication_pending.load(Acquire));
         assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn cancelled_fresh_publication_returns_candidate_and_allows_successor() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        let active_revision = control.status.applied_revision.load(Acquire);
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let candidate_revision = control
+            .publish_with_policy(
+                graph_with_frame([0.91, -0.83]).0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(candidate_revision + 1),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(candidate_revision),
+            FreshRuntimeCancellationResult::Cancelled
+        );
+        callback.begin_block();
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            active_revision
+        );
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((
+                candidate_revision,
+                PlaybackHandoffRejection::FreshRuntimeCancelled
+            ))
+        );
+        assert!(!control.publication_pending.load(Acquire));
+        let mut output = [[0.0; 2]; 1];
+        callback.render(&mut output).unwrap();
+        assert_eq!(output, [[0.25; 2]], "the old runtime remains active");
+        assert_eq!(control.reclaim(), 1, "the candidate retires to control");
+
+        let successor = control.publish(graph_with_frame([0.5, -0.4]).0).unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), successor);
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(candidate_revision),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        assert_eq!(
+            control.reclaim(),
+            1,
+            "the replaced graph retires to control"
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn cancellation_and_final_apply_cas_have_one_winner() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let active_revision = control.status.applied_revision.load(Acquire);
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let cancelled_revision = control
+            .publish_with_policy(
+                graph_with_frame([0.91, -0.83]).0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let before_apply = Arc::new(Barrier::new(2));
+        callback.test_before_fresh_runtime_apply = Some(Arc::clone(&before_apply));
+        std::thread::scope(|scope| {
+            let callback_thread = scope.spawn(|| callback.begin_block());
+            before_apply.wait();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(cancelled_revision),
+                FreshRuntimeCancellationResult::Cancelled
+            );
+            control.stop();
+            before_apply.wait();
+            callback_thread.join().unwrap();
+        });
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            active_revision
+        );
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((
+                cancelled_revision,
+                PlaybackHandoffRejection::FreshRuntimeCancelled
+            ))
+        );
+        assert_eq!(control.reclaim(), 1);
+
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        assert!(control.status.playing.load(Acquire));
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let applying_revision = control
+            .publish_with_policy(
+                graph_with_frame([0.5, -0.4]).0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let after_apply_decision = Arc::new(Barrier::new(2));
+        callback.test_after_fresh_runtime_apply_decision = Some(Arc::clone(&after_apply_decision));
+        std::thread::scope(|scope| {
+            let callback_thread = scope.spawn(|| callback.begin_block());
+            after_apply_decision.wait();
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(applying_revision),
+                FreshRuntimeCancellationResult::Applying
+            );
+            control.stop();
+            after_apply_decision.wait();
+            callback_thread.join().unwrap();
+        });
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            applying_revision
+        );
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(
+            control.status.rejected_revision().unwrap().0,
+            cancelled_revision
+        );
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(applying_revision),
+            FreshRuntimeCancellationResult::Complete
+        );
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn failed_enqueue_does_not_leave_a_cancellable_revision_or_block_next_publish() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publications
+            .push(Publication {
+                revision: 99,
+                policy: PublicationPolicy::InstallFreshRuntime,
+                fresh_runtime_cancellation: None,
+                playback: Box::new(graph().0),
+            })
+            .unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let rejected = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap_err();
+        assert_eq!(rejected.reason, "playback publication queue full");
+        assert_eq!(control.revision, 0);
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(1),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        let queued = callback.publications.pop().unwrap();
+        drop(queued);
+        assert_eq!(control.publish(rejected.playback).unwrap(), 1);
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn ordinary_inherited_publications_have_no_fresh_cancellation_decision() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let first = control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let next = control.publish(graph_with_frame([0.5, -0.4]).0).unwrap();
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(next),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), next);
+        assert_eq!(
+            control.cancel_fresh_runtime_publication(first),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        control.reclaim();
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
@@ -1368,6 +1742,7 @@ mod tests {
                 .push(Publication {
                     revision,
                     policy: PublicationPolicy::InstallFreshRuntime,
+                    fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
                 })
                 .unwrap();
@@ -1644,6 +2019,7 @@ mod tests {
         callback.held_retirement = Some(Publication {
             revision: 1,
             policy: PublicationPolicy::InheritRuntime,
+            fresh_runtime_cancellation: None,
             playback: Box::new(playback),
         });
         assert!(weak_revision.upgrade().is_some());
@@ -1755,6 +2131,7 @@ mod tests {
                     .push(Publication {
                         revision,
                         policy: PublicationPolicy::InheritRuntime,
+                        fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
                     })
                     .is_ok()
@@ -1826,6 +2203,7 @@ mod tests {
                     .push(Publication {
                         revision,
                         policy: PublicationPolicy::InheritRuntime,
+                        fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
                     })
                     .is_ok()
@@ -1836,6 +2214,7 @@ mod tests {
         callback.held_retirement = Some(Publication {
             revision: 4,
             policy: PublicationPolicy::InheritRuntime,
+            fresh_runtime_cancellation: None,
             playback: Box::new(held),
         });
         let mut last_ticket = 0;
@@ -1980,6 +2359,7 @@ mod tests {
                 .push(Publication {
                     revision: 3,
                     policy: PublicationPolicy::InheritRuntime,
+                    fresh_runtime_cancellation: None,
                     playback: Box::new(queued),
                 })
                 .is_ok()
