@@ -28,7 +28,7 @@ const ENVELOPE_FIELDS: usize = 6;
 const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
 const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
 const WAVEFORM_COUNT: usize = OPERATORS;
-const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT;
+const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
@@ -66,6 +66,11 @@ pub mod parameter {
         }
         ParameterId::from_static(56 + operator)
     }
+
+    /// Derived topology selector. Custom is inferred from the stored routing.
+    pub const fn routing_preset() -> ParameterId {
+        ParameterId::from_static(61)
+    }
 }
 
 const ENVELOPE_LABELS: [&str; OPERATORS * ENVELOPE_FIELDS] = [
@@ -94,6 +99,65 @@ const ENVELOPE_LABELS: [&str; OPERATORS * ENVELOPE_FIELDS] = [
     "op4 decay",
     "op4 release",
 ];
+
+const ROUTING_PRESET_LABELS: [&str; 4] = ["custom", "serial", "parallel", "two pairs"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OperatorRoutingPreset {
+    Custom,
+    Serial,
+    Parallel,
+    TwoPairs,
+}
+
+impl OperatorRoutingPreset {
+    const fn from_choice(choice: u32) -> Option<Self> {
+        match choice {
+            0 => Some(Self::Custom),
+            1 => Some(Self::Serial),
+            2 => Some(Self::Parallel),
+            3 => Some(Self::TwoPairs),
+            _ => None,
+        }
+    }
+
+    const fn choice(self) -> u32 {
+        match self {
+            Self::Custom => 0,
+            Self::Serial => 1,
+            Self::Parallel => 2,
+            Self::TwoPairs => 3,
+        }
+    }
+
+    const fn routing_fields(self) -> Option<[f32; 20]> {
+        let mut fields = [0.0; 20];
+        match self {
+            Self::Custom => None,
+            Self::Serial => {
+                fields[4] = 0.25; // op2 -> op1
+                fields[9] = 0.25; // op3 -> op2
+                fields[14] = 0.25; // op4 -> op3
+                fields[16] = 1.0; // op1 carrier
+                Some(fields)
+            }
+            Self::Parallel => {
+                fields[16] = 0.25;
+                fields[17] = 0.25;
+                fields[18] = 0.25;
+                fields[19] = 0.25;
+                Some(fields)
+            }
+            Self::TwoPairs => {
+                fields[4] = 0.25; // op2 -> op1
+                fields[14] = 0.25; // op4 -> op3
+                fields[16] = 0.5; // op1 carrier
+                fields[18] = 0.5; // op3 carrier
+                Some(fields)
+            }
+        }
+    }
+}
 
 const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut result = [crate::fm4::device::PARAMETERS[0]; PARAMETER_COUNT];
@@ -140,6 +204,15 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         index += 1;
         operator += 1;
     }
+    result[index] = ParameterDescriptor {
+        id: ParameterId::from_static(61),
+        label: "routing preset",
+        kind: ParameterKind::Choice {
+            labels: &ROUTING_PRESET_LABELS,
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    };
     result
 }
 
@@ -280,6 +353,27 @@ impl OperatorSettings {
         Ok(([a?, b?, c?, d?], routing, [ea?, eb?, ec?, ed?]))
     }
 
+    fn routing_preset(&self) -> OperatorRoutingPreset {
+        for preset in [
+            OperatorRoutingPreset::Serial,
+            OperatorRoutingPreset::Parallel,
+            OperatorRoutingPreset::TwoPairs,
+        ] {
+            if let Some(expected) = preset.routing_fields()
+                && self.fields[12..32] == expected
+            {
+                return preset;
+            }
+        }
+        OperatorRoutingPreset::Custom
+    }
+
+    fn apply_routing_preset(&mut self, preset: OperatorRoutingPreset) {
+        if let Some(fields) = preset.routing_fields() {
+            self.fields[12..32].copy_from_slice(&fields);
+        }
+    }
+
     /// Standalone control preparation only; no native sampler/registry admission.
     pub fn prepare_configuration(
         &self,
@@ -351,6 +445,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if parameter == parameter::routing_preset() {
+            return Ok(ParameterValue::Choice(settings.routing_preset().choice()));
+        }
         if let Some(index) = waveform_index(parameter) {
             return settings
                 .waveforms
@@ -378,6 +475,15 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if parameter == parameter::routing_preset() {
+            let ParameterValue::Choice(choice) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            let preset = OperatorRoutingPreset::from_choice(choice)
+                .ok_or(DeviceContractError::InvalidParameterValue)?;
+            settings.apply_routing_preset(preset);
+            return settings.to_state();
+        }
         if let Some(index) = waveform_index(parameter) {
             let ParameterValue::Choice(value) = value else {
                 return Err(DeviceContractError::InvalidParameterValue);
