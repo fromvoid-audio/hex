@@ -55,6 +55,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
             }),
+            instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,

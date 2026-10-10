@@ -151,7 +151,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 15);
+    assert_eq!(json["version"], 16);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -186,13 +186,14 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
 }
 
 #[test]
-fn schema_fourteen_migrates_instrument_slot_and_schema_fifteen_preserves_unknown_state() {
+fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state() {
     let mut legacy: serde_json::Value =
         serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
     let old_highwater = legacy["next_id"].as_u64().unwrap();
     legacy["version"] = 14.into();
     for track in legacy["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("instrument");
+        track.as_object_mut().unwrap().remove("instrument_position");
     }
     let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     for track in migrated.tracks() {
@@ -202,7 +203,22 @@ fn schema_fourteen_migrates_instrument_slot_and_schema_fifteen_preserves_unknown
             &hex_project::default_instrument_state().unwrap()
         );
         assert!(instrument.id().value() >= old_highwater);
+        assert_eq!(track.instrument_position(), Some(0));
     }
+
+    let mut schema_fifteen: serde_json::Value =
+        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+    schema_fifteen["version"] = 15.into();
+    for track in schema_fifteen["tracks"].as_array_mut().unwrap() {
+        track.as_object_mut().unwrap().remove("instrument_position");
+    }
+    let migrated = decode(&serde_json::to_vec(&schema_fifteen).unwrap()).unwrap();
+    assert!(
+        migrated
+            .tracks()
+            .iter()
+            .all(|track| track.instrument_position() == Some(0))
+    );
 
     let mut current = Project::new(48_000).unwrap();
     let mut editor = Editor::new(current.clone(), 8).unwrap();
@@ -231,7 +247,7 @@ fn schema_fourteen_migrates_instrument_slot_and_schema_fifteen_preserves_unknown
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 15);
+    assert_eq!(json["version"], 16);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -249,13 +265,88 @@ fn schema_fourteen_migrates_instrument_slot_and_schema_fifteen_preserves_unknown
 }
 
 #[test]
+fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "chain".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let effect = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: NativeDeviceState::new(DeviceTypeId::new("test.effect").unwrap(), 1, vec![1])
+                .unwrap(),
+        })
+        .unwrap()
+    {
+        Created::Device(id) => id,
+        _ => panic!("effect"),
+    };
+    editor
+        .execute(Command::MoveTrackDevice {
+            device: instrument,
+            track,
+            before: None,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().track(track).unwrap().instrument_position(),
+        Some(1)
+    );
+    let project = editor.project().clone();
+    let bytes = encode(&project).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["version"], 16);
+    assert_eq!(json["tracks"][0]["instrument_position"], 1);
+    assert_eq!(decode(&bytes).unwrap(), project);
+
+    let mut missing = json.clone();
+    missing["tracks"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("instrument_position");
+    assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+
+    let mut out_of_range = json.clone();
+    out_of_range["tracks"][0]["instrument_position"] = 2.into();
+    assert!(decode(&serde_json::to_vec(&out_of_range).unwrap()).is_err());
+
+    let mut orphaned = json.clone();
+    orphaned["tracks"][0]["instrument"] = serde_json::Value::Null;
+    orphaned["tracks"][0]["instrument_position"] = 0.into();
+    assert!(decode(&serde_json::to_vec(&orphaned).unwrap()).is_err());
+
+    let mut missing_instrument = json;
+    missing_instrument["tracks"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("instrument");
+    assert!(decode(&serde_json::to_vec(&missing_instrument).unwrap()).is_err());
+    assert!(editor.project().device(effect).is_some());
+}
+
+#[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 15);
+    assert_eq!(json["version"], 16);
     json["version"] = 13.into();
     for track in json["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("devices");
         track.as_object_mut().unwrap().remove("instrument");
+        track.as_object_mut().unwrap().remove("instrument_position");
     }
     let migrated = decode(&serde_json::to_vec(&json).unwrap()).unwrap();
     assert!(
@@ -393,7 +484,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 15);
+    assert_eq!(json["version"], 16);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -520,10 +611,10 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 15);
-    json["version"] = 16.into();
+    assert_eq!(json["version"], 16);
+    json["version"] = 17.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    json["version"] = 15.into();
+    json["version"] = 16.into();
     json["unrecognized"] = true.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json.as_object_mut().unwrap().remove("unrecognized");
@@ -642,7 +733,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 15);
+    assert_eq!(current_json["version"], 16);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
@@ -650,6 +741,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     for track in json["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("devices");
         track.as_object_mut().unwrap().remove("instrument");
+        track.as_object_mut().unwrap().remove("instrument_position");
         let clips = track["audio_clips"].take();
         let object = track.as_object_mut().unwrap();
         object.remove("audio_clips");
@@ -961,6 +1053,7 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
     track_object.remove("midi_clips");
     track_object.remove("devices");
     track_object.remove("instrument");
+    track_object.remove("instrument_position");
     value["tracks"][0]["content"] = serde_json::json!({
         "kind": "instrument",
         "clips": midi_clips,

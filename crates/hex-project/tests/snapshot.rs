@@ -35,6 +35,7 @@ fn valid_snapshot() -> Snapshot {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
@@ -106,6 +107,40 @@ fn rejects_invalid_rates_ids_and_high_water_marks() {
 }
 
 #[test]
+fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
+    rejects(|snapshot| snapshot.tracks[0].instrument_position = Some(0));
+
+    let mut missing_position = valid_snapshot();
+    missing_position.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        id: 50,
+        bypassed: false,
+        state: hex_project::default_instrument_state().unwrap(),
+    });
+    assert!(Project::from_snapshot(missing_position).is_err());
+
+    let mut out_of_range = valid_snapshot();
+    out_of_range.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        id: 50,
+        bypassed: false,
+        state: hex_project::default_instrument_state().unwrap(),
+    });
+    out_of_range.tracks[0].instrument_position = Some(1);
+    assert!(Project::from_snapshot(out_of_range).is_err());
+
+    let mut valid = valid_snapshot();
+    valid.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        id: 50,
+        bypassed: false,
+        state: hex_project::default_instrument_state().unwrap(),
+    });
+    valid.tracks[0].instrument_position = Some(0);
+    assert_eq!(
+        Project::from_snapshot(valid).unwrap().tracks()[0].instrument_position(),
+        Some(0)
+    );
+}
+
+#[test]
 fn rejects_invalid_assets_tracks_and_clip_ranges() {
     rejects(|snapshot| snapshot.assets[0].path = PathBuf::new());
     rejects(|snapshot| snapshot.assets[0].playback_frames = 0);
@@ -134,6 +169,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
             soloed: false,
             devices: Vec::new(),
             instrument: None,
+            instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
         })
         .collect();

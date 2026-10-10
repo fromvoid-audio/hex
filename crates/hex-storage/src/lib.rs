@@ -89,7 +89,7 @@ impl From<serde_json::Error> for StorageError {
 }
 
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    let document = schema::DocumentV15::from_project(project)?;
+    let document = schema::DocumentV16::from_project(project)?;
     let bytes = serde_json::to_vec_pretty(&document)?;
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid("project document exceeds byte limit"));

@@ -362,6 +362,14 @@ follow integration.
 See [contract](docs/lattice-instruments.md). This is a prerequisite for Operator,
 not Operator implementation. Source/native/merge gates remain separate.
 
+Pulse2138 canonical chain-position prerequisite: project snapshots now retain one
+optional instrument's gap among up to 64 effects, with stable-ID ordered-node
+moves, Undo and strict schema16 persistence. Schemas1–15 migrate existing/default
+instruments to the front while preserving explicit silent slots. Arrangement and
+Session compilers refuse non-front positions before history commits because the
+engine still executes only the legacy front-instrument layout. Arbitrary chain
+execution remains Pulse2139; no UI ordering is enabled by this prerequisite.
+
 Menu follow-up2115: user accepted and manually merged PR37 into the stacked
 integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and
 open-panel/focus-switching2117 is implemented in the focused detail-pane branch;

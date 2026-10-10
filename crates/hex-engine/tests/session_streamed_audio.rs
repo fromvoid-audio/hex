@@ -60,6 +60,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 soloed: false,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(Vec::new()),
             },
             TrackSnapshot {
@@ -71,6 +72,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 soloed: false,
                 devices: Vec::new(),
                 instrument: None,
+                instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     id: 8,
                     asset: BED_ASSET,
