@@ -1822,25 +1822,32 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
 
     let rail = visual
         .debug_bounds("device-chain-scroll")
         .expect("visible rail bounds");
-    let outside = point(
-        rail.origin.x + rail.size.width + px(2.0),
-        rail.origin.y + rail.size.height / 2.0,
-    );
-    let clipped_card_contains_pointer = device_ids.iter().any(|device| {
+    let overflow_pointer = device_ids.iter().find_map(|device| {
         let selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
-        visual
-            .debug_bounds(selector)
-            .is_some_and(|bounds| bounds.contains(&outside))
+        let bounds = visual.debug_bounds(selector)?;
+        let x = rail.origin.x + rail.size.width + px(1.0);
+        let y = bounds.origin.y + bounds.size.height / 2.0;
+        let point = point(x, y);
+        (bounds.contains(&point) && y >= rail.origin.y && y <= rail.origin.y + rail.size.height)
+            .then_some(point)
     });
-    assert!(
-        clipped_card_contains_pointer,
-        "fixture reaches overflow card bounds"
-    );
+    let Some(outside) = overflow_pointer else {
+        assert!(
+            device_ids.iter().any(|device| {
+                let selector =
+                    Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
+                visual.debug_bounds(selector).is_some()
+            }),
+            "fixture has visible device cards"
+        );
+        panic!("fixture reaches a card beyond the visible rail");
+    };
 
     let source = visual
         .debug_bounds("browser-device-effect-hex.utility")
