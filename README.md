@@ -278,6 +278,16 @@ matrix for Arrangement/Session audio and MIDI. This foundation does not yet
 provide the desktop device panel, stateful DC/bass-mono controls, Operator or
 plugin hosting. See [lattice](docs/lattice.md) for contracts and open acceptance.
 
+## Return routing — 10 October 2026
+
+Schema-17 return buses render regular-track post-fader sends through registered
+zero-algorithmic-latency effects before the Main master gain in Arrangement,
+SessionPlayback and prepared export. Fixed return scratch and effect runtimes
+are built on control; compatible history survives prepared revision handoff,
+with callback allocation probes. General latency compensation, feedback, native
+pinned return rows and physical listening/deadline acceptance remain open. See
+[return tracks](docs/return-tracks.md).
+
 ## Source repository
 
 Private development repository: https://github.com/PORTALSURFER/hex.

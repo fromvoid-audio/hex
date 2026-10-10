@@ -1901,3 +1901,37 @@ sampling evidence, excluding control preparation, construction, checksums and
 retirement; it is not native device timing, UI responsiveness, plugin capacity,
 maximal16,384-release timing or a sustained deadline guarantee. Existing exact
 cap/refusal tests and callback allocation/destructor probes are separate evidence.
+
+## Return routing release workload — Pulse2177 (10 October 2026)
+
+`cargo run --release -p hex-engine --example profile_return_routing` measures
+the canonical Arrangement renderer at 48kHz with 256-frame blocks: 100 regular
+looping audio tracks each send to all 16 Returns (1,600 send contributions per
+frame), and every Return runs a registered stateful Utility DC filter. It warms
+100 blocks, times 300 blocks with `Instant`, and prints p50/p99/max, the 5,333us
+block period, and a deterministic PCM digest. This is a focused routing workload,
+not a before/after comparison or physical callback deadline test. Three sequential
+runs on Apple M5 Pro, arm64, macOS 26.6.2 (25G83) reported:
+
+| Run | p50 | p99 | max | PCM digest |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 223.4 us | 292.2 us | 361.3 us | `2d913f742d1d6255` |
+| 2 | 213.1 us | 284.8 us | 313.9 us | `2d913f742d1d6255` |
+| 3 | 215.7 us | 245.7 us | 285.2 us | `2d913f742d1d6255` |
+
+The measurement used dirty source based on `583bfdc`, not an exact clean committed
+head. Results are workload samples only; they make no comparative speed or sustained
+physical deadline claim. Run output and provenance are in
+`artifacts/profiles/return-routing-20261010/final-run-{1,2,3}.txt` and the
+directory's `metadata.txt`.
+
+The benchmark's fixed Return accumulation scratch is
+`16 Returns × 256 frames × 2 f32 samples = 32,768 bytes`. Its paired Utility
+history is `16 Returns × 2 transactional runtime twins ×
+size_of::<UtilityFilterProcessor>()`, printed by the example. The admission
+policy bounds all stateful processor declarations to 256 × 4,096 = 1,048,576
+bytes per runtime twin, or 2,097,152 bytes for the primary/scratch pair. These
+figures cover scratch and declared processor state; they exclude allocator/Arc
+headers and the rest of the compiled graph. The separate callback allocation
+probe verifies zero total and signed-net allocation changes for a stateful
+Return render/handoff block and control-side retirement.

@@ -266,6 +266,8 @@ pub struct SessionPlayback {
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    return_scratch: Vec<[Frame; 256]>,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
@@ -393,43 +395,24 @@ impl SessionPlayback {
             });
         }
         let mut mutable_count = 0_usize;
-        let mut mutable_bytes = 0_usize;
-        let mut existing_stateful_count = 0_usize;
-        let mut existing_stateful_bytes = 0_usize;
         for track in arrangement_tracks {
-            existing_stateful_count = existing_stateful_count
-                .checked_add(track.stateful_device_count())
-                .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
-            existing_stateful_bytes = existing_stateful_bytes
-                .checked_add(
+            if revision
+                .session()
+                .mutable_instrument_factory(
                     track
-                        .stateful_device_declared_bytes()
-                        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?,
+                        .canonical_track_id()
+                        .ok_or(SessionPlaybackError::RevisionTrackMismatch)?,
                 )
-                .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
-            if let Some(factory) = revision.session().mutable_instrument_factory(
-                track
-                    .canonical_track_id()
-                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?,
-            ) {
+                .is_some()
+            {
                 mutable_count = mutable_count
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
-                mutable_bytes = mutable_bytes
-                    .checked_add(
-                        factory
-                            .declared_twin_bytes()
-                            .checked_mul(2)
-                            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?,
-                    )
-                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
             }
         }
-        crate::mutable_instrument::validate_mutable_graph_budget(
-            existing_stateful_count,
-            existing_stateful_bytes,
-            mutable_count,
-            mutable_bytes,
+        crate::mutable_instrument::validate_prepared_graph_budget(
+            revision.arrangement(),
+            revision.session(),
         )
         .map_err(SessionPlaybackError::from)?;
         if mutable_count > 0 {
@@ -483,6 +466,27 @@ impl SessionPlayback {
                     .new_device_runtime()
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
             );
+        }
+        let return_buses = revision.arrangement().return_buses();
+        let mut return_chains = Vec::new();
+        return_chains
+            .try_reserve_exact(return_buses.len())
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        let mut return_scratch = Vec::new();
+        return_scratch
+            .try_reserve_exact(return_buses.len())
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        for bus in return_buses {
+            let mut instances = Vec::new();
+            instances
+                .try_reserve_exact(bus.device_chain.len())
+                .map_err(|_| SessionPlaybackError::Allocation)?;
+            instances.extend(bus.device_chain.iter().cloned());
+            return_chains.push(
+                hex_lattice::NativeRuntimeChain::new(instances)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
+            );
+            return_scratch.push([[0.0; 2]; 256]);
         }
         let mut tail_groups = Vec::new();
         tail_groups
@@ -551,6 +555,8 @@ impl SessionPlayback {
             routes,
             route_scratch,
             device_chains,
+            return_chains,
+            return_scratch,
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,

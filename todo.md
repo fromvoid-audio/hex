@@ -250,17 +250,16 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   hit testing; 304 UI tests/two existing ignores and strict UI Clippy/guards pass.
   Clean full CI, native scroll/drop/minimum-layout review and merge remain open.
 - [ ] **return tracks above main** — Pulse2176 supplies schema17, canonical
-  return IDs, gain/mute, generic effect chains, sparse sends and history. Pulse2178
-  now supplies the bounded pinned return section, add/remove/mute/gain controls,
-  focused return effect view, effect-only drag/drop, same-return reorder, and
-  compact per-source send menus with readable linear levels and validated 0.1
-  steps. The section caps at 67 logical pixels and scrolls internally, preserving
-  the regular Arrangement area and pinned Main at 880×540 with details open.
-  Pulse2177 audio integration is a separate dependency and is not merged into
-  this branch: playback compilation currently refuses return projects. Therefore
-  full playback/send/effect validation, integrated save/reopen and native
-  interaction/listening remain open. Send gain drag/type with one undo step is
-  tracked separately as Pulse2179. See [return tracks](docs/return-tracks.md).
+  return IDs, gain/mute, generic effect chains, sparse sends and atomic history.
+  Pulse2177 routes Arrangement, SessionPlayback and prepared export through
+  bounded post-fader Return chains with registered zero-latency processing,
+  compatible state inheritance and control-side retirement. Pulse2178 supplies
+  pinned return rows, effect-only device workflow and named send menus. The
+  section caps at 67 logical pixels and scrolls internally, preserving regular
+  tracks and Main at 880×540 with details open. Audio and UI source are integrated;
+  positive service/save/reopen tests, full local checks and native user acceptance
+  remain open. Continuous drag/type sends are Pulse2179; general compensation is
+  Pulse28. See [return tracks](docs/return-tracks.md).
 - [ ] **project-wide time selection on main/master** — separate feature PR
   after the pinned main row. Selecting time there addresses every project track
   as one rectangle, including returns when implemented, gaps and every supported
@@ -741,10 +740,22 @@ generic effect chains, bounded sparse regular-track sends and transactional
 commands are in schema17. Send and device state survive snapshots, undo/redo and
 strict round-trip; return removal cascades sends, track removal drops its sends,
 and schemas1–16 migrate to empty returns/sends. Playback compilation explicitly
-refuses projects containing return routes until audio2177. Focused model/storage/
-engine regressions, affected package checks, local fmt, architecture and style
-checks passed; full local CI and native return-row interaction/listening remain
-open for the integration owner. See [return track contract](docs/return-tracks.md).
+refused routes before audio2177. Model PR77 passed all16 clean exact-head local
+checks; see [return track contract](docs/return-tracks.md).
+
+Pulse2177 audio routing: implemented regular-track post-fader sends into ordered
+Return effect chains, Return gain/mute, Main sum and one master gain in Arrangement,
+SessionPlayback and prepared linear export. Return runtime owner identity is typed
+Track/Return; processor admission requires registry preparation and explicit zero
+algorithmic latency. Fixed 256-frame scratch and chains are prepared on control;
+compatible bus state is inherited after preflight, seek/stop reset matches regular
+effects, loop wraps preserve history, and removed-return runtimes retire on control.
+Removed regular-track release tails keep existing Main-only processing and their
+sends stop at the revision boundary. Focused routing, tail, handoff, unsupported
+latency/class, prepared-edit atomicity, export, and callback allocation probes pass.
+Three100-track/16-return release samples have matching PCM digests and documented
+memory bounds in docs/performance.md. Full exact-head local CI and native listening
+remain open; UI source integration is Pulse2178. See [return tracks](docs/return-tracks.md).
 
 Pulse2178 pinned return UI: return rows are pinned immediately above Main and
 scroll internally within a 67 px cap; return focus preserves regular-track
@@ -755,6 +766,5 @@ validated 0.1 steps; continuous drag/type editing with one undo step is deferred
 to Pulse2179. Return-only rail and device rendering are extracted into focused
 editor modules; step arithmetic clamps roundoff to exact 0/2 endpoints without
 rounding interior saved levels. The 2 send-step tests, 9 Arrangement/Main UI tests,
-18 device-panel tests, strict hex-ui Clippy, format and source guards pass. Full
-audio integration, device command playback/save validation and native user
-acceptance remain open until Pulse2177 is integrated.
+18 device-panel tests, strict hex-ui Clippy, format and source guards pass. Audio source is integrated; positive service/device workflow and save/reopen
+validation, full local checks and native user acceptance remain open.

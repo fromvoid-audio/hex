@@ -66,6 +66,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        for chain in &mut self.return_chains {
+            chain.begin_block();
+        }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
         }
@@ -162,6 +165,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.commit_block();
         }
+        for chain in &mut self.return_chains {
+            chain.commit_block();
+        }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.commit_block();
         }
@@ -239,6 +245,9 @@ impl SessionPlayback {
         mut pages: Option<&mut P>,
     ) -> Result<(), SessionPlaybackError> {
         let tracks = self.revision.arrangement().tracks();
+        for scratch in &mut self.return_scratch {
+            scratch[..output.len()].fill([0.0; 2]);
+        }
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
         let table = self.revision.session().sine_table().as_ref();
         let mut release_cursor = 0;
@@ -256,7 +265,7 @@ impl SessionPlayback {
                     .as_ref()
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
-            let buffered = stateful_effects || mutable_active;
+            let buffered = stateful_effects || mutable_active || !track.sends().is_empty();
             let ordered = track.requires_ordered_processing();
             while self
                 .release_scratch
@@ -397,8 +406,22 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     chain.process_block(render_output);
                 }
-                for (destination, source) in output.iter_mut().zip(render_output.iter().copied()) {
-                    mix.add_frame(destination, source);
+                for (frame_index, source) in render_output.iter().copied().enumerate() {
+                    if track.sends().is_empty() {
+                        mix.add_frame(&mut output[frame_index], source);
+                    } else {
+                        let contribution = mix.apply_frame(source);
+                        output[frame_index][0] += contribution[0];
+                        output[frame_index][1] += contribution[1];
+                        for send in track.sends() {
+                            let target = self
+                                .return_scratch
+                                .get_mut(send.return_index)
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                            target[frame_index][0] += contribution[0] * send.gain;
+                            target[frame_index][1] += contribution[1] * send.gain;
+                        }
+                    }
                 }
             } else {
                 for release in &self.release_scratch[first_release..release_cursor] {
@@ -584,6 +607,33 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
                 mix.add_frame(destination, source);
+            }
+        }
+        for (index, bus) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .enumerate()
+        {
+            let frames = self
+                .return_scratch
+                .get_mut(index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let frames = &mut frames[..output.len()];
+            let chain = self
+                .return_chains
+                .get_mut(index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            chain.process_block(frames);
+            if let Some(matrix) = bus.matrix {
+                matrix.apply_block(frames);
+            }
+            if !bus.muted {
+                for (destination, source) in output.iter_mut().zip(frames.iter()) {
+                    destination[0] += source[0] * bus.gain;
+                    destination[1] += source[1] * bus.gain;
+                }
             }
         }
         Ok(())

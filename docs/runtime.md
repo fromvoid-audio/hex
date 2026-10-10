@@ -2,19 +2,36 @@
 
 ## Native device integration
 
-The first lattice chain admits memoryless linear stereo effects. Canonical
-device state is an opaque versioned envelope; registered definitions parse it
-and prepare a fused ordered matrix on the session worker. `PreparedTrackMix`
-applies that transform before track gain/balance and master summation across
-Arrangement and Session sources. Captured outgoing Session voices keep their
-source revision's mix. Payloads and device codecs never enter the callback.
+Canonical device state is an opaque versioned envelope; registered definitions
+parse it and prepare ordered memoryless matrices or stateful processors on the
+session worker. `PreparedTrackMix` applies the regular effect transform before
+track gain/balance and Main summation across Arrangement and Session sources.
+Captured outgoing Session voices keep their source revision's mix. Payloads and
+device codecs never enter the callback.
 
 Native parameter requests carry device/parameter IDs and typed values. The
 worker patches the latest canonical state and compiles the candidate before
 committing history. These are discrete edits; continuous gesture coalescing and
-grouped undo are separate Pulse ticket 65. Stateful devices, an instrument slot
-and full latency compensation remain separate dependencies. See
-[lattice](lattice.md) for the contract and acceptance limits.
+grouped undo are separate Pulse ticket 65. Full graph latency compensation
+remains a separate dependency. See [lattice](lattice.md) for the contract and
+acceptance limits.
+
+## Return audio routing
+
+The compiled topology is regular track → Return → Main. A regular source and
+effect chain are evaluated once; sparse sends tap the post-track-fader result.
+Each Return processes its sum through the registered chain and bus mix, then Main
+applies master gain once. Arrangement rendering, SessionPlayback, and prepared
+linear export use the same routing. Only registered return effects that declare
+explicit zero algorithmic latency are admitted. Fixed 256-frame scratch and
+runtime chains are constructed on control. Compatible Return IDs inherit state
+only after all chain copies have passed preflight. Seek and Stop reset Return
+state; arrangement loop wraps preserve it. Zero-input blocks still process
+return filters so their stateful output can decay. Removed regular-track sends
+stop at the revision boundary, existing release tails remain Main-only, and a
+removed Return is cut at the boundary and retired on control. This is not a
+general compensation or Live-equivalent tail policy; see
+[return tracks](return-tracks.md).
 
 ## Default canonical editor
 
