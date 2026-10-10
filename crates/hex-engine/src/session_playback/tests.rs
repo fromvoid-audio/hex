@@ -152,6 +152,327 @@ fn continuity_sample(
     }
 }
 
+struct MutableFeedbackDefinition {
+    metadata: ContinuityInstrumentDefinition,
+}
+
+struct MutableFeedbackPrepared {
+    level: f32,
+    release_frames: u64,
+}
+
+struct MutableFeedbackFactory {
+    level: f32,
+    release_frames: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MutableFeedbackVoice {
+    occurrence_id: u64,
+    pitch: u8,
+    velocity: u8,
+    active: bool,
+    gated: bool,
+    release_left: u8,
+}
+
+struct MutableFeedbackRuntime {
+    key: u32,
+    level: f32,
+    release_frames: u8,
+    voices: [MutableFeedbackVoice; 64],
+    feedback: f32,
+    tail_left: u8,
+}
+
+impl MutableFeedbackRuntime {
+    fn advance(voices: &mut [MutableFeedbackVoice; 64], frames: usize) {
+        for _ in 0..frames {
+            for voice in voices.iter_mut() {
+                if voice.active && !voice.gated {
+                    voice.release_left = voice.release_left.saturating_sub(1);
+                    if voice.release_left == 0 {
+                        *voice = MutableFeedbackVoice::default();
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply(
+        voices: &mut [MutableFeedbackVoice; 64],
+        event: hex_lattice::NativeInstrumentEvent,
+        release: u8,
+    ) {
+        match event {
+            hex_lattice::NativeInstrumentEvent::NoteOn {
+                occurrence_id,
+                pitch,
+                velocity,
+                ..
+            } => {
+                if let Some(voice) = voices.iter_mut().find(|voice| !voice.active) {
+                    *voice = MutableFeedbackVoice {
+                        occurrence_id,
+                        pitch,
+                        velocity,
+                        active: true,
+                        gated: true,
+                        release_left: release,
+                    };
+                }
+            }
+            hex_lattice::NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                if let Some(voice) = voices
+                    .iter_mut()
+                    .find(|voice| voice.active && voice.occurrence_id == occurrence_id)
+                {
+                    voice.gated = false;
+                    voice.release_left = release;
+                }
+            }
+        }
+    }
+}
+
+impl hex_lattice_contract::NativeDeviceMetadata for MutableFeedbackDefinition {
+    fn type_id(&self) -> hex_lattice_contract::DeviceTypeId {
+        self.metadata.id
+    }
+    fn display_name(&self) -> Option<&'static str> {
+        Some("mutable feedback proof")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+    fn default_state(
+        &self,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        self.metadata.default_state()
+    }
+    fn migrate_state(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        self.metadata.migrate_state(state)
+    }
+    fn read_parameter(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Result<hex_lattice_contract::ParameterValue, hex_lattice_contract::DeviceContractError>
+    {
+        self.metadata.read_parameter(state, id)
+    }
+    fn patch_parameter(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+        value: hex_lattice_contract::ParameterValue,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        self.metadata.patch_parameter(state, id, value)
+    }
+}
+
+impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
+    fn prepare_instrument(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<
+        Box<dyn hex_lattice::PreparedNativeInstrument>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || state.type_id() != self.metadata.id
+            || state.state_version() != 1
+        {
+            return Err(hex_lattice_contract::DeviceContractError::MalformedState);
+        }
+        let level = *self
+            .metadata
+            .levels
+            .get(usize::from(*state.payload().first().ok_or(
+                hex_lattice_contract::DeviceContractError::MalformedState,
+            )?))
+            .ok_or(hex_lattice_contract::DeviceContractError::MalformedState)?;
+        Ok(Box::new(MutableFeedbackPrepared {
+            level,
+            release_frames: self.metadata.release_frames,
+        }))
+    }
+}
+
+impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+        Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<
+        Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        Ok(Some(Box::new(MutableFeedbackFactory {
+            level: self.level,
+            release_frames: self.release_frames,
+        })))
+    }
+}
+
+impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_twin_bytes(&self) -> usize {
+        std::mem::size_of::<MutableFeedbackRuntime>()
+    }
+    fn max_events_per_block(&self) -> usize {
+        256
+    }
+    fn max_active_occurrences(&self) -> usize {
+        64
+    }
+    fn max_release_tail_frames(&self) -> u64 {
+        self.release_frames + 8
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        Box::new(MutableFeedbackRuntime {
+            key: self.level.to_bits(),
+            level: self.level,
+            release_frames: u8::try_from(self.release_frames).unwrap_or(u8::MAX),
+            voices: [MutableFeedbackVoice::default(); 64],
+            feedback: 0.0,
+            tail_left: 0,
+        })
+    }
+}
+
+impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
+    fn preflight_events(
+        &self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        let mut voices = self.voices;
+        let mut previous_offset = 0;
+        for event in events.iter().copied() {
+            let offset = match event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
+            };
+            if offset < previous_offset || offset >= frame_count {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            Self::advance(&mut voices, offset - previous_offset);
+            match event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
+                    if voices
+                        .iter()
+                        .any(|voice| voice.active && voice.occurrence_id == occurrence_id)
+                    {
+                        return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                    if !voices.iter().any(|voice| !voice.active) {
+                        return Err(
+                            hex_lattice::NativeInstrumentRuntimeError::EventCapacityExceeded,
+                        );
+                    }
+                }
+                hex_lattice::NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                    if !voices.iter().any(|voice| {
+                        voice.active && voice.gated && voice.occurrence_id == occurrence_id
+                    }) {
+                        return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+            }
+            Self::apply(&mut voices, event, self.release_frames);
+            previous_offset = offset;
+        }
+        Ok(())
+    }
+    fn process_block(
+        &mut self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+    ) {
+        let mut event_index = 0;
+        for (frame_index, frame) in frames.iter_mut().enumerate() {
+            while events.get(event_index).is_some_and(|event| match *event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                    frame_offset == frame_index
+                }
+            }) {
+                Self::apply(&mut self.voices, events[event_index], self.release_frames);
+                event_index += 1;
+            }
+            let active = self.voices.iter().any(|voice| voice.active);
+            let direct = self
+                .voices
+                .iter()
+                .filter(|voice| voice.active)
+                .map(|voice| {
+                    let pitch_scale = 1.0 + (f32::from(voice.pitch) - 60.0) * 0.01;
+                    self.level * (f32::from(voice.velocity) / 100.0) * pitch_scale
+                })
+                .sum::<f32>();
+            self.feedback = self.feedback * 0.5 + direct * 0.25;
+            let contribution = direct + self.feedback;
+            frame[0] += contribution;
+            frame[1] += contribution;
+            Self::advance(&mut self.voices, 1);
+            if active && self.voices.iter().all(|voice| !voice.active) {
+                self.tail_left = 8;
+            }
+            if self.voices.iter().all(|voice| !voice.active) && self.tail_left > 0 {
+                self.tail_left -= 1;
+                if self.tail_left == 0 {
+                    self.feedback = 0.0;
+                }
+            }
+        }
+    }
+    fn reset(&mut self) {
+        self.voices = [MutableFeedbackVoice::default(); 64];
+        self.feedback = 0.0;
+        self.tail_left = 0;
+    }
+    fn is_quiescent(&self) -> bool {
+        self.voices.iter().all(|voice| !voice.active) && self.tail_left == 0 && self.feedback == 0.0
+    }
+    fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|old| self.key == old.key && self.release_frames == old.release_frames)
+    }
+    fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
+        if let Some(old) = previous.as_any().downcast_ref::<Self>() {
+            self.voices = old.voices;
+            self.feedback = old.feedback;
+            self.tail_left = old.tail_left;
+        }
+    }
+    fn fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[test]
 fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
@@ -170,8 +491,8 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     #[cfg(target_pointer_width = "64")]
     {
         assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
-        assert_eq!(span_buffer_bytes, 81_416);
-        assert_eq!(current_bytes, 16_072_200);
+        assert_eq!(span_buffer_bytes, 82_952);
+        assert_eq!(current_bytes, 16_073_736);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -1453,6 +1774,771 @@ fn revision_with_instrument_registry(
 }
 
 #[test]
+fn registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+
+    for session_owner in [false, true] {
+        let source = if session_owner {
+            session_only_project(&base)
+        } else {
+            base.clone()
+        };
+        let revision = revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+        let mut whole = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut partitioned = SessionPlayback::new(revision).unwrap();
+        if session_owner {
+            let clip = whole.revision.session().midi_clips()[0].id;
+            for playback in [&mut whole, &mut partitioned] {
+                playback
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+            }
+        } else {
+            whole.apply(SessionPlaybackCommand::Play).unwrap();
+            partitioned.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut expected = [[0.0_f32; 2]; 16];
+        let mut feedback = 0.0_f32;
+        for frame in &mut expected {
+            let direct = 0.2_f32;
+            feedback = feedback * 0.5 + direct * 0.25;
+            frame[0] = direct + feedback;
+            frame[1] = direct + feedback;
+        }
+        let mut actual = [[0.0; 2]; 16];
+        whole.render(&mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "mutable runtime must add its independent feedback law once"
+        );
+        let mut first = [[0.0; 2]; 5];
+        let mut rest = [[0.0; 2]; 11];
+        partitioned.render(&mut first).unwrap();
+        partitioned.render(&mut rest).unwrap();
+        assert_eq!(first.as_slice(), &expected[..5]);
+        assert_eq!(rest.as_slice(), &expected[5..]);
+    }
+}
+
+#[test]
+fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
+    use hex_lattice_contract::NativeDeviceMetadata as _;
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    let midi_clips = match std::mem::replace(
+        &mut snapshot.tracks[0].content,
+        TrackContentSnapshot::Audio(Vec::new()),
+    ) {
+        TrackContentSnapshot::Instrument(midi_clips)
+        | TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        TrackContentSnapshot::Audio(_) => panic!("fixture has Arrangement MIDI"),
+    };
+    let asset = 20;
+    let audio_clip = 21;
+    let effect = 22;
+    snapshot.next_id = 23;
+    snapshot.assets.push(AssetSnapshot {
+        id: asset,
+        path: "mutable-hybrid.wav".into(),
+        source_sample_rate: 48_000,
+        source_frames: 16,
+        playback_frames: 16,
+        conversion_version: hex_project::IDENTITY_CONVERSION,
+    });
+    snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
+        audio_clips: vec![ClipSnapshot {
+            id: audio_clip,
+            asset,
+            start: 0,
+            duration: 16,
+            source_offset: 0,
+            source_length: 16,
+            looping: false,
+            source_phase: 0,
+            fade: ClipFade::neutral(16).unwrap(),
+        }],
+        midi_clips,
+    };
+    snapshot.tracks[0].instrument.as_mut().unwrap().state =
+        hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap();
+    let gain_state = hex_devices::utility::UTILITY_DEFINITION
+        .patch_parameter(
+            &hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+            hex_devices::utility::parameter::GAIN,
+            hex_lattice_contract::ParameterValue::Float(0.5),
+        )
+        .unwrap();
+    snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        id: effect,
+        bypassed: false,
+        state: gain_state,
+    }];
+    snapshot.tracks[0].instrument_position = Some(0);
+    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    let asset_id = project.assets().next().unwrap().id();
+    let media = BTreeMap::from([(
+        asset_id,
+        crate::Audio::new(48_000, vec![[0.3, -0.1]; 16]).unwrap(),
+    )]);
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &project, &media, table, None, &registry,
+        )
+        .unwrap(),
+    );
+    let mut playback = SessionPlayback::new(prepared).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    playback.render(&mut actual).unwrap();
+    let bypassed = with_instrument_bypassed(&project, true);
+    let bypassed_revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &bypassed,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut audio_only = SessionPlayback::new(bypassed_revision).unwrap();
+    audio_only.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut audio_only_output = [[0.0; 2]; 16];
+    audio_only.render(&mut audio_only_output).unwrap();
+
+    let mut feedback = 0.0_f32;
+    let expected_difference: Vec<_> = (0..16)
+        .map(|_| {
+            let direct = 0.2_f32;
+            feedback = feedback * 0.5 + direct * 0.25;
+            let post_suffix = (direct + feedback) * 0.5;
+            [post_suffix, post_suffix]
+        })
+        .collect();
+    for ((actual, audio_only), expected) in actual
+        .iter()
+        .zip(audio_only_output.iter())
+        .zip(expected_difference.iter())
+    {
+        assert!((actual[0] - audio_only[0] - expected[0]).abs() <= 1.0e-6);
+        assert!((actual[1] - audio_only[1] - expected[1]).abs() <= 1.0e-6);
+    }
+}
+
+#[test]
+fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let project = with_test_instrument(&project(0.5, 0, 8 << 32), id, 0);
+    let prepared = revision_with_instrument_registry(&project, Arc::clone(&table), &registry);
+    let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let track = playback.routes[0].id;
+    playback.routes[0].pending = Some(PendingRoute {
+        frame: 8,
+        beat: BeatTime::ZERO,
+        target: RouteTarget::Silence,
+    });
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let mut refused = [[1.0; 2]; 16];
+    assert_eq!(
+        playback.render(&mut refused),
+        Err(SessionPlaybackError::MutableInstrumentActive)
+    );
+    assert_eq!(refused, [[0.0; 2]; 16]);
+    assert_eq!(playback.performance_frame(), 0);
+    assert_eq!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+    assert!(playback.routes[0].pending.is_some());
+    assert!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+    );
+
+    playback.apply(SessionPlaybackCommand::Pause).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+        .unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut retried = [[0.0; 2]; 16];
+    playback.render(&mut retried).unwrap();
+
+    let mut reference = SessionPlayback::new(prepared).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 16];
+    reference.render(&mut expected).unwrap();
+    assert_eq!(retried, expected);
+    assert_eq!(playback.performance_frame(), 16);
+}
+
+#[test]
+fn legacy_arrangement_renderers_refuse_enabled_mutable_instruments_atomically() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let revision = revision_with_instrument_registry(
+        &source,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let expected_output = [[0.25, -0.25]; 8];
+
+    let mut renderer = crate::Renderer::new(revision.arrangement());
+    renderer.play();
+    let mut direct_output = expected_output;
+    assert!(renderer.render(&mut direct_output).is_err());
+    assert_eq!(renderer.position(), 0);
+    assert_eq!(direct_output, expected_output);
+
+    let arrangement = Arc::clone(revision.arrangement());
+    let mut playback = crate::playback::Playback::from_shared(arrangement);
+    playback.apply(crate::playback::PlaybackCommand::Play);
+    let mut shared_output = expected_output;
+    assert!(playback.render(&mut shared_output).is_err());
+    assert_eq!(playback.position(), 0);
+    assert_eq!(shared_output, expected_output);
+}
+
+#[test]
+fn mutable_short_note_releases_inside_query_and_matches_partitioned_render() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let source = with_test_instrument(&project(1.0, 0, 1 << 20), id, 0);
+    let table = Arc::new(hex_devices::SineTable::new());
+    let revision = revision_with_instrument_registry(&source, table, &registry);
+    let mut whole = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut partitioned = SessionPlayback::new(revision).unwrap();
+    whole.apply(SessionPlaybackCommand::Play).unwrap();
+    partitioned.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let mut expected = [[0.0; 2]; 32];
+    let mut actual = [[0.0; 2]; 32];
+    whole.render(&mut expected).unwrap();
+    partitioned.render(&mut actual[..5]).unwrap();
+    partitioned.render(&mut actual[5..16]).unwrap();
+    partitioned.render(&mut actual[16..]).unwrap();
+
+    assert_eq!(actual, expected);
+    assert!(actual[..8].iter().any(|frame| *frame != [0.0; 2]));
+    assert!(actual[24..].iter().all(|frame| *frame == [0.0; 2]));
+}
+
+#[test]
+fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+
+    let mut all_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    // Deliberately reverse chronology and reverse the identity tie order. A
+    // host/source iterator must not affect event IDs or voice-slot assignment.
+    for (iteration, source_start, pitch, velocity) in [
+        (4, 2, 68, 55),
+        (3, 0, 72, 47),
+        (2, 0, 64, 73),
+        (1, 0, 59, 91),
+    ] {
+        all_onsets
+            .push(crate::mutable_instrument::MutableNoteOnset {
+                key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                    track.id(),
+                    clip.id(),
+                    note.id(),
+                    iteration,
+                    0,
+                ),
+                source_start,
+                source_gate_end: 8,
+                pitch,
+                velocity,
+            })
+            .unwrap();
+    }
+
+    let mut whole =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    whole.begin_block();
+    let mut whole_output = [[0.0; 2]; 8];
+    let mut whole_events = Vec::new();
+    let mut whole_onsets = all_onsets.clone();
+    whole
+        .process_segment(
+            track.id(),
+            0,
+            0,
+            &mut whole_output,
+            &mut whole_onsets,
+            &mut whole_events,
+        )
+        .unwrap();
+    let ordered: Vec<_> = whole_events
+        .iter()
+        .filter_map(|event| match *event {
+            hex_lattice::NativeInstrumentEvent::NoteOn {
+                frame_offset,
+                occurrence_id,
+                pitch,
+                velocity,
+            } => Some((frame_offset, occurrence_id, pitch, velocity)),
+            hex_lattice::NativeInstrumentEvent::NoteOff { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        ordered,
+        [
+            (0, 1, 59, 91),
+            (0, 2, 64, 73),
+            (0, 3, 72, 47),
+            (2, 4, 68, 55)
+        ]
+    );
+
+    let terms = [(59_u8, 91_u8), (64_u8, 73_u8), (72_u8, 47_u8)];
+    let direct = terms
+        .iter()
+        .map(|(pitch, velocity)| {
+            0.2_f32 * (f32::from(*velocity) / 100.0) * (1.0 + (f32::from(*pitch) - 60.0) * 0.01)
+        })
+        .sum::<f32>();
+    assert_eq!(whole_output[0], [direct + direct * 0.25; 2]);
+    whole.commit_block();
+
+    let mut partitioned =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    partitioned.begin_block();
+    let mut partitioned_output = [[0.0; 2]; 8];
+    let mut partitioned_events = Vec::new();
+    let mut partitioned_onsets = all_onsets;
+    for (start, end) in [(0_usize, 1_usize), (1, 2), (2, 5), (5, 8)] {
+        partitioned
+            .process_segment(
+                track.id(),
+                start as u64,
+                start as u64,
+                &mut partitioned_output[start..end],
+                &mut partitioned_onsets,
+                &mut partitioned_events,
+            )
+            .unwrap();
+    }
+    assert_eq!(partitioned_output, whole_output);
+    partitioned.commit_block();
+}
+
+#[test]
+fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+    let mut runtime =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    runtime.begin_block();
+    let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    for iteration in 0..128_u64 {
+        let source_start = iteration * 2;
+        onsets
+            .push(crate::mutable_instrument::MutableNoteOnset {
+                key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                    track.id(),
+                    clip.id(),
+                    note.id(),
+                    iteration,
+                    0,
+                ),
+                source_start,
+                source_gate_end: source_start + 1,
+                pitch: 60,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let mut events = Vec::new();
+    let mut frames = [[0.0; 2]; 256];
+    runtime
+        .process_segment(track.id(), 0, 0, &mut frames, &mut onsets, &mut events)
+        .unwrap();
+    assert_eq!(events.len(), 256);
+    let mut release = [[0.0; 2]; 16];
+    onsets.clear();
+    runtime
+        .process_segment(track.id(), 256, 256, &mut release, &mut onsets, &mut events)
+        .unwrap();
+    assert!(runtime.speculative_is_quiescent());
+    runtime.commit_block();
+    assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
+fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+    let runtime =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    let ledger_bytes = runtime.ledger_capacity_bytes().unwrap();
+    let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
+    let graph_host_bytes =
+        crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap();
+
+    assert_eq!(
+        ledger_bytes,
+        2 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
+            * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+    );
+    assert_eq!(
+        graph_host_bytes,
+        hex_project::MAX_TRACKS
+            * std::mem::size_of::<Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>>(
+            )
+            + hex_project::MAX_TRACKS
+                * 2
+                * MAX_SIMULTANEOUS_VOICES_PER_TRACK
+                * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+            + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
+            + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
+                * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
+            + std::mem::size_of::<
+                Vec<Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>>,
+            >()
+            + std::mem::size_of::<Vec<hex_lattice::NativeInstrumentEvent>>()
+    );
+    assert!(
+        crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS + 1).is_none()
+    );
+    println!(
+        "mutable storage bytes: track_owner={}, ledger_pair={}, onset_buffer={}, event={}, runtime_pair={}, max_graph_host={graph_host_bytes}",
+        std::mem::size_of::<Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>>(),
+        ledger_bytes,
+        std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>(),
+        std::mem::size_of::<hex_lattice::NativeInstrumentEvent>(),
+        runtime_pair_bytes,
+    );
+}
+
+#[test]
+fn mutable_seek_and_handoff_refuse_live_history_then_stop_and_quiescence_allow_retry() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
+    let prepared = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let clip = prepared.session().midi_clips()[0].id;
+    let start = || {
+        let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+    };
+
+    let mut active = start();
+    let mut reference = start();
+    let mut prefix = [[0.0; 2]; 16];
+    let mut reference_prefix = [[0.0; 2]; 16];
+    active.render(&mut prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+    let frame_before_refusal = active.performance_frame();
+    assert_eq!(
+        active.apply(SessionPlaybackCommand::Seek(0)),
+        Err(SessionPlaybackError::MutableInstrumentActive)
+    );
+    assert_eq!(active.performance_frame(), frame_before_refusal);
+
+    let mut candidate = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut active),
+        Err(SessionPlaybackError::MutableInstrumentActive)
+    );
+    let mut actual_tail = [[0.0; 2]; 256];
+    let mut expected_tail = [[0.0; 2]; 256];
+    active.render(&mut actual_tail).unwrap();
+    reference.render(&mut expected_tail).unwrap();
+    assert_eq!(actual_tail, expected_tail);
+
+    candidate
+        .try_inherit_state_from(&mut active)
+        .expect("revision replacement is safe after the declared tail becomes quiet");
+    assert!(
+        active.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+    );
+    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+    );
+    candidate.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+}
+
+#[test]
+fn mutable_session_route_switch_refuses_live_state_and_retries_after_quiet() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let source = with_test_instrument(&project(1.0, 0, 1 << 20), id, 0);
+    let revision = revision_with_instrument_registry(
+        &source,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let clip = revision.session().midi_clips()[0].id;
+    let track = revision.session().midi_clips()[0].track;
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut onset = [[0.0; 2]; 1];
+    playback.render(&mut onset).unwrap();
+    let frame_before_refusal = playback.performance_frame();
+    assert_eq!(
+        playback.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        }),
+        Err(SessionPlaybackError::MutableInstrumentActive)
+    );
+    assert_eq!(playback.performance_frame(), frame_before_refusal);
+    assert_eq!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+
+    let mut release = [[0.0; 2]; 32];
+    playback.render(&mut release).unwrap();
+    assert!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+    );
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .expect("quiet mutable owner may switch routes without losing note events");
+    assert!(matches!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Session { clip: active }) if active == clip
+    ));
+    let mut new_source = [[0.0; 2]; 1];
+    playback.render(&mut new_source).unwrap();
+    assert_eq!(new_source[0], [0.25, 0.25]);
+}
+
+#[test]
+fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    let arrangement_clips = match &mut snapshot.tracks[0].content {
+        TrackContentSnapshot::Instrument(clips) => clips,
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        TrackContentSnapshot::Audio(_) => panic!("Arrangement MIDI fixture expected"),
+    };
+    arrangement_clips[0].notes[0].duration_raw = 8 << 32;
+    let SessionCellContentSnapshot::Midi(session_clip) = &mut snapshot.session.cells[0].content
+    else {
+        panic!("Session MIDI fixture expected");
+    };
+    session_clip.source.notes[0].duration_raw = 1 << 32;
+    let source = legacy_project_from_snapshot(snapshot).unwrap();
+    let source = with_test_instrument(&source, id, 0);
+    let revision = revision_with_instrument_registry(
+        &source,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let clip = revision.session().midi_clips()[0].id;
+    let track = revision.session().midi_clips()[0].track;
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut session_audio = vec![[0.0; 2]; 24_064];
+    playback.render(&mut session_audio).unwrap();
+    assert!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+    );
+    assert_eq!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Session { clip })
+    );
+
+    let cut = playback.performance_frame();
+    let before_routes = playback.routes.clone();
+    assert_eq!(
+        playback.apply(SessionPlaybackCommand::BackToArrangement {
+            quantization: LaunchQuantization::Immediate,
+        }),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(playback.performance_frame(), cut);
+    assert_eq!(playback.routes, before_routes);
+    assert_eq!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Session { clip })
+    );
+
+    playback
+        .apply(SessionPlaybackCommand::Seek(16 * 24_000 + 1))
+        .unwrap();
+    playback
+        .apply(SessionPlaybackCommand::BackToArrangement {
+            quantization: LaunchQuantization::Immediate,
+        })
+        .expect("retry succeeds once the Arrangement destination is clear");
+    assert_eq!(
+        playback.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+}
+
+#[test]
+fn mutable_prepared_playback_refuses_arrangement_and_session_loops() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+
+    let mut arrangement_loop = project(0.5, 0, 1 << 24).snapshot();
+    arrangement_loop.tracks[0]
+        .instrument
+        .as_mut()
+        .unwrap()
+        .state = hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap();
+    arrangement_loop.loop_region = Some(LoopRegion::new(0, 48_000, true).unwrap());
+    let arrangement_loop = legacy_project_from_snapshot(arrangement_loop).unwrap();
+    let prepared =
+        revision_with_instrument_registry(&arrangement_loop, Arc::clone(&table), &registry);
+    assert!(matches!(
+        SessionPlayback::new(prepared),
+        Err(SessionPlaybackError::MutableInstrumentLoopUnsupported)
+    ));
+
+    let mut session_loop = session_only_project(&project(0.5, 0, 1 << 24)).snapshot();
+    session_loop.tracks[0].instrument.as_mut().unwrap().state =
+        hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap();
+    let SessionCellContentSnapshot::Midi(clip) = &mut session_loop.session.cells[0].content else {
+        panic!("fixture has a Session MIDI source")
+    };
+    clip.source.looping = true;
+    let session_loop = legacy_project_from_snapshot(session_loop).unwrap();
+    let prepared = revision_with_instrument_registry(&session_loop, table, &registry);
+    assert!(matches!(
+        SessionPlayback::new(prepared),
+        Err(SessionPlaybackError::MutableInstrumentLoopUnsupported)
+    ));
+}
+
+#[test]
 fn changing_session_instrument_identity_carries_old_held_voice_once() {
     let table = Arc::new(hex_devices::SineTable::new());
     let original = session_only_project(&project(0.5, 0, 8 << 32));
@@ -2257,6 +3343,200 @@ fn arrangement_instrument_handoff_uses_new_sampler_for_exact_cut_onset() {
     // The note begins exactly at the publication frame, so it belongs
     // exclusively to the candidate sampler.
     assert_eq!(at_cut[0], [0.4, 0.4]);
+}
+
+#[test]
+fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.new-track.chase"),
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let original = project(1.0, 1 << 32, 1 << 32);
+    let mut previous = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 2];
+    previous.render(&mut prefix).unwrap();
+    assert_eq!(previous.performance_frame(), 2);
+
+    let make_candidate = |arrangement_start: u64, session_start: u64| {
+        let mut snapshot = original.snapshot();
+        let old_track = snapshot.tracks[0].id;
+        snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+        snapshot.tracks[0].instrument = None;
+        snapshot.tracks[0].instrument_position = None;
+        snapshot
+            .session
+            .cells
+            .retain(|cell| cell.track != old_track);
+        let track = 20;
+        let instrument_id = 21;
+        let arrangement_clip = 22;
+        let arrangement_note = 23;
+        let session_clip = 24;
+        let session_note = 25;
+        snapshot.tracks.push(TrackSnapshot {
+            id: track,
+            name: "new mutable track".into(),
+            gain: 1.0,
+            balance: 0.0,
+            muted: false,
+            soloed: false,
+            devices: Vec::new(),
+            instrument: Some(DeviceSnapshot {
+                id: instrument_id,
+                bypassed: false,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    definition.metadata.id,
+                    1,
+                    vec![0],
+                )
+                .unwrap(),
+            }),
+            instrument_position: Some(0),
+            content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                id: arrangement_clip,
+                start_raw: 0,
+                length_raw: 16 << 32,
+                source_length_raw: 32 << 32,
+                source_start_raw: 0,
+                loop_start_raw: 0,
+                loop_end_raw: 32 << 32,
+                looping: false,
+                notes: vec![MidiNoteSnapshot {
+                    id: arrangement_note,
+                    start_raw: arrangement_start,
+                    duration_raw: 1 << 32,
+                    pitch: 64,
+                    channel: 0,
+                    velocity: 100,
+                }],
+            }]),
+        });
+        snapshot.session.cells.push(SessionCellSnapshot {
+            track,
+            scene: snapshot.session.scenes[0].id,
+            content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                id: session_clip,
+                name: "new mutable clip".into(),
+                source: MidiSourceSnapshot {
+                    source_length_raw: 32 << 32,
+                    source_start_raw: 0,
+                    loop_start_raw: 0,
+                    loop_end_raw: 32 << 32,
+                    looping: false,
+                    notes: vec![MidiNoteSnapshot {
+                        id: session_note,
+                        start_raw: session_start,
+                        duration_raw: 1 << 32,
+                        pitch: 64,
+                        channel: 0,
+                        velocity: 100,
+                    }],
+                },
+            }),
+        });
+        snapshot.next_id = 26;
+        legacy_project_from_snapshot(snapshot).unwrap()
+    };
+
+    let sounding = make_candidate(0, 0);
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        &sounding,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    assert_eq!(candidate.routes.len(), 2);
+    assert!(candidate.mutable_instruments[1].is_some());
+    let mut candidate_span_active = false;
+    candidate.revision.arrangement().tracks()[1]
+        .for_each_mutable_midi_span(2, 3, |span| {
+            candidate_span_active |= span.start < 2 && span.end > 2;
+        })
+        .unwrap();
+    assert!(candidate_span_active);
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(previous.performance_frame(), 2);
+    let old_track = previous.routes[0].id;
+    assert_eq!(
+        previous.owner(old_track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+
+    let cleared = make_candidate(1 << 32, 1 << 32);
+    let mut retry = SessionPlayback::new(revision_with_instrument_registry(
+        &cleared, table, &registry,
+    ))
+    .unwrap();
+    retry.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(retry.performance_frame(), 2);
+    assert_eq!(retry.release_voice_count(), 0);
+}
+
+#[test]
+fn mutable_handoff_refuses_inherited_future_analytic_route_boundary() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.pending-boundary"),
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let original = project(1.0, 1 << 32, 1 << 32);
+    let mut previous = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let clip = previous.revision.session().midi_clips()[0].id;
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 1];
+    previous.render(&mut prefix).unwrap();
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::FourQuarter,
+        })
+        .unwrap();
+    let pending = previous.routes[0].pending;
+    assert!(pending.is_some_and(|entry| entry.frame > previous.performance_frame));
+
+    let changed = with_test_instrument(&original, definition.metadata.id, 0);
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        &changed,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::MutableInstrumentRouteBoundary)
+    );
+    assert_eq!(previous.performance_frame(), 1);
+    assert_eq!(previous.routes[0].pending, pending);
+    let track = previous.routes[0].id;
+    assert_eq!(
+        previous.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+
+    previous
+        .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+        .unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(candidate.performance_frame(), 1);
 }
 
 #[test]

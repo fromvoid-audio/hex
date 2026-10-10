@@ -457,6 +457,8 @@ pub struct Track {
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_bypassed: bool,
+    mutable_instrument: bool,
+    mutable_looping_source: bool,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -520,6 +522,13 @@ impl PreparedTrackMix {
         destination[0] += source[0] * self.channel_gain[0];
         destination[1] += source[1] * self.channel_gain[1];
     }
+
+    fn without_effects(self) -> Self {
+        Self {
+            effects: None,
+            ..self
+        }
+    }
 }
 
 impl Track {
@@ -547,6 +556,8 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            mutable_instrument: false,
+            mutable_looping_source: false,
         })
     }
 
@@ -589,6 +600,8 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            mutable_instrument: false,
+            mutable_looping_source: false,
         })
     }
 
@@ -606,6 +619,24 @@ impl Track {
         self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
+    }
+
+    pub(crate) fn with_mutable_instrument(mut self, mutable: bool, looping_source: bool) -> Self {
+        if mutable {
+            // Device effects were prepared before the instrument capability
+            // was attached. A gap-zero stateless chain may therefore still be
+            // fused into the source/mix path; ordered rendering owns every
+            // effect application once the mutable instrument is admitted.
+            self.mix = self.mix.without_effects();
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        self.mutable_instrument = mutable;
+        self.mutable_looping_source = mutable && looping_source;
+        self
+    }
+
+    pub(crate) fn has_mutable_looping_source(&self) -> bool {
+        self.mutable_looping_source
     }
 
     pub(crate) fn instrument_enabled(&self) -> bool {
@@ -629,6 +660,22 @@ impl Track {
             .any(|device| device.definition.is_some())
     }
 
+    pub(crate) fn stateful_device_count(&self) -> usize {
+        self.device_chain
+            .iter()
+            .filter(|device| device.definition.is_some())
+            .count()
+    }
+
+    pub(crate) fn stateful_device_declared_bytes(&self) -> Option<usize> {
+        self.device_chain
+            .iter()
+            .filter_map(|device| device.definition.as_ref())
+            .try_fold(0_usize, |total, definition| {
+                total.checked_add(definition.declared_runtime_bytes().checked_mul(2)?)
+            })
+    }
+
     pub(crate) fn instrument_position(&self) -> usize {
         self.instrument_position
     }
@@ -638,7 +685,8 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        self.has_stateful_devices()
+        self.mutable_instrument
+            || self.has_stateful_devices()
             || (self.has_ordered_instrument()
                 && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
     }
@@ -835,6 +883,25 @@ impl Track {
         Ok(())
     }
 
+    pub(crate) fn for_each_mutable_midi_span(
+        &self,
+        start: u64,
+        end: u64,
+        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+    ) -> Result<(), Invalid> {
+        if start > end {
+            return Err(Invalid("midi span frame range is invalid"));
+        }
+        if let Some(instrument) = self
+            .instrument
+            .as_ref()
+            .filter(|instrument| instrument.mutable)
+        {
+            instrument.for_each_intersecting(start, end, None, &mut visit);
+        }
+        Ok(())
+    }
+
     fn render_unmuted_range(
         &self,
         start_frame: u64,
@@ -1010,6 +1077,9 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
+            if instrument.mutable {
+                return Ok(());
+            }
             for chunk_start in (start_frame..end_frame).step_by(256) {
                 let chunk_end = chunk_start.saturating_add(256).min(end_frame);
                 let output_start = (chunk_start - start_frame) as usize;
@@ -1075,6 +1145,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
     pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
+    pub(crate) mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1107,7 +1178,11 @@ impl Project {
             .filter_map(|track| track.instrument.as_ref())
             .try_fold(0_usize, |total, instrument| {
                 total
-                    .checked_add(instrument.spans.len())
+                    .checked_add(if instrument.mutable {
+                        0
+                    } else {
+                        instrument.spans.len()
+                    })
                     .ok_or(Invalid("midi note bank reference count overflow"))
             })
     }
@@ -1360,6 +1435,11 @@ impl RendererRuntime {
     ) -> Result<(), Invalid> {
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
+        }
+        if project.tracks.iter().any(|track| track.mutable_instrument) {
+            return Err(Invalid(
+                "mutable instrument requires shared Session playback",
+            ));
         }
         let next = if playing {
             position
@@ -1718,6 +1798,7 @@ pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
 pub mod midi_template;
+mod mutable_instrument;
 mod prepared_revision;
 mod prepared_tempo;
 mod session_inventory;

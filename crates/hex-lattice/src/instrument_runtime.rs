@@ -220,6 +220,13 @@ impl NativeInstrumentRuntimePair {
         !self.block_started && self.primary.is_quiescent()
     }
 
+    /// Quiescence of the current speculative history inside an open block.
+    /// This is used only to preflight a route boundary before rendering its
+    /// next source segment; it never observes or mutates committed history.
+    pub fn speculative_is_quiescent(&self) -> bool {
+        self.block_started && self.scratch.is_quiescent()
+    }
+
     /// Measured sum reported by both runtime implementations, excluding
     /// allocator bookkeeping. Implementations remain responsible for honest
     /// accounting of their fixed internal storage.
