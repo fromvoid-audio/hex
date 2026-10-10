@@ -9654,7 +9654,7 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
 #[path = "effect_tail_budget_tests.rs"]
 mod effect_tail_budget_tests;
 
-#[path = "silence_effect_tests.rs"]
-mod silence_effect_tests;
 #[path = "return_effect_tail_tests.rs"]
 mod return_effect_tail_tests;
+#[path = "silence_effect_tests.rs"]
+mod silence_effect_tests;
