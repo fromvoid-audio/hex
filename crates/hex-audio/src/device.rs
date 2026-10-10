@@ -1,4 +1,7 @@
 //! Device adapter for the canonical compiled playback handoff.
+use crate::spectrum_worker::{
+    SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
+};
 use crate::{lifecycle, prepared};
 use cpal::{
     FromSample, SizedSample,
@@ -15,6 +18,8 @@ pub struct PreparedOutput {
     pub control: prepared::Control,
     pub sample_rate: u32,
     pub label: String,
+    pub spectrum: Option<SpectrumReader>,
+    pub spectrum_error: Option<String>,
 }
 impl PreparedOutput {
     /// Opens the current default device with an empty, paused arrangement.
@@ -37,28 +42,89 @@ impl PreparedOutput {
         if config.channels == 0 {
             return Err("output device has no channels".into());
         }
-        let (control, callback) =
-            prepared::channel(config.sample_rate).map_err(|e| e.to_string())?;
-        let status = control.status.clone();
-        let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, callback, status),
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, callback, status),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, callback, status),
-            other => return Err(format!("unsupported output format: {other:?}")),
+        let sample_format = supported.sample_format();
+        if !matches!(
+            sample_format,
+            cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+        ) {
+            return Err(format!("unsupported output format: {sample_format:?}"));
         }
-        .map_err(|e| e.to_string())?;
+
+        let (capture, spectrum, spectrum_reaper, spectrum_error) = if (8_000..=192_000)
+            .contains(&config.sample_rate)
+        {
+            let initial = SpectrumStamp {
+                target: SpectrumTargetId(0),
+                generation: 0,
+                sample_rate_hz: config.sample_rate,
+                applied_revision: 0,
+            };
+            match spawn_spectrum_worker(initial) {
+                Ok((capture, reader, reaper)) => (Some(capture), Some(reader), Some(reaper), None),
+                Err(error) => (None, None, None, Some(error.to_string())),
+            }
+        } else {
+            (
+                None,
+                None,
+                None,
+                Some(format!(
+                    "spectrum analysis unavailable at {} hz; supported range is 8000..=192000 hz",
+                    config.sample_rate
+                )),
+            )
+        };
+        let channel_result = match capture {
+            Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
+            None => prepared::channel(config.sample_rate),
+        };
+        let (control, callback) = match channel_result {
+            Ok(channel) => channel,
+            Err(error) => {
+                if let Some(reaper) = spectrum_reaper {
+                    let _ = reaper.shutdown_and_join();
+                }
+                return Err(error.to_string());
+            }
+        };
+        let status = control.status.clone();
+        let stream = if sample_format == cpal::SampleFormat::F32 {
+            build::<f32>(&device, &config, callback, status).map_err(|error| error.to_string())
+        } else if sample_format == cpal::SampleFormat::I16 {
+            build::<i16>(&device, &config, callback, status).map_err(|error| error.to_string())
+        } else if sample_format == cpal::SampleFormat::U16 {
+            build::<u16>(&device, &config, callback, status).map_err(|error| error.to_string())
+        } else {
+            Err(format!("unsupported output format: {sample_format:?}"))
+        };
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                drop(control);
+                if let Some(reaper) = spectrum_reaper {
+                    let _ = reaper.shutdown_and_join();
+                }
+                return Err(error);
+            }
+        };
         if let Err(error) = stream.play() {
-            drop(lifecycle::StreamOwner::new(stream, lease));
+            drop(lifecycle::StreamOwner::with_spectrum(
+                stream,
+                lease,
+                spectrum_reaper,
+            ));
             return Err(error.to_string());
         }
         Ok(Self {
-            _stream: lifecycle::StreamOwner::new(stream, lease),
+            _stream: lifecycle::StreamOwner::with_spectrum(stream, lease, spectrum_reaper),
             control,
             sample_rate: config.sample_rate,
             label: format!(
                 "coreaudio · {} hz · {} channels",
                 config.sample_rate, config.channels
             ),
+            spectrum,
+            spectrum_error,
         })
     }
 }
@@ -94,12 +160,13 @@ fn build<T: SizedSample + FromSample<f32>>(
             data[complete..].fill(T::from_sample(0.0));
             for chunk in data[..complete].chunks_mut(channels * block.len()) {
                 let frames = chunk.len() / channels;
-                if callback.render(&mut block[..frames]).is_err()
-                    || block[..frames]
+                let render_valid = callback.render(&mut block[..frames]).is_ok()
+                    && block[..frames]
                         .iter()
                         .flatten()
-                        .any(|sample| !sample.is_finite())
-                {
+                        .all(|sample| sample.is_finite());
+                callback.finish_spectrum_block(start, render_valid);
+                if !render_valid {
                     block[..frames].fill([0.0; 2]);
                     status.render_fault.store(true, Relaxed);
                     callback.stop_after_fault();

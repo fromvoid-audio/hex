@@ -48,7 +48,9 @@ pub struct SpectrumStamp {
 pub struct PublishedSpectrum {
     pub stamp: SpectrumStamp,
     pub frame: SpectrumFrame,
-    /// Worker receive time of the newest frame represented by this window.
+    /// Conservative caller timestamp for the newest accepted capture batch.
+    /// The CPAL adapter uses callback entry time, so it is never a predicted
+    /// future playback timestamp.
     pub captured_at: Instant,
     /// Time the worker completed the transform.
     pub processed_at: Instant,
@@ -67,6 +69,7 @@ pub enum CaptureOutcome {
     Queued { sequence: u64 },
     QueueFull { sequence: u64 },
     InvalidBatch { sequence: u64 },
+    Skipped { sequence: u64 },
     SequenceExhausted,
 }
 
@@ -86,6 +89,18 @@ impl SpectrumCapture {
     /// Sequence numbers never wrap; after exhaustion, create a new capture
     /// producer with a new generation.
     pub fn submit(&mut self, stamp: SpectrumStamp, frames: &[[f32; 2]]) -> CaptureOutcome {
+        self.submit_at(stamp, frames, Instant::now())
+    }
+
+    /// Submit output with a caller-supplied capture time. The CPAL adapter uses
+    /// callback entry time for every chunk from one invocation, avoiding a
+    /// predicted timestamp that may lie ahead of fast offline rendering.
+    pub fn submit_at(
+        &mut self,
+        stamp: SpectrumStamp,
+        frames: &[[f32; 2]],
+        captured_start: Instant,
+    ) -> CaptureOutcome {
         if self.exhausted {
             return CaptureOutcome::SequenceExhausted;
         }
@@ -110,6 +125,7 @@ impl SpectrumCapture {
         let batch = CaptureBatch {
             stamp,
             sequence,
+            captured_start,
             frame_count: frames.len() as u16,
             samples,
         };
@@ -118,26 +134,43 @@ impl SpectrumCapture {
             Err(_) => CaptureOutcome::QueueFull { sequence },
         }
     }
+
+    /// Record an unavailable, failed or rolled-back render attempt so the next
+    /// accepted capture resets the worker's rolling window at the gap.
+    pub fn skip(&mut self) -> CaptureOutcome {
+        if self.exhausted {
+            return CaptureOutcome::SequenceExhausted;
+        }
+        let sequence = self.next_sequence;
+        let Some(next_sequence) = sequence.checked_add(1) else {
+            self.exhausted = true;
+            return CaptureOutcome::SequenceExhausted;
+        };
+        self.next_sequence = next_sequence;
+        CaptureOutcome::Skipped { sequence }
+    }
 }
 
-/// Control-side worker owner and newest-result cache.
-pub struct SpectrumWorker {
-    stop: Arc<AtomicBool>,
-    join: Option<JoinHandle<()>>,
+/// Control-side newest-result cache. It can be polled by the UI without
+/// owning or joining the worker thread.
+pub struct SpectrumReader {
     results: Receiver<PublishedSpectrum>,
     latest: Option<PublishedSpectrum>,
 }
 
-impl SpectrumWorker {
+impl SpectrumReader {
     /// Return the newest result, clearing cached display data after 100 ms.
     pub fn try_latest(&mut self) -> Option<PublishedSpectrum> {
+        self.try_latest_at(Instant::now())
+    }
+
+    pub fn try_latest_at(&mut self, now: Instant) -> Option<PublishedSpectrum> {
         for _ in 0..RESULT_QUEUE_CAPACITY {
             match self.results.try_recv() {
                 Ok(result) => self.latest = Some(result),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        let now = Instant::now();
         if self
             .latest
             .as_ref()
@@ -147,16 +180,26 @@ impl SpectrumWorker {
         }
         self.latest.clone()
     }
+}
 
-    /// Stop and join on a control thread after the callback has quiesced and
-    /// returned its capture producer. Consuming the producer ensures its queue
-    /// storage is reclaimed here, never in an audio callback destructor.
-    pub fn shutdown_and_join(
-        mut self,
-        capture: SpectrumCapture,
-    ) -> Result<(), SpectrumWorkerError> {
-        drop(capture);
+/// Lifecycle-side worker shutdown owner. The stream owner must first pause and
+/// drop the stream, which destroys its callback-held producer, then join here.
+pub struct SpectrumReaper {
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl SpectrumReaper {
+    /// Request exit without joining. Safe to use while retaining a quarantined
+    /// stream and callback; all destruction still waits for successful pause.
+    pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+
+    /// Stop and join after the callback producer has been destroyed by stream
+    /// disposal. The worker consumer and queue allocation are reclaimed here.
+    pub fn shutdown_and_join(mut self) -> Result<(), SpectrumWorkerError> {
+        self.request_stop();
         let Some(join) = self.join.take() else {
             return Ok(());
         };
@@ -164,7 +207,7 @@ impl SpectrumWorker {
     }
 }
 
-impl Drop for SpectrumWorker {
+impl Drop for SpectrumReaper {
     fn drop(&mut self) {
         // Dropping the control handle requests worker exit but never joins it.
         // Owners needing lifecycle confirmation must call shutdown_and_join.
@@ -198,7 +241,7 @@ impl Error for SpectrumWorkerError {}
 /// Construct the bounded capture queue and its worker on a control thread.
 pub fn spawn_spectrum_worker(
     initial_stamp: SpectrumStamp,
-) -> Result<(SpectrumCapture, SpectrumWorker), SpectrumWorkerError> {
+) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
     let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
@@ -217,11 +260,13 @@ pub fn spawn_spectrum_worker(
             next_sequence: 0,
             exhausted: false,
         },
-        SpectrumWorker {
-            stop,
-            join: Some(join),
+        SpectrumReader {
             results: result_receiver,
             latest: None,
+        },
+        SpectrumReaper {
+            stop,
+            join: Some(join),
         },
     ))
 }
@@ -230,6 +275,7 @@ pub fn spawn_spectrum_worker(
 struct CaptureBatch {
     stamp: SpectrumStamp,
     sequence: u64,
+    captured_start: Instant,
     frame_count: u16,
     samples: [[f32; 2]; MAX_CAPTURE_FRAMES],
 }
@@ -248,7 +294,7 @@ fn worker_loop(
             let Ok(batch) = consumer.pop() else {
                 break;
             };
-            core.ingest(batch, Instant::now());
+            core.ingest(batch);
             drained += 1;
         }
         let now = Instant::now();
@@ -278,7 +324,7 @@ struct SpectrumCore {
     filled: usize,
     last_sequence: Option<u64>,
     latest_stamp: Option<SpectrumStamp>,
-    received_at: Option<Instant>,
+    captured_at: Option<Instant>,
     last_analysis_at: Option<Instant>,
     dirty_since_analysis: bool,
 }
@@ -295,13 +341,13 @@ impl SpectrumCore {
             filled: 0,
             last_sequence: None,
             latest_stamp: None,
-            received_at: None,
+            captured_at: None,
             last_analysis_at: None,
             dirty_since_analysis: false,
         }
     }
 
-    fn ingest(&mut self, batch: CaptureBatch, received_at: Instant) -> IngestOutcome {
+    fn ingest(&mut self, batch: CaptureBatch) -> IngestOutcome {
         let frame_count = usize::from(batch.frame_count);
         if frame_count == 0
             || frame_count > MAX_CAPTURE_FRAMES
@@ -344,7 +390,7 @@ impl SpectrumCore {
         self.context = Some(next_context);
         self.last_sequence = Some(batch.sequence);
         self.latest_stamp = Some(batch.stamp);
-        self.received_at = Some(received_at);
+        self.captured_at = Some(batch.captured_start);
         for frame in &batch.samples[..frame_count] {
             self.rolling[self.write_index] = *frame;
             self.write_index = (self.write_index + 1) % FFT_SIZE;
@@ -377,7 +423,7 @@ impl SpectrumCore {
         let result = PublishedSpectrum {
             stamp: self.latest_stamp?,
             frame,
-            captured_at: self.received_at?,
+            captured_at: self.captured_at?,
             processed_at,
         };
         self.last_analysis_at = Some(now);
@@ -390,7 +436,7 @@ impl SpectrumCore {
         self.write_index = 0;
         self.filled = 0;
         self.latest_stamp = None;
-        self.received_at = None;
+        self.captured_at = None;
         self.dirty_since_analysis = false;
     }
 }
@@ -421,6 +467,7 @@ mod tests {
         CaptureBatch {
             stamp,
             sequence,
+            captured_start: Instant::now(),
             frame_count: count as u16,
             samples,
         }
@@ -457,10 +504,7 @@ mod tests {
         );
         let first = consumer.pop().expect("queued batch");
         let mut analysis = core();
-        assert_eq!(
-            analysis.ingest(first, Instant::now()),
-            IngestOutcome::Accepted
-        );
+        assert_eq!(analysis.ingest(first), IngestOutcome::Accepted);
         while consumer.pop().is_ok() {}
         assert_eq!(
             capture.submit(context, &frames),
@@ -469,35 +513,34 @@ mod tests {
             }
         );
         let next = consumer.pop().expect("batch after dropped sequence");
-        assert_eq!(analysis.ingest(next, Instant::now()), IngestOutcome::Reset);
+        assert_eq!(analysis.ingest(next), IngestOutcome::Reset);
         assert_eq!(analysis.filled, MAX_CAPTURE_FRAMES);
     }
 
     #[test]
     fn ordinary_revisions_continue_but_target_generation_and_rate_reset_window() {
         let mut analysis = core();
-        let at = Instant::now();
         assert_eq!(
-            analysis.ingest(batch(0, stamp(1, 1, 8_000, 1), 0.1, 256), at),
+            analysis.ingest(batch(0, stamp(1, 1, 8_000, 1), 0.1, 256)),
             IngestOutcome::Accepted
         );
         assert_eq!(
-            analysis.ingest(batch(1, stamp(1, 1, 8_000, 2), 0.2, 256), at),
+            analysis.ingest(batch(1, stamp(1, 1, 8_000, 2), 0.2, 256)),
             IngestOutcome::Accepted
         );
         assert_eq!(analysis.filled, 512);
         assert_eq!(
-            analysis.ingest(batch(2, stamp(1, 2, 8_000, 2), 0.2, 256), at),
+            analysis.ingest(batch(2, stamp(1, 2, 8_000, 2), 0.2, 256)),
             IngestOutcome::Reset
         );
         assert_eq!(analysis.filled, 256);
         assert_eq!(
-            analysis.ingest(batch(3, stamp(2, 2, 8_000, 3), 0.2, 256), at),
+            analysis.ingest(batch(3, stamp(2, 2, 8_000, 3), 0.2, 256)),
             IngestOutcome::Reset
         );
         assert_eq!(analysis.filled, 256);
         assert_eq!(
-            analysis.ingest(batch(4, stamp(2, 2, 48_000, 4), 0.2, 256), at),
+            analysis.ingest(batch(4, stamp(2, 2, 48_000, 4), 0.2, 256)),
             IngestOutcome::Reset
         );
         assert_eq!(analysis.filled, 256);
@@ -508,20 +551,21 @@ mod tests {
     fn cadence_freshness_and_window_publication_are_deterministic() {
         let mut analysis = core();
         let start = Instant::now();
-        let context = stamp(3, 1, 8_000, 1);
-        for sequence in 0..16 {
-            analysis.ingest(batch(sequence, context, 0.5, 256), start);
+        for sequence in 0..32 {
+            // 128 frames at 8 khz model approximately 60 hz parameter changes
+            // throughout one rolling window, with caller capture timestamps.
+            let mut capture = batch(sequence, stamp(3, 1, 8_000, sequence + 1), 0.5, 128);
+            capture.captured_start = start - Duration::from_millis((31 - sequence) * 16);
+            analysis.ingest(capture);
         }
         let first = analysis.analyze_if_due(start).expect("full initial window");
         assert_eq!(first.frame.bins_dbfs.len(), 96);
-        assert_eq!(first.stamp.applied_revision, 1);
-        assert!(first.is_fresh_at(start + DISPLAY_STALE_AFTER));
-        assert!(!first.is_fresh_at(start + DISPLAY_STALE_AFTER + Duration::from_nanos(1)));
-
-        analysis.ingest(
-            batch(16, stamp(3, 1, 8_000, 2), 0.25, 256),
-            start + Duration::from_millis(1),
+        assert_eq!(first.stamp.applied_revision, 32);
+        assert!(first.is_fresh_at(first.captured_at + DISPLAY_STALE_AFTER));
+        assert!(
+            !first.is_fresh_at(first.captured_at + DISPLAY_STALE_AFTER + Duration::from_nanos(1))
         );
+        analysis.ingest(batch(32, stamp(3, 1, 8_000, 33), 0.25, 128));
         assert!(
             analysis
                 .analyze_if_due(start + Duration::from_millis(33))
@@ -530,7 +574,33 @@ mod tests {
         let next = analysis
             .analyze_if_due(start + Duration::from_millis(34))
             .expect("cadence elapsed");
-        assert_eq!(next.stamp.applied_revision, 2);
+        assert_eq!(next.stamp.applied_revision, 33);
+    }
+
+    #[test]
+    fn reader_drops_worker_result_by_capture_age_not_processing_or_receipt_time() {
+        let mut analysis = core();
+        let now = Instant::now();
+        let stale_capture = now - DISPLAY_STALE_AFTER - Duration::from_millis(1);
+        let context = stamp(5, 2, 8_000, 40);
+        for sequence in 0..16 {
+            let mut captured = batch(sequence, context, 0.4, 256);
+            captured.captured_start = stale_capture;
+            analysis.ingest(captured);
+        }
+        let result = analysis.analyze_if_due(now).expect("complete fft window");
+        assert!(result.processed_at >= now);
+        assert!(!result.is_fresh_at(now));
+
+        let (sender, receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
+        sender.try_send(result).expect("publish worker result");
+        let mut reader = SpectrumReader {
+            results: receiver,
+            latest: None,
+        };
+        // Receipt happens now, but the channel carries the original capture
+        // timestamp so expensive/queued processing cannot refresh stale audio.
+        assert!(reader.try_latest_at(now).is_none());
     }
 
     #[test]
@@ -542,14 +612,14 @@ mod tests {
         let start = Instant::now();
         let first_context = stamp(4, 1, 192_000, 1);
         for sequence in 0..16 {
-            analysis.ingest(batch(sequence, first_context, 0.3, 256), start);
+            analysis.ingest(batch(sequence, first_context, 0.3, 256));
         }
         assert!(analysis.analyze_if_due(start).is_some());
 
         let next_context = stamp(4, 2, 192_000, 2);
         let next_capture_at = start + Duration::from_millis(21);
         for sequence in 16..32 {
-            analysis.ingest(batch(sequence, next_context, 0.4, 256), next_capture_at);
+            analysis.ingest(batch(sequence, next_context, 0.4, 256));
         }
         assert!(analysis.analyze_if_due(next_capture_at).is_none());
         let second = analysis
@@ -566,17 +636,16 @@ mod tests {
     #[test]
     fn malformed_batches_clear_window_without_partial_ingest() {
         let mut analysis = core();
-        let at = Instant::now();
         assert_eq!(
-            analysis.ingest(batch(0, stamp(1, 1, 8_000, 1), 0.5, 256), at),
+            analysis.ingest(batch(0, stamp(1, 1, 8_000, 1), 0.5, 256)),
             IngestOutcome::Accepted
         );
         let mut invalid = batch(1, stamp(1, 1, 8_000, 1), 0.5, 256);
         invalid.frame_count = (MAX_CAPTURE_FRAMES + 1) as u16;
-        assert_eq!(analysis.ingest(invalid, at), IngestOutcome::Rejected);
+        assert_eq!(analysis.ingest(invalid), IngestOutcome::Rejected);
         assert_eq!(analysis.filled, 0);
         let bad_rate = batch(2, stamp(1, 1, 7_999, 1), 0.5, 256);
-        assert_eq!(analysis.ingest(bad_rate, at), IngestOutcome::Rejected);
+        assert_eq!(analysis.ingest(bad_rate), IngestOutcome::Rejected);
         assert_eq!(analysis.filled, 0);
         assert_eq!(analysis.context, None);
     }
@@ -584,14 +653,15 @@ mod tests {
     #[test]
     fn worker_lifecycle_returns_capture_to_control_before_join() {
         let context = stamp(7, 1, 8_000, 0);
-        let (mut capture, worker) = spawn_spectrum_worker(context).expect("valid worker");
+        let (mut capture, _reader, reaper) = spawn_spectrum_worker(context).expect("valid worker");
         assert_eq!(
             capture.submit(context, &[[0.0, 0.0]; 128]),
             CaptureOutcome::Queued { sequence: 0 }
         );
-        worker
-            .shutdown_and_join(capture)
-            .expect("control-side capture reclamation and join");
+        drop(capture);
+        reaper
+            .shutdown_and_join()
+            .expect("worker joined after producer drop");
     }
 
     #[test]

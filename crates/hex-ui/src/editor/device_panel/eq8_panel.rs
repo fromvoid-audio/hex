@@ -54,6 +54,7 @@ pub(super) fn render_body(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    owner: hex_engine::ProcessorChainOwner,
     canonical_state: &NativeDeviceState,
     device_view: &NativeDeviceView,
     sample_rate: u32,
@@ -135,6 +136,13 @@ pub(super) fn render_body(
                 if mode == 1 { "r" } else { "s" },
             ));
     }
+    toolbar = toolbar.child(spectrum_toggle(
+        view,
+        cx,
+        device,
+        owner,
+        device_view.type_id,
+    ));
     toolbar = toolbar
         .child(div().flex_1())
         .child(theme::text(format!(
@@ -149,6 +157,7 @@ pub(super) fn render_body(
         view,
         GraphModelRequest {
             device,
+            owner,
             canonical_state,
             device_view,
             sample_rate,
@@ -248,6 +257,109 @@ pub(super) fn render_body(
                 .child(div().w_full().flex_1().min_h_0().child(graph))
                 .child(controls),
         )
+}
+
+fn spectrum_toggle(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    owner: hex_engine::ProcessorChainOwner,
+    device_type: hex_lattice_contract::DeviceTypeId,
+) -> Stateful<Div> {
+    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_type);
+    let generation = view.project_generation;
+    let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let selected =
+        view.audio.as_ref().and_then(|audio| {
+            audio.control.spectrum_target.desired().map(|target| {
+                target.identity == identity && target.project_generation == generation
+            })
+        }) == Some(true);
+    let available = view.audio.as_ref().is_some_and(|audio| {
+        audio.spectrum.is_some() && (8_000..=192_000).contains(&audio.sample_rate)
+    });
+    let tooltip = view
+        .audio
+        .as_ref()
+        .and_then(|audio| audio.spectrum_error.clone())
+        .unwrap_or_else(|| "show post-eq8 output spectrum".to_owned());
+    div()
+        .id(ElementId::Name(
+            format!("eq8-spectrum-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("eq8-spectrum-{}", device.value()))
+        .w(px(18.0))
+        .h(px(13.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_size(px(9.0))
+        .text_color(rgb(if selected && available {
+            theme::color(theme::PaletteRole::Secondary)
+        } else {
+            theme::color(theme::PaletteRole::Muted)
+        }))
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::super::transport::MiniTooltip {
+                description: tooltip.clone().into(),
+            })
+            .into()
+        })
+        .child(theme::text("∿"))
+        .on_click(cx.listener(move |view, _, _, cx| {
+            let active = view.audio.as_ref().and_then(|audio| {
+                audio.control.spectrum_target.desired().map(|target| {
+                    target.identity == identity && target.project_generation == generation
+                })
+            }) == Some(true);
+            if active {
+                if let Some(audio) = view.audio.as_mut() {
+                    let _ = audio.control.spectrum_target.clear();
+                }
+                view.device_panel.spectrum_result = None;
+                view.device_panel.message = None;
+            } else if view.project_generation != generation
+                || view.state.as_ref().map(|state| state.revision) != Some(project_revision)
+            {
+                view.device_panel.message = Some("spectrum target changed; select it again".into());
+            } else if let Some(floor) = view
+                .audio_admission
+                .published_audio_revision(generation, project_revision)
+            {
+                if let Some(audio) = view.audio.as_mut() {
+                    if audio.spectrum.is_none() {
+                        view.device_panel.message = Some(
+                            audio
+                                .spectrum_error
+                                .clone()
+                                .unwrap_or_else(|| "spectrum analysis unavailable".into()),
+                        );
+                    } else {
+                        match audio.control.spectrum_target.select(
+                            identity,
+                            generation,
+                            floor,
+                            audio.sample_rate,
+                        ) {
+                            Ok(_) => view.device_panel.message = None,
+                            Err(_) => {
+                                view.device_panel.message =
+                                    Some("spectrum analysis is unavailable for this target".into())
+                            }
+                        }
+                    }
+                } else {
+                    view.device_panel.message = Some("audio output is unavailable".into());
+                }
+            } else {
+                view.device_panel.message =
+                    Some("waiting for the current project audio revision".into());
+            }
+            cx.notify();
+        }))
 }
 
 fn band_list(

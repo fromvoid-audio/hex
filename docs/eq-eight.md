@@ -25,12 +25,16 @@ and phase delay remain inherent to the filters.
 
 The compact panel is shared by regular tracks and Return tracks. Its left band
 list selects/enables bands and chooses filter shape. The central response graph
-is sampled from the prepared DSP coefficients at the project sample rate; it is
-not a live analyzer. Dragging a node changes frequency and gain in one canonical
-paired gesture; Option-drag changes frequency and Q, and cut/notch nodes edit Q.
-Each pair is validated and committed atomically as one undoable state change.
-The mode selector and channel buttons expose each bank, while compact controls
-provide direct frequency, gain, Q, and output editing.
+is sampled from the prepared DSP coefficients at the project sample rate. Its
+optional `∿` control overlays a muted original spectrum of accepted finite
+post-EQ8 output. The analyzer is bounded backend telemetry, not part of the EQ8
+DSP or project state; see [spectrum analysis](spectrum-analysis.md) for its
+capture, freshness and lifecycle contract. Dragging a node changes frequency
+and gain in one canonical paired gesture; Option-drag changes frequency and Q,
+and cut/notch nodes edit Q. Each pair is validated and committed atomically as
+one undoable state change. The mode selector and channel buttons expose each
+bank, while compact controls provide direct frequency, gain, Q, and output
+editing.
 
 The graph uses a bounded shared widget and receives only normalized curves and
 nodes. The UI translates graph movement into existing session parameter edits;
@@ -40,6 +44,8 @@ history, export, and audio processing use the registered device definition.
 Automated source evidence includes all eight shapes, frequency response at
 multiple modes, extreme Q stability at 8–192 kHz, independent channel banks,
 coefficient ramp continuity across partitions, registered runtime handoff and
-callback allocation probes. Native visual review, listening, detailed comparison
-with the installed Live build, analyzer behavior, and exact numerical parity
-remain separate native acceptance evidence; they are not prerequisites for local source CI. No Ableton code or assets are included.
+callback allocation probes. The live analyzer's source tests and integrated
+callback probes are tracked separately in Pulse2250. Native visual review,
+listening, detailed comparison with the installed Live build, and exact
+numerical/visual parity remain separate acceptance evidence; they are not
+prerequisites for local source CI. No Ableton code or assets are included.

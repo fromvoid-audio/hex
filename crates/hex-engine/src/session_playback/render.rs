@@ -8,6 +8,18 @@ impl SessionPlayback {
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {
+        self.render_with_post_node_observer(output, None)
+    }
+
+    /// Render transactionally while optionally observing stable device IDs at
+    /// their post-node output. Observations are speculative until this method
+    /// returns `Ok`; callers must publish them only after their final output
+    /// validation also succeeds.
+    pub fn render_with_post_node_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let contains_streamed_sources = if self.linear_arrangement_export {
             self.revision.arrangement().contains_streamed_sources()
@@ -17,7 +29,7 @@ impl SessionPlayback {
         if self.playing && !output.is_empty() && contains_streamed_sources {
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
-        self.render_internal::<dyn MediaPages>(output, None)
+        self.render_internal::<dyn MediaPages>(output, None, observer)
     }
 
     /// Render with a borrowed page view. Misses silence only the unavailable
@@ -28,19 +40,21 @@ impl SessionPlayback {
         pages: &mut P,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        self.render_internal(output, Some(pages))
+        self.render_internal(output, Some(pages), None)
     }
 
     fn render_internal<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
         pages: Option<&mut P>,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
         if output.is_empty() || !self.playing {
             return Ok(());
         }
-        let result = self.render_playing(output, pages);
+        let mut observer = observer;
+        let result = self.render_playing(output, pages, &mut observer);
         if result.is_err() {
             output.fill([0.0; 2]);
             for runtime in self.mutable_instruments.iter_mut().flatten() {
@@ -58,6 +72,7 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         mut pages: Option<&mut P>,
+        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -150,6 +165,8 @@ impl SessionPlayback {
                 arrangement_loop_pass,
                 &mut output[output_offset..chunk_end],
                 pages.as_deref_mut(),
+                output_offset,
+                observer,
             )?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -250,6 +267,7 @@ impl SessionPlayback {
         Ok((captured_release, applied_route))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_route_chunk<P: MediaPages + ?Sized>(
         &mut self,
         performance_frame: u64,
@@ -257,6 +275,8 @@ impl SessionPlayback {
         arrangement_loop_pass: u64,
         output: &mut [Frame],
         mut pages: Option<&mut P>,
+        frame_offset: usize,
+        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let tracks = self.revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
@@ -330,9 +350,32 @@ impl SessionPlayback {
                         SourceStage::Audio,
                     )?;
                     if stateful_effects {
-                        self.device_chains[index]
-                            .process_range(0..track.instrument_position(), render_output)
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        if let Some(observer) = observer.as_mut() {
+                            let mut observe =
+                                |owner: hex_lattice::ProcessorChainOwner,
+                                 device_id: u64,
+                                 device_type: hex_lattice_contract::DeviceTypeId,
+                                 offset: usize,
+                                 frames: &[Frame]| {
+                                    observer(
+                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                        offset,
+                                        frames,
+                                    );
+                                };
+                            self.device_chains[index]
+                                .process_range_observed(
+                                    0..track.instrument_position(),
+                                    render_output,
+                                    frame_offset,
+                                    &mut observe,
+                                )
+                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        } else {
+                            self.device_chains[index]
+                                .process_range(0..track.instrument_position(), render_output)
+                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        }
                     } else {
                         track.apply_ordered_prefix(render_output);
                     }
@@ -396,9 +439,35 @@ impl SessionPlayback {
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let effect_count = chain.len();
-                        chain
-                            .process_range(track.instrument_position()..effect_count, render_output)
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        if let Some(observer) = observer.as_mut() {
+                            let mut observe =
+                                |owner: hex_lattice::ProcessorChainOwner,
+                                 device_id: u64,
+                                 device_type: hex_lattice_contract::DeviceTypeId,
+                                 offset: usize,
+                                 frames: &[Frame]| {
+                                    observer(
+                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                        offset,
+                                        frames,
+                                    );
+                                };
+                            chain
+                                .process_range_observed(
+                                    track.instrument_position()..effect_count,
+                                    render_output,
+                                    frame_offset,
+                                    &mut observe,
+                                )
+                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        } else {
+                            chain
+                                .process_range(
+                                    track.instrument_position()..effect_count,
+                                    render_output,
+                                )
+                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        }
                     } else {
                         track.apply_ordered_suffix(render_output);
                     }
@@ -436,7 +505,23 @@ impl SessionPlayback {
                         .device_chains
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    chain.process_block(render_output);
+                    if let Some(observer) = observer.as_mut() {
+                        let mut observe =
+                            |owner: hex_lattice::ProcessorChainOwner,
+                             device_id: u64,
+                             device_type: hex_lattice_contract::DeviceTypeId,
+                             offset: usize,
+                             frames: &[Frame]| {
+                                observer(
+                                    crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                    offset,
+                                    frames,
+                                );
+                            };
+                        chain.process_block_observed(render_output, frame_offset, &mut observe);
+                    } else {
+                        chain.process_block(render_output);
+                    }
                 }
                 for (frame_index, source) in render_output.iter().copied().enumerate() {
                     if track.sends().is_empty() {
@@ -731,7 +816,22 @@ impl SessionPlayback {
                 .return_chains
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            chain.process_block(frames);
+            if let Some(observer) = observer.as_mut() {
+                let mut observe = |owner: hex_lattice::ProcessorChainOwner,
+                                   device_id: u64,
+                                   device_type: hex_lattice_contract::DeviceTypeId,
+                                   offset: usize,
+                                   frames: &[Frame]| {
+                    observer(
+                        crate::PostNodeIdentity::new(owner, device_id, device_type),
+                        offset,
+                        frames,
+                    );
+                };
+                chain.process_block_observed(frames, frame_offset, &mut observe);
+            } else {
+                chain.process_block(frames);
+            }
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
             }

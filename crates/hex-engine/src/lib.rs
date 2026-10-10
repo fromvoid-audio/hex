@@ -1,6 +1,8 @@
 //! Deterministic, sample-rate-locked stereo arrangement rendering.
 //! This is an original prototype, not a verified Live-compatible engine.
 pub use hex_devices::SineTable;
+pub use hex_lattice::ProcessorChainOwner;
+pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
 mod native_device_view;
@@ -17,6 +19,34 @@ pub use streamed::{
 };
 
 pub type Frame = [f32; 2];
+
+/// Stable identity and post-node signal for an actually processed native
+/// device. This is an observation-only engine boundary; it does not expose
+/// mutable processor state or imply that retired tails are part of the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostNodeIdentity {
+    pub owner: ProcessorChainOwner,
+    pub device_id: u64,
+    pub device_type: DeviceTypeId,
+}
+
+impl PostNodeIdentity {
+    pub const fn new(
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+    ) -> Self {
+        Self {
+            owner,
+            device_id,
+            device_type,
+        }
+    }
+}
+
+/// Borrowed post-node samples delivered during one render call.
+pub type PostNodeObserver<'observer> =
+    dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
 /// Maximum stable track routes exposed to native callback telemetry.
 pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 

@@ -1,6 +1,7 @@
 //! Bounded output lifecycle worker for stream retirement and recovery opens.
 //! Stream pause/disposal and replacement device creation never run on realtime.
 use crate::device::PreparedOutput;
+use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
     fmt,
@@ -46,6 +47,7 @@ impl Drop for Lease {
 
 struct Retirement {
     stream: cpal::Stream,
+    spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
 }
 
@@ -54,9 +56,18 @@ pub(crate) struct StreamOwner {
 }
 impl StreamOwner {
     pub fn new(stream: cpal::Stream, lease: Lease) -> Self {
+        Self::with_spectrum(stream, lease, None)
+    }
+
+    pub fn with_spectrum(
+        stream: cpal::Stream,
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+    ) -> Self {
         Self {
             retirement: Some(Retirement {
                 stream,
+                spectrum_reaper,
                 _lease: lease,
             }),
         }
@@ -79,6 +90,9 @@ impl Drop for StreamOwner {
             },
             Err(_) => retirement,
         };
+        if let Some(reaper) = retirement.spectrum_reaper.as_ref() {
+            reaper.request_stop();
+        }
         let mut quarantine = match QUARANTINE.lock() {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),
@@ -383,13 +397,7 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
                             let lease = Lease::try_acquire()?;
                             Some(PreparedOutput::open_with_lease(expected_rate, lease))
                         },
-                        |retirement| {
-                            retire_when_stopped(
-                                retirement,
-                                |value| value.stream.pause().is_ok(),
-                                || thread::sleep(Duration::from_millis(250)),
-                            )
-                        },
+                        retire_prepared_output,
                     );
                 })
                 .map_err(|error| format!("could not start audio lifecycle worker: {error}"))?;
@@ -399,8 +407,51 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
         .map_err(Clone::clone)
 }
 
+fn retire_prepared_output(retirement: Retirement) {
+    let retirement = retirement;
+    while retirement.stream.pause().is_err() {
+        thread::sleep(Duration::from_millis(250));
+    }
+    let Retirement {
+        stream,
+        spectrum_reaper,
+        _lease,
+    } = retirement;
+    // Dropping the paused stream first destroys its callback closure and the
+    // callback-owned SPSC producer on this lifecycle thread.
+    if retire_after_callback_stops(
+        stream,
+        spectrum_reaper,
+        _lease,
+        drop,
+        |reaper| reaper.shutdown_and_join(),
+        drop,
+    )
+    .is_err()
+    {
+        eprintln!("hex audio spectrum worker failed during output retirement");
+    }
+}
+
+fn retire_after_callback_stops<S, R, L, E>(
+    stream: S,
+    reaper: Option<R>,
+    lease: L,
+    drop_stream: impl FnOnce(S),
+    join_reaper: impl FnOnce(R) -> Result<(), E>,
+    drop_lease: impl FnOnce(L),
+) -> Result<(), E> {
+    drop_stream(stream);
+    let joined = reaper.map_or(Ok(()), join_reaper);
+    // Keep the exclusive device lease until callback and worker ownership are
+    // fully retired, even if the worker reports a panic.
+    drop_lease(lease);
+    joined
+}
+
 /// Successful pause precedes disposal. Never retry by dropping the stream: the
 /// pinned backend ignores stop errors in Drop. Retry executes only off realtime.
+#[cfg(test)]
 fn retire_when_stopped<T>(value: T, mut pause: impl FnMut(&T) -> bool, mut retry: impl FnMut()) {
     while !pause(&value) {
         retry();
@@ -445,6 +496,52 @@ mod tests {
         assert!(dropped.load(Acquire));
         assert_eq!(*owner.lock().unwrap(), Some(result));
         assert_ne!(result, thread::current().id());
+    }
+
+    #[test]
+    fn spectrum_retirement_drops_callback_before_join_and_lease() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let stream_order = Arc::clone(&order);
+        let worker_order = Arc::clone(&order);
+        let lease_order = Arc::clone(&order);
+        let stream = 1_u8;
+        let reaper = 2_u8;
+        let lease = 3_u8;
+        let result = retire_after_callback_stops(
+            stream,
+            Some(reaper),
+            lease,
+            move |_| stream_order.lock().unwrap().push("stream"),
+            move |_| {
+                assert_eq!(*worker_order.lock().unwrap(), ["stream"]);
+                worker_order.lock().unwrap().push("worker");
+                Ok::<(), ()>(())
+            },
+            move |_| lease_order.lock().unwrap().push("lease"),
+        );
+        assert!(result.is_ok());
+        assert_eq!(*order.lock().unwrap(), ["stream", "worker", "lease"]);
+
+        let error_order = Arc::new(Mutex::new(Vec::new()));
+        let stream_order = Arc::clone(&error_order);
+        let worker_order = Arc::clone(&error_order);
+        let lease_order = Arc::clone(&error_order);
+        let result = retire_after_callback_stops(
+            1_u8,
+            Some(2_u8),
+            3_u8,
+            move |_| stream_order.lock().unwrap().push("stream"),
+            move |_| {
+                worker_order.lock().unwrap().push("worker-error");
+                Err("worker panic")
+            },
+            move |_| lease_order.lock().unwrap().push("lease"),
+        );
+        assert_eq!(result, Err("worker panic"));
+        assert_eq!(
+            *error_order.lock().unwrap(),
+            ["stream", "worker-error", "lease"]
+        );
     }
 
     #[test]

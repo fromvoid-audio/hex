@@ -133,6 +133,7 @@ pub(super) struct DevicePanelState {
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
+    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -331,6 +332,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.eq8_graph_gestures.clear();
+        view.device_panel.spectrum_result = None;
+        if let Some(audio) = view.audio.as_mut() {
+            let _ = audio.control.spectrum_target.clear();
+        }
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
@@ -349,6 +354,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         .map(DevicePanelOwner::Return)
         .or_else(|| view.selected_track.map(DevicePanelOwner::Track));
     if desired_owner != view.device_panel.owner {
+        if let Some(audio) = view.audio.as_mut() {
+            let _ = audio.control.spectrum_target.clear();
+        }
         if let Some(previous) = view.device_panel.owner {
             if !owner_exists(&state, previous) {
                 // A history restore or external project replacement can remove
@@ -377,6 +385,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.eq8_graph_gestures.clear();
+        view.device_panel.spectrum_result = None;
         view.device_panel.owner = desired_owner;
         view.device_panel.message = None;
     }
@@ -449,6 +458,28 @@ pub(super) fn retire_removed_eq8_graphs(
     }
 }
 
+fn clear_removed_spectrum_target(
+    view: &mut EditorView,
+    owner: hex_engine::ProcessorChainOwner,
+    identities: &HashMap<DeviceId, DeviceControlIdentity>,
+) {
+    let stale = view.audio.as_ref().and_then(|audio| {
+        audio.control.spectrum_target.desired().map(|target| {
+            target.identity.owner == owner
+                && !identities.iter().any(|(device, identity)| {
+                    device.value() == target.identity.device_id
+                        && identity.class == NativeDeviceClass::Effect
+                        && identity.type_id == target.identity.device_type
+                        && identity.type_id.as_str() == Ok("hex.eq8")
+                })
+        })
+    }) == Some(true);
+    if stale && let Some(audio) = view.audio.as_mut() {
+        let _ = audio.control.spectrum_target.clear();
+        view.device_panel.spectrum_result = None;
+    }
+}
+
 fn cancel_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
     let controls = std::mem::take(&mut view.device_panel.send_controls);
     for (_, control) in controls {
@@ -487,6 +518,11 @@ fn render_track(
         })
         .collect();
     let alive: HashSet<_> = identities.keys().copied().collect();
+    clear_removed_spectrum_target(
+        view,
+        hex_engine::ProcessorChainOwner::Track(track_id.value()),
+        &identities,
+    );
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -1151,6 +1187,7 @@ fn render_effect(
                     view,
                     cx,
                     device_id,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
                     device.state(),
                     device_view,
                     sample_rate,

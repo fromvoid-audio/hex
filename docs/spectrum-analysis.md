@@ -40,7 +40,7 @@ overhead and native visual/listening acceptance remain Pulse2250.
 ## bounded capture worker — Pulse2288
 
 `hex-audio::spectrum_worker` consumes accepted stereo output supplied by its
-caller. It does not yet install a tap in the prepared callback. Capture submits
+caller; it does not own or install the audio tap. Capture submits
 1–256 finite frames through a 32-batch rtrb SPSC queue. Full or invalid
 submissions consume a sequence but drop only analysis; the next accepted batch
 exposes the gap. Sequence overflow refuses further submission until the owner
@@ -54,23 +54,57 @@ latest revision. The global 30 Hz analysis limit survives context changes;
 unchanged windows are not recomputed after capture stops.
 
 A bounded one-result channel separates worker results from control. Each
-result carries its target context, worker receive time and FFT completion time.
-`try_latest` drains at most the channel capacity and discards results more than
-100 ms past worker receipt. This is receipt-based freshness, not proof of
-physical capture or display latency under worker starvation. Actual callback
-integration must validate accepted-render publication, queue overflow/gaps,
-revision/target retirement and end-to-end freshness before exposing a trace.
+result carries its target context, caller-supplied capture start and FFT
+completion time. The CPAL adapter stamps the callback start for each fixed
+chunk, conservatively dating later chunks in that callback no later than they
+were rendered. `try_latest` drains at most the channel capacity and discards
+results more than 100 ms after the represented capture time. This is a bounded
+freshness estimate, not proof of physical capture or display latency under
+worker starvation.
 
 Construction occurs on control. Only the capture producer moves into a callback;
 its submit path copies bounded inline data and performs one nonblocking push.
-After callback quiescence, return the producer to control and consume it in
-`shutdown_and_join`; its destruction and worker join stay off callback. Dropping
-the worker handle signals exit but does not join. The owner must use explicit
-shutdown to verify retirement.
+After a successful stream pause, the lifecycle owner drops the stream and its
+callback-owned producer, joins the worker reaper, then releases the output
+lease. Failed pauses retain all three. Dropping the reaper requests exit but
+does not join.
 
 Nine deterministic worker tests cover cadence, changing context/revision, gaps,
 malformed/rate input, exhaustion, idle freshness and lifecycle. An opt-in capture
 probe asserts zero total allocation count/bytes and zero signed net count/bytes,
 with construction and reclamation outside measurement. It tests submission, not
-the future live callback tap, native APIs or physical deadlines. Full exact-source
-local CI and focused PR evidence are tracked by Pulse2288.
+native APIs or physical deadlines. Full exact-source local CI and focused PR
+evidence are tracked by Pulse2288.
+
+## live EQ8 post-node display — Pulse2250
+
+The prepared renderer can observe one selected node after its own processing.
+Identity includes track or return owner, canonical device ID and device type;
+only current graph owners are observed, never retired tails. The callback stages
+at most 256 frames with exact render offsets, publishes only complete finite
+final-output blocks, and marks failed or rolled-back renders as sequence gaps.
+With no active analyzer or before the selected project publication reaches its
+activation revision, playback uses the ordinary unobserved render path.
+
+The compact EQ8 panel toggle selects one exact EQ8 node. A bounded control queue
+and desired epoch invalidate stale callback targets immediately, including when
+the queue is full. Results are filtered by target token, project generation,
+sample rate and activation revision; later ordinary parameter revisions remain
+eligible. The shared response graph draws a muted spectrum behind its editable
+EQ curve. The trace clears when its target is removed, its owner/project changes,
+or capture becomes stale. Existing audio admission remains 8,000–192,000 Hz;
+this analyzer does not widen or add to playback's existing rate contract.
+
+Controller ticks retire the target and clear its cached trace when the device
+panel closes, clip view becomes active, focus moves to another owner, the project
+generation changes, or the exact EQ8 node disappears or changes type. Ordinary
+parameter revisions on the same active device preserve the trace. Retirement
+drops the paused stream/callback before joining the analyzer worker, then releases
+the output lease. Source tests cover stable owner/type identity, activation
+floors, bounded staging offsets/overlaps, target queue races and exhaustion,
+lifecycle order, stale context and stale capture age. Run the headless callback
+comparison with `cargo run -p hex-audio --release --example
+profile_eq8_spectrum -- 128 4000`; it checks PCM equivalence separately from
+timing. Remaining evidence: exact-tree local CI, native UI interaction and
+listening, and any physical-device deadline claim. The analyzer is original
+telemetry; no Live algorithm or visual parity is claimed.

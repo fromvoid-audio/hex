@@ -2,13 +2,14 @@
 #![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
+use hex_audio::spectrum_worker::{SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker};
 use hex_engine::{
     PreparedRevision, SineTable,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
-use std::{collections::BTreeMap, error::Error, sync::Arc};
+use std::{collections::BTreeMap, error::Error, sync::Arc, time::Instant};
 
 #[test]
 fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_callback()
@@ -256,11 +257,14 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
             value,
         )?;
     }
-    editor.execute(Command::InsertDevice {
+    let Created::Device(eq8_device) = editor.execute(Command::InsertDevice {
         track,
         before: None,
         state,
-    })?;
+    })?
+    else {
+        return Err("eq8 device missing".into());
+    };
     let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
@@ -285,20 +289,64 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
-    let (mut control, mut callback) = prepared::channel(48_000)?;
-    control
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
+    oracle.apply(PlaybackCommand::Play);
+    let initial_stamp = SpectrumStamp {
+        target: SpectrumTargetId(0),
+        generation: 0,
+        sample_rate_hz: 48_000,
+        applied_revision: 0,
+    };
+    let (capture, _reader, reaper) = spawn_spectrum_worker(initial_stamp)?;
+    let (mut control, mut callback) = prepared::channel_with_spectrum(48_000, Some(capture))?;
+    let activation_floor = control
         .publish(playback)
         .map_err(|_| "publication refused")?;
+    let target_identity = hex_engine::PostNodeIdentity::new(
+        hex_engine::ProcessorChainOwner::Track(track.value()),
+        eq8_device.value(),
+        DeviceTypeId::from_static("hex.eq8"),
+    );
     control
         .command(PlaybackCommand::Play)
         .map_err(|_| "play refused")?;
     let mut output = [[0.0; 2]; 128];
+    let mut expected = [[0.0; 2]; 128];
+    for _ in 0..8 {
+        oracle.render(&mut expected)?;
+        let measured = measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).expect("eq8 unobserved render");
+        });
+        assert_eq!(output, expected);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "unobserved EQ8 callback allocation"
+        );
+    }
+    control
+        .spectrum_target
+        .select(target_identity, 0, activation_floor, 48_000)
+        .map_err(|_| "spectrum target refused")?;
     let mut active_output = false;
-    for _ in 0..48 {
+    for block_index in 0..48 {
+        oracle.render(&mut expected)?;
         let measured = measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("eq8 render");
+            let finite = output.iter().flatten().all(|sample| sample.is_finite());
+            callback.finish_spectrum_block(Instant::now(), finite && block_index != 47);
         });
+        assert_eq!(
+            output, expected,
+            "spectrum observation changed rendered audio"
+        );
         active_output |= output.iter().flatten().any(|sample| sample.abs() > 1.0e-6);
         assert_eq!(measured.count_total, 0, "callback allocation count");
         assert_eq!(measured.bytes_total, 0, "callback allocation bytes");
@@ -325,5 +373,10 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         (0, 0, 0, 0)
     );
     control.reclaim();
+    drop(callback);
+    drop(control);
+    reaper
+        .shutdown_and_join()
+        .map_err(|_| "spectrum worker did not join")?;
     Ok(())
 }

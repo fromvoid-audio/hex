@@ -1,9 +1,14 @@
 //! Bounded ownership handoff for compiled arrangement playback.
 //! Control constructs/drops graphs; callback swaps at most one per block and returns
 //! old ownership through a reserved retirement queue. Used by the native prepared output.
+use crate::{
+    spectrum_target,
+    spectrum_worker::{SpectrumCapture, SpectrumStamp},
+};
 use hex_engine::{
     Frame, Invalid, MAX_SESSION_ROUTE_TRACKS, PlaybackAction, PlaybackActionRejection,
-    PlaybackCommand, PlaybackHandoffRejection, SessionCapabilityStatus, playback::Playback,
+    PlaybackCommand, PlaybackHandoffRejection, PostNodeIdentity, SessionCapabilityStatus,
+    playback::Playback,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::{
@@ -13,6 +18,7 @@ use std::sync::{
         Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
     },
 };
+use std::time::Instant;
 
 // Queue capacity and per-block consumption budget must stay equal: every
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
@@ -595,6 +601,7 @@ pub struct Control {
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
     pub status: Arc<Status>,
+    pub spectrum_target: spectrum_target::SpectrumTargetControl,
     rate: u32,
     revision: u64,
     command_ticket: u64,
@@ -610,6 +617,9 @@ pub struct Callback {
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
     status: Arc<Status>,
+    spectrum_target: spectrum_target::SpectrumTargetCallback,
+    spectrum_capture: Option<SpectrumCapture>,
+    spectrum_stage: SpectrumStage,
     active: Option<Publication>,
     deferred: Option<Publication>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -630,6 +640,15 @@ pub struct Callback {
 /// Allocate channels/telemetry on the control side. Initial graph must be
 /// published before playback; an empty provider emits silence.
 pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
+    channel_with_spectrum(rate, None)
+}
+
+/// Construct the prepared callback with an optional prebuilt bounded spectrum
+/// producer. The worker and queue are created off the audio thread.
+pub fn channel_with_spectrum(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
@@ -641,6 +660,7 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
     let closing = Arc::new(AtomicBool::new(false));
     let publication_pending = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Status::try_new()?);
+    let (spectrum_target, callback_target) = spectrum_target::channel();
     Ok((
         Control {
             publications,
@@ -651,6 +671,7 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             closing: closing.clone(),
             publication_pending: publication_pending.clone(),
             status: status.clone(),
+            spectrum_target,
             rate,
             revision: 0,
             command_ticket: 0,
@@ -665,6 +686,9 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             closing,
             publication_pending,
             status,
+            spectrum_target: callback_target,
+            spectrum_capture: capture,
+            spectrum_stage: SpectrumStage::default(),
             active: None,
             deferred: None,
             held_retirement: None,
@@ -681,6 +705,90 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             test_after_fresh_runtime_apply_decision: None,
         },
     ))
+}
+
+struct SpectrumStage {
+    frames: [[f32; 2]; 256],
+    seen: [u64; 4],
+    expected: usize,
+    observed: bool,
+    valid: bool,
+    target: Option<spectrum_target::SpectrumTarget>,
+    epoch: u64,
+}
+
+impl Default for SpectrumStage {
+    fn default() -> Self {
+        Self {
+            frames: [[0.0; 2]; 256],
+            seen: [0; 4],
+            expected: 0,
+            observed: false,
+            valid: false,
+            target: None,
+            epoch: 0,
+        }
+    }
+}
+
+impl SpectrumStage {
+    fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
+        self.frames.fill([0.0; 2]);
+        self.seen.fill(0);
+        self.expected = expected;
+        self.observed = false;
+        self.valid = expected <= self.frames.len();
+        self.target = Some(target);
+        self.epoch = epoch;
+    }
+
+    fn observe(&mut self, identity: PostNodeIdentity, offset: usize, frames: &[[f32; 2]]) {
+        let Some(target) = self.target else {
+            return;
+        };
+        if identity != target.identity {
+            return;
+        }
+        self.observed = true;
+        let Some(end) = offset.checked_add(frames.len()) else {
+            self.valid = false;
+            return;
+        };
+        if end > self.expected || end > self.frames.len() {
+            self.valid = false;
+            return;
+        }
+        for (relative, frame) in frames.iter().enumerate() {
+            let index = offset + relative;
+            let word = index / 64;
+            let mask = 1_u64 << (index % 64);
+            let Some(bits) = self.seen.get_mut(word) else {
+                self.valid = false;
+                return;
+            };
+            if *bits & mask != 0 {
+                self.valid = false;
+                return;
+            }
+            *bits |= mask;
+            self.frames[index] = *frame;
+        }
+    }
+
+    fn complete(&self) -> bool {
+        self.valid
+            && self.observed
+            && self.target.is_some()
+            && (0..self.expected).all(|index| self.seen[index / 64] & (1_u64 << (index % 64)) != 0)
+    }
+
+    fn clear(&mut self) {
+        self.target = None;
+        self.expected = 0;
+        self.observed = false;
+        self.valid = false;
+        self.seen.fill(0);
+    }
 }
 
 impl Control {
@@ -871,6 +979,7 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.spectrum_target.begin_block();
         if let Some(publication) = self.held_retirement.take() {
             self.return_graph(publication);
             if self.held_retirement.is_some() {
@@ -1130,6 +1239,45 @@ impl Callback {
         self.publish_active_routes(false);
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        let Some(target) = self
+            .spectrum_capture
+            .as_ref()
+            .and(self.spectrum_target.current())
+        else {
+            self.spectrum_stage.clear();
+            return self.render_unobserved(output);
+        };
+        if self
+            .active
+            .as_ref()
+            .is_none_or(|active| active.revision < target.activation_floor)
+        {
+            self.spectrum_stage.clear();
+            return self.render_unobserved(output);
+        }
+        let epoch = self.spectrum_target.current_epoch();
+        self.spectrum_stage.begin(target, epoch, output.len());
+        if self.closing.load(Acquire) {
+            output.fill([0.0; 2]);
+            return Ok(());
+        }
+        if let Some(active) = self.active.as_mut() {
+            let stage = &mut self.spectrum_stage;
+            let mut observe = |identity, offset, frames: &[Frame]| {
+                stage.observe(identity, offset, frames);
+            };
+            active
+                .playback
+                .render_with_post_node_observer(output, Some(&mut observe))?;
+        } else {
+            output.fill([0.0; 2]);
+        }
+        self.publish_transport();
+        self.publish_active_routes(false);
+        Ok(())
+    }
+
+    fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
@@ -1142,6 +1290,44 @@ impl Callback {
         self.publish_transport();
         self.publish_active_routes(false);
         Ok(())
+    }
+
+    /// Accept or reject the staged post-node signal after the caller has
+    /// validated the complete final output block. A skipped attempt consumes a
+    /// capture sequence so the next accepted window cannot bridge the gap.
+    pub fn finish_spectrum_block(&mut self, captured_start: Instant, output_valid: bool) {
+        let Some(target) = self.spectrum_stage.target else {
+            return;
+        };
+        let complete = self.spectrum_stage.complete();
+        let current = self.spectrum_target.current();
+        let current_epoch = self.spectrum_target.current_epoch();
+        let valid = output_valid
+            && complete
+            && current == Some(target)
+            && current_epoch == self.spectrum_stage.epoch
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.revision >= target.activation_floor);
+        if let Some(capture) = self.spectrum_capture.as_mut() {
+            if valid {
+                let stamp = SpectrumStamp {
+                    target: target.token,
+                    generation: target.project_generation,
+                    sample_rate_hz: target.sample_rate_hz,
+                    applied_revision: self.active.as_ref().map_or(0, |active| active.revision),
+                };
+                let _ = capture.submit_at(
+                    stamp,
+                    &self.spectrum_stage.frames[..self.spectrum_stage.expected],
+                    captured_start,
+                );
+            } else {
+                let _ = capture.skip();
+            }
+        }
+        self.spectrum_stage.clear();
     }
 
     fn publish_active_routes(&mut self, force: bool) {
@@ -1207,6 +1393,48 @@ impl Callback {
 mod tests {
     use super::*;
     use std::sync::{Barrier, Weak};
+
+    fn spectrum_test_target(
+        owner: hex_engine::ProcessorChainOwner,
+    ) -> spectrum_target::SpectrumTarget {
+        spectrum_target::SpectrumTarget {
+            token: crate::spectrum_worker::SpectrumTargetId(1),
+            identity: PostNodeIdentity::new(
+                owner,
+                11,
+                hex_engine::DeviceTypeId::from_static("hex.eq8"),
+            ),
+            project_generation: 0,
+            activation_floor: 1,
+            sample_rate_hz: 48_000,
+        }
+    }
+
+    #[test]
+    fn spectrum_stage_accumulates_exact_offsets_and_rejects_overlap_or_wrong_owner() {
+        let target = spectrum_test_target(hex_engine::ProcessorChainOwner::Track(3));
+        let mut stage = SpectrumStage::default();
+        stage.begin(target, 1, 4);
+        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
+        let wrong_owner = spectrum_test_target(hex_engine::ProcessorChainOwner::Return(3));
+        stage.observe(wrong_owner.identity, 2, &[[0.8, 0.9]]);
+        assert!(!stage.complete());
+        stage.observe(target.identity, 2, &[[0.5, 0.6], [0.7, 0.8]]);
+        assert!(stage.complete());
+        assert_eq!(
+            stage.frames[..4],
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]
+        );
+
+        stage.begin(target, 2, 4);
+        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
+        stage.observe(target.identity, 1, &[[0.5, 0.6]]);
+        assert!(!stage.complete());
+
+        stage.begin(target, 3, 4);
+        stage.observe(target.identity, usize::MAX, &[[0.1, 0.2]]);
+        assert!(!stage.complete());
+    }
 
     fn assert_fresh_fence_rejection(control: &mut Control, expected_revision: u64) {
         assert_eq!(

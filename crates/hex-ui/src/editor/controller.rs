@@ -91,8 +91,29 @@ impl EditorView {
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
+        visible_change |= self.retire_stale_spectrum_target();
         if let Some(audio) = self.audio.as_mut() {
+            let _ = audio.control.spectrum_target.retry_pending();
+            let desired_spectrum = audio.control.spectrum_target.desired();
+            let spectrum = audio
+                .spectrum
+                .as_mut()
+                .and_then(|reader| reader.try_latest());
+            let spectrum = spectrum.filter(|result| {
+                desired_spectrum.is_some_and(|target| {
+                    result.stamp.target == target.token
+                        && result.stamp.generation == target.project_generation
+                        && result.stamp.sample_rate_hz == target.sample_rate_hz
+                        && result.stamp.applied_revision >= target.activation_floor
+                })
+            });
+            if self.device_panel.spectrum_result != spectrum {
+                self.device_panel.spectrum_result = spectrum;
+                visible_change = true;
+            }
             audio.control.reclaim();
+        } else if self.device_panel.spectrum_result.take().is_some() {
+            visible_change = true;
         }
         if (self.prepared_seek.is_some() || self.latched_seek_intent.is_some())
             && self
@@ -431,6 +452,83 @@ impl EditorView {
         visible_change |= self.finish_audio_recovery_tick();
         self.redraw_gate
             .should_redraw(visible_change, Some(frame), Instant::now())
+    }
+
+    fn spectrum_target_is_visible_and_current(
+        &self,
+        target: hex_audio::spectrum_target::SpectrumTarget,
+    ) -> bool {
+        if !self.clip_view_open
+            || !self.device_panel_active
+            || self.project_generation != target.project_generation
+            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+        {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let focused_owner = self
+            .focused_return
+            .filter(|id| {
+                state
+                    .project
+                    .return_tracks()
+                    .iter()
+                    .any(|track| track.id() == *id)
+            })
+            .map(super::device_panel::DevicePanelOwner::Return)
+            .or_else(|| {
+                self.selected_track
+                    .map(super::device_panel::DevicePanelOwner::Track)
+            });
+
+        match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Track(track_id)),
+                hex_engine::ProcessorChainOwner::Track(owner_id),
+            ) if track_id.value() == owner_id => {
+                state.project.track(track_id).is_some_and(|track| {
+                    track.devices().iter().any(|device| {
+                        device.id().value() == target.identity.device_id
+                            && device.state().type_id() == target.identity.device_type
+                    })
+                })
+            }
+            (
+                Some(super::device_panel::DevicePanelOwner::Return(return_id)),
+                hex_engine::ProcessorChainOwner::Return(owner_id),
+            ) if return_id.value() == owner_id => state
+                .project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == return_id)
+                .is_some_and(|track| {
+                    track.devices().iter().any(|device| {
+                        device.id().value() == target.identity.device_id
+                            && device.state().type_id() == target.identity.device_type
+                    })
+                }),
+            _ => false,
+        }
+    }
+
+    fn retire_stale_spectrum_target(&mut self) -> bool {
+        let target = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.spectrum_target.desired());
+        if target.is_some_and(|target| !self.spectrum_target_is_visible_and_current(target)) {
+            if let Some(audio) = self.audio.as_mut() {
+                let _ = audio.control.spectrum_target.clear();
+            }
+            self.device_panel.spectrum_result = None;
+            return true;
+        }
+        if target.is_none() && self.device_panel.spectrum_result.take().is_some() {
+            return true;
+        }
+        false
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
