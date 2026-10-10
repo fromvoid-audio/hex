@@ -15,8 +15,9 @@ owned by their definitions; generic project/storage state needs no device DTO.
 
 Linear memoryless chains retain their fused matrix fast path. Stateful chains
 process each track's summed source signal once, in serial order, before track
-gain/balance/mute and master mixing. Bypassed processors advance their histories
-while preserving the signal. Arrangement, Session and offline paths use the same
+gain/balance/mute and master mixing. A bypassed stateful processor advances its
+history from the device's matrix-transformed input while the audible samples
+remain bitwise dry. Arrangement, Session and offline paths use the same
 registered processing definitions. Runtime objects remain outside canonical
 project/history snapshots.
 
@@ -67,8 +68,10 @@ Affected lattice/contract/devices/engine/audio/export tests, strict Clippy,
 formatting and architecture checks passed before integration. Tests cover a
 second independently registered nonlinear processor, serial order, summed-track
 oracle, compatible/incompatible histories, block partitioning, Utility migration
-and Undo, offline/Session PCM, rollback, stop/seek/pause/loop, tail saturation and
-reuse. Root additionally removed unused duplicate fallback owners before full CI.
+and Undo, bypassed matrix-transformed history with bitwise-dry output and
+partition equivalence, offline/Session PCM, rollback, stop/seek/pause/loop, tail
+saturation and reuse. Root additionally removed unused duplicate fallback owners
+before full CI.
 
 Allocation probes verify zero total allocations and zero signed-net count/bytes
 for stateful processing, successful handoffs, tail completion and legacy fallback
