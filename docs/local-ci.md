@@ -32,5 +32,25 @@ missing-tool runs retain a summary, logs and explicit incomplete/skipped steps.
 is tied to the recorded unchanged commit and working-tree digest; any source edit
 afterward makes that evidence stale for the new tree.
 
+## continuous integration and merge policy
+
+As requested on 10 October 2026, agents merge a completed, focused PR immediately
+once its final diff has been reviewed and full local CI is green on its exact
+final commit and unchanged source digest. The user gives standing merge
+authorization; no additional approval is needed. Merge dependencies first and
+revalidate source changes or conflict resolutions. Quick, stale, partial,
+interrupted or failed runs never authorize a merge. Preserve branch protections
+and use local checks only; no hosted CI or background merge service is configured
+by this policy.
+
+A known unresolved correctness bug must be fixed even if the existing suite is
+green. Every reported bug should strengthen a focused deterministic regression
+at the owning boundary, failing before the repair and passing afterward. Prefer
+extending existing fixtures and behavior tests over duplicate tests, broad
+snapshots or expensive matrices. Keep lifecycle, boundary and malformed-input
+coverage that protects real risks. When reliable automated coverage is unavailable,
+record the limitation, manual reproducer and follow-up in Pulse.
+
 The runner is not a substitute for the user's native UI and listening acceptance.
-Those results remain separate from automated checks.
+Those results may follow merge and remain separate from automated checks; retain
+pending validation in Pulse and do not claim acceptance from a green suite.
