@@ -2069,3 +2069,30 @@ size bounds are not measured memory traffic. Idle-host confirmation is Pulse2219
 these samples do not establish native callback deadlines or justify an exact
 configuration semantics change. Pulse2108 retains control-side transition
 certificates as a separate possible optimization with exact fallback.
+
+## registered Operator feedback profiler — Pulse2289
+
+The release harness in `crates/hex-engine/examples/profile_operator_feedback.rs`
+now measures the actual registered nonzero-feedback Operator through
+`PreparedRevision` and `SessionPlayback`, including steady rendering and
+supported level/feedback live history handoffs. It keeps candidate edit /
+preparation/runtime creation, handoff and following render samples separate,
+and checks exact PCM partition equality before timing. The documented default
+is 48 kHz, 1 track × 1 held note, 128-frame blocks, 100 warmup and 2,000 measured
+blocks. `docs/operator-feedback.md` has the invocation and capture protocol.
+PCM checks reject silence and non-finite samples; warmup plus measured frames
+are validated against the fixture's 60-second held-note gate. Retarget checksum
+coverage excludes warmup. Each handoff changes one track; with 512-frame blocks
+the changed track ramps for 240 frames and renders 272 frames at its target in
+that following block.
+
+Only a short debug smoke has been run for this harness, including the full
+100-track × 16-note admission path and the intentional 17-note-per-track
+refusal. The debug smoke is a correctness check, not a performance result. No
+release baseline is accepted yet; schedule it after other builds are quiet and
+retain the executable hash, source/tree identity, compiler, hardware, options
+and individual logs. Public declarations report a 4,032-byte twin, 8,064-byte
+pair and 112-byte target proof; whole playback host bytes have no public
+accounting API and are explicitly not inferred. This offline profile does not
+establish CPAL deadlines, sustained device behavior, listening acceptance or
+Ableton Live parity.
