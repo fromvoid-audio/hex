@@ -9650,3 +9650,6 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = None);
 }
+
+#[path = "effect_tail_budget_tests.rs"]
+mod effect_tail_budget_tests;

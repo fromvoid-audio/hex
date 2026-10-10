@@ -108,6 +108,9 @@ after its input ends, no premature quiescence, eventual finite-bound completion
 across block partitions, reset, legacy conservative defaults, and Utility's
 DC/bass-mono combinations. Engine tests compare detached suffix PCM against an
 uninterrupted old-chain oracle across partitions and cover unchanged-chain
-history transfer, bypass, and parameter changes. These results do not establish
+history transfer, bypass, parameter changes and track removal. Boundary tests
+accept the finite ten-second horizon, refuse a longer bound and serial-bound
+overflow without moving live owners, count memoryless entries at the4,096-entry
+aggregate cap, and retry after reset or actual tail drain. These results do not establish
 a general plug-in guarantee, return-bus parity, every failure/density path,
 physical-device deadlines, or audible DAW acceptance.

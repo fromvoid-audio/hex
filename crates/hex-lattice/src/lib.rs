@@ -156,7 +156,7 @@ pub struct PreparedProcessorInstance {
     pub bypassed: bool,
     pub sample_rate: u32,
     /// Exact migrated configuration used to prepare this processor. Production
-    /// compilation supplies this shared immutable state so control-side
+    /// compilation supplies this shared immutable state so revision
     /// handoff can distinguish unchanged settings from compatible history
     /// edits. Synthetic instances may omit it; callers must then conservatively
     /// treat configuration identity as unknown.
