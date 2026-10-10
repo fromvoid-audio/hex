@@ -3790,3 +3790,15 @@ action dispatch, shortcut glyphs/focus and safe Open/Quit behavior.
 PRs #12–#16 passed their individual full local CI runs, were accepted by the user
 in the combined review build, and are merged on 9 October. The captured selection
 fix remains a separate unmerged work unit.
+
+## staged prerequisite — return-track model (Pulse2176)
+
+The control-side model and schema17 represent ordered return buses, generic
+effect chains, mix gain/mute and bounded sparse sends from regular tracks. Global
+ID validation and one-step history include these records; removing a return
+cascades its sends. Schemas1–16 migrate strictly to empty return/send state.
+Engine compilation explicitly rejects projects containing returns or sends
+until Pulse2177 implements routed playback. UI placement and controls remain in
+Pulse2178. Effect class validation stays in registered control preparation; the
+project and storage crates preserve generic opaque state without registry
+branches. See [return tracks](return-tracks.md).

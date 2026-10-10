@@ -251,11 +251,13 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Clean full CI, native scroll/drop/minimum-layout review and merge remain open.
 - [ ] **return tracks above main** — add/remove return tracks pinned immediately
   above main, below the scrollable regular-track region. Implement canonical
-  return routing, sends, history and persistence, not decorative rows. Keep both
-  sections usable at small heights and prevent implicit feedback cycles. The
-  prepared native processor seam now declares known algorithmic latency in
-  frames or unknown; a future return compiler must refuse unknown/nonzero
-  processor latency until path compensation is implemented and validated.
+  return routing, sends, history and persistence, not decorative rows. Pulse2176
+  now supplies the model/storage prerequisite; see [return tracks](docs/return-tracks.md).
+  Pulse2177 must compile routed audio and validate registered effect classes,
+  bounded processing, latency compensation and retirement. Pulse2178 must place
+  return rows above Main and prove compact native interaction. Until then the
+  engine refuses projects with returns or sends. Keep both sections usable at
+  small heights and prevent implicit feedback cycles.
 - [ ] **project-wide time selection on main/master** — separate feature PR
   after the pinned main row. Selecting time there addresses every project track
   as one rectangle, including returns when implemented, gaps and every supported
@@ -730,3 +732,13 @@ of candidate/predecessor state and PCM. Engine tests (146), audio callback
 allocation probes (16), affected strict Clippy, formatting and diff checks pass.
 Full local CI remains with the integration owner; no native acceptance is
 claimed.
+
+Pulse2176 return-track model/storage: canonical stable ReturnId buses, gain/mute,
+generic effect chains, bounded sparse regular-track sends and transactional
+commands are in schema17. Send and device state survive snapshots, undo/redo and
+strict round-trip; return removal cascades sends, track removal drops its sends,
+and schemas1–16 migrate to empty returns/sends. Playback compilation explicitly
+refuses projects containing return routes until audio2177. Focused model/storage/
+engine regressions, affected package checks, local fmt, architecture and style
+checks passed; full local CI and native return-row interaction/listening remain
+open for the integration owner. See [return track contract](docs/return-tracks.md).

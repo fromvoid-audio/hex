@@ -223,6 +223,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
                 audio_clips: Vec::new(),
                 midi_clips: clips,
             },
+            sends: Vec::new(),
         }],
         session: Default::default(),
         loop_region: None,
@@ -235,6 +236,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     })
     .expect("full clip project");
     let full_clip = full_project.tracks()[0].midi_clips()[0].id();

@@ -1,7 +1,8 @@
 use crate::{
     Asset, AssetId, Clip, ClipFade, ClipId, DeviceId, IDENTITY_CONVERSION, Invalid, LoopRegion,
-    MAX_ASSETS, MAX_CLIPS, MAX_NAME_BYTES, MAX_TRACKS, MeterPoint, NoteId, Project, TempoPoint,
-    Track, TrackContent, TrackId, TrimEdge, converted_frame_count, validate_conversion_metadata,
+    MAX_ASSETS, MAX_CLIPS, MAX_NAME_BYTES, MAX_TRACKS, MeterPoint, NoteId, Project, ReturnId,
+    TempoPoint, Track, TrackContent, TrackId, TrimEdge, converted_frame_count,
+    validate_conversion_metadata,
 };
 use std::{collections::HashMap, path::PathBuf};
 
@@ -43,6 +44,37 @@ pub enum Command {
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
+    },
+    AddReturnTrack {
+        name: String,
+    },
+    RemoveReturnTrack(ReturnId),
+    RenameReturnTrack {
+        return_track: ReturnId,
+        name: String,
+    },
+    ReturnGain {
+        return_track: ReturnId,
+        gain: f32,
+    },
+    ReturnMute {
+        return_track: ReturnId,
+        muted: bool,
+    },
+    /// Zero removes the sparse send; positive levels use the linear 0..2 domain.
+    SetReturnSend {
+        track: TrackId,
+        return_track: ReturnId,
+        gain: f32,
+    },
+    InsertReturnDevice {
+        return_track: ReturnId,
+        before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    MoveReturnDevice {
+        device: DeviceId,
+        before: Option<DeviceId>,
     },
     DeleteTimeRange {
         range: crate::TimeRange,
@@ -515,6 +547,7 @@ pub struct MidiNoteInsert {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
     Track(TrackId),
+    ReturnTrack(ReturnId),
     Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
@@ -583,6 +616,7 @@ pub(crate) fn insert_track_before(
             }),
             instrument_position: Some(0),
             content: TrackContent::default(),
+            sends: Vec::new(),
         },
     );
     Ok(id)
@@ -979,6 +1013,14 @@ impl Project {
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            return_command @ (Command::AddReturnTrack { .. }
+            | Command::RemoveReturnTrack(_)
+            | Command::RenameReturnTrack { .. }
+            | Command::ReturnGain { .. }
+            | Command::ReturnMute { .. }
+            | Command::SetReturnSend { .. }
+            | Command::InsertReturnDevice { .. }
+            | Command::MoveReturnDevice { .. }) => crate::returns::apply(self, return_command),
             Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),
             Command::PasteTimeRange {
                 clipboard,

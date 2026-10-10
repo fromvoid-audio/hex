@@ -57,6 +57,7 @@ fn fixture(
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
+            sends: Vec::new(),
         });
         for (scene_index, scene) in scenes.iter().enumerate() {
             let content = if scene_index == 0 {
@@ -96,6 +97,7 @@ fn fixture(
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })?;
     let asset = project.assets().next().ok_or("missing fixture asset")?.id();
     let source = (0..32)

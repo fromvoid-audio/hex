@@ -62,6 +62,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(Vec::new()),
+                sends: Vec::new(),
             },
             TrackSnapshot {
                 id: BED_TRACK,
@@ -84,6 +85,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                     fade: hex_project::ClipFade::neutral(12).expect("neutral fade"),
                     source_phase: 0,
                 }]),
+                sends: Vec::new(),
             },
         ],
         session: SessionSnapshot {
@@ -107,6 +109,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })
     .expect("valid Session streamed project")
 }

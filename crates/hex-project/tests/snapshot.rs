@@ -63,7 +63,9 @@ fn valid_snapshot() -> Snapshot {
                 ],
                 midi_clips: Vec::new(),
             },
+            sends: Vec::new(),
         }],
+        return_tracks: Vec::new(),
         session: Default::default(),
     }
 }
@@ -171,6 +173,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
+            sends: Vec::new(),
         })
         .collect();
     tracks.next_id = 1_000 + tracks.tracks.len() as u64;

@@ -69,6 +69,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 instrument: None,
                 instrument_position: None,
                 content: hex_project::TrackContentSnapshot::Audio(clips),
+                sends: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
@@ -95,6 +96,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             hex_project::BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     };
     Ok(Project::from_snapshot(snapshot)?)
 }
