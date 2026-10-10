@@ -146,7 +146,7 @@ impl fmt::Display for SessionPlaybackError {
                     "session playback mutable instrument event query is invalid"
                 }
                 Self::MutableInstrumentLoopUnsupported => {
-                    "mutable instrument loops are not admitted by this playback runtime"
+                    "mutable instrument source loops are unsupported by this playback mode"
                 }
                 Self::MutableInstrumentActive => {
                     "mutable instrument must become quiescent before this route change"
@@ -377,16 +377,17 @@ impl SessionPlayback {
             revision.session().periodic_tempo()
         };
 
+        let mutable_arrangement_source_loop = linear_arrangement_export
+            && arrangement_tracks
+                .iter()
+                .any(|track| track.has_mutable_looping_source());
+        let mutable_transport_loop = !linear_arrangement_export
+            && revision
+                .arrangement()
+                .loop_region()
+                .is_some_and(|region| region.enabled());
         if revision.session().has_mutable_instruments()
-            && ((!linear_arrangement_export
-                && (revision
-                    .arrangement()
-                    .loop_region()
-                    .is_some_and(|region| region.enabled())
-                    || revision.session().has_mutable_looping_source()))
-                || arrangement_tracks
-                    .iter()
-                    .any(|track| track.has_mutable_looping_source()))
+            && (mutable_arrangement_source_loop || mutable_transport_loop)
         {
             return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
         }

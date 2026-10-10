@@ -1159,3 +1159,13 @@ semantics have focused coverage. Engine181pass/3ignored,12added tests, strict
 engineClippy, formatting, architecture and the actual Return callback allocation
 probe pass. Full exact-head local CI, PR publication and native listening remain
 pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).
+
+## 10 October 2026 — Pulse2214 mutable source loops
+
+Interactive mutable instruments now accept looping Session sources and finite
+Arrangement source loops. Intro-only notes, clipped loop-end gates, distinct
+occurrence identities and callback rollback retain the existing source contract.
+Six focused tests and the actual callback allocation probe pass; exact-head local
+CI and combined native review are next. Arrangement transport wrapping (2215) and
+mutable Arrangement source-loop linear export remain refused.
+See [the contract](docs/mutable-source-loops.md).
