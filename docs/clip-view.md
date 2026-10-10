@@ -40,6 +40,29 @@ scale workflows are requested follow-ups, not implemented merely by displaying
 a panel. Full Live clip-view equivalence remains an acceptance goal. No new
 proprietary UI assets or extracted application code are needed for this layout.
 
+## detail focus and visibility
+
+Pulse2117 keeps pane visibility independent from its current content. An explicit
+Arrangement or Session clip focus selects clip detail; an explicit track focus
+selects devices, even when an older clip selection would otherwise remain. A
+scene-level focus with no applicable track or clip shows the compact empty state.
+Changing focus never opens a closed pane or closes an open pane. When a clip
+selection disappears, the open pane shows a truthful empty state at the last
+valid clip-detail body height (228 px initially, or 38 px after Session audio).
+Device content keeps its existing 188 px geometry. These heights are view-local
+and are not persisted. Worker snapshots, selection reconciliation and Undo/Redo
+do not choose the pane content; they may clear a selection, leaving the open pane
+truthful about the missing context.
+Switching away from device controls uses the existing gesture-finalization path,
+and switching away from the MIDI editor returns keyboard focus to the editor.
+Session cell/clip keyboard navigation uses the same explicit context transitions
+as pointer focus.
+
+Source checks cover real Arrangement track/clip clicks, a closed-pane track focus
+followed by explicit reopen, Session keyboard focus, stable empty-pane height after
+selection removal, and worker snapshot/Undo selection reconciliation. Native
+track/clip focus and minimum-layout checks remain for user acceptance.
+
 ## first panel acceptance
 
 - One compact icon toggle opens/closes audio and MIDI detail without changing

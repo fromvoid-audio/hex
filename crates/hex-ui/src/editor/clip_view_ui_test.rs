@@ -169,6 +169,124 @@ fn selected_arrangement_audio_shows_left_controls_ruler_and_stereo_waveform(
 }
 
 #[gpui::test]
+fn open_clip_detail_keeps_its_body_height_after_selection_is_removed(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let populated = visual
+        .debug_bounds("clip-view")
+        .expect("populated detail pane");
+
+    editor.update(cx, |view, window_cx| {
+        view.selected_clip = None;
+        window_cx.notify();
+    });
+    visual.run_until_parked();
+
+    let empty = visual.debug_bounds("clip-view").expect("empty detail pane");
+    let empty_body = visual
+        .debug_bounds("clip-detail-empty")
+        .expect("truthful empty detail body");
+    assert_eq!(empty.size.height, populated.size.height);
+    assert!(f32::from(empty_body.size.height) >= 228.0);
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.clip_view_open,
+            "losing a selection does not close the pane"
+        );
+        assert!(
+            !view.device_panel_active,
+            "empty clip context stays truthful"
+        );
+    });
+}
+
+#[gpui::test]
+fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, clip) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let track_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
+    let track_name = visual
+        .debug_bounds(track_selector)
+        .expect("focused track name");
+    let track_point = point(track_name.center().x, track_name.center().y);
+    visual.simulate_mouse_down(track_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(track_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel_active, "track focus selects devices");
+        assert!(view.clip_view_open, "track focus keeps the pane open");
+        assert_eq!(view.selected_track, Some(track));
+        assert_eq!(
+            view.selected_clip, None,
+            "track focus clears stale clip selection"
+        );
+    });
+    assert!(visual.debug_bounds("device-panel").is_some());
+
+    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_bounds = visual
+        .debug_bounds(clip_selector)
+        .expect("arrangement clip");
+    let clip_point = point(clip_bounds.center().x, clip_bounds.center().y);
+    visual.simulate_mouse_down(clip_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(clip_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.device_panel_active,
+            "clip focus returns to clip details"
+        );
+        assert!(view.clip_view_open, "clip focus keeps the pane open");
+        assert_eq!(view.selected_clip, Some(clip));
+    });
+    assert!(visual.debug_bounds("arrangement-audio-waveform").is_some());
+
+    let toggle = visual
+        .debug_bounds("clip-view-toggle")
+        .expect("detail toggle");
+    let toggle_point = point(toggle.center().x, toggle.center().y);
+    visual.simulate_mouse_down(toggle_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(!view.clip_view_open));
+
+    let track_name = visual
+        .debug_bounds(track_selector)
+        .expect("track name while closed");
+    let track_point = point(track_name.center().x, track_name.center().y);
+    visual.simulate_mouse_down(track_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(track_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel_active);
+        assert!(
+            !view.clip_view_open,
+            "automatic mode change does not reopen a closed pane"
+        );
+    });
+    let toggle = visual
+        .debug_bounds("clip-view-toggle")
+        .expect("closed detail toggle");
+    let toggle_point = point(toggle.center().x, toggle.center().y);
+    visual.simulate_mouse_down(toggle_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.clip_view_open, "explicit reopen remains available");
+        assert!(
+            view.device_panel_active,
+            "reopen uses the most recent track focus"
+        );
+    });
+    assert!(visual.debug_bounds("device-panel").is_some());
+}
+
+#[gpui::test]
 fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     cx: &mut TestAppContext,
 ) {
