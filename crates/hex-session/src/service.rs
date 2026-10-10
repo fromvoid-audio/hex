@@ -143,6 +143,7 @@ pub enum Request {
         source: NativeDeviceDropSource,
         track: hex_project::TrackId,
         before: Option<hex_project::DeviceId>,
+        replace: Option<hex_project::DeviceId>,
     },
     AddNativeDevice {
         track: hex_project::TrackId,
@@ -724,6 +725,7 @@ fn run_worker(
                     source,
                     track,
                     before,
+                    replace,
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -742,6 +744,18 @@ fn run_worker(
                         })
                     }) {
                         Err("device insertion anchor no longer exists".to_owned())
+                    } else if replace.is_some() && before.is_some() {
+                        Err("device replacement cannot include an insertion anchor".to_owned())
+                    } else if replace.is_some()
+                        && !matches!(
+                            source,
+                            NativeDeviceDropSource::Browser {
+                                class: hex_engine::NativeDeviceClass::Instrument,
+                                ..
+                            }
+                        )
+                    {
+                        Err("only a browser instrument drop can replace an instrument".to_owned())
                     } else {
                         match source {
                             NativeDeviceDropSource::Browser { class, type_id } => match class {
@@ -761,16 +775,26 @@ fn run_worker(
                                     .track(track)
                                     .ok_or_else(|| "track no longer exists".to_owned())
                                     .and_then(|target| {
-                                        if target.instrument().is_some() {
-                                            return Err(
-                                                "instrument slot is already occupied".into()
-                                            );
-                                        }
-                                        hex_engine::default_native_device_state_for_class(
+                                        let state = hex_engine::default_native_device_state_for_class(
                                             class, type_id,
                                         )
-                                        .map(|state| Command::InsertInstrument { track, state })
-                                        .map_err(|reason| reason.to_string().to_lowercase())
+                                        .map_err(|reason| reason.to_string().to_lowercase())?;
+                                        if let Some(replacement) = replace {
+                                            let Some(instrument) = target.instrument() else {
+                                                return Err("instrument replacement target no longer exists".into());
+                                            };
+                                            if instrument.id() != replacement {
+                                                return Err("instrument replacement target changed".into());
+                                            }
+                                            Ok(Command::ReplaceDeviceState {
+                                                device: replacement,
+                                                state,
+                                            })
+                                        } else if target.instrument().is_some() {
+                                            Err("instrument slot is already occupied".into())
+                                        } else {
+                                            Ok(Command::InsertInstrument { track, state })
+                                        }
                                     }),
                             },
                             NativeDeviceDropSource::Existing {
@@ -811,6 +835,11 @@ fn run_worker(
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some(match source {
+                                        NativeDeviceDropSource::Browser { .. }
+                                            if replace.is_some() =>
+                                        {
+                                            "instrument replaced".into()
+                                        }
                                         NativeDeviceDropSource::Browser { .. } => {
                                             "device added".into()
                                         }
@@ -3733,6 +3762,7 @@ mod service_tests {
                 },
                 track: first_track,
                 before: None,
+                replace: None,
             })
             .expect("drop utility from browser");
         let added_effect = next_event(&service);
@@ -3751,6 +3781,7 @@ mod service_tests {
                 },
                 track: first_track,
                 before: Some(utility_id),
+                replace: None,
             })
             .expect("drop sine into empty instrument slot");
         let added_instrument = next_event(&service);
@@ -3766,7 +3797,22 @@ mod service_tests {
             Some(hex_project::TrackDeviceRef::Instrument(device)) if device.id() == instrument_id
         ));
 
-        let before_rejection = added_instrument.state.clone();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track: first_track,
+                start: hex_project::BeatTime::ONE,
+                length: hex_project::BeatTime::from_quarters(4).expect("clip length"),
+            }))
+            .expect("place a clip before instrument replacement");
+        let with_clip = next_event(&service);
+        let original_track = with_clip
+            .state
+            .project
+            .track(first_track)
+            .expect("track with clip")
+            .clone();
+
+        let before_rejection = with_clip.state.clone();
         service
             .submit(Request::DropNativeDevice {
                 project_generation: 0,
@@ -3777,6 +3823,7 @@ mod service_tests {
                 },
                 track: first_track,
                 before: None,
+                replace: None,
             })
             .expect("occupied instrument drop");
         let occupied = next_event(&service);
@@ -3788,6 +3835,114 @@ mod service_tests {
         assert_eq!(occupied.state.project, before_rejection.project);
         assert_eq!(occupied.state.can_undo, before_rejection.can_undo);
         assert!(occupied.playback.is_none());
+
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: before_rejection.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: sine,
+                },
+                track: first_track,
+                before: None,
+                replace: Some(utility_id),
+            })
+            .expect("invalid replacement target");
+        let invalid_replace = next_event(&service);
+        assert_eq!(
+            invalid_replace.error.as_deref(),
+            Some("instrument replacement target changed")
+        );
+        assert_eq!(invalid_replace.state.revision, before_rejection.revision);
+        assert_eq!(invalid_replace.state.project, before_rejection.project);
+        assert_eq!(invalid_replace.state.can_undo, before_rejection.can_undo);
+
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: before_rejection.revision,
+                source: NativeDeviceDropSource::Existing {
+                    device: instrument_id,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: sine,
+                },
+                track: first_track,
+                before: None,
+                replace: Some(instrument_id),
+            })
+            .expect("existing-device drag cannot claim replacement intent");
+        let invalid_source = next_event(&service);
+        assert_eq!(
+            invalid_source.error.as_deref(),
+            Some("only a browser instrument drop can replace an instrument")
+        );
+        assert_eq!(invalid_source.state.revision, before_rejection.revision);
+        assert_eq!(invalid_source.state.project, before_rejection.project);
+        assert_eq!(invalid_source.state.can_undo, before_rejection.can_undo);
+
+        let operator = hex_lattice_contract::DeviceTypeId::new("hex.instrument.operator").unwrap();
+        service
+            .submit(Request::DropNativeDevice {
+                project_generation: 0,
+                revision: with_clip.state.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: operator,
+                },
+                track: first_track,
+                before: None,
+                replace: Some(instrument_id),
+            })
+            .expect("replace sine in its instrument card");
+        let replaced = next_event(&service);
+        assert!(replaced.error.is_none(), "{:?}", replaced.error);
+        assert_eq!(replaced.status.as_deref(), Some("instrument replaced"));
+        let replaced_track = replaced
+            .state
+            .project
+            .track(first_track)
+            .expect("replaced track");
+        assert_eq!(
+            replaced_track.instrument().map(hex_project::Device::id),
+            Some(instrument_id)
+        );
+        assert_eq!(
+            replaced_track
+                .instrument()
+                .expect("replacement instrument")
+                .state()
+                .type_id(),
+            operator
+        );
+        assert_eq!(replaced_track.devices(), original_track.devices());
+        assert_eq!(replaced_track.clips(), original_track.clips());
+        assert_eq!(replaced_track.midi_clips(), original_track.midi_clips());
+
+        service
+            .submit(Request::Undo)
+            .expect("undo the single replacement edit");
+        let undone = next_event(&service);
+        let undone_track = undone
+            .state
+            .project
+            .track(first_track)
+            .expect("track after undo");
+        assert_eq!(
+            undone_track.instrument().map(hex_project::Device::id),
+            Some(instrument_id)
+        );
+        assert_eq!(
+            undone_track
+                .instrument()
+                .expect("restored instrument")
+                .state()
+                .type_id(),
+            sine
+        );
+        assert_eq!(undone_track.devices(), original_track.devices());
+        assert_eq!(undone_track.clips(), original_track.clips());
+        assert_eq!(undone_track.midi_clips(), original_track.midi_clips());
 
         service
             .submit(Request::Edit(Command::AddTrack {
@@ -3813,6 +3968,7 @@ mod service_tests {
                 },
                 track: destination_track,
                 before: None,
+                replace: None,
             })
             .expect("move instrument to destination");
         let moved_instrument = next_event(&service);
@@ -3844,6 +4000,7 @@ mod service_tests {
                 },
                 track: destination_track,
                 before: Some(utility_id),
+                replace: None,
             })
             .expect("anchor from another track");
         let rejected_anchor = next_event(&service);
@@ -3868,6 +4025,7 @@ mod service_tests {
                     },
                     track: destination_track,
                     before: None,
+                    replace: None,
                 })
                 .expect("stale device drop");
             let rejected = next_event(&service);
@@ -3932,6 +4090,7 @@ mod service_tests {
                 },
                 track,
                 before: None,
+                replace: None,
             })
             .expect("drop during parameter gesture");
         let refused = next_event(&service);

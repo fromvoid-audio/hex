@@ -155,3 +155,16 @@ incompatible lane history while remaining publishable. The panel's frequency
 response is a bounded control-side query of the prepared coefficients, not a
 live analyzer or a claim of Live response parity. Native visual and listening
 acceptance remain with the user.
+
+## direct instrument replacement
+
+Browser replacement2262: dragging a browser instrument directly over the current
+instrument card explicitly targets that stable instrument ID and replaces its
+state in place. A single replacement edit preserves chain position, bypass,
+effects and Arrangement clips and is undone as one operation. Drops over effect
+cards, empty rail space or stale targets do not imply replacement and remain
+subject to the occupied-slot refusal. When the instrument type changes, the UI
+retires controls, pending values and type-specific page state keyed to the former
+device type before rendering the new controls. Session and GPUI regressions cover
+replacement, invalid/stale targets, preservation and Undo; full local CI and
+native pointer acceptance remain open until delivery.

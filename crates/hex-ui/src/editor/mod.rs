@@ -497,6 +497,7 @@ pub(super) struct EditorView {
         hex_session::service::NativeDeviceDropSource,
         TrackId,
         Option<hex_project::DeviceId>,
+        Option<hex_project::DeviceId>,
     )>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,

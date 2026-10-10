@@ -94,6 +94,19 @@ enum ParameterControl {
     },
 }
 
+fn parameter_control_matches_identity(
+    control: &ParameterControl,
+    identity: DeviceControlIdentity,
+) -> bool {
+    match control {
+        ParameterControl::Float { class, type_id, .. }
+        | ParameterControl::Bool { class, type_id, .. }
+        | ParameterControl::Choice { class, type_id, .. } => {
+            *class == identity.class && *type_id == identity.type_id
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
@@ -433,20 +446,46 @@ fn render_track(
     };
     let devices = track.devices().to_vec();
     let instrument = track.instrument().cloned();
-    let alive: HashSet<_> = track
+    let identities: HashMap<_, _> = track
         .ordered_device_chain()
         .map(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(device)
-            | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+            hex_project::TrackDeviceRef::Instrument(device) => (
+                device.id(),
+                DeviceControlIdentity {
+                    class: NativeDeviceClass::Instrument,
+                    type_id: device.state().type_id(),
+                },
+            ),
+            hex_project::TrackDeviceRef::Effect(device) => (
+                device.id(),
+                DeviceControlIdentity {
+                    class: NativeDeviceClass::Effect,
+                    type_id: device.state().type_id(),
+                },
+            ),
         })
         .collect();
+    let alive: HashSet<_> = identities.keys().copied().collect();
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
-        .keys()
-        .filter(|key| !alive.contains(&key.device))
-        .copied()
+        .iter()
+        .filter(|(key, control)| {
+            identities
+                .get(&key.device)
+                .is_none_or(|identity| !parameter_control_matches_identity(control, *identity))
+        })
+        .map(|(key, _)| *key)
         .collect();
+    let mut changed_device_ids: HashSet<_> = stale_keys.iter().map(|key| key.device).collect();
+    changed_device_ids.extend(view.device_panel.views.iter().filter_map(
+        |(device, (class, old_state, _))| {
+            identities.get(device).and_then(|identity| {
+                (*class != identity.class || old_state.type_id() != identity.type_id)
+                    .then_some(*device)
+            })
+        },
+    ));
     let active_target = view
         .device_gesture
         .snapshot()
@@ -484,20 +523,31 @@ fn render_track(
     view.device_panel.views.retain(|id, _| alive.contains(id));
     view.device_panel
         .pending_values
-        .retain(|key, _| alive.contains(&key.device));
-    view.device_panel
-        .operator_pages
-        .retain(|device, _| alive.contains(device));
-    retire_removed_eq8_graphs(view, cx, &alive);
+        .retain(|key, _| alive.contains(&key.device) && !changed_device_ids.contains(&key.device));
+    view.device_panel.operator_pages.retain(|device, _| {
+        identities.get(device).is_some_and(|identity| {
+            identity.class == NativeDeviceClass::Instrument
+                && identity.type_id.as_str().ok() == Some("hex.instrument.operator")
+        })
+    });
+    let alive_eq8: HashSet<_> = identities
+        .iter()
+        .filter_map(|(device, identity)| {
+            (identity.class == NativeDeviceClass::Effect
+                && identity.type_id.as_str().ok() == Some("hex.eq8"))
+            .then_some(*device)
+        })
+        .collect();
+    retire_removed_eq8_graphs(view, cx, &alive_eq8);
     view.device_panel
         .eq8_panels
-        .retain(|device, _| alive.contains(device));
+        .retain(|device, _| alive_eq8.contains(device));
     view.device_panel
         .eq8_responses
-        .retain(|device, _| alive.contains(device));
+        .retain(|device, _| alive_eq8.contains(device));
     view.device_panel
         .eq8_graph_gestures
-        .retain(|device, _| alive.contains(device));
+        .retain(|device, _| alive_eq8.contains(device));
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
@@ -595,6 +645,8 @@ fn render_track(
             DeviceCardDropGeometry {
                 track: track_id,
                 device: device.id(),
+                class,
+                width: device_card_width(class, device.state().type_id()),
                 next: device_ids.get(index + 1).copied(),
                 first: first_device,
                 visible_chain_bounds: visible_chain_bounds.clone(),
@@ -608,6 +660,7 @@ fn render_track(
         drag::NativeDeviceDropTarget {
             track: track_id,
             before: None,
+            replace: None,
         },
         first_device,
         visible_chain_bounds,
@@ -683,9 +736,22 @@ fn render_track(
 struct DeviceCardDropGeometry {
     track: TrackId,
     device: DeviceId,
+    class: NativeDeviceClass,
+    width: f32,
     next: Option<DeviceId>,
     first: Option<DeviceId>,
     visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+}
+
+fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
+    match (class, type_id.as_str().ok()) {
+        (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
+            operator_panel::OPERATOR_FRAME_WIDTH
+        }
+        (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
+        _ => DEVICE_FRAME_WIDTH,
+    }
 }
 
 fn pointer_within_visible_device_drop_bounds(
@@ -705,6 +771,8 @@ fn render_device_card_target(
     let DeviceCardDropGeometry {
         track,
         device,
+        class,
+        width,
         next,
         first,
         visible_chain_bounds,
@@ -713,21 +781,33 @@ fn render_device_card_target(
         .active_native_device_drag
         .as_ref()
         .and_then(|drag| drag.destination.get());
-    let active_left =
-        active.is_some_and(|target| target.track == track && target.before == Some(device));
-    let active_right = active.is_some_and(|target| target.track == track && target.before == next);
+    let active_left = active.is_some_and(|target| {
+        target.replace.is_none() && target.track == track && target.before == Some(device)
+    });
+    let active_right = active.is_some_and(|target| {
+        target.replace.is_none() && target.track == track && target.before == next
+    });
     let left_target = drag::NativeDeviceDropTarget {
         track,
         before: Some(device),
+        replace: None,
     };
     let right_target = drag::NativeDeviceDropTarget {
         track,
         before: next,
+        replace: None,
     };
     let front_target = drag::NativeDeviceDropTarget {
         track,
         before: first,
+        replace: None,
     };
+    let replacement_target = drag::NativeDeviceDropTarget {
+        track,
+        before: None,
+        replace: Some(device),
+    };
+    let active_replace = active == Some(replacement_target);
     let selector = format!("device-drop-card-{}", device.value());
     let entity = cx.entity();
     let target_visible_bounds = visible_chain_bounds.clone();
@@ -735,7 +815,7 @@ fn render_device_card_target(
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
         .relative()
-        .w(px(DEVICE_FRAME_WIDTH))
+        .w(px(width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
         .drag_over::<drag::NativeDeviceDrag>(move |style, _, _, _| {
@@ -765,6 +845,10 @@ fn render_device_card_target(
                     target_visible_bounds.borrow().as_ref(),
                 );
             let target = match payload.source {
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                } if class == NativeDeviceClass::Instrument => Some(replacement_target),
                 drag::NativeDeviceDragSource::Browser {
                     class: NativeDeviceClass::Instrument,
                     ..
@@ -810,6 +894,18 @@ fn render_device_card_target(
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
         );
     }
+    if active_replace {
+        wrapper = wrapper.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .border_1()
+                .border_color(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
     wrapper
 }
 
@@ -823,6 +919,7 @@ fn render_device_end_target(
     let instrument_target = drag::NativeDeviceDropTarget {
         track: target.track,
         before: first,
+        replace: None,
     };
     let active = view.active_native_device_drag.as_ref().is_some_and(|drag| {
         let expected = match drag.source {
@@ -1316,30 +1413,54 @@ impl EditorView {
             return;
         }
 
-        let before = match drag.source {
-            drag::NativeDeviceDragSource::Browser {
-                class: NativeDeviceClass::Instrument,
-                ..
-            } => target_track
-                .ordered_device_chain()
-                .next()
-                .map(|node| match node {
-                    hex_project::TrackDeviceRef::Instrument(device)
-                    | hex_project::TrackDeviceRef::Effect(device) => device.id(),
-                }),
-            _ => drop_target.before,
-        };
+        let before =
+            match drag.source {
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                } if drop_target.replace.is_none() => target_track
+                    .ordered_device_chain()
+                    .next()
+                    .map(|node| match node {
+                        hex_project::TrackDeviceRef::Instrument(device)
+                        | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+                    }),
+                _ => drop_target.before,
+            };
         if let drag::NativeDeviceDragSource::Browser {
             class: NativeDeviceClass::Instrument,
             ..
         } = drag.source
             && target_track.instrument().is_some()
+            && drop_target.replace.is_none()
         {
             self.error = Some("instrument slot is already occupied".into());
             self.device_panel.message = self.error.clone();
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
+        }
+        if let Some(replacement) = drop_target.replace {
+            let source_is_browser_instrument = matches!(
+                drag.source,
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                }
+            );
+            let target_is_current_instrument = target_track
+                .instrument()
+                .is_some_and(|instrument| instrument.id() == replacement);
+            if !source_is_browser_instrument
+                || !target_is_current_instrument
+                || drop_target.before.is_some()
+            {
+                self.error = Some("instrument replacement target changed; drag again".into());
+                self.device_panel.message = self.error.clone();
+                self.clear_native_device_drag(drag);
+                cx.notify();
+                return;
+            }
         }
         if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
             && device_move_would_be_noop(&state.project, device, track, before)
@@ -1370,12 +1491,16 @@ impl EditorView {
             source,
             track,
             before,
+            replace: drop_target.replace,
         };
         self.clear_native_device_drag(drag);
         if self.enqueue_device_barrier(request) {
             self.error = None;
             self.device_panel.message = None;
             self.status = match source {
+                NativeDeviceDropSource::Browser { .. } if drop_target.replace.is_some() => {
+                    "replacing instrument".into()
+                }
                 NativeDeviceDropSource::Browser { .. } => "adding device".into(),
                 NativeDeviceDropSource::Existing { .. } => "moving device".into(),
             };

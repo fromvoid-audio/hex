@@ -1574,3 +1574,15 @@ read-only previews, and full Live DSP/UI parity is not established. Test Utility
 Operator shared styling, oscillator/fixed tuning and dropdowns, envelope/routing
 values with drag/type/Undo, device reorder/remove and save/reopen. Codexattachment
 cap100 prevents attaching108; verified link is retained in Pulse and here.
+
+### 2026-10-10 — replace an instrument from its card
+
+Pulse2262: browser instruments now replace an occupied instrument only when
+dropped directly on that instrument's card. The explicit target retains the
+instrument ID and chain position; effects and Arrangement clips remain intact,
+and the replacement is one Undo step. Drops on effect cards or elsewhere on an
+occupied rail remain refused. Type changes retire old device controls, pending
+values and Operator page state before rendering the replacement. Targeted
+Session and GPUI replacement tests pass, including wrong/stale targets, the
+right edge of the wide Operator card, UI cache retirement and Undo. Full local
+CI and native pointer acceptance remain pending.

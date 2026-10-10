@@ -919,10 +919,17 @@ impl EditorView {
             source,
             track,
             before,
+            replace,
         } = &request
         {
-            self.last_enqueued_native_device_drop =
-                Some((*project_generation, *revision, *source, *track, *before));
+            self.last_enqueued_native_device_drop = Some((
+                *project_generation,
+                *revision,
+                *source,
+                *track,
+                *before,
+                *replace,
+            ));
         }
         #[cfg(test)]
         match &request {
