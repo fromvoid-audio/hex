@@ -2722,3 +2722,90 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn mutable_session_source_loop_callback_is_allocation_and_deallocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "looping mutable".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected midi track".into()),
+    };
+    let scene = match editor.execute(Command::AddScene {
+        name: "loop".into(),
+    })? {
+        Created::Scene(scene) => scene,
+        _ => return Err("expected session scene".into()),
+    };
+    let clip = match editor.execute(Command::CreateSessionMidiClip {
+        track,
+        scene,
+        name: "source loop".into(),
+        source_length: BeatTime::from_quarters(4)?,
+    })? {
+        Created::SessionClip(clip) => clip,
+        _ => return Err("expected session midi clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_quarters(1)?,
+        duration: BeatTime::from_quarters(3)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?;
+    editor.execute(Command::SetSessionMidiClipSource {
+        clip,
+        source_length: BeatTime::from_quarters(4)?,
+        source_start: BeatTime::ZERO,
+        loop_start: BeatTime::from_quarters(1)?,
+        loop_end: BeatTime::from_quarters(2)?,
+        looping: true,
+    })?;
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial publication failed")?;
+    control
+        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .map_err(|_| "looping mutable clip launch failed")?;
+
+    let mut output = [[0.0; 2]; 128];
+    let mut heard_note = false;
+    // Cross three source-loop seams while measuring the real prepared callback.
+    for _ in 0..600 {
+        measured_block(&mut callback, &mut output);
+        heard_note |= output.iter().any(|frame| frame[0] > 0.0);
+    }
+    assert!(heard_note);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}

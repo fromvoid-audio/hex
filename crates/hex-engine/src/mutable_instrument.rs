@@ -293,6 +293,11 @@ impl MutableInstrumentTrackRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_next_occurrence_id_for_test(&mut self, next_id: u64) {
+        self.next_id = next_id;
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_uncommitted_test_block(&mut self) {
         self.pair.begin_block();
     }

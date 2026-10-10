@@ -627,3 +627,15 @@ Stop/Seek reset tails and Pause freezes them. Quiescent owners stay in their
 Playback for control reclamation. See [the contract](return-effect-tails.md).
 Focused PCM/boundary/rollback and callback allocation checks pass; full local CI
 and native listening remain pending at this source checkpoint.
+
+## mutable source-loop admission — 10 October 2026
+
+Interactive SessionPlayback admits prepared mutable Session source loops and
+finite Arrangement source loops through the existing bounded template queries
+and occurrence ledger. Source iteration and transport pass remain separate;
+authored notes before source start are not chased, intro-only notes do not repeat,
+and held gates end at the exclusive source loop boundary. Source-loop counter
+exhaustion and query failures retain transactional DSP/ledger/clock rollback.
+Enabled Arrangement transport loops and mutable Arrangement source-loop linear
+export remain refused. See [mutable-source-loops.md](mutable-source-loops.md) for
+the acceptance evidence and remaining native validation.

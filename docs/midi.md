@@ -373,6 +373,38 @@ aggregation, track/master processing and transport/launch transitions remain
 required before runtime integration. Finite PCM oracle and density/seek/error
 regressions pass; this does not establish native ongoing Session playback.
 
+## Mutable instrument source-loop admission — Pulse 2214
+
+`SessionPlayback` now admits bounded mutable instruments on finite Arrangement
+MIDI clips with enabled source loops and on looping Session MIDI sources. The
+existing control-prepared templates already materialize only the intro and one
+repeat period; each query reports the occurrence iteration in its span/event
+key. The mutable host combines that iteration with the Arrangement transport
+loop pass (zero for Session routes) before assigning its monotonically checked
+runtime occurrence ID. Authored gates crossing a source loop end are clipped
+there, so their matching NoteOff remains bounded and is emitted at the mapped
+loop boundary.
+Existing source-start semantics are preserved: a note onset before the initial
+`source_start` is not chased, and notes beginning before `loop_start` occur only
+in the intro even when their gates extend into the loop interval.
+
+The admission change does not enable Arrangement transport-loop wrapping for a
+mutable instrument. Its separate refusal remains in place because one mutable
+voice may need history across a discontinuous transport wrap. Linear
+Arrangement export keeps its monotonic source timeline and continues to refuse
+mutable Arrangement source loops. In interactive playback, looped Arrangement
+source occurrences remain finite at the clip's Arrangement end. Source-template period, density,
+beat-domain, span and event limits continue to refuse invalid or excessive
+work before a prepared revision is published.
+
+Source tests compare trimmed Session intro/repeat events with an authored-frame
+oracle, check loop-end gate clipping and unique iteration IDs, compare render
+partitions of 1/17/127/256 frames, and enumerate finite Arrangement spans.
+An allocation-probe test covers repeated Session source events through the
+prepared audio callback and requires zero total and signed-net allocations.
+These are headless source checks; native device, audible deadline and broader
+musical editing acceptance remain open.
+
 ## Canonical Session data ownership — source accepted
 
 MidiSource owns source markers, loop settings and notes. Arrangement MidiClip

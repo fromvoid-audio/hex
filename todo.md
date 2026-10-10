@@ -1184,3 +1184,13 @@ merge is claimed.
 Pulse2165 is split into mutable source loops2214 (active) and transport seam/
 loop-start chase2215 (todo, depends on2214). The existing transport-loop refusal
 remains until bounded gates, chase, identity/capacity and rollback are verified.
+
+## 10 October 2026 — Pulse2214 mutable source loops
+
+Interactive mutable instruments now accept looping Session sources and finite
+Arrangement source loops. Intro-only notes, clipped loop-end gates, distinct
+occurrence identities and callback rollback retain the existing source contract.
+Six focused tests and the actual callback allocation probe pass; exact-head local
+CI and combined native review are next. Arrangement transport wrapping (2215) and
+mutable Arrangement source-loop linear export remain refused.
+See [the contract](docs/mutable-source-loops.md).
