@@ -316,10 +316,12 @@ will eventually replace/delegate through Playback. It uses monotonic performance
 time for ongoing sources and a separate wrapped Arrangement cursor, preserving
 the existing native cursor contract. One selected source per track uses shared
 prepared mix coefficients, followed by master gain once. Outgoing Session voices
-move as Copy spans to a bounded release bank, without retaining old graphs.
-Construction allocates all route/pending/scratch storage; command/render paths
-must allocate and drop no graph ownership. A refused render zeros the entire
-requested output and leaves persistent clocks/routes/pending/releases unchanged.
+move as Copy spans to a bounded release bank. Carried shared analytic voices
+retain at most one `Arc` per unique context; they do not retain the prior playback
+graph or allocate one owner per voice. Construction allocates all
+route/pending/scratch storage; command/render paths must allocate and drop no
+graph ownership. A refused render zeros the entire requested output and leaves
+persistent clocks/routes/pending/releases unchanged.
 
 The initial kernel uses explicit Hex test policies: per-track replacement of
 pending immediate/four-quarter actions; absent scene cells do nothing. Pause

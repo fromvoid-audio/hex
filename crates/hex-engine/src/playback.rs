@@ -147,6 +147,9 @@ impl PlaybackActionError {
             | Self::Session(crate::SessionPlaybackError::SessionTempoUnavailable(_)) => {
                 PlaybackActionRejection::Timing
             }
+            Self::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
+                PlaybackActionRejection::InvalidSessionAction
+            }
             Self::Session(_) => PlaybackActionRejection::InvalidSessionAction,
         }
     }
@@ -179,6 +182,9 @@ pub enum PlaybackHandoffRejection {
 impl PlaybackHandoffRejection {
     pub const fn from_error(error: PlaybackHandoffError) -> Self {
         match error {
+            PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
+                Self::SessionRuntime
+            }
             PlaybackHandoffError::Session(_) => Self::SessionRuntime,
             PlaybackHandoffError::ActiveSessionStateCannotBeDropped => {
                 Self::ActiveSessionStateCannotBeDropped
