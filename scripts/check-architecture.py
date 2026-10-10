@@ -19,6 +19,7 @@ ALLOWED = {
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),
+    'hex-widgets': set(),
     'hex-audio': {'hex-engine', 'hex-stream'},
     'hex-ui': {'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences'},
     'hex-desktop': {'hex-ui', 'hex-audio'},
@@ -27,8 +28,8 @@ ALLOWED = {
 # Canonical publication fixtures need the authored model only in audio tests.
 # This does not grant the production device/callback crate ownership of editing.
 DEV_ALLOWED = {'hex-audio': {'hex-project', 'hex-lattice-contract'}}
-BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop'},
-              'gpui_platform': {'hex-ui', 'hex-desktop'},
+BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
+              'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
               # Raw source-page fingerprints belong to control-side media, never DSP.
               'sha2': {'hex-media'}}

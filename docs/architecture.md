@@ -92,13 +92,14 @@ of these substitutes for the others.
 | hex-devices | Registered original sine/envelope and linear Utility DSP | hex-lattice, hex-lattice-contract, std |
 | hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | hex-lattice-contract, std |
 | hex-media | Bounded control-side WAV decode and cached waveform peaks | hex-engine, std |
-| hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, std |
-| hex-storage | Versioned project metadata and recoverable file creation | hex-project, serde, serde_json, std |
+| hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, hex-lattice-contract, std |
+| hex-storage | Versioned project metadata and recoverable file creation | hex-project, hex-lattice-contract, serde, serde_json, std |
 | hex-export | Fixed-block linear PCM16 WAV rendering and create-new file publication | hex-engine, std |
-| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering | hex-project, hex-devices, hex-lattice, std |
+| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering | hex-project, hex-devices, hex-lattice, hex-lattice-contract, std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
 | hex-library | Bounded nonrecursive folder/WAV/project listings with original paths | std |
-| hex-ui | GPUI views, interaction/display state, required typography and browser navigation | hex-engine, hex-audio, hex-session, hex-project, hex-library, GPUI |
+| hex-widgets | Reusable native control rendering, focus and local edit gestures with caller-supplied style/text | GPUI, std |
+| hex-ui | GPUI views, interaction/display state, required typography and browser navigation | hex-engine, hex-audio, hex-session, hex-project, hex-library, hex-preferences, GPUI |
 | hex-desktop | Startup and composition; constructs backend and injects it | hex-ui, hex-audio, GPUI lifecycle |
 | hex-cli | Headless project edits, import/load/compile and streamed WAV export | hex-project, hex-engine, hex-media, hex-storage, hex-export, std |
 

@@ -94,6 +94,7 @@ crates/
     src/main.rs              generated demo and offline WAV export through hex-export
   hex-audio/
     src/lib.rs               CPAL stream, bounded queue, priority Stop, callback
+  hex-widgets/               reusable native GPUI controls; injected display/style and edit events
   hex-ui/
     src/lib.rs               window and UI service entry point
     src/app.rs               GPUI view state, controls, drawing, shortcuts
@@ -145,6 +146,12 @@ bounded background work. Read docs/browser-places.md; preserve original paths
 and malformed settings, surface errors, and keep filesystem I/O off UI/callback.
 Desktop must remain small. UI must not own
 device construction or callback DSP. Audio must not own GPUI or project editing.
+
+`hex-widgets` depends only on pinned GPUI and the standard library. It owns
+reusable control rendering, focus and local gestures; `hex-ui` supplies lowercase
+display text, inherited bundled typography, style and canonical bindings.
+Widgets do not construct devices, edit projects, perform DSP, own audio queues
+or access files.
 
 `hex-stream` depends on engine/media/project and owns the verified page worker,
 fixed pool and rtrb ownership queues. Engine borrows its narrow `MediaPages`

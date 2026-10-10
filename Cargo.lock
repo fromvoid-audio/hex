@@ -2676,6 +2676,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-widgets"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

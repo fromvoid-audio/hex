@@ -44,6 +44,15 @@ Generic persisted state and device registration (70) accompany canonical chains
 See [the lattice contract](docs/lattice.md); stateful filters and instrument
 lifecycle remain explicit dependencies, not completed support.
 
+Foundation source evidence: [PR #22](https://github.com/PORTALSURFER/hex/pull/22)
+adds original linear DSP; [PR #23](https://github.com/PORTALSURFER/hex/pull/23)
+adds generic registered state and canonical prepared chains. Full local CI passed
+all 14 checks on clean `9efed7e` for PR #23 (105.880 s, unchanged digest,
+`stale=false`). Source-frozen benchmarks and their limits are in
+[performance](docs/performance.md). Both PRs remain unmerged; controls/panel,
+stateful Utility and Operator remain open. Toolkit 44 is now active; see
+[device controls](docs/device-controls.md).
+
 ## merged PR history and remaining acceptance
 
 PRs #1–#17 were verified closed as merged on 9 October 2026. Merging records

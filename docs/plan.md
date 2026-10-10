@@ -9,13 +9,16 @@ The user reprioritized the native DSP system, device panel and first devices
 before main/return-track layout. The system is named **lattice**.
 Pulse ticket 42's real stereo DSP primitives and linear Utility implementation
 passed all 14 local CI steps on clean `0a2d70b` ([PR #22](https://github.com/PORTALSURFER/hex/pull/22)).
-Now integrate canonical device IDs/order/settings/history/schema and shared
-engine processing (ticket 43, modular contract 70, parent 16), reusable device controls (44),
+Canonical IDs/order/generic state/history/schema and shared engine processing
+(tickets 43/70, parent 16) passed all 14 local CI checks on clean `9efed7e`
+in 105.880 s ([PR #23](https://github.com/PORTALSURFER/hex/pull/23)); merge and
+native processing acceptance remain separate. Now implement reusable device controls (44),
 bounded live parameter gestures with grouped undo (65), the
 compact panel (17), complete Utility (18) and
 Operator (19). Each deliverable has a focused PR. The finite contracts and
 stateful dependencies are in [lattice](lattice.md). Pending native acceptance
 for earlier UI PRs stays open; it does not block independent source work.
+Widget/controller contracts are in [device controls](device-controls.md).
 
 The user's current implementation scope is every open ticket planned for Hex
 in Pulse, rather than only existing PRs. This priority order is a dependency

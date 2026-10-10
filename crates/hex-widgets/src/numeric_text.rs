@@ -1,0 +1,357 @@
+use crate::numeric_control::NumericControl;
+use gpui::{
+    App, Bounds, Context, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    GlobalElementId, LayoutId, MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style,
+    TextRun, UTF16Selection, UnderlineStyle, Window, fill, point, prelude::*, px, relative, rgb,
+    rgba, size,
+};
+use std::ops::Range;
+
+const MAX_NUMERIC_TEXT_BYTES: usize = 256;
+
+pub(crate) struct NumericTextElement {
+    pub(crate) input: Entity<NumericControl>,
+}
+
+impl EntityInputHandler for NumericControl {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        actual: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let range = range_utf16_to_bytes(&self.text, range);
+        actual.replace(range_bytes_to_utf16(&self.text, range.clone()));
+        self.text.get(range).map(str::to_owned)
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: range_bytes_to_utf16(&self.text, self.selected.clone()),
+            reversed: self.reversed,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked
+            .as_ref()
+            .map(|range| range_bytes_to_utf16(&self.text, range.clone()))
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+        self.marked = None;
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        new_text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let new_text = new_text.replace(['\n', '\r'], "");
+        let range = range
+            .map(|range| range_utf16_to_bytes(&self.text, range))
+            .or(self.marked.clone())
+            .unwrap_or_else(|| self.selected.clone());
+        let Some(selected) = self.text.get(range.clone()) else {
+            return;
+        };
+        if self
+            .text
+            .len()
+            .saturating_sub(selected.len())
+            .checked_add(new_text.len())
+            .is_none_or(|length| length > MAX_NUMERIC_TEXT_BYTES)
+        {
+            self.invalid_text = true;
+            cx.notify();
+            return;
+        }
+        self.text.replace_range(range.clone(), &new_text);
+        let cursor = range.start + new_text.len();
+        self.selected = cursor..cursor;
+        self.reversed = false;
+        self.marked = None;
+        self.invalid_text = false;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        new_text: &str,
+        new_selected: Option<Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let new_text = new_text.replace(['\n', '\r'], "");
+        let range = range
+            .map(|range| range_utf16_to_bytes(&self.text, range))
+            .or(self.marked.clone())
+            .unwrap_or_else(|| self.selected.clone());
+        let Some(selected) = self.text.get(range.clone()) else {
+            return;
+        };
+        if self
+            .text
+            .len()
+            .saturating_sub(selected.len())
+            .checked_add(new_text.len())
+            .is_none_or(|length| length > MAX_NUMERIC_TEXT_BYTES)
+        {
+            self.invalid_text = true;
+            cx.notify();
+            return;
+        }
+        self.text.replace_range(range.clone(), &new_text);
+        self.marked = (!new_text.is_empty()).then_some(range.start..range.start + new_text.len());
+        self.selected = new_selected
+            .map(|selected| range_utf16_to_bytes(&new_text, selected))
+            .map(|selected| range.start + selected.start..range.start + selected.end)
+            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.reversed = false;
+        self.invalid_text = false;
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let line = self.last_layout.as_ref()?;
+        let range = range_utf16_to_bytes(&self.text, range);
+        let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+        Some(Bounds::from_corners(
+            point(origin_x + line.x_for_index(range.start), bounds.top()),
+            point(origin_x + line.x_for_index(range.end), bounds.bottom()),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        let bounds = self.last_bounds?;
+        let origin_x = self.last_origin_x.unwrap_or(bounds.left());
+        let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
+        Some(byte_offset_to_utf16(&self.text, index))
+    }
+}
+
+pub struct TextPaintState {
+    line: ShapedLine,
+    origin_x: Pixels,
+    cursor: Option<PaintQuad>,
+    selection: Option<PaintQuad>,
+}
+
+impl IntoElement for NumericTextElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for NumericTextElement {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<TextPaintState>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.0).into();
+        style.size.height = window.line_height().into();
+        (window.request_layout(style, [], cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let input = self.input.read(cx);
+        let text = input.value_string();
+        let style = window.text_style();
+        let color = rgb(input.style.text).into();
+        let run = TextRun {
+            len: text.len(),
+            font: style.font(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = if let Some(marked) = input.marked.as_ref() {
+            vec![
+                TextRun {
+                    len: marked.start,
+                    ..run.clone()
+                },
+                TextRun {
+                    len: marked.end - marked.start,
+                    underline: Some(UnderlineStyle {
+                        color: Some(color),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: text.len() - marked.end,
+                    ..run
+                },
+            ]
+            .into_iter()
+            .filter(|run| run.len > 0)
+            .collect()
+        } else {
+            vec![run]
+        };
+        let line = window.text_system().shape_line(
+            text.into(),
+            style.font_size.to_pixels(window.rem_size()),
+            &runs,
+            None,
+        );
+        let cursor_x = line.x_for_index(input.cursor());
+        let max_x = bounds.size.width - px(2.0);
+        let shift = if cursor_x > max_x {
+            cursor_x - max_x
+        } else if cursor_x < px(0.0) {
+            cursor_x
+        } else {
+            px(0.0)
+        };
+        let origin_x = bounds.left() - shift;
+        let selection = (!input.selected.is_empty()).then(|| {
+            fill(
+                Bounds::from_corners(
+                    point(
+                        origin_x + line.x_for_index(input.selected.start),
+                        bounds.top(),
+                    ),
+                    point(
+                        origin_x + line.x_for_index(input.selected.end),
+                        bounds.bottom(),
+                    ),
+                ),
+                rgba(0x70e8e366),
+            )
+        });
+        let cursor = (input.editing && input.selected.is_empty()).then(|| {
+            fill(
+                Bounds::new(
+                    point(origin_x + cursor_x, bounds.top()),
+                    size(px(1.0), bounds.bottom() - bounds.top()),
+                ),
+                rgb(input.style.accent),
+            )
+        });
+        Some(TextPaintState {
+            line,
+            origin_x,
+            cursor,
+            selection,
+        })
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        state: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(state) = state.take() else {
+            return;
+        };
+        let focus = self.input.read(cx).focus.clone();
+        if self.input.read(cx).editing {
+            let input = self.input.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase.capture() && !bounds.contains(&event.position) {
+                    input.update(cx, |control, cx| control.finish_text_edit_on_blur(cx));
+                    window.refresh();
+                }
+            });
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(bounds, self.input.clone()),
+                cx,
+            );
+        }
+        if let Some(selection) = state.selection {
+            window.paint_quad(selection);
+        }
+        let _ = state.line.paint(
+            point(state.origin_x, bounds.top()),
+            window.line_height(),
+            window,
+            cx,
+        );
+        if focus.is_focused(window)
+            && let Some(cursor) = state.cursor
+        {
+            window.paint_quad(cursor);
+        }
+        self.input.update(cx, |input, _| {
+            input.last_layout = Some(state.line);
+            input.last_bounds = Some(bounds);
+            input.last_origin_x = Some(state.origin_x);
+        });
+    }
+}
+
+fn range_utf16_to_bytes(text: &str, range: Range<usize>) -> Range<usize> {
+    utf16_to_byte(text, range.start)..utf16_to_byte(text, range.end)
+}
+
+fn range_bytes_to_utf16(text: &str, range: Range<usize>) -> Range<usize> {
+    byte_offset_to_utf16(text, range.start)..byte_offset_to_utf16(text, range.end)
+}
+
+fn utf16_to_byte(text: &str, offset: usize) -> usize {
+    let mut units = 0;
+    for (index, character) in text.char_indices() {
+        if units >= offset {
+            return index;
+        }
+        units += character.len_utf16();
+    }
+    text.len()
+}
+
+fn byte_offset_to_utf16(text: &str, offset: usize) -> usize {
+    text.char_indices()
+        .take_while(|(index, _)| *index < offset)
+        .map(|(_, character)| character.len_utf16())
+        .sum()
+}
