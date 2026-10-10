@@ -1648,3 +1648,15 @@ native visual acceptance remain pending. See [Operator shell context contract]
 - No live analyzer is exposed yet. Capture worker remains Pulse2288; actual
   accepted post-node audio, UI display, callback overhead and native acceptance
   remain Pulse2250. See [spectrum analysis](docs/spectrum-analysis.md).
+
+## 10 October 2026 — bounded spectrum worker (Pulse2288)
+
+- Added fixed capture batches, a 32-batch queue, sequence-gap resets, off-callback
+  rolling FFT analysis and a bounded result cache. Ordinary parameter revisions
+  retain the actual contiguous output window.
+- Review found and fixed excess FFT cadence on context changes, repeated idle
+  FFT work, invalid-rate admission and unbounded result draining. Nine focused
+  regressions and the zero-total/net capture allocation probe pass.
+- Exact final-tree local CI and focused PR evidence are recorded in Pulse.
+  Actual accepted post-node capture, retirement/freshness validation, UI trace
+  and release callback overhead remain Pulse2250.
