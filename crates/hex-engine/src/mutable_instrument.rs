@@ -21,6 +21,8 @@ pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 /// implementation-defined and does not specify how released voices count.
 pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
 const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
+pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
+pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MutableOccurrenceKey {
@@ -91,7 +93,7 @@ impl MutableOccurrenceSignature {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MutableOccurrence {
     pub(crate) signature: MutableOccurrenceSignature,
     pub(crate) id: u64,
@@ -189,6 +191,32 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    /// Conservative checkpoint charge derived from the prepared declaration
+    /// and both fixed occurrence-ledger buffers. Call before `new` so a store
+    /// can reject count/aggregate overages before invoking the runtime factory.
+    pub(crate) fn checkpoint_storage_upper_bound(
+        prepared: &dyn PreparedMutableInstrumentRuntime,
+        sample_rate: u32,
+    ) -> Option<usize> {
+        let max_tail_frames = u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)?;
+        let pair_bytes = prepared.declared_twin_bytes().checked_mul(2)?;
+        if prepared.runtime_version() == 0
+            || prepared.declared_twin_bytes() == 0
+            || pair_bytes > hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2
+            || prepared.max_events_per_block() == 0
+            || prepared.max_events_per_block() > MAX_MUTABLE_EVENTS_PER_QUERY
+            || prepared.max_active_occurrences() == 0
+            || prepared.max_active_occurrences() > MAX_SIMULTANEOUS_VOICES_PER_TRACK
+            || prepared.max_release_tail_frames() > max_tail_frames
+        {
+            return None;
+        }
+        let ledger_bytes = MAX_MUTABLE_OCCURRENCE_PROOFS
+            .checked_mul(std::mem::size_of::<MutableOccurrence>())?
+            .checked_mul(2)?;
+        pair_bytes.checked_add(ledger_bytes)
+    }
+
     pub(crate) fn new(
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
@@ -245,6 +273,10 @@ impl MutableInstrumentTrackRuntime {
         self.primary.is_empty() && self.pair.committed_is_quiescent()
     }
 
+    pub(crate) fn committed_state_available(&self) -> bool {
+        self.pair.committed_state_available()
+    }
+
     #[cfg(test)]
     pub(crate) fn committed_ledger_is_empty(&self) -> bool {
         self.primary.is_empty()
@@ -258,6 +290,16 @@ impl MutableInstrumentTrackRuntime {
     #[cfg(test)]
     pub(crate) fn next_occurrence_id(&self) -> u64 {
         self.next_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_uncommitted_test_block(&mut self) {
+        self.pair.begin_block();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn occurrence_proofs(&self) -> &[MutableOccurrence] {
+        &self.primary
     }
 
     /// Check whether this freshly prepared owner can take the exact committed

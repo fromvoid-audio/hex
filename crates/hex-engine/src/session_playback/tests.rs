@@ -10,7 +10,23 @@ use hex_project::{
     SceneSnapshot, SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot,
     SessionSnapshot, Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+thread_local! {
+    static MUTABLE_RUNTIME_CREATE_COUNTER: RefCell<Option<Arc<AtomicUsize>>> = const {
+        RefCell::new(None)
+    };
+    static MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE: Cell<Option<usize>> = const {
+        Cell::new(None)
+    };
+}
 
 #[derive(Default)]
 struct ContinuityMissingPages;
@@ -609,7 +625,11 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
         1
     }
     fn declared_twin_bytes(&self) -> usize {
-        std::mem::size_of::<MutableFeedbackRuntime>()
+        MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
+            bytes
+                .get()
+                .unwrap_or(std::mem::size_of::<MutableFeedbackRuntime>())
+        })
     }
     fn max_events_per_block(&self) -> usize {
         256
@@ -621,6 +641,11 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
         self.release_frames + 8
     }
     fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        MUTABLE_RUNTIME_CREATE_COUNTER.with(|counter| {
+            if let Some(counter) = counter.borrow().as_ref() {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         Box::new(MutableFeedbackRuntime {
             key: self.level.to_bits(),
             level: self.level,
@@ -2076,6 +2101,69 @@ fn revision_with_instrument_registry(
         )
         .unwrap(),
     )
+}
+
+fn mutable_checkpoint_fixture(note_duration: u64) -> (Arc<PreparedRevision>, hex_project::TrackId) {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let project = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
+    let revision = revision_with_instrument_registry(&project, table, &registry);
+    let track = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    (revision, track)
+}
+
+fn render_checkpoint_prefix(playback: &mut SessionPlayback, frames: usize) -> Vec<crate::Frame> {
+    let mut rendered = vec![[0.0; 2]; frames];
+    playback.render(&mut rendered).unwrap();
+    rendered
+}
+
+fn render_checkpoint_partitioned(
+    playback: &mut SessionPlayback,
+    pattern: &[usize],
+    total_frames: usize,
+) -> Vec<crate::Frame> {
+    let mut rendered = Vec::with_capacity(total_frames);
+    let mut pattern_index = 0;
+    while rendered.len() < total_frames {
+        let count = pattern[pattern_index % pattern.len()].min(total_frames - rendered.len());
+        let mut block = vec![[0.0; 2]; count];
+        playback.render(&mut block).unwrap();
+        rendered.extend(block);
+        pattern_index += 1;
+    }
+    rendered
+}
+
+fn reset_checkpoint_track(playback: &mut SessionPlayback, track: hex_project::TrackId) {
+    let route = playback
+        .routes
+        .iter()
+        .position(|route| route.id == track)
+        .unwrap();
+    let factory = playback
+        .revision
+        .session()
+        .mutable_instrument_factory(track)
+        .unwrap();
+    playback.mutable_instruments[route] = Some(
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
+            factory,
+            playback.revision.arrangement().sample_rate(),
+        )
+        .unwrap(),
+    );
 }
 
 #[test]
@@ -8384,4 +8472,234 @@ fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains
     assert!(!candidate.candidate_admission_open);
     assert_eq!(candidate.performance_frame(), previous.performance_frame());
     assert_eq!(candidate.owner(track), Some(SessionPlaybackOwner::Silence));
+}
+
+#[test]
+fn mutable_checkpoint_restores_held_and_released_feedback_with_owned_occurrence_ids() {
+    for (duration, prefix_frames, expect_released) in
+        [(8 << 32, 19, false), ((1 << 32) / 6_000, 5, true)]
+    {
+        let (revision, track) = mutable_checkpoint_fixture(duration);
+        let mut source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut restored = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        for playback in [&mut source, &mut restored] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let prefix = render_checkpoint_prefix(&mut source, prefix_frames);
+        let restored_prefix = render_checkpoint_prefix(&mut restored, prefix_frames);
+        assert_eq!(prefix, restored_prefix);
+        assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+        let source_runtime = source.mutable_instruments[0].as_ref().unwrap();
+        let next_id = source_runtime.next_occurrence_id();
+        assert_eq!(next_id, 1);
+        let proof = source_runtime.occurrence_proofs().first().unwrap();
+        assert_eq!(proof.id, next_id);
+        assert_eq!(proof.note_off_sent, expect_released);
+        assert!(source_runtime.committed_feedback_tail_is_active());
+
+        let mut checkpoints = MutableRuntimeCheckpointStore::new();
+        checkpoints.capture_track(&source, track).unwrap();
+        assert_eq!(checkpoints.checkpoint_count(), 1);
+        assert!(checkpoints.declared_storage_bytes() > 0);
+        assert!(checkpoints.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
+
+        // Make the target's device state different while retaining its exact
+        // revision and musical frame. Restore must recover both the voice
+        // history and the engine's occurrence-ID ledger.
+        reset_checkpoint_track(&mut restored, track);
+        assert_eq!(
+            restored.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .next_occurrence_id(),
+            0
+        );
+        checkpoints.restore_track(&mut restored, track).unwrap();
+        assert_eq!(
+            restored.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .next_occurrence_id(),
+            next_id
+        );
+        assert_eq!(
+            restored.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .occurrence_proofs(),
+            source_runtime.occurrence_proofs()
+        );
+        checkpoints.restore_track(&mut source, track).unwrap();
+        assert_eq!(
+            source.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .next_occurrence_id(),
+            next_id
+        );
+
+        let expected = render_checkpoint_partitioned(&mut source, &[1, 7, 3, 11, 2], 48);
+        let actual = render_checkpoint_partitioned(&mut restored, &[5, 1, 9, 2, 7], 48);
+        assert_eq!(actual, expected);
+        // The same checkpoint remains reusable and the next occurrence still
+        // receives the same ID after an identical continuation.
+        let id_after = source.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .next_occurrence_id();
+        assert_eq!(
+            restored.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .next_occurrence_id(),
+            id_after
+        );
+    }
+}
+
+#[test]
+fn mutable_checkpoint_refuses_uncommitted_wrong_revision_and_wrong_frame_atomically() {
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut target = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    for playback in [&mut source, &mut target] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        render_checkpoint_prefix(playback, 16);
+    }
+    let mut checkpoints = MutableRuntimeCheckpointStore::new();
+    checkpoints.capture_track(&source, track).unwrap();
+
+    let wrong_frame_before = target.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .next_occurrence_id();
+    render_checkpoint_prefix(&mut target, 1);
+    assert_eq!(
+        checkpoints.restore_track(&mut target, track),
+        Err(MutableRuntimeCheckpointError::IncompatiblePerformanceFrame)
+    );
+    assert_eq!(
+        target.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .next_occurrence_id(),
+        wrong_frame_before
+    );
+
+    let instrument_id =
+        hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: instrument_id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let changed_project = with_test_instrument(&project(1.0, 0, 8 << 32), instrument_id, 1);
+    let changed_revision = revision_with_instrument_registry(
+        &changed_project,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let mut wrong_revision = SessionPlayback::new(changed_revision).unwrap();
+    wrong_revision.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut wrong_revision, 16);
+    let wrong_revision_id = wrong_revision.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .next_occurrence_id();
+    assert_eq!(
+        checkpoints.restore_track(&mut wrong_revision, track),
+        Err(MutableRuntimeCheckpointError::IncompatiblePreparedRevision)
+    );
+    assert_eq!(
+        wrong_revision.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .next_occurrence_id(),
+        wrong_revision_id
+    );
+
+    source.mutable_instruments[0]
+        .as_mut()
+        .unwrap()
+        .begin_uncommitted_test_block();
+    let mut empty = MutableRuntimeCheckpointStore::new();
+    let empty_store_bytes = empty.declared_storage_bytes();
+    assert_eq!(
+        empty.capture_track(&source, track),
+        Err(MutableRuntimeCheckpointError::UncommittedRuntime)
+    );
+    assert_eq!(empty.checkpoint_count(), 0);
+    assert_eq!(empty.declared_storage_bytes(), empty_store_bytes);
+    assert!(empty_store_bytes > 0);
+}
+
+#[test]
+fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut playback, 1);
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
+    MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
+        bytes.set(Some(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES));
+    });
+    let mut byte_limited = MutableRuntimeCheckpointStore::new();
+    let byte_refusal = loop {
+        match byte_limited.capture_track(&playback, track) {
+            Ok(()) => {
+                render_checkpoint_prefix(&mut playback, 1);
+            }
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(
+        byte_refusal,
+        MutableRuntimeCheckpointError::CheckpointBudgetExceeded
+    );
+    assert!(byte_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS);
+    assert!(byte_limited.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
+    let before_byte_refusal = counter.load(Ordering::Relaxed);
+    assert_eq!(
+        byte_limited.capture_track(&playback, track),
+        Err(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
+
+    MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    let mut count_limited = MutableRuntimeCheckpointStore::new();
+    while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
+        render_checkpoint_prefix(&mut playback, 1);
+        count_limited.capture_track(&playback, track).unwrap();
+    }
+    assert_eq!(
+        count_limited.checkpoint_count(),
+        MAX_MUTABLE_RUNTIME_CHECKPOINTS
+    );
+    let before_refusal = counter.load(Ordering::Relaxed);
+    render_checkpoint_prefix(&mut playback, 1);
+    assert_eq!(
+        count_limited.capture_track(&playback, track),
+        Err(MutableRuntimeCheckpointError::CheckpointCountExceeded)
+    );
+    assert_eq!(
+        count_limited.checkpoint_count(),
+        MAX_MUTABLE_RUNTIME_CHECKPOINTS
+    );
+    assert!(count_limited.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
+    assert_eq!(counter.load(Ordering::Relaxed), before_refusal);
+    count_limited.clear();
+    assert_eq!(count_limited.checkpoint_count(), 0);
+    assert_eq!(
+        count_limited.declared_storage_bytes(),
+        MutableRuntimeCheckpointStore::new().declared_storage_bytes()
+    );
+    MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = None);
 }
