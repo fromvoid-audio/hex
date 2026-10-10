@@ -1,8 +1,11 @@
 //! Original standalone phase-modulation kernel, a prerequisite for Operator.
 //!
-//! No registry admission, feedback, mutable voices or Live algorithm numbering.
-//! Preparation validates everything; sampling uses fixed arrays and a borrowed
-//! control-created sine table. Graph coefficients are modulation depth in turns.
+//! No built-in registry admission, feedback, mutable voices or Live algorithm
+//! numbering. The standalone kernel and optional custom-registry definition
+//! validate on control; sampling uses fixed arrays and a borrowed sine table.
+//! Graph coefficients are modulation depth in turns.
+pub mod device;
+
 use crate::{Invalid, PHASE_SCALE, SineTable};
 use hex_lattice::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, StereoFrame};
 
