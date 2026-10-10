@@ -1,4 +1,4 @@
-//! Control-prepared, bounded linear Arrangement preroll.
+//! Control-prepared, bounded Arrangement preroll.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,6 +10,12 @@ pub const MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES: usize = 32 * 1024 * 1024;
 const PREROLL_BLOCK_FRAMES: usize = 256;
 pub(super) const PREROLL_SCRATCH_BYTES: usize =
     std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>();
+
+#[derive(Clone, Copy)]
+enum PrerollRuntimePolicy {
+    LinearExport,
+    Interactive,
+}
 
 /// Why an Arrangement playback candidate could not be prepared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +85,33 @@ impl SessionPlayback {
         )
     }
 
+    /// Prepare a fresh interactive Session runtime whose tracks initially
+    /// remain routed to Arrangement, then reconstruct Arrangement history to
+    /// `destination_frame`. Unlike the linear export candidate, this runtime
+    /// accepts subsequent Session commands and state inheritance. Enabled
+    /// transport loops are refused because this operation reconstructs one
+    /// monotonic Arrangement pass. Run preparation on an adequately sized
+    /// control thread; the production seek worker reserves an explicit 8 MiB
+    /// stack because stateful multi-chain construction can exceed the Rust
+    /// platform-default test-thread stack.
+    pub fn prepare_interactive_arrangement_preroll_from_revision(
+        revision: Arc<PreparedRevision>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::Interactive,
+            || cancelled.load(Ordering::Acquire),
+        )
+    }
+
     #[cfg(test)]
     pub(super) fn prepare_arrangement_preroll_checked(
         &self,
@@ -104,6 +137,26 @@ impl SessionPlayback {
         work_budget_frames: u64,
         start_playing: bool,
         storage_budget_bytes: usize,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            storage_budget_bytes,
+            PrerollRuntimePolicy::LinearExport,
+            is_cancelled,
+        )
+    }
+
+    fn prepare_arrangement_preroll_from_revision_with_policy(
+        revision: Arc<PreparedRevision>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        storage_budget_bytes: usize,
+        policy: PrerollRuntimePolicy,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<Self, ArrangementPrerollError> {
         if is_cancelled() {
@@ -137,7 +190,12 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::Cancelled);
         }
 
-        let mut candidate = Self::new_linear_arrangement_export(Arc::clone(&revision))?;
+        let constructor: fn(Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> =
+            match policy {
+                PrerollRuntimePolicy::LinearExport => Self::new_linear_arrangement_export,
+                PrerollRuntimePolicy::Interactive => Self::new,
+            };
+        let mut candidate = constructor(Arc::clone(&revision))?;
         let actual_storage = candidate
             .accounted_runtime_storage_bytes()
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;

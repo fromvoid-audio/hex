@@ -988,3 +988,35 @@ and UI-style guards pass. This does not supersede session-worker project identit
 admission checks or change unconditional fresh/inherited publication. Full local
 CI, exact-head review and native integration remain pending; do not mark Pulse2186
 done before those gates.
+
+2026-10-10 Pulse2190 interactive Arrangement preroll source milestone:
+`ArrangementSeekMode::Interactive` constructs the ordinary Session runtime
+before bounded Arrangement replay; linear export-style preparation remains the
+default and unchanged. The seek request/result carry the mode so the future
+caller can require interactive eligibility explicitly. Interactive candidates
+preserve the exact prepared revision, clocks, mutable instrument history,
+release tails, and track/return effect history, remain Session-route capable,
+and can serve as predecessors for ordinary compiled graph handoff. Both modes
+refuse enabled transport loops. A prepared-revision policy query keeps analytic
+Sine/Operator instruments on direct absolute-frame evaluation while requiring
+preroll for mutable instruments and stateful track/return processors.
+
+The original high-residency interactive test overflowed the platform-default
+thread stack; a reduced held-note oracle passes on a 2 MiB test thread after
+sequentializing candidate/oracle construction and using one constructor call
+selected by policy. The dedicated control worker reserves 8 MiB explicitly;
+this is one per Service and is separate from the 8,388,608-frame and 32 MiB
+candidate-runtime/scratch ceilings. `size_of::<SessionPlayback>()` is 104,568
+bytes for this build target; this is not peak stack use. Pulse2195 tracks
+measuring constructor stack residency for representative 100-track/stateful
+workloads. Debug and release Service-worker verification now constructs both stateful
+track Utility and sent stateful return Utility candidates on the normal worker.
+Interactive continuation tests cover a held and an ended-gate mutable-feedback
+note against independently partitioned uninterrupted output, track and return
+filter history, Session route commands, and successor inheritance. Native UI
+admission/publication, route/Stop fencing, enabled transport loops, and measured
+100-track readiness remain open. Debug/release Service-worker checks and focused
+crate tests/Clippy pass. An ignored release profile now reuses the 100-track
+mutable fixture for both linear and interactive preroll; the interactive profile
+uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Root has not yet captured
+its release timing evidence.

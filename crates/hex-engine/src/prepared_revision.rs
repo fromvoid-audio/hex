@@ -270,6 +270,25 @@ impl PreparedRevision {
             .any(crate::Track::has_mutable_instrument)
     }
 
+    /// Whether an Arrangement seek must reconstruct stateful history instead
+    /// of using the direct absolute-frame sampler path. Built-in Sine and
+    /// Operator MIDI notes are deterministic functions of note age and gate
+    /// duration, so they can be evaluated directly at a seek destination.
+    /// Mutable Arrangement instruments and stateful track/return processors
+    /// carry history and require preroll. Return processors are checked
+    /// conservatively even when no current send reaches them.
+    pub fn arrangement_seek_requires_preroll(&self) -> bool {
+        self.arrangement
+            .tracks()
+            .iter()
+            .any(|track| track.has_mutable_instrument() || track.has_stateful_devices())
+            || self.arrangement.return_buses().iter().any(|bus| {
+                bus.device_chain
+                    .iter()
+                    .any(|device| device.definition.is_some())
+            })
+    }
+
     pub(crate) fn mutable_track_topology_matches(&self, other: &Self, track: TrackId) -> bool {
         let Some(old) = self.mutable_track_revision(track) else {
             return false;
