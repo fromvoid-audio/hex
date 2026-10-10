@@ -1139,3 +1139,15 @@ focused PCM, callback allocation and strict affected source checks; full combine
 validation is next. Pulse2204 Return-chain residual ownership remains a separate
 active change and is not included. No native acceptance, merge or new test bundle
 is claimed at this source checkpoint.
+
+## 10 October2026 — Pulse2195 playback stack evidence
+
+An opt-in isolated subprocess probe measures constructor/preroll completion
+thresholds for stateful Utility and100-track mutable/Return fixtures. Debug
+passes at2MiB and overflows at1MiB; release passes at the512KiB probe floor.
+Passing held/released PCM digests match across stack sizes and profiles. The8MiB
+production worker reservation is unchanged. Requested-stack completion is not
+peak/high-water stack measurement. Commands, raw logs, toolchain and executable
+hashes are in[the evidence](docs/playback-stack.md). Affected debug/release
+probes, strict feature-enabled engineClippy, formatting and architecture guards
+pass. No production storage/DSP/schema change.

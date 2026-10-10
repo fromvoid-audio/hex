@@ -20,3 +20,7 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 [[example]]
 name = "profile_shared_context"
 required-features = ["instrument-test-support"]
+
+[[example]]
+name = "playback_stack"
+required-features = ["instrument-test-support"]

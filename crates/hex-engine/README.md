@@ -67,6 +67,11 @@ prepared revision and the source playback is untouched. Enabled Arrangement
 transport loops are refused. This API does not inspect live route ownership,
 restore Session routes, or establish native seek/publication readiness; live
 route fencing and supersede/Stop admission remain a separate integration layer.
+Interactive Session preroll uses the same bounded replay contract with the
+dedicated seek worker's 8 MiB control stack reservation. The opt-in
+[`playback stack probe`](../../docs/playback-stack.md) records isolated
+debug/release completion thresholds for Utility and dense mutable-instrument
+fixtures; it measures requested-stack completion, not peak stack residency.
 Prepared Playback honors the
 compiled half-open loop region with bounded spans; Renderer and CLI export remain
 linear arrangement renders. Compilation never runs inside a callback.
