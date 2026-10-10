@@ -859,12 +859,16 @@ fn sounding_midi_scene_switches_at_position(
 fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
     for instrument_position in [0, 1] {
-        stateful_utility_handoff_at_position(instrument_position)?;
+        stateful_utility_handoff_at_position(instrument_position, false)?;
+        stateful_utility_handoff_at_position(instrument_position, true)?;
     }
     Ok(())
 }
 
-fn stateful_utility_handoff_at_position(instrument_position: usize) -> Result<(), Box<dyn Error>> {
+fn stateful_utility_handoff_at_position(
+    instrument_position: usize,
+    bypass_instrument: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let track = match editor.execute(Command::AddMidiTrack {
         name: "keys".into(),
@@ -899,6 +903,16 @@ fn stateful_utility_handoff_at_position(instrument_position: usize) -> Result<()
         beat: BeatTime::ZERO,
         tempo: Tempo::new(60_000_000)?,
     })?;
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected instrument slot")?
+        .id();
+    editor.execute(Command::SetDeviceBypass {
+        device: instrument,
+        bypassed: bypass_instrument,
+    })?;
     let second_project = editor.project().clone();
     let media = BTreeMap::new();
     let table = Arc::new(SineTable::new());
@@ -911,7 +925,7 @@ fn stateful_utility_handoff_at_position(instrument_position: usize) -> Result<()
     let second_revision = Arc::new(PreparedRevision::prepare(
         &second_project,
         &media,
-        table,
+        Arc::clone(&table),
         Some(first_revision.session()),
     )?);
 
@@ -940,6 +954,26 @@ fn stateful_utility_handoff_at_position(instrument_position: usize) -> Result<()
         measured_block(&mut callback, &mut output);
     }
     assert!(control.status.rejected_revision().is_none());
+
+    if bypass_instrument {
+        editor.execute(Command::SetDeviceBypass {
+            device: instrument,
+            bypassed: false,
+        })?;
+        let third_project = editor.project().clone();
+        let third_revision = Arc::new(PreparedRevision::prepare(
+            &third_project,
+            &media,
+            Arc::clone(&table),
+            Some(second_revision.session()),
+        )?);
+        let reenabled = Playback::try_from_prepared_with_session(Arc::clone(&third_revision))?;
+        control
+            .publish(reenabled)
+            .map_err(|_| "instrument re-enable publication failed")?;
+        measured_block(&mut callback, &mut output);
+        assert!(control.status.rejected_revision().is_none());
+    }
 
     // The prior graph retains completed stateful tail owners until a later
     // graph publication retires it. Callback transfer stays allocation-free;

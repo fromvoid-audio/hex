@@ -218,8 +218,14 @@ impl PreparedSessionMidiClip {
         self.instrument_enabled
     }
 
-    pub(crate) fn source_matches(&self, other: &Self) -> bool {
-        self.source_identity == other.source_identity
+    pub(crate) fn source_content_matches(&self, other: &Self) -> bool {
+        self.track == other.track && self.source_identity == other.source_identity
+    }
+
+    pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
+        self.instrument_id == other.instrument_id
+            && self.instrument_state == other.instrument_state
+            && self.instrument_enabled == other.instrument_enabled
     }
 
     pub(crate) fn occurrence(
