@@ -83,6 +83,7 @@ impl EditorView {
     }
 
     fn show_close_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>, quit: bool) {
+        self.invalidate_prepared_seek();
         self.close_prompt_open = true;
         let answer = window.prompt(
             PromptLevel::Warning,

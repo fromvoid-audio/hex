@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 impl EditorView {
     pub(super) fn recover_audio(&mut self) {
+        self.invalidate_prepared_seek();
         if self.close_prompt_open
             || self.opening_project
             || self.save_dialog_open
@@ -130,6 +131,9 @@ impl EditorView {
     }
 
     fn clear_audio_accounting(&mut self) {
+        self.service.invalidate_arrangement_seek();
+        self.prepared_seek = None;
+        self.latched_seek_intent = None;
         self.playback_candidates.clear();
         self.audible_playback = None;
         self.audio_admission.reset_audio();

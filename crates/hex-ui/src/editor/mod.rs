@@ -2,6 +2,7 @@ mod arrangement;
 mod arrangement_audio_panel;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
+mod arrangement_seek;
 mod audio_admission;
 mod bootstrap;
 mod browser;
@@ -113,6 +114,9 @@ struct PendingPlayback {
     state: Arc<ViewState>,
     playback: Playback,
     install_fresh_runtime: bool,
+    fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
+    prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
+    seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
 }
 
@@ -121,6 +125,8 @@ struct PlaybackCandidate {
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
+    prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
+    seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
 }
 
@@ -416,6 +422,9 @@ pub(super) struct EditorView {
     audible_playback: Option<PlaybackCandidate>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
+    prepared_seek: Option<arrangement_seek::PendingSeek>,
+    latched_seek_intent: Option<arrangement_seek::SeekIntent>,
+    retired_seek_result: Option<hex_session::arrangement_seek::ArrangementSeekResult>,
     applied_project_revision: Option<u64>,
     observed_rejected_action: u64,
     observed_rejected_revision: u64,
@@ -676,6 +685,9 @@ impl EditorView {
             audible_playback: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
+            prepared_seek: None,
+            latched_seek_intent: None,
+            retired_seek_result: None,
             applied_project_revision: None,
             observed_rejected_action: 0,
             observed_rejected_revision: 0,
@@ -811,11 +823,18 @@ impl EditorView {
                 .playing
                 .load(std::sync::atomic::Ordering::Acquire)
         });
-        let playing = self.play_intent.desired_playing(device_playing);
-        let command = if playing {
-            PlaybackCommand::Pause
-        } else {
-            PlaybackCommand::PlayFrom(self.playback_start_frame())
+        let start_frame = self.playback_start_frame();
+        let command = match self.play_toggle_action(device_playing, start_frame) {
+            arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
+            arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
+            arrangement_seek::ToggleAction::PreparedPlayFrom(frame) => {
+                self.request_prepared_seek(frame, true);
+                return;
+            }
+            arrangement_seek::ToggleAction::Unavailable => {
+                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                return;
+            }
         };
         #[cfg(test)]
         {
