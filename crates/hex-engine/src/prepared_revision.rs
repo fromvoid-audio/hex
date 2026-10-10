@@ -43,6 +43,20 @@ impl PreparedRevision {
             sine_table,
             previous_session,
         )?;
+        let midi_bank_bytes = arrangement
+            .midi_note_bank_storage_bytes()?
+            .checked_add(session.midi_note_bank_storage_bytes())
+            .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
+        let midi_bank_references = arrangement
+            .midi_note_sampler_reference_count()?
+            .checked_add(session.midi_note_bank_reference_count())
+            .ok_or(Invalid(
+                "complete revision midi bank reference count overflow",
+            ))?;
+        crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
+            midi_bank_bytes,
+            midi_bank_references,
+        )?;
         Ok(Self {
             arrangement: Arc::new(arrangement),
             session: Arc::new(session),
@@ -73,6 +87,20 @@ impl PreparedRevision {
             expected_generation,
             sine_table,
             previous_session,
+        )?;
+        let midi_bank_bytes = arrangement
+            .midi_note_bank_storage_bytes()?
+            .checked_add(session.midi_note_bank_storage_bytes())
+            .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
+        let midi_bank_references = arrangement
+            .midi_note_sampler_reference_count()?
+            .checked_add(session.midi_note_bank_reference_count())
+            .ok_or(Invalid(
+                "complete revision midi bank reference count overflow",
+            ))?;
+        crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
+            midi_bank_bytes,
+            midi_bank_references,
         )?;
         Ok(Self {
             arrangement: Arc::new(arrangement),

@@ -295,7 +295,7 @@ mod tests {
         gate_end: u64,
         release: u64,
         note: NoteId,
-        voice: PreparedAnalyticNote,
+        _voice: PreparedAnalyticNote,
     ) -> VoiceSpan {
         VoiceSpan {
             start,
@@ -305,7 +305,7 @@ mod tests {
             pitch: 60,
             channel: 0,
             velocity: 100,
-            voice,
+            sampler_index: 0,
         }
     }
 

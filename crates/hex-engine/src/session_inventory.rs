@@ -20,6 +20,7 @@ struct PreparedTrackInstrumentConfig {
     device_id: Option<DeviceId>,
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
+    note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
 }
 
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
@@ -248,6 +249,8 @@ pub struct PreparedSessionInventory {
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
+    midi_note_bank_storage_bytes: usize,
+    midi_note_bank_reference_count: usize,
 }
 
 impl std::fmt::Debug for PreparedSessionInventory {
@@ -358,6 +361,7 @@ impl PreparedSessionInventory {
         instrument_configs
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| crate::Invalid("could not reserve Session instrument configuration"))?;
+        let mut instrument_track_indices = BTreeMap::new();
         for track in project.tracks() {
             let slot = track.instrument();
             let config = slot
@@ -373,7 +377,9 @@ impl PreparedSessionInventory {
                 device_id: slot.map(|device| device.id()),
                 state: slot.map(|device| device.state().clone()),
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
+                note_bank: None,
             });
+            instrument_track_indices.insert(track.id(), instrument_configs.len() - 1);
         }
         let can_reuse = previous.is_some_and(|old| {
             Arc::ptr_eq(&old.sine_table, &sine_table)
@@ -381,6 +387,195 @@ impl PreparedSessionInventory {
                 && old.timing.sample_rate() == project.sample_rate()
                 && old.source_admission_max_micro_bpm == source_admission_max_micro_bpm
         });
+        let can_reuse_note_bank =
+            previous.is_some_and(|old| old.timing.sample_rate() == project.sample_rate());
+
+        let mut current_midi_counts = Vec::new();
+        current_midi_counts
+            .try_reserve_exact(instrument_configs.len())
+            .map_err(|_| crate::Invalid("could not reserve Session MIDI track counts"))?;
+        current_midi_counts.resize(instrument_configs.len(), 0_usize);
+        let mut unchanged_sources = Vec::new();
+        unchanged_sources
+            .try_reserve_exact(instrument_configs.len())
+            .map_err(|_| crate::Invalid("could not reserve Session source reuse flags"))?;
+        unchanged_sources.resize(instrument_configs.len(), can_reuse);
+        for cell in project.session_cells() {
+            let SessionCellContent::Midi(clip) = cell.content() else {
+                continue;
+            };
+            let track_index = instrument_track_indices
+                .get(&cell.track())
+                .copied()
+                .ok_or(crate::Invalid("Session MIDI track is missing"))?;
+            let count = current_midi_counts
+                .get_mut(track_index)
+                .ok_or(crate::Invalid("Session MIDI track index is invalid"))?;
+            *count = count
+                .checked_add(1)
+                .ok_or(crate::Invalid("Session MIDI clip count overflow"))?;
+            let config = instrument_configs
+                .get(track_index)
+                .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
+            let enabled = config.config.is_some() && !config.bypassed;
+            let source_unchanged = previous
+                .and_then(|old| old.midi_clip(clip.id()))
+                .is_some_and(|old| {
+                    old.track == cell.track()
+                        && old.source_identity == clip.source_identity()
+                        && old.instrument_id == config.device_id
+                        && old.instrument_state == config.state
+                        && old.instrument_enabled == enabled
+                });
+            if !source_unchanged {
+                *unchanged_sources
+                    .get_mut(track_index)
+                    .ok_or(crate::Invalid("Session source reuse index is invalid"))? = false;
+            }
+        }
+        let mut previous_midi_counts = Vec::new();
+        previous_midi_counts
+            .try_reserve_exact(instrument_configs.len())
+            .map_err(|_| crate::Invalid("could not reserve previous Session MIDI counts"))?;
+        previous_midi_counts.resize(instrument_configs.len(), 0_usize);
+        if let Some(previous) = previous {
+            for clip in &previous.midi_clips {
+                if let Some(index) = instrument_track_indices.get(&clip.track).copied() {
+                    let count = previous_midi_counts
+                        .get_mut(index)
+                        .ok_or(crate::Invalid("previous Session MIDI index is invalid"))?;
+                    *count = count
+                        .checked_add(1)
+                        .ok_or(crate::Invalid("previous Session MIDI count overflow"))?;
+                }
+            }
+        }
+        for index in 0..instrument_configs.len() {
+            if current_midi_counts.get(index) != previous_midi_counts.get(index) {
+                *unchanged_sources
+                    .get_mut(index)
+                    .ok_or(crate::Invalid("Session source reuse index is invalid"))? = false;
+            }
+        }
+
+        let mut note_keys_by_track = Vec::new();
+        note_keys_by_track
+            .try_reserve_exact(instrument_configs.len())
+            .map_err(|_| crate::Invalid("could not reserve Session note bank index"))?;
+        note_keys_by_track.resize_with(instrument_configs.len(), || {
+            crate::midi_note_bank::PreparedMidiNoteBank::empty_keys()
+        });
+        let mut session_note_key_count = 0_usize;
+        for cell in project.session_cells() {
+            let SessionCellContent::Midi(clip) = cell.content() else {
+                continue;
+            };
+            let track_index = instrument_track_indices
+                .get(&cell.track())
+                .copied()
+                .ok_or(crate::Invalid("Session MIDI track is missing"))?;
+            session_note_key_count = session_note_key_count
+                .checked_add(clip.source().notes().len())
+                .ok_or(crate::Invalid("Session MIDI note bank key count overflow"))?;
+            if session_note_key_count > hex_project::MAX_NOTES {
+                return Err(crate::Invalid("Session MIDI note bank key limit reached"));
+            }
+            if unchanged_sources
+                .get(track_index)
+                .copied()
+                .ok_or(crate::Invalid("Session source reuse index is invalid"))?
+            {
+                continue;
+            }
+            let keys = note_keys_by_track
+                .get_mut(track_index)
+                .ok_or(crate::Invalid("Session MIDI track index is invalid"))?;
+            for note in clip.source().notes() {
+                if !super::midi_template::session_source_note_has_occurrence(clip.source(), note) {
+                    continue;
+                }
+                crate::midi_note_bank::PreparedMidiNoteBank::add_key(
+                    keys,
+                    note.pitch(),
+                    note.velocity(),
+                )?;
+            }
+        }
+        for (index, (config, mut keys)) in instrument_configs
+            .iter_mut()
+            .zip(note_keys_by_track)
+            .enumerate()
+        {
+            let enabled = config.config.is_some() && !config.bypassed;
+            if unchanged_sources
+                .get(index)
+                .copied()
+                .ok_or(crate::Invalid("Session source reuse index is invalid"))?
+            {
+                let previous_bank = can_reuse_note_bank
+                    .then_some(previous)
+                    .flatten()
+                    .and_then(|old| {
+                        old.midi_clips.iter().find(|clip| {
+                            clip.track == config.track
+                                && clip.instrument_id == config.device_id
+                                && clip.instrument_state == config.state
+                                && clip.instrument_enabled == enabled
+                        })
+                    })
+                    .map(|clip| Arc::clone(clip.instrument.note_bank()));
+                config.note_bank = Some(
+                    previous_bank
+                        .unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+                );
+                continue;
+            }
+            if keys.is_empty() {
+                config.note_bank = Some(crate::midi_note_bank::PreparedMidiNoteBank::empty());
+                continue;
+            }
+            let previous_bank = can_reuse_note_bank
+                .then(|| {
+                    previous.and_then(|old| {
+                        old.midi_clips
+                            .iter()
+                            .find(|clip| {
+                                clip.track == config.track
+                                    && clip.instrument_id == config.device_id
+                                    && clip.instrument_state == config.state
+                                    && clip.instrument_enabled == enabled
+                            })
+                            .map(|clip| Arc::clone(clip.instrument.note_bank()))
+                    })
+                })
+                .flatten();
+            let bank = if enabled {
+                crate::midi_note_bank::PreparedMidiNoteBank::prepare(
+                    &mut keys,
+                    config.config.as_deref().ok_or(crate::Invalid(
+                        "Session instrument configuration is missing",
+                    ))?,
+                    previous_bank.as_ref(),
+                )?
+            } else {
+                crate::midi_note_bank::prepare_silent(&mut keys, previous_bank.as_ref())?
+            };
+            config.note_bank = Some(bank);
+        }
+        let mut midi_bank_bytes = 0_usize;
+        for config in &instrument_configs {
+            if let Some(bank) = &config.note_bank {
+                midi_bank_bytes = midi_bank_bytes
+                    .checked_add(bank.storage_bytes()?)
+                    .ok_or(crate::Invalid("Session MIDI note bank byte count overflow"))?;
+            }
+        }
+        crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
+            midi_bank_bytes,
+            0,
+            crate::midi_note_bank::MAX_SESSION_NOTE_BANK_REFERENCES,
+        )?;
+        let mut midi_bank_references = 0_usize;
 
         let mut scenes = Vec::new();
         scenes
@@ -444,7 +639,7 @@ impl PreparedSessionInventory {
                 SessionCellContent::Stop => PreparedSessionCellContent::Stop,
                 SessionCellContent::Midi(clip) => {
                     let source_identity = clip.source_identity();
-                    let (instrument_id, instrument_state, instrument_enabled, instrument_config) =
+                    let (instrument_id, instrument_state, instrument_enabled, instrument_bank) =
                         instrument_configs
                             .iter()
                             .find(|config| config.track == cell.track())
@@ -453,7 +648,7 @@ impl PreparedSessionInventory {
                                     config.device_id,
                                     config.state.clone(),
                                     config.config.is_some() && !config.bypassed,
-                                    config.config.as_deref(),
+                                    config.note_bank.as_ref(),
                                 )
                             })
                             .ok_or(crate::Invalid("Session cell track is missing"))?;
@@ -467,14 +662,10 @@ impl PreparedSessionInventory {
                                 && old.instrument_state == instrument_state
                                 && old.instrument_enabled == instrument_enabled
                         });
-                    let (source, instrument, work) = if let Some(old) = cached {
-                        (
-                            Arc::clone(&old.source),
-                            Arc::clone(&old.instrument),
-                            old.work,
-                        )
+                    let source = if let Some(old) = cached {
+                        Arc::clone(&old.source)
                     } else {
-                        let source = Arc::new(
+                        Arc::new(
                             PreparedMidiSourceTemplate::prepare_source(
                                 cell.track(),
                                 clip.id(),
@@ -482,22 +673,47 @@ impl PreparedSessionInventory {
                                 &source_timing,
                             )
                             .map_err(template_error)?,
-                        );
-                        let instrument = Arc::new(if instrument_enabled {
-                            PreparedMidiInstrumentTemplate::prepare_with_instrument(
-                                &source,
-                                instrument_config.ok_or(crate::Invalid(
-                                    "Session instrument configuration is missing",
-                                ))?,
-                            )
-                            .map_err(template_error)?
-                        } else {
-                            PreparedMidiInstrumentTemplate::prepare_silent(&source)
-                                .map_err(template_error)?
-                        });
-                        let work = work_for(&source, &instrument)?;
-                        (source, instrument, work)
+                        )
                     };
+                    let bank = instrument_bank
+                        .ok_or(crate::Invalid("Session MIDI note bank is missing"))?;
+                    let instrument = if let Some(old) =
+                        cached.filter(|old| Arc::ptr_eq(old.instrument.note_bank(), bank))
+                    {
+                        Arc::clone(&old.instrument)
+                    } else {
+                        Arc::new(
+                            PreparedMidiInstrumentTemplate::prepare_with_bank(
+                                &source,
+                                Arc::clone(bank),
+                            )
+                            .map_err(template_error)?,
+                        )
+                    };
+                    let work = if let Some(old) =
+                        cached.filter(|old| Arc::ptr_eq(old.instrument.note_bank(), bank))
+                    {
+                        old.work
+                    } else {
+                        work_for(&source, &instrument)?
+                    };
+                    midi_bank_references = midi_bank_references
+                        .checked_add(instrument.index_reference_count().map_err(template_error)?)
+                        .ok_or(crate::Invalid(
+                            "Session MIDI note bank reference count overflow",
+                        ))?;
+                    midi_bank_bytes = midi_bank_bytes
+                        .checked_add(std::mem::size_of::<
+                            Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+                        >())
+                        .ok_or(crate::Invalid(
+                            "Session MIDI bank handle byte count overflow",
+                        ))?;
+                    crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
+                        midi_bank_bytes,
+                        midi_bank_references,
+                        crate::midi_note_bank::MAX_SESSION_NOTE_BANK_REFERENCES,
+                    )?;
                     let track_index = track_indices
                         .iter()
                         .find(|(id, _)| *id == cell.track())
@@ -640,6 +856,8 @@ impl PreparedSessionInventory {
             audio_clips,
             work,
             contains_streamed_sources,
+            midi_note_bank_storage_bytes: midi_bank_bytes,
+            midi_note_bank_reference_count: midi_bank_references,
         })
     }
 
@@ -724,6 +942,16 @@ impl PreparedSessionInventory {
 
     pub fn contains_streamed_sources(&self) -> bool {
         self.contains_streamed_sources
+    }
+
+    /// Accounted bytes for shared note banks and per-template Arc handles.
+    pub fn midi_note_bank_storage_bytes(&self) -> usize {
+        self.midi_note_bank_storage_bytes
+    }
+
+    /// Number of compact indices stored by all Session source templates.
+    pub fn midi_note_bank_reference_count(&self) -> usize {
+        self.midi_note_bank_reference_count
     }
 }
 
@@ -1008,6 +1236,15 @@ mod tests {
         assert_eq!(initial.work().query_onsets, 7);
         assert_eq!(initial.work().span_hits, 14);
         assert_eq!(initial.work().query_visit_ceiling, 32_768);
+        let first_bank = initial.midi_clip(first).unwrap().instrument.note_bank();
+        assert!(Arc::ptr_eq(
+            first_bank,
+            initial.midi_clip(alternate).unwrap().instrument.note_bank()
+        ));
+        assert!(!Arc::ptr_eq(
+            first_bank,
+            initial.midi_clip(third).unwrap().instrument.note_bank()
+        ));
         assert_eq!(
             initial
                 .midi_clips()
@@ -1045,8 +1282,12 @@ mod tests {
             .expect("reused source")
             .source_template();
         assert!(std::ptr::eq(old_template, reused_template));
+        assert!(Arc::ptr_eq(
+            initial.midi_clip(first).unwrap().instrument.note_bank(),
+            reused.midi_clip(alternate).unwrap().instrument.note_bank()
+        ));
 
-        add_note(&mut editor, first, 63);
+        add_note(&mut editor, first, 70);
         let detached =
             PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&reused))
                 .expect("prepare changed source");
@@ -1055,6 +1296,10 @@ mod tests {
             .expect("changed source")
             .source_template();
         assert!(!std::ptr::eq(reused_template, changed_template));
+        assert!(!Arc::ptr_eq(
+            reused.midi_clip(first).unwrap().instrument.note_bank(),
+            detached.midi_clip(first).unwrap().instrument.note_bank()
+        ));
 
         editor
             .execute(Command::SetTempoPoint {

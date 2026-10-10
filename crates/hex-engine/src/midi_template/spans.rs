@@ -31,7 +31,7 @@ struct VoiceSpan {
     pitch: u8,
     channel: u8,
     velocity: u8,
-    voice: PreparedAnalyticNote,
+    sampler_index: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +65,7 @@ pub struct PreparedMidiInstrumentTemplate {
     max_span_hits: usize,
     max_query_visits: usize,
     max_period_windows: usize,
+    bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
 }
 
 struct SilentInstrument;
@@ -427,22 +428,50 @@ impl PreparedMidiInstrumentTemplate {
         source: &PreparedMidiSourceTemplate,
         instrument: &dyn PreparedNativeInstrument,
     ) -> Result<Self, MidiTemplateError> {
+        let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
+        for span in source.intro_spans.iter().chain(&source.repeat_spans) {
+            crate::midi_note_bank::PreparedMidiNoteBank::add_key(
+                &mut keys,
+                span.pitch,
+                span.velocity,
+            )
+            .map_err(|_| MidiTemplateError::InvalidSource("invalid midi note bank key"))?;
+        }
+        let bank =
+            crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None)
+                .map_err(|error| {
+                    if error.0.contains("reserve") {
+                        MidiTemplateError::Allocation
+                    } else {
+                        MidiTemplateError::InvalidSource(error.0)
+                    }
+                })?;
+        Self::prepare_with_bank(source, bank)
+    }
+
+    /// Prepare source intervals by resolving compact note-bank indices. The
+    /// caller owns a bank scoped to this track, state and sample rate.
+    pub(crate) fn prepare_with_bank(
+        source: &PreparedMidiSourceTemplate,
+        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+    ) -> Result<Self, MidiTemplateError> {
         let intro = prepare_spans(
             &source.intro_spans,
             source.sample_rate,
             source.admitted_max_micro_bpm,
-            instrument,
+            &bank,
         )?;
         let repeats = prepare_spans(
             &source.repeat_spans,
             source.sample_rate,
             source.admitted_max_micro_bpm,
-            instrument,
+            &bank,
         )?;
         let release_frames = intro
             .iter()
             .chain(&repeats)
-            .map(|span| span.voice.release_frames())
+            .filter_map(|span| bank.sampler(span.sampler_index))
+            .map(PreparedAnalyticNote::release_frames)
             .max()
             .unwrap_or_else(|| u64::from(source.sample_rate / 20).max(1));
         let release_raw = release_window_raw(
@@ -527,6 +556,7 @@ impl PreparedMidiInstrumentTemplate {
                 0
             },
             max_period_windows,
+            bank,
         })
     }
 
@@ -537,6 +567,17 @@ impl PreparedMidiInstrumentTemplate {
 
     pub fn max_active_voices(&self) -> usize {
         self.max_active_voices
+    }
+
+    pub(crate) fn note_bank(&self) -> &std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank> {
+        &self.bank
+    }
+
+    pub(crate) fn index_reference_count(&self) -> Result<usize, MidiTemplateError> {
+        self.intro
+            .len()
+            .checked_add(self.repeats.len())
+            .ok_or(MidiTemplateError::ArithmeticOverflow)
     }
 
     pub fn max_query_onsets(&self) -> usize {
@@ -955,8 +996,14 @@ impl PreparedMidiInstrumentTemplate {
             .timing
             .beat_to_frame(BeatTime::from_raw(gate_raw))
             .map_err(|_| MidiTemplateError::TempoConversion)?;
+        let voice =
+            self.bank
+                .sampler(span.sampler_index)
+                .ok_or(MidiTemplateError::InvalidSource(
+                    "midi note sampler index is invalid",
+                ))?;
         let end = gate_end
-            .checked_add(span.voice.release_frames())
+            .checked_add(voice.release_frames())
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         if onset >= context.end_frame || end <= context.start_frame {
             return Ok(());
@@ -977,7 +1024,7 @@ impl PreparedMidiInstrumentTemplate {
             clip: self.clip,
             note: span.note,
             iteration,
-            voice: span.voice,
+            voice,
         });
         context.buffer.len += 1;
         Ok(())
@@ -998,7 +1045,7 @@ fn prepare_spans(
     source: &[SourceSpan],
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
-    instrument: &dyn PreparedNativeInstrument,
+    bank: &crate::midi_note_bank::PreparedMidiNoteBank,
 ) -> Result<Vec<VoiceSpan>, MidiTemplateError> {
     if source.len() > MIDI_SPAN_MAX_SOURCE_NOTES {
         return Err(MidiTemplateError::TooManySourceNotes);
@@ -1008,11 +1055,16 @@ fn prepare_spans(
         .try_reserve_exact(source.len())
         .map_err(|_| MidiTemplateError::Allocation)?;
     for span in source {
-        let voice = instrument
-            .prepare_note(span.pitch, span.velocity)
-            .map_err(|_| {
-                MidiTemplateError::InvalidSource("midi note cannot be prepared by its instrument")
-            })?;
+        let sampler_index =
+            bank.index(span.pitch, span.velocity)
+                .ok_or(MidiTemplateError::InvalidSource(
+                    "midi note sampler is missing from bank",
+                ))?;
+        let voice = bank
+            .sampler(sampler_index)
+            .ok_or(MidiTemplateError::InvalidSource(
+                "midi note sampler index is invalid",
+            ))?;
         let release_raw =
             release_window_raw(voice.release_frames(), sample_rate, admitted_max_micro_bpm)?;
         let raw_end = u128::from(span.gate_end)
@@ -1026,7 +1078,7 @@ fn prepare_spans(
             pitch: span.pitch,
             channel: span.channel,
             velocity: span.velocity,
-            voice,
+            sampler_index,
         });
     }
     Ok(result)
@@ -1117,4 +1169,55 @@ fn require_period_query_bound(
         return Err(MidiTemplateError::LoopPeriodTooShortForSpanAdmission);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod note_bank_lifetime_tests {
+    use super::*;
+    use crate::midi_note_bank::PreparedMidiNoteBank;
+    use std::sync::{Arc, Weak};
+
+    struct TestInstrument;
+
+    impl PreparedNativeInstrument for TestInstrument {
+        fn prepare_note(
+            &self,
+            _pitch: u8,
+            _velocity: u8,
+        ) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+            Ok(PreparedAnalyticNote::new(
+                [0.25_f32.to_bits() as u64, 0, 0],
+                4,
+                test_sample,
+            ))
+        }
+    }
+
+    fn test_sample(
+        payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+        age: u64,
+        gate: u64,
+        release: u64,
+    ) -> [f32; 2] {
+        if age < gate.saturating_add(release) {
+            [f32::from_bits(payload[0] as u32), -0.5]
+        } else {
+            [0.0; 2]
+        }
+    }
+
+    #[test]
+    fn copied_release_voice_does_not_retain_its_note_bank() {
+        let mut keys = PreparedMidiNoteBank::empty_keys();
+        PreparedMidiNoteBank::add_key(&mut keys, 60, 100).unwrap();
+        let bank = PreparedMidiNoteBank::prepare(&mut keys, &TestInstrument, None).unwrap();
+        let sampler = bank.sampler(bank.index(60, 100).unwrap()).unwrap();
+        let weak: Weak<PreparedMidiNoteBank> = Arc::downgrade(&bank);
+        let release = MidiReleaseVoice::from_finite_span(0, 2, 6, sampler, 2, 2)
+            .unwrap()
+            .unwrap();
+        drop(bank);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(release.sample_at(3), Some([0.25, -0.5]));
+    }
 }

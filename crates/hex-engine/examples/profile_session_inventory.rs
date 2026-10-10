@@ -1,5 +1,6 @@
 //! Canonical Session control preparation; no audio callback or UI is exercised.
 use hex_engine::{PreparedRevision, PreparedSessionInventory};
+use hex_lattice::PreparedAnalyticNote;
 use hex_project::{
     BeatTime, Command, Created, Editor, Meter, MeterPoint, MidiNoteSnapshot, MidiSourceSnapshot,
     Project, SceneSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
@@ -142,6 +143,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         notes
     );
     println!("structural reachable envelope: {:?}", previous.work());
+    let sampler_references = previous.midi_note_bank_reference_count();
+    let old_sampler_bytes = sampler_references
+        .checked_mul(std::mem::size_of::<PreparedAnalyticNote>())
+        .ok_or("old sampler byte estimate overflow")?;
+    let indexed_bytes = previous
+        .midi_note_bank_storage_bytes()
+        .checked_add(
+            sampler_references
+                .checked_mul(std::mem::size_of::<u16>())
+                .ok_or("indexed sampler reference byte count overflow")?,
+        )
+        .ok_or("indexed sampler byte estimate overflow")?;
+    println!(
+        "note storage estimate: refs={} indexed_bytes={} previous_inline_sampler_bytes={} (bank entries include keys, owner and per-template handles)",
+        sampler_references, indexed_bytes, old_sampler_bytes
+    );
     let mut times = Vec::with_capacity(RUNS);
     for _ in 0..RUNS {
         let started = Instant::now();
