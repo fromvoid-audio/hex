@@ -1,4 +1,4 @@
-//! Fixed tuning is prepared before admission; callback sampling and seek stay bounded.
+//! Fixed tuning and velocity sensitivity prepare before admission; callback sampling and seek stay bounded.
 #![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
@@ -11,7 +11,7 @@ use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 #[test]
-fn fixed_operator_render_seek_and_shutdown_allocate_and_deallocate_nothing_on_callback()
+fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -43,6 +43,7 @@ fn fixed_operator_render_seek_and_shutdown_allocate_and_deallocate_nothing_on_ca
         (64, ParameterValue::Float(2.0)),
         (62, ParameterValue::Bool(true)),
         (57, ParameterValue::Choice(1)),
+        (74, ParameterValue::Float(0.75)),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,
@@ -66,7 +67,7 @@ fn fixed_operator_render_seek_and_shutdown_allocate_and_deallocate_nothing_on_ca
         duration: BeatTime::from_quarters(4)?,
         pitch: 60,
         channel: 0,
-        velocity: 127,
+        velocity: 64,
     })?;
     let graph = Arc::new(PreparedRevision::prepare(
         editor.project(),

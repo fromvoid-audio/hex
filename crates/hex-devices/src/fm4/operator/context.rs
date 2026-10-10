@@ -17,6 +17,7 @@ pub struct PreparedOperatorConfiguration {
     configuration: PreparedFmConfiguration,
     envelopes: PreparedOperatorEnvelopes,
     waveforms: [OperatorWaveform; OPERATORS],
+    amplitude_velocity: [f32; OPERATORS],
     waveform_bank: Option<&'static OperatorWaveformBank>,
 }
 
@@ -27,6 +28,8 @@ pub struct PreparedOperatorNote {
     steps: [u64; OPERATORS],
     velocity: f64,
     harmonic_caps: u32,
+    amplitude_velocity_scales: [f32; OPERATORS],
+    amplitude_velocity_active: bool,
 }
 
 impl PreparedOperatorConfiguration {
@@ -73,6 +76,33 @@ impl PreparedOperatorConfiguration {
         waveforms: [OperatorWaveform; OPERATORS],
         tuning: [OperatorTuning; OPERATORS],
     ) -> Result<Self, Invalid> {
+        Self::new_with_tuning_and_amplitude_velocity(
+            sample_rate,
+            oscillators,
+            routing,
+            envelopes,
+            waveforms,
+            tuning,
+            [0.0; OPERATORS],
+        )
+    }
+
+    /// Prepare per-oscillator amplitude response to note-on velocity.
+    pub fn new_with_tuning_and_amplitude_velocity(
+        sample_rate: u32,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelopes: [OperatorEnvelope; OPERATORS],
+        waveforms: [OperatorWaveform; OPERATORS],
+        tuning: [OperatorTuning; OPERATORS],
+        amplitude_velocity: [f32; OPERATORS],
+    ) -> Result<Self, Invalid> {
+        if amplitude_velocity
+            .iter()
+            .any(|amount| !amount.is_finite() || !(0.0..=1.0).contains(amount))
+        {
+            return Err(Invalid("invalid operator amplitude velocity amount"));
+        }
         for mode in tuning {
             mode.validate()?;
         }
@@ -95,6 +125,7 @@ impl PreparedOperatorConfiguration {
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             envelopes,
             waveforms,
+            amplitude_velocity,
             waveform_bank,
         })
     }
@@ -114,10 +145,14 @@ impl PreparedOperatorConfiguration {
                 ))?;
             }
         }
+        let amplitude_velocity_scales =
+            super::amplitude_velocity_scales(self.amplitude_velocity, f64::from(velocity) / 127.0);
         Ok(PreparedOperatorNote {
             steps,
             velocity: f64::from(velocity) / 127.0,
             harmonic_caps: pack_caps(caps),
+            amplitude_velocity_active: amplitude_velocity_scales != [1.0; OPERATORS],
+            amplitude_velocity_scales,
         })
     }
 
@@ -133,9 +168,12 @@ impl PreparedOperatorConfiguration {
         age_frames: u64,
         gate_frames: u64,
     ) -> f32 {
-        let amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return 0.0;
+        }
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
         }
         let routed = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
             // Preserve the previous arithmetic and lookup path bit-for-bit.
@@ -181,7 +219,18 @@ impl PreparedOperatorNote {
         let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
         payload[..OPERATORS].copy_from_slice(&self.steps);
         payload[OPERATORS] = self.velocity.to_bits();
-        payload[5] = u64::from(self.harmonic_caps);
+        payload[5] = u64::from(
+            self.harmonic_caps
+                | if self.amplitude_velocity_active {
+                    1 << 31
+                } else {
+                    0
+                },
+        );
+        payload[6] = u64::from(self.amplitude_velocity_scales[0].to_bits())
+            | (u64::from(self.amplitude_velocity_scales[1].to_bits()) << 32);
+        payload[7] = u64::from(self.amplitude_velocity_scales[2].to_bits())
+            | (u64::from(self.amplitude_velocity_scales[3].to_bits()) << 32);
         payload
     }
 
@@ -191,11 +240,10 @@ impl PreparedOperatorNote {
     pub(crate) fn from_shared_payload(
         payload: &[u64; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
     ) -> Option<Self> {
-        if payload[6..].iter().any(|word| *word != 0) {
-            return None;
-        }
         let steps = std::array::from_fn(|index| payload[index]);
-        let harmonic_caps = u32::try_from(payload[5]).ok()?;
+        let encoded_caps = u32::try_from(payload[5]).ok()?;
+        let amplitude_velocity_active = encoded_caps & (1 << 31) != 0;
+        let harmonic_caps = encoded_caps & !(1 << 31);
         if steps.contains(&0) || unpack_caps(harmonic_caps).iter().any(|cap| *cap >= 10) {
             return None;
         }
@@ -203,10 +251,34 @@ impl PreparedOperatorNote {
         if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return None;
         }
+        let amplitude_velocity_scales =
+            if payload[6] == 0 && payload[7] == 0 && !amplitude_velocity_active {
+                // Earlier Operator contexts left these two words reserved-zero.
+                [1.0; OPERATORS]
+            } else {
+                let unpack = |word: u64| {
+                    [
+                        f32::from_bits(word as u32),
+                        f32::from_bits((word >> 32) as u32),
+                    ]
+                };
+                let [a, b] = unpack(payload[6]);
+                let [c, d] = unpack(payload[7]);
+                [a, b, c, d]
+            };
+        if amplitude_velocity_scales
+            .iter()
+            .any(|scale| !scale.is_finite() || !(0.0..=1.0).contains(scale))
+            || amplitude_velocity_active != (amplitude_velocity_scales != [1.0; OPERATORS])
+        {
+            return None;
+        }
         Some(Self {
             steps,
             velocity,
             harmonic_caps,
+            amplitude_velocity_active,
+            amplitude_velocity_scales,
         })
     }
 }

@@ -1297,3 +1297,20 @@ remain intact. Pulse2220 is ready_for_review; attachment registration reached
 CI or automatic merge. Pulse2222 per-oscillator amplitude velocity sensitivity
 is active separately and absent from this app. Full Operator/reference parity,
 plugin hosting, PDC and physical deadline acceptance remain open.
+
+## 10 October 2026 — Pulse2222 oscillator velocity controls
+
+Operator adds four independently validated amplitude velocity controls before
+FM routing. Original bounded scales are prepared control-side; neutral defaults
+preserve previous response. Statev4 appends16bytes, retains v1–v3 migration and
+the v3 tuning prefix. The shared note stays8words/64bytes, including valid active
+zero scales; callback decoding retains bounded payload checks and preparing-context
+pairing without recomputing the velocity law per sample.
+
+79 device tests, strict device Clippy, generic engine-view test, active registered
+callback allocation probe and quick repository guards pass. The probe asserts
+zero total/net count/bytes. Busy-host3-run direct profiles: before median0.697s
+standalone/0.678s compact, after0.691s/0.702s; note/context/compact sizes change
+600/688/48 to624/704/64bytes. No reliable speed, adapter timing, physical deadline
+or Live numerical parity claim. Full exact-head local CI and native acceptance
+remain pending. See docs/operator-context.md for workload and raw-log provenance.

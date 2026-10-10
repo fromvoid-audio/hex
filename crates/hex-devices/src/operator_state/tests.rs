@@ -11,8 +11,8 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), 288);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 69);
+    assert_eq!(original.payload().len(), 304);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 73);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -135,6 +135,145 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
         OperatorSettings::defaults().to_state().expect("defaults"),
         original
     );
+}
+
+#[test]
+fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
+    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    state = patch(&state, parameter::oscillator_ratio(2), 2.0);
+    state = patch(&state, parameter::oscillator_level(1), 0.8);
+    state = patch(&state, parameter::oscillator_level(2), 0.7);
+    state = patch(&state, parameter::modulation(2, 1), 0.35);
+    state = patch(&state, parameter::carrier(1), 1.0);
+    for operator in 1..=2 {
+        for (field, value) in [
+            (EnvelopeField::Initial, 1.0),
+            (EnvelopeField::Peak, 1.0),
+            (EnvelopeField::Sustain, 1.0),
+            (EnvelopeField::Attack, 0.0),
+            (EnvelopeField::Decay, 0.0),
+            (EnvelopeField::Release, 0.004),
+        ] {
+            state = patch(&state, parameter::envelope(operator, field), value);
+        }
+    }
+    state = patch(&state, parameter::amplitude_velocity(1), 0.35);
+    state = patch(&state, parameter::amplitude_velocity(2), 1.0);
+
+    const RATE: u64 = 48_000;
+    const PHASE_SCALE: f64 = 18_446_744_073_709_551_616.0;
+    const RELEASE: u64 = 192;
+    let table = crate::shared_sine_table();
+    let scale = |amount: f32, velocity: u8| {
+        f64::from(1.0 - amount + amount * (f32::from(velocity) / 127.0))
+    };
+    let phase_step =
+        |frequency: f64| -> u64 { (frequency / RATE as f64 * PHASE_SCALE).round() as u64 };
+    let phase_turns = |turns: f64| -> u64 { (turns.rem_euclid(1.0) * PHASE_SCALE).round() as u64 };
+    let envelope = |age: u64, gate: u64| -> f64 {
+        if age < gate {
+            1.0
+        } else {
+            let released = age - gate;
+            if released >= RELEASE {
+                0.0
+            } else {
+                (-(11.512_925_464_970_229 * released as f64 / RELEASE as f64)).exp()
+            }
+        }
+    };
+    let expected = |age: u64, gate: u64, velocity: u8| -> f32 {
+        let env = envelope(age, gate);
+        if env == 0.0 {
+            return 0.0;
+        }
+        let op2_step = phase_step(880.0);
+        let op1_step = phase_step(440.0);
+        let modulator = f64::from(table.sample_phase(op2_step.wrapping_mul(age)))
+            * 0.7
+            * env
+            * scale(1.0, velocity);
+        let carrier_phase = op1_step
+            .wrapping_mul(age)
+            .wrapping_add(phase_turns(modulator * 0.35));
+        (f64::from(table.sample_phase(carrier_phase))
+            * 0.8
+            * env
+            * scale(0.35, velocity)
+            * (f64::from(velocity) / 127.0)) as f32
+    };
+
+    for velocity in [1, 23, 64, 100, 127] {
+        let settings = OperatorSettings::from_state(&state).expect("settings");
+        let standalone = settings
+            .prepare_note(RATE as u32, 69, velocity)
+            .expect("standalone note");
+        let configuration = settings
+            .prepare_configuration(RATE as u32)
+            .expect("configuration");
+        let compact = configuration
+            .prepare_note(69, velocity)
+            .expect("compact note");
+        let instrument = OPERATOR_METADATA
+            .prepare_instrument(&state, RATE as u32)
+            .expect("instrument");
+        let shared = instrument
+            .prepare_shared_analytic_context()
+            .expect("context capability")
+            .expect("shared context");
+        let note = shared.prepare_note(69, velocity).expect("shared note");
+        for gate in [1, 73, 191, 511] {
+            let frames = (0..gate + RELEASE + 8).collect::<Vec<_>>();
+            for block in [1, 17, 127, 256] {
+                let mut rendered = Vec::with_capacity(frames.len());
+                for partition in frames.chunks(block) {
+                    for &age in partition {
+                        let oracle = expected(age, gate, velocity);
+                        let direct = standalone.sample(crate::shared_sine_table(), age, gate);
+                        let compact_sample = configuration.sample(table, &compact, age, gate);
+                        let shared_sample = shared.sample(&note, age, gate)[0];
+                        assert_eq!(direct.to_bits(), compact_sample.to_bits());
+                        assert_eq!(direct.to_bits(), shared_sample.to_bits());
+                        assert!(
+                            (f64::from(direct) - f64::from(oracle)).abs() < 0.000_002,
+                            "velocity {velocity}, gate {gate}, age {age}: {direct} != oracle {oracle}"
+                        );
+                        rendered.push(direct.to_bits());
+                    }
+                }
+                assert_eq!(rendered.len(), frames.len());
+                assert!(
+                    rendered
+                        .iter()
+                        .zip(frames.iter())
+                        .all(|(sample, age)| *sample
+                            == standalone.sample(table, *age, gate).to_bits())
+                );
+            }
+        }
+    }
+
+    // The neutral control leaves the legacy standalone kernel bit-identical.
+    let neutral = OperatorSettings::defaults();
+    let modern = neutral.prepare_note(48_000, 60, 83).expect("neutral note");
+    let (oscillators, routing, envelopes) = neutral.kernel_parts().expect("legacy fields");
+    let legacy = PreparedOperatorFm4::new_with_tuning(
+        48_000,
+        60,
+        83,
+        oscillators,
+        routing,
+        envelopes,
+        neutral.waveforms,
+        neutral.tuning.modes().expect("tuning"),
+    )
+    .expect("legacy constructor");
+    for age in [0, 1, 11, 127, 2048, 4799, 4800, 8000] {
+        assert_eq!(
+            modern.sample(table, age, 4800).to_bits(),
+            legacy.sample(table, age, 4800).to_bits()
+        );
+    }
 }
 
 #[test]
@@ -439,7 +578,8 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
         .expect("shared context");
     assert!(context.declared_context_bytes() <= 4096);
     let note = context.prepare_note(69, 127).expect("prepared mixed note");
-    assert!(note.payload()[6..].iter().all(|word| *word == 0));
+    assert_eq!(note.payload()[6], 0x3f80_0000_3f80_0000);
+    assert_eq!(note.payload()[7], 0x3f80_0000_3f80_0000);
     assert_eq!(note.payload()[5] >> 32, 0);
     println!(
         "mixed registered context={}B",
@@ -475,6 +615,43 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
     noncanonical[5] = (noncanonical[5] & !0xff) | u64::from(selected - 1);
     let noncanonical = PreparedSharedAnalyticNote::new(noncanonical, note.release_frames());
     assert_eq!(context.sample(&noncanonical, 0, 4096), [0.0; 2]);
+
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.25, 1.25] {
+        let mut malformed = *note.payload();
+        malformed[6] = (malformed[6] & !u64::from(u32::MAX)) | u64::from(invalid.to_bits());
+        assert!(PreparedOperatorNote::from_shared_payload(&malformed).is_none());
+    }
+
+    let mut zero_scale_state = OPERATOR_METADATA.default_state().expect("defaults");
+    for operator in 1..=4 {
+        zero_scale_state = patch(
+            &zero_scale_state,
+            parameter::amplitude_velocity(operator),
+            1.0,
+        );
+    }
+    let zero_scale_context = registry
+        .prepare_instrument(&zero_scale_state, 48_000)
+        .expect("zero scale instrument")
+        .prepare_shared_analytic_context()
+        .expect("context capability")
+        .expect("shared context");
+    let prepared_zero = zero_scale_context
+        .prepare_note(69, 127)
+        .expect("prepared note");
+    let mut zero_velocity_payload = *prepared_zero.payload();
+    let zero_velocity_release = prepared_zero.release_frames();
+    zero_velocity_payload[4] = 0.0_f64.to_bits();
+    zero_velocity_payload[5] |= 1 << 31;
+    zero_velocity_payload[6] = 0;
+    zero_velocity_payload[7] = 0;
+    let zero_velocity =
+        hex_lattice::PreparedSharedAnalyticNote::new(zero_velocity_payload, zero_velocity_release);
+    assert_ne!(zero_velocity.payload()[5] & (1 << 31), 0);
+    let decoded = PreparedOperatorNote::from_shared_payload(zero_velocity.payload())
+        .expect("active all-zero scales are valid");
+    assert_eq!(decoded.into_shared_payload(), zero_velocity_payload);
+    assert_eq!(zero_scale_context.sample(&zero_velocity, 0, 4096), [0.0; 2]);
 }
 
 #[test]
@@ -522,7 +699,11 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
             1,
             original.payload().to_vec(),
         ),
-        (OPERATOR_TYPE_ID, 4, original.payload().to_vec()),
+        (
+            OPERATOR_TYPE_ID,
+            OPERATOR_STATE_VERSION + 1,
+            original.payload().to_vec(),
+        ),
         (OPERATOR_TYPE_ID, 1, original.payload()[..220].to_vec()),
         (OPERATOR_TYPE_ID, 2, vec![0; 228]),
     ] {
@@ -543,6 +724,15 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
             );
         }
     }
+    for (operator, invalid) in [(0, f32::NAN), (1, f32::INFINITY), (2, -0.001), (3, 1.001)] {
+        let mut bytes = original.payload().to_vec();
+        let offset = TUNING_PAYLOAD_BYTES + operator * size_of::<f32>();
+        bytes[offset..offset + 4].copy_from_slice(&invalid.to_le_bytes());
+        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+            .expect("opaque malformed amount");
+        assert!(OperatorSettings::from_state(&malformed).is_err());
+        assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
+    }
     let one_edge = patch(&original, parameter::modulation(1, 2), 0.5);
     assert!(
         OPERATOR_METADATA
@@ -562,7 +752,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(74),
+        ParameterId::from_static(78),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -730,7 +920,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 69);
+    assert_eq!(definition.descriptors().len(), 73);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");
@@ -749,7 +939,9 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .prepare_configuration(48_000)
         .expect("standalone oracle configuration");
     let note = context.prepare_note(69, 100).expect("compact note");
-    assert!(note.payload()[5..].iter().all(|word| *word == 0));
+    assert_eq!(note.payload()[5], 0);
+    assert_eq!(note.payload()[6], 0x3f80_0000_3f80_0000);
+    assert_eq!(note.payload()[7], 0x3f80_0000_3f80_0000);
     let table = crate::shared_sine_table();
     for gate in [1, 24_000, 48_000] {
         for age in [
