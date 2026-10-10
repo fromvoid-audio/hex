@@ -16,6 +16,9 @@ oscillator core; neither changes the registered FM4 envelope or state.
 The [Operator control codec](../../docs/operator-state.md) owns a distinct
 versioned opaque state and reusable metadata for those four envelopes. It is
 not registered for native playback yet.
+The [compact Operator kernel](../../docs/operator-context.md) prepares one
+immutable DSP configuration and40-byte notes without duplicating envelopes or
+the routing graph into each note; host admission/ownership remains separate.
 
 ## Dependencies
 

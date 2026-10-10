@@ -658,3 +658,12 @@ All54 device tests pass, including independent PCM field-binding/routing oracles
 Native registration/UI waits for Pulse2169; existing FM4 state/output stays
 unchanged. Full local CI evidence is tracked in its PR and Pulse ticket.
 See [control contract](docs/operator-state.md).
+
+Pulse2171: standalone original Operator now supports a584-byte immutable
+configuration and40-byte notes, sharing one private oscillator loop with legacy
+FM4. All57 device tests/strict Clippy pass; independent oracles and exact compact
+PCM match across routing, release, rate and query boundaries. Short paired release
+measurements show similar speed and bounded note-memory reduction, not native
+deadline proof. Host admission/retirement and native Operator remain open under
+2169/19. Full CI evidence is recorded in the focused PR/Pulse ticket.
+See [compact kernel contract](docs/operator-context.md).
