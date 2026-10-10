@@ -31,7 +31,9 @@ absolute note-relative frame positions; Utility processes caller-owned samples
 without allocation. Standalone stateful filters have validated control-prepared
 coefficients and fixed audio-owned histories. Utility version 2 exposes these
 through generic descriptors and runtime preparation; version 1 receives neutral
-filter defaults. The original sine instrument is registered through the separate
+filter defaults. Its prepared filter processors declare zero algorithmic
+buffering/lookahead delay; filter phase/group delay is separate. The original
+sine instrument is registered through the separate
 Lattice analytic contract; its table initializes on control and copied note
 samplers preserve authored age/gate semantics. See [the filter contract](../../docs/utility-filters.md).
 

@@ -49,11 +49,21 @@ pub use instrument_runtime::{
 
 /// Immutable, control-prepared configuration for one stateful native effect.
 /// Runtime construction happens before publication and is covered by the
-/// definition's checked per-instance byte declaration.
+/// definition's checked per-instance byte declaration. The optional latency
+/// declaration is algorithmic delay in frames from fixed buffering or
+/// lookahead; `None` means the latency is unknown. Filter phase/group delay,
+/// audio-interface latency and intended effect tails are not declared here.
 pub trait PreparedNativeProcessor: Send + Sync {
     fn runtime_version(&self) -> u32;
     fn declared_runtime_bytes(&self) -> usize;
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime>;
+
+    /// Return known algorithmic latency in frames; `None` means unknown.
+    /// Implementations may report zero when processing introduces no fixed
+    /// buffering or lookahead delay.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Audio-owned state with allocation-free, infallible block processing and
@@ -810,6 +820,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
+        assert_eq!(prepared.algorithmic_latency_frames(), None);
         let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
             track_id: 3,
             device_id: 9,

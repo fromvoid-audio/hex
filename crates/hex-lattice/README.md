@@ -13,7 +13,10 @@ This crate uses the Rust standard library and `hex-lattice-contract`. It defines
 immutable finite 2×2 matrices, ordered composition, and explicit memoryless
 latency metadata, plus the borrowed native-device definition registry and
 preconstructed transactional effect and instrument twins with checked compatible
-histories. Mutable instrument event batches are caller-owned and preflighted
+histories. Prepared processors report known algorithmic delay in frames or
+`None` when unknown; this describes fixed buffering/lookahead, not filter
+phase/group delay, interface latency or effect tails. Mutable instrument event
+batches are caller-owned and preflighted
 before scratch-state processing; runtime factories declare finite output-tail
 bounds and expose committed-state quiescence for later control-side retirement.
 Analytic instruments may also prepare an immutable shared context and compact

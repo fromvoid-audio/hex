@@ -76,6 +76,8 @@ claim. Stateful graph mixing/tails and device deadlines require separate evidenc
 ## runtime admission
 
 The filters now enter shared playback through registered Utility version 2 state
-and the [stateful lattice contract](stateful-lattice.md). Native listening and
+and the [stateful lattice contract](stateful-lattice.md). Their prepared native
+processors declare zero fixed buffering/lookahead latency; IIR phase/group delay
+is separate. Native listening and
 measured reference response remain open; original standalone DSP checks do not
 establish Ableton parity.
