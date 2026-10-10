@@ -1074,7 +1074,7 @@ mod tests {
         let matrix = StereoMatrix::new([[2.0, 0.0], [0.0, 2.0]]).unwrap();
         let make_chain = |bypassed| {
             NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-                track_id: 3,
+                owner: ProcessorChainOwner::Track(3),
                 device_id: 9,
                 device_type: DeviceTypeId::from_static("test.independent"),
                 matrix,
