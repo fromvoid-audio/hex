@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 # Instrumented headless tests only; never referenced by production code.
-allocation-probe = []
+allocation-probe = ["hex-engine/instrument-test-support"]
 
 [dependencies]
 hex-engine = { path = "../hex-engine" }
@@ -17,6 +17,7 @@ rtrb = "=0.3.4"
 [dev-dependencies]
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+hex-lattice = { path = "../hex-lattice" }
 allocation-counter = "=0.8.1"
 
 [lints]

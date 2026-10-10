@@ -299,6 +299,10 @@ retains that exact artifact for restore and constructs Playback from it. Capable
 native Playback uses the mixed Session kernel; unavailable optional Session
 construction keeps the finite Arrangement graph with an explicit reason.
 
+The hidden `instrument-test-support` feature exposes only a preparation wrapper
+for integration tests that inject a lattice instrument registry. It is disabled
+in ordinary builds and does not register or construct any proof instrument.
+
 `SessionPlayback` is a separate headless mixed-route kernel over one immutable
 `PreparedRevision`. It chooses one borrowed source per project-order track:
 finite Arrangement, one prepared Session MIDI clip, or silence. Sparse absent
@@ -358,6 +362,13 @@ An inherited quantized request already due at the cut keeps that frame while
 retaining its original requested beat for status; Session source phase is then
 anchored to the effective beat at the actual application frame. This handles
 shared-frame quantization plateaus as a Hex policy, not a verified Live rule.
+The test-only mutable instrument path also moves a live runtime pair and its
+occurrence ledger into a bounded old-revision tail group. That group keeps its
+old effect suffix and track mix through gate/release completion; a disabled or
+removed candidate instrument sends NoteOff at the cut. Tail exhaustion is
+preflighted with the shared release-bank and declared runtime limits. Stop
+resets active and retained mutable state, while Seek refuses a nonquiescent
+mutable tail. Effect processors do not yet declare residual-tail quiescence.
 `playback::Playback` keeps the legacy finite Arrangement constructors and export
 behavior. Its explicit prepared-with-Session constructor opts into the headless
 Session kernel; all-Arrangement PCM parity is tested across loop boundaries,

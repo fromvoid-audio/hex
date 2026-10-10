@@ -10,7 +10,9 @@ use crate::{
     Frame, PreparedRevision,
     midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
     midi_template::{MidiOccurrenceSuppression, MidiReleaseVoice, MidiSpanBuffer},
-    mutable_instrument::{MutableInstrumentTrackRuntime, MutableOnsetBuffer},
+    mutable_instrument::{
+        MutableInstrumentTail, MutableInstrumentTrackRuntime, MutableOnsetBuffer,
+    },
 };
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
@@ -262,6 +264,7 @@ pub struct SessionPlayback {
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
@@ -450,6 +453,11 @@ impl SessionPlayback {
             .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
             .map_err(|_| SessionPlaybackError::Allocation)?;
         tail_groups.resize_with(SESSION_TAIL_GROUP_CAPACITY, || None);
+        let mut tail_mutable_instruments = Vec::new();
+        tail_mutable_instruments
+            .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        tail_mutable_instruments.resize_with(SESSION_TAIL_GROUP_CAPACITY, || None);
         let mut tail_suffix_starts = Vec::new();
         tail_suffix_starts
             .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
@@ -500,6 +508,7 @@ impl SessionPlayback {
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
+            tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,

@@ -2261,12 +2261,19 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
                 * 2
                 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
                 * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+            + hex_lattice::MAX_STATEFUL_PROCESSORS
+                * std::mem::size_of::<Option<crate::mutable_instrument::MutableInstrumentTail>>()
+            + hex_lattice::MAX_STATEFUL_PROCESSORS
+                * 2
+                * MAX_SIMULTANEOUS_VOICES_PER_TRACK
+                * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
             + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
             + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
                 * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
             + std::mem::size_of::<
                 Vec<Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>>,
             >()
+            + std::mem::size_of::<Vec<Option<crate::mutable_instrument::MutableInstrumentTail>>>()
             + std::mem::size_of::<Vec<hex_lattice::NativeInstrumentEvent>>()
     );
     assert!(
@@ -2283,7 +2290,7 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
 }
 
 #[test]
-fn mutable_seek_and_handoff_refuse_live_history_then_stop_and_quiescence_allow_retry() {
+fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -2324,32 +2331,496 @@ fn mutable_seek_and_handoff_refuse_live_history_then_stop_and_quiescence_allow_r
     );
     assert_eq!(active.performance_frame(), frame_before_refusal);
 
-    let mut candidate = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut candidate_snapshot = base.snapshot();
+    candidate_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    candidate_snapshot.session.cells.clear();
+    let source_empty = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let source_empty_prepared =
+        revision_with_instrument_registry(&source_empty, Arc::clone(&table), &registry);
+    let mut candidate = SessionPlayback::new(source_empty_prepared).unwrap();
+    candidate.try_inherit_state_from(&mut active).unwrap();
+    assert!(active.mutable_instruments[0].is_none());
+    assert!(
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .any(|tail| !tail.runtime.committed_is_quiescent())
+    );
     assert_eq!(
-        candidate.try_inherit_state_from(&mut active),
+        candidate.apply(SessionPlaybackCommand::Seek(0)),
         Err(SessionPlaybackError::MutableInstrumentActive)
     );
     let mut actual_tail = [[0.0; 2]; 256];
     let mut expected_tail = [[0.0; 2]; 256];
-    active.render(&mut actual_tail).unwrap();
+    candidate.render(&mut actual_tail).unwrap();
     reference.render(&mut expected_tail).unwrap();
     assert_eq!(actual_tail, expected_tail);
-
-    candidate
-        .try_inherit_state_from(&mut active)
-        .expect("revision replacement is safe after the declared tail becomes quiet");
     assert!(
-        active.mutable_instruments[0]
-            .as_ref()
-            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .any(Option::is_some)
     );
-    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
     assert!(
-        candidate.mutable_instruments[0]
-            .as_ref()
-            .is_some_and(MutableInstrumentTrackRuntime::committed_is_quiescent)
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .all(|tail| tail.runtime.committed_is_quiescent())
     );
     candidate.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+}
+
+#[test]
+fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_suffix() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mutable_id =
+        hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let analytic_id =
+        hex_lattice_contract::DeviceTypeId::from_static("test.instrument.continuity.analytic");
+    let mutable = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: mutable_id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let analytic = ContinuityInstrumentDefinition {
+        id: analytic_id,
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 2] = [&mutable, &analytic];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+
+    let mut source = with_test_instrument(&project(0.5, 0, 1 << 24), mutable_id, 0).snapshot();
+    let neutral = UTILITY_DEFINITION.default_state().unwrap();
+    let dc_remove = UTILITY_DEFINITION
+        .patch_parameter(&neutral, parameter::DC_REMOVE, ParameterValue::Bool(true))
+        .unwrap();
+    let first_id = source.next_id;
+    source.tracks[0].devices = vec![
+        hex_project::DeviceSnapshot {
+            id: first_id,
+            bypassed: false,
+            state: neutral,
+        },
+        hex_project::DeviceSnapshot {
+            id: first_id + 1,
+            bypassed: false,
+            state: dc_remove,
+        },
+    ];
+    source.next_id += 2;
+    let midi_clips = match std::mem::replace(
+        &mut source.tracks[0].content,
+        TrackContentSnapshot::Audio(Vec::new()),
+    ) {
+        TrackContentSnapshot::Instrument(midi_clips)
+        | TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        TrackContentSnapshot::Audio(_) => panic!("fixture has Arrangement MIDI"),
+    };
+    let asset = source.next_id;
+    let audio_clip = asset + 1;
+    source.next_id += 2;
+    source.assets.push(AssetSnapshot {
+        id: asset,
+        path: "mutable-tail-input.wav".into(),
+        source_sample_rate: 48_000,
+        source_frames: 64,
+        playback_frames: 64,
+        conversion_version: hex_project::IDENTITY_CONVERSION,
+    });
+    source.tracks[0].content = TrackContentSnapshot::Hybrid {
+        audio_clips: vec![ClipSnapshot {
+            id: audio_clip,
+            asset,
+            start: 0,
+            duration: 64,
+            source_offset: 0,
+            source_length: 64,
+            looping: false,
+            source_phase: 0,
+            fade: ClipFade::neutral(64).unwrap(),
+        }],
+        midi_clips,
+    };
+    source.tracks[0].instrument_position = Some(1);
+    let old_project = legacy_project_from_snapshot(source).unwrap();
+    let asset_id = old_project.assets().next().unwrap().id();
+    let media = BTreeMap::from([(
+        asset_id,
+        crate::Audio::new(48_000, vec![[0.1, 0.03]; 64]).unwrap(),
+    )]);
+    let prepare = |project: &Project, table: Arc<hex_devices::SineTable>| {
+        Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                project, &media, table, None, &registry,
+            )
+            .unwrap(),
+        )
+    };
+    let old_revision = prepare(&old_project, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(old_revision).unwrap();
+    for playback in [&mut previous, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut prefix = [[0.0; 2]; 16];
+    let mut reference_prefix = [[0.0; 2]; 16];
+    previous.render(&mut prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+    assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    // The unchanged, enabled analytic candidate would sound the same
+    // pre-cut occurrence alongside the retained mutable owner. Refuse it
+    // atomically until mutable occurrence suppression is available.
+    let changed_source = with_test_instrument(&old_project, analytic_id, 0);
+    let changed_revision = prepare(&changed_source, Arc::clone(&table));
+    let mut refused = SessionPlayback::new(changed_revision).unwrap();
+    let previous_frame = previous.performance_frame();
+    assert_eq!(
+        refused.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(previous.performance_frame(), previous_frame);
+    assert!(
+        previous.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+
+    // A source-empty enabled analytic replacement is safe. The old held
+    // occurrence keeps its original gate and captured DC-removal suffix.
+    let mut tail_snapshot = old_project.snapshot();
+    if let TrackContentSnapshot::Hybrid {
+        audio_clips,
+        midi_clips,
+    } = &mut tail_snapshot.tracks[0].content
+    {
+        audio_clips.clear();
+        midi_clips.clear();
+    }
+    tail_snapshot.session.cells.clear();
+    let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
+    let mut tail_candidate =
+        SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
+    tail_candidate
+        .try_inherit_state_from(&mut reference)
+        .unwrap();
+
+    let mut candidate_snapshot = old_project.snapshot();
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut candidate_snapshot.tracks[0].content
+    {
+        midi_clips.clear();
+    }
+    candidate_snapshot.session.cells.clear();
+    let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
+    let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
+    let mut candidate = SessionPlayback::new(empty_revision).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    let mut actual = [[0.0; 2]; 16];
+    let mut old_tail_pcm = [[0.0; 2]; 16];
+    let mut new_audio_pcm = [[0.0; 2]; 16];
+    candidate.render(&mut actual).unwrap();
+    tail_candidate.render(&mut old_tail_pcm).unwrap();
+    let mut fresh_audio =
+        SessionPlayback::new(prepare(&candidate_source, Arc::clone(&table))).unwrap();
+    fresh_audio.apply(SessionPlaybackCommand::Seek(16)).unwrap();
+    fresh_audio.apply(SessionPlaybackCommand::Play).unwrap();
+    fresh_audio.render(&mut new_audio_pcm).unwrap();
+    for ((actual, old_tail), new_audio) in actual
+        .iter()
+        .zip(old_tail_pcm.iter())
+        .zip(new_audio_pcm.iter())
+    {
+        assert!((actual[0] - old_tail[0] - new_audio[0]).abs() <= 1.0e-6);
+        assert!((actual[1] - old_tail[1] - new_audio[1]).abs() <= 1.0e-6);
+    }
+    assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    // A retained old mutable owner also fences a later candidate that would
+    // reintroduce the still-sounding pre-cut occurrence.
+    let later_active = with_test_instrument(&old_project, analytic_id, 0);
+    let later_revision = prepare(&later_active, Arc::clone(&table));
+    let mut retained_tail_chase = SessionPlayback::new(later_revision).unwrap();
+    let tail_frame = candidate.performance_frame();
+    assert_eq!(
+        retained_tail_chase.try_inherit_state_from(&mut candidate),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(candidate.performance_frame(), tail_frame);
+    assert!(
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .any(|tail| !tail.runtime.committed_is_quiescent())
+    );
+}
+
+#[test]
+fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processing() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
+    let mut old_snapshot = base.snapshot();
+    let neutral = UTILITY_DEFINITION.default_state().unwrap();
+    let dc_remove = UTILITY_DEFINITION
+        .patch_parameter(&neutral, parameter::DC_REMOVE, ParameterValue::Bool(true))
+        .unwrap();
+    let first_id = old_snapshot.next_id;
+    old_snapshot.tracks[0].devices = vec![
+        hex_project::DeviceSnapshot {
+            id: first_id,
+            bypassed: false,
+            state: neutral,
+        },
+        hex_project::DeviceSnapshot {
+            id: first_id + 1,
+            bypassed: false,
+            state: dc_remove,
+        },
+    ];
+    old_snapshot.next_id += 2;
+    old_snapshot.tracks[0].instrument_position = Some(1);
+    let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
+    let old_revision =
+        revision_with_instrument_registry(&old_project, Arc::clone(&table), &registry);
+    let clip = old_revision.session().midi_clips()[0].id;
+    let start = || {
+        let mut playback = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+    };
+    let mut previous = start();
+    let mut reference = start();
+    let mut prefix = [[0.0; 2]; 16];
+    let mut reference_prefix = [[0.0; 2]; 16];
+    previous.render(&mut prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+
+    // Keep the instrument enabled but remove candidate source occurrences.
+    // Existing mutable voices must retain their original gate deadline.
+    let mut candidate_snapshot = old_project.snapshot();
+    candidate_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    candidate_snapshot.session.cells.clear();
+    let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let candidate_project = with_utility_filter_state_at(&candidate_project, 1, false, true);
+    let candidate_revision =
+        revision_with_instrument_registry(&candidate_project, Arc::clone(&table), &registry);
+    let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+
+    // A full preallocated tail bank refuses before either graph is mutated.
+    for slot in &mut candidate.tail_groups {
+        *slot = Some(hex_lattice::NativeRuntimeChain::empty());
+    }
+    let previous_frame = previous.performance_frame;
+    let previous_routes = previous.routes.clone();
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::ReleaseBankFull)
+    );
+    assert_eq!(previous.performance_frame, previous_frame);
+    assert_eq!(previous.routes, previous_routes);
+    assert!(
+        previous.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    for slot in &mut candidate.tail_groups {
+        *slot = None;
+    }
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(previous.mutable_instruments[0].is_none());
+    let tail_group = candidate
+        .tail_mutable_instruments
+        .iter()
+        .position(Option::is_some)
+        .unwrap();
+    assert_eq!(candidate.tail_suffix_starts[tail_group], 1);
+    assert_eq!(candidate.tail_groups[tail_group].as_ref().unwrap().len(), 2);
+
+    // Fail after the mutable tail has processed but before the captured suffix
+    // completes. The block transaction must roll its runtime back for retry.
+    candidate.tail_suffix_starts[tail_group] = usize::MAX;
+    let frame_before_failure = candidate.performance_frame;
+    let mut failed = [[1.0; 2]; 16];
+    assert_eq!(
+        candidate.render(&mut failed),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert_eq!(failed, [[0.0; 2]; 16]);
+    assert_eq!(candidate.performance_frame, frame_before_failure);
+    candidate.tail_suffix_starts[tail_group] = 1;
+
+    let mut actual = [[0.0; 2]; 16];
+    let mut expected = [[0.0; 2]; 16];
+    candidate.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
+    assert!(
+        candidate.tail_mutable_instruments[tail_group]
+            .as_ref()
+            .is_some_and(|tail| !tail.runtime.committed_is_quiescent())
+    );
+
+    // A second publication carries the same still-live old owner without
+    // recapturing or resetting its held occurrence.
+    let mut next = SessionPlayback::new(Arc::clone(&candidate.revision)).unwrap();
+    next.try_inherit_state_from(&mut candidate).unwrap();
+    let mut next_pcm = [[0.0; 2]; 16];
+    let mut reference_pcm = [[0.0; 2]; 16];
+    next.render(&mut next_pcm).unwrap();
+    reference.render(&mut reference_pcm).unwrap();
+    assert_eq!(next_pcm, reference_pcm);
+    assert!(
+        next.tail_mutable_instruments
+            .iter()
+            .flatten()
+            .any(|tail| { !tail.runtime.committed_is_quiescent() })
+    );
+}
+
+#[test]
+fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+
+    // A held occurrence is cut at the handoff frame. Compare its first release
+    // block to an independent instance of the original feedback law.
+    let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
+    let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let clip = old_revision.session().midi_clips()[0].id;
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 16];
+    previous.render(&mut prefix).unwrap();
+
+    let disabled = with_instrument_bypassed(&base, true);
+    let disabled_revision =
+        revision_with_instrument_registry(&disabled, Arc::clone(&table), &registry);
+    let mut candidate = SessionPlayback::new(disabled_revision).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    let tail_index = candidate
+        .tail_mutable_instruments
+        .iter()
+        .position(Option::is_some)
+        .unwrap();
+
+    let mut oracle = MutableFeedbackRuntime {
+        key: 0.2_f32.to_bits(),
+        level: 0.2,
+        release_frames: 8,
+        voices: [MutableFeedbackVoice::default(); 64],
+        feedback: 0.0,
+        tail_left: 0,
+    };
+    let note_on = [hex_lattice::NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 100,
+    }];
+    let mut oracle_prefix = [[0.0; 2]; 16];
+    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_on, &mut oracle_prefix);
+    let note_off = [hex_lattice::NativeInstrumentEvent::NoteOff {
+        frame_offset: 0,
+        occurrence_id: 1,
+    }];
+    let mut expected = [[0.0; 2]; 16];
+    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_off, &mut expected);
+    for frame in &mut expected {
+        frame[0] *= 0.5;
+        frame[1] *= 0.5;
+    }
+    let mut actual = [[0.0; 2]; 16];
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(
+        candidate.tail_mutable_instruments[tail_index]
+            .as_ref()
+            .is_some_and(|tail| tail.runtime.committed_is_quiescent())
+    );
+
+    // An occurrence already in its release phase has no pending ledger gate;
+    // disabling the candidate must preserve that old in-flight state exactly.
+    let short = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
+    let short_revision = revision_with_instrument_registry(&short, Arc::clone(&table), &registry);
+    let short_clip = short_revision.session().midi_clips()[0].id;
+    let mut old = SessionPlayback::new(Arc::clone(&short_revision)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&short_revision)).unwrap();
+    for playback in [&mut old, &mut reference] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: short_clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut old_prefix = [[0.0; 2]; 96];
+    let mut reference_prefix = [[0.0; 2]; 96];
+    old.render(&mut old_prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(old_prefix, reference_prefix);
+    assert!(
+        old.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    let disabled_short = with_instrument_bypassed(&short, true);
+    let disabled_short_revision =
+        revision_with_instrument_registry(&disabled_short, Arc::clone(&table), &registry);
+    let mut next = SessionPlayback::new(disabled_short_revision).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual_release = [[0.0; 2]; 16];
+    let mut expected_release = [[0.0; 2]; 16];
+    next.render(&mut actual_release).unwrap();
+    reference.render(&mut expected_release).unwrap();
+    assert_eq!(actual_release, expected_release);
 }
 
 #[test]

@@ -6,14 +6,6 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if previous
-            .mutable_instruments
-            .iter()
-            .flatten()
-            .any(|runtime| !runtime.committed_is_quiescent())
-        {
-            return Err(SessionPlaybackError::MutableInstrumentActive);
-        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -33,7 +25,31 @@ impl SessionPlayback {
                     .device_chains
                     .get(old_index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                if !candidate.can_inherit_from(old) {
+                let excluded_old_range = if previous
+                    .mutable_instruments
+                    .get(old_index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|runtime| !runtime.committed_is_quiescent())
+                {
+                    let track = previous
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(old_index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let suffix_start = track.instrument_position();
+                    if suffix_start > old.len() {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    Some(suffix_start..old.len())
+                } else {
+                    None
+                };
+                let can_inherit = excluded_old_range.map_or_else(
+                    || candidate.can_inherit_from(old),
+                    |range| candidate.can_inherit_from_excluding_old_range(old, range),
+                );
+                if !can_inherit {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
             }
@@ -72,6 +88,85 @@ impl SessionPlayback {
                 SessionTimingView::Anchored(AnchoredSessionTempoView::new(new_base_view, anchor))
             },
         );
+
+        // A nonquiescent mutable owner is retained as an old-law tail. Until
+        // mutable occurrence suppression is available, refuse a candidate
+        // enabled source that would also emit a pre-cut occurrence for that
+        // track, including analytic candidates and tracks represented only by
+        // an already-carried mutable tail.
+        for (new_index, new_route) in self.routes.iter().enumerate() {
+            let active_old_mutable = previous
+                .routes
+                .iter()
+                .position(|route| route.id == new_route.id)
+                .and_then(|old_index| previous.mutable_instruments.get(old_index))
+                .and_then(Option::as_ref)
+                .is_some_and(|runtime| !runtime.committed_is_quiescent());
+            let active_old_tail = previous
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .any(|tail| {
+                    tail.track_id == new_route.id && !tail.runtime.committed_is_quiescent()
+                });
+            if !active_old_mutable && !active_old_tail {
+                continue;
+            }
+            let new_track = self
+                .revision
+                .arrangement()
+                .tracks()
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if !new_track.instrument_slot_enabled() {
+                continue;
+            }
+
+            let previous_owner = previous
+                .routes
+                .iter()
+                .find(|route| route.id == new_route.id)
+                .map_or(RouteOwner::Arrangement, |route| route.owner);
+            let has_precut_candidate = match previous_owner {
+                RouteOwner::Arrangement => {
+                    let mut active = false;
+                    new_track
+                        .for_each_active_midi_span(previous.arrangement_frame, |span, _| {
+                            active |= span.start < previous.arrangement_frame
+                                && span.end > previous.arrangement_frame;
+                        })
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    active
+                }
+                RouteOwner::Session { clip, launch } => {
+                    let Some(prepared) = self.revision.session().midi_clip(clip) else {
+                        continue;
+                    };
+                    if prepared.track != new_route.id
+                        || !prepared.instrument_enabled()
+                        || !prepared.instrument_template().is_event_source()
+                    {
+                        false
+                    } else {
+                        let frame = previous.performance_frame;
+                        let end = frame
+                            .checked_add(1)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        prepared
+                            .instrument_template()
+                            .query(launch, &candidate_timing, frame, end, &mut self.spans)
+                            .map_err(SessionPlaybackError::Midi)?;
+                        self.spans
+                            .spans()
+                            .any(|span| span.start_frame < frame && span.end_frame > frame)
+                    }
+                }
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            if has_precut_candidate {
+                return Err(SessionPlaybackError::MutableInstrumentChase);
+            }
+        }
 
         // Mutable runtimes have no authored-age chase yet. Refuse a candidate
         // whose active owner would require starting a pre-cut note midstream.
@@ -897,11 +992,9 @@ impl SessionPlayback {
         self.suppression_scratch
             .sort_unstable_by_key(|entry| (entry.track, entry.clip, entry.note, entry.iteration));
 
-        // Only tail groups still referenced by live copied releases cross a
-        // publication boundary. Completed groups stay on `previous` so their
-        // processor allocations are reclaimed when that graph retires on the
-        // control side. This mask also makes completed slot numbers reusable in
-        // the candidate without touching the old graph during preflight.
+        // Only groups with live release voices or a nonquiescent mutable
+        // instrument cross a publication boundary. Completed owners stay on
+        // `previous` for control-side graph retirement.
         let mut active_tail_groups = [false; SESSION_TAIL_GROUP_CAPACITY];
         for release in &self.release_scratch {
             let Some(group) = release.tail_group else {
@@ -920,15 +1013,42 @@ impl SessionPlayback {
             }
             *active = true;
         }
-        if active_tail_groups
-            .iter()
-            .enumerate()
-            .any(|(slot, active)| *active && self.tail_groups.get(slot).is_none_or(Option::is_some))
-        {
+        let mut reserved_tail_voices = self.release_scratch.len();
+        for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
+            let Some(tail) = tail
+                .as_ref()
+                .filter(|tail| !tail.runtime.committed_is_quiescent())
+            else {
+                continue;
+            };
+            let Some(active) = active_tail_groups.get_mut(slot) else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            if previous.tail_groups.get(slot).is_none_or(Option::is_none) {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            *active = true;
+            reserved_tail_voices = reserved_tail_voices
+                .checked_add(tail.runtime.max_active_occurrences())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        }
+        if active_tail_groups.iter().enumerate().any(|(slot, active)| {
+            *active
+                && (self.tail_groups.get(slot).is_none_or(Option::is_some)
+                    || self
+                        .tail_mutable_instruments
+                        .get(slot)
+                        .is_none_or(Option::is_some))
+        }) {
             return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        if reserved_tail_voices > self.release_capacity {
+            return Err(SessionPlaybackError::ReleaseBankFull);
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
+        let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
@@ -947,7 +1067,28 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
                 .checked_add(chain.declared_runtime_bytes())
+                .and_then(|bytes| bytes.checked_add(chain.declared_runtime_bytes()))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if let Some(tail) = previous
+                .tail_mutable_instruments
+                .get(slot)
+                .and_then(Option::as_ref)
+                .filter(|tail| !tail.runtime.committed_is_quiescent())
+            {
+                tail_processor_count = tail_processor_count
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                tail_runtime_bytes = tail_runtime_bytes
+                    .checked_add(tail.runtime.declared_pair_bytes())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            }
+            if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                || tail_runtime_bytes
+                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
+                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
         }
         for release in &mut self.release_scratch {
             if release.tail_group.is_some() {
@@ -1010,10 +1151,11 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
                     .checked_add(old_chain.declared_runtime_bytes())
+                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                     || tail_runtime_bytes
-                        > hex_lattice::MAX_STATEFUL_PROCESSORS
+                        > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
                             * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1024,6 +1166,101 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             release.track_index = usize::MAX;
+        }
+
+        // Mutable occurrences keep their original absolute performance-frame
+        // deadlines. Reserve one old chain/suffix group for each nonquiescent
+        // active runtime before moving any owner out of `previous`.
+        for old_index in 0..previous.routes.len() {
+            let old_route = previous
+                .routes
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let Some(runtime) = previous
+                .mutable_instruments
+                .get(old_index)
+                .and_then(Option::as_ref)
+                .filter(|runtime| !runtime.committed_is_quiescent())
+            else {
+                continue;
+            };
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let candidate_enabled = self
+                .routes
+                .iter()
+                .position(|route| route.id == old_route.id)
+                .and_then(|new_index| self.revision.arrangement().tracks().get(new_index))
+                .is_some_and(|track| track.instrument_slot_enabled());
+            if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
+                *cutoff = !candidate_enabled;
+            } else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            let old_chain = previous
+                .device_chains
+                .get(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let existing_slot = old_track_tail_slots.get(old_index).copied().flatten();
+            let slot = existing_slot.or_else(|| {
+                (0..self.tail_groups.len()).find(|slot| {
+                    self.tail_groups.get(*slot).is_some_and(Option::is_none)
+                        && self
+                            .tail_mutable_instruments
+                            .get(*slot)
+                            .is_some_and(Option::is_none)
+                        && !active_tail_groups.get(*slot).copied().unwrap_or(true)
+                        && !old_track_tail_slots.contains(&Some(*slot))
+                        && !old_track_mutable_tail_slots.contains(&Some(*slot))
+                })
+            });
+            let Some(slot) = slot else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            };
+            if self
+                .tail_mutable_instruments
+                .get(slot)
+                .is_none_or(Option::is_some)
+                || self.tail_groups.get(slot).is_none_or(Option::is_some)
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            if old_track_tail_slots[old_index].is_none() {
+                old_track_tail_slots[old_index] = Some(slot);
+                old_track_tail_metadata[old_index] = Some((
+                    old_track.instrument_position(),
+                    old_track.instrument_suffix_matrix(),
+                ));
+                tail_processor_count = tail_processor_count
+                    .checked_add(old_chain.stateful_count())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                tail_runtime_bytes = tail_runtime_bytes
+                    .checked_add(old_chain.declared_runtime_bytes())
+                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            }
+            tail_processor_count = tail_processor_count
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            tail_runtime_bytes = tail_runtime_bytes
+                .checked_add(runtime.declared_pair_bytes())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            reserved_tail_voices = reserved_tail_voices
+                .checked_add(runtime.max_active_occurrences())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                || tail_runtime_bytes
+                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
+                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || reserved_tail_voices > self.release_capacity
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            old_track_mutable_tail_slots[old_index] = Some(slot);
         }
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
@@ -1046,7 +1283,33 @@ impl SessionPlayback {
                     self.device_chains.get_mut(new_index),
                     previous.device_chains.get(old_index),
                 ) {
-                    candidate.inherit_from(old);
+                    let excluded_old_range = if old_track_mutable_tail_slots
+                        .get(old_index)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                    {
+                        let old_track = previous
+                            .revision
+                            .arrangement()
+                            .tracks()
+                            .get(old_index)
+                            .ok_or(SessionPlaybackError::UnknownTrack)?;
+                        let suffix_start = old_track.instrument_position();
+                        if suffix_start > old.len() {
+                            return Err(SessionPlaybackError::DeviceRuntime);
+                        }
+                        Some(suffix_start..old.len())
+                    } else {
+                        None
+                    };
+                    if let Some(range) = excluded_old_range {
+                        candidate
+                            .inherit_from_excluding_old_range(old, range)
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    } else {
+                        candidate.inherit_from(old);
+                    }
                 }
             }
         }
@@ -1076,6 +1339,18 @@ impl SessionPlayback {
                     previous.tail_suffix_matrices.get(slot).copied(),
                 ) {
                     *candidate_matrix = previous_matrix;
+                }
+                if previous
+                    .tail_mutable_instruments
+                    .get(slot)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|tail| !tail.runtime.committed_is_quiescent())
+                    && let (Some(candidate), Some(previous_tail)) = (
+                        self.tail_mutable_instruments.get_mut(slot),
+                        previous.tail_mutable_instruments.get_mut(slot),
+                    )
+                {
+                    std::mem::swap(candidate, previous_tail);
                 }
             }
         }
@@ -1108,6 +1383,34 @@ impl SessionPlayback {
                     old_track_tail_metadata.get(old_index).copied().flatten(),
                 ) {
                     *matrix = suffix_matrix;
+                }
+            }
+        }
+        for (old_index, slot) in old_track_mutable_tail_slots.iter().copied().enumerate() {
+            let Some(slot) = slot else {
+                continue;
+            };
+            let track_id = previous.routes.get(old_index).map(|route| route.id);
+            if let (Some(candidate), Some(track_id)) =
+                (self.tail_mutable_instruments.get_mut(slot), track_id)
+                && candidate.is_none()
+            {
+                if let Some(mut old_runtime) = previous
+                    .mutable_instruments
+                    .get_mut(old_index)
+                    .and_then(Option::take)
+                {
+                    if cut_mutable_gateoffs
+                        .get(old_index)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        old_runtime.cut_gate_deadlines_at(previous.performance_frame);
+                    }
+                    *candidate = Some(MutableInstrumentTail {
+                        track_id,
+                        runtime: old_runtime,
+                    });
                 }
             }
         }
