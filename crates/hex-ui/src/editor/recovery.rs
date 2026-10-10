@@ -130,9 +130,9 @@ impl EditorView {
     }
 
     fn clear_audio_accounting(&mut self) {
-        self.applied_revisions.clear();
         self.playback_candidates.clear();
         self.audible_playback = None;
+        self.audio_admission.reset_audio();
         self.applied_project_revision = None;
         self.pending_audio_commands.clear();
         self.pending_seek_ticket = None;

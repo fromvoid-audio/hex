@@ -2,6 +2,7 @@ mod arrangement;
 mod arrangement_audio_panel;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
+mod audio_admission;
 mod bootstrap;
 mod browser;
 mod browser_input;
@@ -70,6 +71,7 @@ mod waveform;
 mod waveform_geometry;
 
 use crate::theme;
+use audio_admission::AudioAdmissionStatus;
 use duplicate::DuplicateIntent;
 use gpui::{
     App, AppContext, Bounds, Context, FocusHandle, KeyBinding, Window, WindowBounds, WindowOptions,
@@ -114,6 +116,7 @@ struct PendingPlayback {
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
 }
 
+#[derive(Clone)]
 struct PlaybackCandidate {
     audio_revision: u64,
     project_generation: u64,
@@ -409,9 +412,9 @@ pub(super) struct EditorView {
     pending_seek_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
-    applied_revisions: VecDeque<(u64, u64)>,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     applied_project_revision: Option<u64>,
     observed_rejected_action: u64,
@@ -669,9 +672,9 @@ impl EditorView {
             pending_seek_ticket: None,
             pending_session_ticket: None,
             viewport: None,
-            applied_revisions: VecDeque::new(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             applied_project_revision: None,
             observed_rejected_action: 0,

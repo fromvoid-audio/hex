@@ -73,13 +73,8 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
-        let project_revision = self.state.as_ref().map_or(0, |state| state.revision);
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
-        let revision_label = match self.applied_project_revision() {
-            Some(revision) if revision == project_revision => format!("rev {revision} applied"),
-            Some(revision) => format!("rev {project_revision} pending · rev {revision} audible"),
-            None => format!("rev {project_revision} pending"),
-        };
+        let revision_label = self.audio_admission.label();
         let pending_commands = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
@@ -97,7 +92,7 @@ impl EditorView {
                 .truncate()
                 .text_right()
                 .tooltip({
-                    let description = revision_label.clone();
+                    let description = self.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
                             description: description.clone().into(),

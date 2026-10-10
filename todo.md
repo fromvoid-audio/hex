@@ -678,6 +678,27 @@ probes, affected clippy, format and repository guards pass; root performs full
 local CI after this branch is frozen. Native UI,
 device deadlines and multi-track stress remain unverified.
 
+Pulse2180 adds durable UI-side audio admission reporting keyed by project
+generation, canonical project revision and audio revision. The footer distinguishes
+the current pending/applied/rejected canonical revision from the last admitted
+canonical graph; numeric device/send previews remain separate transient overlays.
+Exact rejected canonical candidate identity is captured before acknowledgment
+pruning, so stale/coalesced rejection cannot overwrite newer accepted or pending
+work. A preview rejection is visible only while its project generation, canonical
+revision, gesture key and sequence are still current; it does not label its reused
+canonical revision rejected. Preview application and cancel/restore do not change
+canonical admission. Queue-full/deferred publication remains pending.
+This does not roll back canonical project history, dirty state, undo/redo, or
+worker save/export snapshots, and the callback protocol is unchanged. Focused
+controller/tracker tests cover same-number project replacement, exact rejection,
+coalesced older rejection with newer applied work, same-revision preview
+apply/reject/cancel/restore, later canonical commit, stale applied work, recovery
+reset and status transitions. Existing session-service tests cover compile
+refusal history preservation and captured export revision; native footer behavior
+and close/recovery interaction still need UI acceptance. Targeted checks and the
+root acceptance/full local-CI pass remain outstanding; keep this ticket open
+until those gates are recorded.
+
 Pulse2169 is the next separate analytic Operator integration prerequisite:
 control-prepared shared configuration, compact note data and bounded old-context
 retention for copied releases, reclaimed on control. This preserves the existing

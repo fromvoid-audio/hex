@@ -51,8 +51,31 @@ Ordinary edits preserve transport through graph replacement. Opening a
 project stops at the start and clears pending UI transport/selection.
 
 Edited model revision and applied audio revision remain visibly distinct until
-the callback accepts a graph. A failed open leaves the current model/audio intact;
-new media and save-as paths preserve case. Device faults retain offline editing.
+the callback accepts a graph. Canonical session history commits after successful
+control-side compilation; later callback admission failure does not roll back the
+project, undo/redo state, dirty state, or worker save/export snapshots. The editor
+tracks the current audio admission by project generation, canonical project
+revision and audio revision, with pending/applied/rejected status. A rejected
+audio revision is resolved against its exact retained candidate before candidate
+acknowledgments are pruned. Only a rejection matching the current generation,
+project revision and latest publication changes the current footer state; stale
+or coalesced rejection telemetry cannot overwrite a newer accepted or pending
+revision. Numeric device/send previews reuse a canonical project revision but
+remain transient overlays: preview rejection stays visible as a preview error,
+preview application does not change durable canonical status, and cancel/restore
+does not create a canonical rejection. The displayed last-audible identity is
+the last admitted canonical graph, not the latest transient preview; the editor
+keeps the actually promoted preview candidate separately for playback and uses
+its validated source revision for existing transport gating. Queue-full and
+deferred publication remain pending until a later publication receives a
+terminal acknowledgment. Audio recovery resets audio admission for the current
+canonical revision while retaining no stale audible identity. The callback
+protocol is unchanged and exposes only its existing high-water/rejection status;
+the UI's bounded candidate mapping supplies project identity. See Pulse2180 for
+the open acceptance gate and remaining native validation.
+
+A failed open leaves the current model/audio intact; new media and save-as paths
+preserve case. Device faults retain offline editing.
 A nonfinite render block becomes silence and stops transport. Finite floating
 output preserves headroom; integer output formats necessarily saturate conversion.
 
