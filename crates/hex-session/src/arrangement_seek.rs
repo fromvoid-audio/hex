@@ -18,10 +18,25 @@ use std::{
 
 /// Maximum render work a request may ask the engine to perform.
 pub const MAX_SEEK_WORK_FRAMES: u64 = MAX_ARRANGEMENT_PREROLL_FRAMES;
+/// Dedicated control-side preparation stack for the bounded runtime
+/// constructor and preroll renderer. This reservation is independent of the
+/// candidate's 32 MiB accounted runtime/scratch ceiling.
+pub const SEEK_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Candidate policy for Arrangement seek preparation. The default remains the
+/// export-style linear owner; callers that will admit Session routes opt into
+/// an interactive Session runtime explicitly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArrangementSeekMode {
+    #[default]
+    LinearArrangement,
+    Interactive,
+}
 
 /// Control-side identity and destination for one prepared seek candidate.
 #[derive(Clone)]
 pub struct ArrangementSeekSpec {
+    pub mode: ArrangementSeekMode,
     pub generation: u64,
     pub revision: u64,
     pub prepared_revision: Arc<PreparedRevision>,
@@ -33,6 +48,7 @@ pub struct ArrangementSeekSpec {
 /// One bounded result. The candidate retains the same prepared revision Arc.
 pub struct ArrangementSeekResult {
     pub request_id: u64,
+    pub mode: ArrangementSeekMode,
     pub generation: u64,
     pub revision: u64,
     pub prepared_revision: Arc<PreparedRevision>,
@@ -80,8 +96,9 @@ struct Shared {
 
 /// Dedicated seek worker, independent of canonical edit and export workers.
 /// At most one request is running, one newer request is pending, and one result
-/// is ready. A runtime candidate is never retained alongside another runtime
-/// candidate: newer admission clears an older ready result before queuing work.
+/// is ready. Under the normal path it constructs one candidate at a time; the
+/// fixed ready/retired slots may briefly own two completed candidates while a
+/// stale result is reclaimed on the worker before pending preparation begins.
 pub struct ArrangementSeekWorker {
     shared: Arc<Shared>,
     _worker: JoinHandle<()>,
@@ -115,6 +132,7 @@ impl ArrangementSeekWorker {
         let preparer: Box<Preparer> = Box::new(preparer);
         let worker = thread::Builder::new()
             .name("hex-arrangement-seek".into())
+            .stack_size(SEEK_WORKER_STACK_BYTES)
             .spawn(move || run_worker(thread_shared, preparer))?;
         Ok(Self {
             shared,
@@ -202,14 +220,28 @@ fn prepare(
     spec: ArrangementSeekSpec,
     cancelled: &AtomicBool,
 ) -> Result<Playback, ArrangementPrerollError> {
-    let runtime = SessionPlayback::prepare_arrangement_preroll_from_revision(
-        Arc::clone(&spec.prepared_revision),
-        spec.destination_frame,
-        spec.work_budget_frames,
-        spec.start_playing,
-        cancelled,
-    )?;
-    Playback::from_arrangement_preroll(runtime)
+    match spec.mode {
+        ArrangementSeekMode::LinearArrangement => {
+            let runtime = SessionPlayback::prepare_arrangement_preroll_from_revision(
+                Arc::clone(&spec.prepared_revision),
+                spec.destination_frame,
+                spec.work_budget_frames,
+                spec.start_playing,
+                cancelled,
+            )?;
+            Playback::from_arrangement_preroll(runtime)
+        }
+        ArrangementSeekMode::Interactive => {
+            let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                Arc::clone(&spec.prepared_revision),
+                spec.destination_frame,
+                spec.work_budget_frames,
+                spec.start_playing,
+                cancelled,
+            )?;
+            Playback::from_interactive_arrangement_preroll(runtime)
+        }
+    }
 }
 
 fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
@@ -263,6 +295,7 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         let result = preparer(work.spec.clone(), &cancelled);
         let result = ArrangementSeekResult {
             request_id: work.request_id,
+            mode: work.spec.mode,
             generation: work.spec.generation,
             revision: work.spec.revision,
             prepared_revision: Arc::clone(&work.spec.prepared_revision),
@@ -325,6 +358,7 @@ mod tests {
 
     fn spec(prepared_revision: Arc<PreparedRevision>, generation: u64) -> ArrangementSeekSpec {
         ArrangementSeekSpec {
+            mode: ArrangementSeekMode::LinearArrangement,
             generation,
             revision: generation + 10,
             prepared_revision,
@@ -489,18 +523,17 @@ mod tests {
         let ready_weak = Arc::downgrade(&ready_graph);
         let worker = ArrangementSeekWorker::new().expect("seek worker");
         let make_result = |graph: Arc<PreparedRevision>, request_id: u64| {
-            let request = spec(Arc::clone(&graph), request_id);
-            let playback = prepare(request.clone(), &AtomicBool::new(false)).expect("candidate");
-            ArrangementSeekResult {
-                request_id,
-                generation: request.generation,
-                revision: request.revision,
-                prepared_revision: graph,
-                destination_frame: request.destination_frame,
-                work_budget_frames: request.work_budget_frames,
-                start_playing: request.start_playing,
-                result: Ok(playback),
-            }
+            let preparer_worker = ArrangementSeekWorker::new().expect("candidate worker");
+            let request_id = preparer_worker
+                .submit(spec(graph, request_id))
+                .expect("candidate request");
+            wait_for_ready(&preparer_worker);
+            let result = preparer_worker
+                .try_result()
+                .expect("prepared candidate result");
+            assert_eq!(result.request_id, request_id);
+            drop(preparer_worker);
+            result
         };
         {
             let mut mailbox = lock(&worker.shared.mailbox);

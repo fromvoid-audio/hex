@@ -2285,3 +2285,23 @@ review build `hex-time-gesture-20261009.app` and authorized PR #17 to merge.
 It is merged as `a250f83`; exact source `25b797e` passed all 14 local CI steps.
 Pulse ticket 38 records this completion. This establishes the reviewed interaction
 acceptance, not physical input/paint timing measurements.
+
+## interactive preroll control-thread stack usage — 10 October 2026
+
+The original high-residency interactive test fixture with several simultaneous
+runtime owners overflowed Rust's platform-default test-thread stack. A reduced
+mutable instrument + stateful track/return oracle passed with 2 MiB after
+sequentializing candidate/oracle construction and selecting one constructor by
+function pointer. The dedicated `hex-arrangement-seek` worker still requests an
+explicit 8 MiB stack; a normal Service worker test passes with stateful Utility
+filters on both a track and a sent return. Interactive mutable-feedback PCM
+oracles run on a per-test thread matching the production worker reservation.
+`size_of::<SessionPlayback>()` is 104,568 bytes, but this is only the value size;
+it does not measure peak constructor stack or cover 100-track worst cases.
+
+Keep control-side interactive preparation on the dedicated seek worker until
+stack behavior is measured on representative graphs. Pulse2195 tracks peak
+stack measurement for 100-track/stateful workloads and further targeted reduction
+of large constructor temporaries if needed, while retaining bounded ownership
+and sample-exact history. Do not infer callback stack behavior or safety from
+the control worker.

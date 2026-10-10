@@ -1,7 +1,7 @@
 use super::*;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
-use crate::playback::{Playback, PlaybackCommand};
+use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
 use crate::{BorrowedMediaPage, MediaPages, StreamSourceKey, StreamedSourceMetadata};
 use crate::{PreparedRevision, PreparedSessionInventory};
 use hex_project::{
@@ -17,6 +17,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    thread,
 };
 
 thread_local! {
@@ -2101,6 +2102,69 @@ fn revision_with_instrument_registry(
         )
         .unwrap(),
     )
+}
+
+fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
+    let mut next_id = snapshot.next_id;
+    fn remap_midi_clips(clips: &mut [hex_project::MidiClipSnapshot], next_id: &mut u64) {
+        for clip in clips {
+            clip.id = *next_id;
+            *next_id += 1;
+            for note in &mut clip.notes {
+                note.id = *next_id;
+                *next_id += 1;
+            }
+        }
+    }
+    for track_index in 1..100 {
+        let mut track = snapshot.tracks[0].clone();
+        track.id = next_id;
+        next_id += 1;
+        track.name = format!("track {track_index}");
+        for device in &mut track.devices {
+            device.id = next_id;
+            next_id += 1;
+        }
+        if let Some(instrument) = track.instrument.as_mut() {
+            instrument.id = next_id;
+            next_id += 1;
+        }
+        match &mut track.content {
+            TrackContentSnapshot::Audio(clips) => {
+                for clip in clips {
+                    clip.id = next_id;
+                    next_id += 1;
+                }
+            }
+            TrackContentSnapshot::Instrument(clips) => remap_midi_clips(clips, &mut next_id),
+            TrackContentSnapshot::Hybrid {
+                audio_clips,
+                midi_clips,
+            } => {
+                for clip in audio_clips {
+                    clip.id = next_id;
+                    next_id += 1;
+                }
+                remap_midi_clips(midi_clips, &mut next_id);
+            }
+        }
+        snapshot.tracks.push(track);
+    }
+    snapshot.next_id = next_id;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    revision_with_instrument_registry(&project, table, &registry)
 }
 
 fn mutable_checkpoint_fixture(note_duration: u64) -> (Arc<PreparedRevision>, hex_project::TrackId) {
@@ -8610,7 +8674,228 @@ fn arrangement_preroll_reconstructs_held_and_released_mutable_feedback() {
 }
 
 #[test]
-fn arrangement_preroll_keeps_mutable_source_and_return_send_history_aligned() {
+fn interactive_arrangement_preroll_accepts_session_routes_and_handoff() {
+    interactive_preroll_session_command_is_available();
+    interactive_preroll_warmed_state_inherits_into_compiled_revision();
+}
+
+#[inline(never)]
+fn interactive_preroll_session_command_is_available() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source_project = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let prepared =
+        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    assert!(prepared.arrangement_seek_requires_preroll());
+
+    let destination = 192_512;
+    let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+        Arc::clone(&prepared),
+        destination,
+        destination,
+        false,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(!runtime.is_linear_arrangement_export());
+    assert_eq!(
+        runtime.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+    assert_eq!(runtime.performance_frame(), destination);
+    assert_eq!(runtime.arrangement_frame(), destination);
+    assert!(!runtime.playing());
+
+    let mut playback = Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+    assert_eq!(playback.position(), destination);
+    assert_eq!(playback.performance_frame(), destination);
+    assert!(!playback.playing());
+    let session_clip = prepared.session().midi_clips()[0].id;
+    playback
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip: session_clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+}
+
+#[inline(never)]
+fn interactive_preroll_warmed_state_inherits_into_compiled_revision() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source_project = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let prepared =
+        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let mut warmed = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+        Arc::clone(&prepared),
+        256,
+        256,
+        true,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut editor = Editor::new(source_project, 8).unwrap();
+    let (_, edited_revision) = editor
+        .execute_prepared(
+            Command::RenameTrack {
+                track,
+                name: "renamed track".to_owned(),
+            },
+            |candidate| {
+                Ok::<_, hex_project::Invalid>(revision_with_instrument_registry(
+                    candidate,
+                    Arc::clone(&table),
+                    &registry,
+                ))
+            },
+        )
+        .unwrap();
+
+    let mut expected_suffix = [[0.0; 2]; 193];
+    {
+        let mut expected = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+            Arc::clone(&edited_revision),
+            256,
+            256,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        expected.render(&mut expected_suffix).unwrap();
+    }
+
+    let mut successor = SessionPlayback::new(edited_revision).unwrap();
+    successor.try_inherit_state_from(&mut warmed).unwrap();
+    assert_eq!(successor.performance_frame(), 256);
+    assert_eq!(successor.arrangement_frame(), 256);
+    assert!(successor.playing());
+    let mut actual_suffix = [[0.0; 2]; 193];
+    successor.render(&mut actual_suffix).unwrap();
+    assert_eq!(actual_suffix, expected_suffix);
+}
+
+#[test]
+fn arrangement_seek_history_query_preserves_analytic_fast_path() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let sine = revision(&project(1.0, 0, 8 << 32), Arc::clone(&table));
+    assert!(!sine.arrangement_seek_requires_preroll());
+
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let operator_state = instruments
+        .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
+        .unwrap();
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    snapshot.tracks[0].instrument.as_mut().unwrap().state = operator_state;
+    let operator = revision(
+        &Project::from_snapshot(snapshot).unwrap(),
+        Arc::clone(&table),
+    );
+    assert!(!operator.arrangement_seek_requires_preroll());
+
+    let compare_analytic_seek = |prepared: Arc<PreparedRevision>| {
+        let destination = 24_704;
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
+        let _prefix = render_checkpoint_partitioned(
+            &mut uninterrupted,
+            &[17, 239, 61, 127],
+            destination as usize,
+        );
+        let mut expected = [[0.0; 2]; 193];
+        uninterrupted.render(&mut expected).unwrap();
+
+        let mut seeked = SessionPlayback::new(prepared).unwrap();
+        seeked
+            .apply(SessionPlaybackCommand::Seek(destination))
+            .unwrap();
+        seeked.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut actual = [[0.0; 2]; 193];
+        seeked.render(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+    };
+    compare_analytic_seek(Arc::clone(&sine));
+    compare_analytic_seek(Arc::clone(&operator));
+
+    let (mutable, _) = mutable_checkpoint_fixture(8 << 32);
+    assert!(mutable.arrangement_seek_requires_preroll());
+
+    let filter_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
+    track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        id: track_snapshot.next_id,
+        bypassed: false,
+        state: filter_state.clone(),
+    });
+    track_snapshot.next_id += 1;
+    let stateful_track = revision(
+        &Project::from_snapshot(track_snapshot).unwrap(),
+        Arc::clone(&table),
+    );
+    assert!(stateful_track.arrangement_seek_requires_preroll());
+
+    let mut return_snapshot = project(1.0, 0, 8 << 32).snapshot();
+    let return_id = return_snapshot.next_id;
+    let return_device_id = return_id + 1;
+    return_snapshot.next_id = return_id + 2;
+    return_snapshot.tracks[0]
+        .sends
+        .push(hex_project::SendLevelSnapshot {
+            return_track: return_id,
+            gain: 0.5,
+        });
+    return_snapshot
+        .return_tracks
+        .push(hex_project::ReturnTrackSnapshot {
+            id: return_id,
+            name: "return".into(),
+            gain: 0.75,
+            muted: false,
+            devices: vec![DeviceSnapshot {
+                id: return_device_id,
+                bypassed: false,
+                state: filter_state,
+            }],
+        });
+    let stateful_return = revision(&Project::from_snapshot(return_snapshot).unwrap(), table);
+    assert!(stateful_return.arrangement_seek_requires_preroll());
+}
+
+fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
@@ -8662,23 +8947,123 @@ fn arrangement_preroll_keeps_mutable_source_and_return_send_history_aligned() {
             }],
         });
     let source = Project::from_snapshot(snapshot).unwrap();
-    let prepared = revision_with_instrument_registry(&source, table, &registry);
+    revision_with_instrument_registry(&source, table, &registry)
+}
+
+#[test]
+fn arrangement_preroll_keeps_held_mutable_source_and_return_send_history_aligned() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    assert!(prepared.arrangement_seek_requires_preroll());
     let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     assert_eq!(caller.device_chains[0].stateful_count(), 1);
     assert_eq!(caller.return_chains[0].stateful_count(), 1);
-    let mut expected_source = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
-    expected_source.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut prefix = [[0.0; 2]; 512];
-    expected_source.render(&mut prefix).unwrap();
-    let mut expected = [[0.0; 2]; 129];
-    expected_source.render(&mut expected).unwrap();
+    drop(caller);
+    run_preroll_continuation_on_worker_stack(prepared, 512);
+}
 
-    let mut candidate = caller
-        .prepare_arrangement_preroll(512, 512, true, &AtomicBool::new(false))
+#[test]
+fn interactive_arrangement_preroll_keeps_released_mutable_source_and_return_history() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    assert!(prepared.arrangement_seek_requires_preroll());
+    run_preroll_continuation_on_worker_stack(prepared, 24_704);
+}
+
+fn run_preroll_continuation_on_worker_stack(prepared: Arc<PreparedRevision>, target: u64) {
+    // Mirrors the dedicated control-worker reservation in hex-session; this is
+    // per-test, never a global harness stack override.
+    const SEEK_STACK_BYTES: usize = 8 * 1024 * 1024;
+    thread::Builder::new()
+        .name("hex-engine-interactive-preroll-test".into())
+        .stack_size(SEEK_STACK_BYTES)
+        .spawn(move || {
+            assert_preroll_continuation(&prepared, target, false);
+            assert_preroll_continuation(&prepared, target, true);
+        })
+        .unwrap()
+        .join()
         .unwrap();
+}
+
+#[test]
+fn interactive_arrangement_preroll_refuses_loops_and_cancellation() {
+    let prepared = revision(
+        &project(0.5, 0, 1 << 32),
+        Arc::new(hex_devices::SineTable::new()),
+    );
+    let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
+    looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
+    let looped_project = Project::from_snapshot(looped_snapshot).unwrap();
+    let looped = revision(&looped_project, Arc::new(hex_devices::SineTable::new()));
+    const SEEK_STACK_BYTES: usize = 8 * 1024 * 1024;
+    thread::Builder::new()
+        .name("hex-engine-interactive-refusal-test".into())
+        .stack_size(SEEK_STACK_BYTES)
+        .spawn(move || {
+            assert_eq!(
+                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    Arc::clone(&looped),
+                    128,
+                    128,
+                    false,
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::UnsupportedTransportLoop
+            );
+            assert_eq!(
+                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    prepared,
+                    128,
+                    128,
+                    false,
+                    &AtomicBool::new(true),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::Cancelled
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[inline(never)]
+fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, interactive: bool) {
+    let mut expected = [[0.0; 2]; 129];
+    {
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(prepared)).unwrap();
+        uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
+        let partitions = [37_usize, 111, 19, 221, 53];
+        let mut remaining = target;
+        let mut partition_index = 0;
+        while remaining != 0 {
+            let count =
+                remaining.min(partitions[partition_index % partitions.len()] as u64) as usize;
+            let mut prefix = vec![[0.0; 2]; count];
+            uninterrupted.render(&mut prefix).unwrap();
+            remaining -= count as u64;
+            partition_index += 1;
+        }
+        uninterrupted.render(&mut expected).unwrap();
+    }
+    let mut candidate = if interactive {
+        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+            Arc::clone(prepared),
+            target,
+            target,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    } else {
+        SessionPlayback::new(Arc::clone(prepared))
+            .unwrap()
+            .prepare_arrangement_preroll(target, target, true, &AtomicBool::new(false))
+            .unwrap()
+    };
     let mut actual = [[0.0; 2]; 129];
     candidate.render(&mut actual).unwrap();
-    assert_eq!(actual, expected);
+    assert_eq!(actual, expected, "preroll mismatch at frame {target}");
     assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
 }
 
@@ -8900,66 +9285,7 @@ fn arrangement_preroll_returns_no_candidate_when_source_render_fails() {
 #[test]
 #[ignore = "release-only timing evidence; run with --release and --ignored"]
 fn arrangement_preroll_profiles_100_stateful_tracks() {
-    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
-    let definition = MutableFeedbackDefinition {
-        metadata: ContinuityInstrumentDefinition {
-            id,
-            levels: [0.2, 0.4],
-            release_frames: 8,
-        },
-    };
-    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
-    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let table = Arc::new(hex_devices::SineTable::new());
-    let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
-    let mut next_id = snapshot.next_id;
-    fn remap_midi_clips(clips: &mut [hex_project::MidiClipSnapshot], next_id: &mut u64) {
-        for clip in clips {
-            clip.id = *next_id;
-            *next_id += 1;
-            for note in &mut clip.notes {
-                note.id = *next_id;
-                *next_id += 1;
-            }
-        }
-    }
-    for track_index in 1..100 {
-        let mut track = snapshot.tracks[0].clone();
-        track.id = next_id;
-        next_id += 1;
-        track.name = format!("track {track_index}");
-        for device in &mut track.devices {
-            device.id = next_id;
-            next_id += 1;
-        }
-        if let Some(instrument) = track.instrument.as_mut() {
-            instrument.id = next_id;
-            next_id += 1;
-        }
-        match &mut track.content {
-            TrackContentSnapshot::Audio(clips) => {
-                for clip in clips {
-                    clip.id = next_id;
-                    next_id += 1;
-                }
-            }
-            TrackContentSnapshot::Instrument(clips) => remap_midi_clips(clips, &mut next_id),
-            TrackContentSnapshot::Hybrid {
-                audio_clips,
-                midi_clips,
-            } => {
-                for clip in audio_clips {
-                    clip.id = next_id;
-                    next_id += 1;
-                }
-                remap_midi_clips(midi_clips, &mut next_id);
-            }
-        }
-        snapshot.tracks.push(track);
-    }
-    snapshot.next_id = next_id;
-    let project = Project::from_snapshot(snapshot).unwrap();
-    let prepared = revision_with_instrument_registry(&project, table, &registry);
+    let prepared = mutable_hundred_track_preroll_revision();
     let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let target = 16_384;
     let storage = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
@@ -8977,6 +9303,44 @@ fn arrangement_preroll_profiles_100_stateful_tracks() {
     eprintln!(
         "100-track mutable preroll: sample_rate=48000 target_frames={target} blocks={} storage_upper_bound={storage} elapsed={elapsed:?}",
         target / 256
+    );
+}
+
+#[test]
+#[ignore = "release-only timing evidence; run with --release and --ignored"]
+fn interactive_arrangement_preroll_profiles_100_stateful_tracks() {
+    let prepared = mutable_hundred_track_preroll_revision();
+    let target = 48_000;
+    let storage = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    let timings = std::thread::Builder::new()
+        .name("interactive-preroll-profile".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut elapsed = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let start = std::time::Instant::now();
+                let candidate =
+                    SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                        Arc::clone(&prepared),
+                        target,
+                        target,
+                        false,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+                elapsed.push(start.elapsed());
+                assert_eq!(candidate.performance_frame(), target);
+                assert!(!candidate.playing());
+            }
+            elapsed
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    eprintln!(
+        "100-track interactive mutable preroll: sample_rate=48000 target_frames={target} blocks={} storage_upper_bound={storage} session_playback_bytes={} elapsed={timings:?}; excludes native callback/publication and is not a readiness deadline",
+        target.div_ceil(256),
+        std::mem::size_of::<SessionPlayback>()
     );
 }
 

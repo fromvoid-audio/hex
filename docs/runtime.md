@@ -112,8 +112,10 @@ native failure/reopen, rate-mismatch interaction and listening remain untested.
 
 ## Arrangement seek candidate preparation — Pulse2188
 
-`hex-session::ArrangementSeekWorker` owns a dedicated control thread, independent
-of canonical edits and export. It admits one running request and one replaceable
+`hex-session::ArrangementSeekWorker` owns a dedicated control thread with an
+explicit 8 MiB stack reservation, independent of canonical edits and export.
+Each Service therefore reserves one bounded worker stack in addition to the
+candidate storage budget below. It admits one running request and one replaceable
 pending request, and retains at most one completed result. Admission is
 nonblocking with respect to preroll and result consumption. New admission cancels
 the running request, replaces pending work, and removes an unread result;
@@ -129,8 +131,8 @@ admission check. Engine limits remain 8,388,608 replay frames and 32 MiB account
 candidate runtime storage, with <=256-frame cancellation checks and a 2,048-byte
 render scratch allowance inside the preroll storage budget. Shared immutable
 prepared graph data is not duplicated or charged to the runtime budget. There
-are at most two request metadata/Arc-handle slots and one candidate runtime
-(running or ready); the second slot is pending work only. A completed but unread
+are bounded running/pending request metadata and two fixed completed-runtime
+slots for defensive stale-result retirement. A completed but unread
 runtime moves into one worker-owned retirement slot on new admission or
 invalidation. If that slot is occupied, the stale ready value stays in its own
 fixed slot; both are drained before any pending candidate construction. The
@@ -149,6 +151,35 @@ promotion are unsupported. This remains candidate preparation only: no UI
 handoff, live route ownership, project supersede/Stop fence or audio publication
 is included. The caller must compare generation/revision and use the later
 native admission and promotion contract before installing any result.
+
+`ArrangementSeekMode::LinearArrangement` remains the default and preserves the
+export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
+constructs a normal Session runtime first and then advances its Arrangement
+history, so the result remains eligible for Session route commands and normal
+prepared-revision state inheritance. Both modes reject enabled Arrangement
+transport loops. Results echo the selected mode; the caller must still validate
+current project/route/Stop admission before publication. `Playback` wrappers do
+not establish the target-frame or readiness proof themselves.
+
+Interactive mode reconstructs Arrangement history from frame zero while keeping
+the exact `Arc<PreparedRevision>`, runtime clocks, mutable voices, release tails,
+track/return processor history and requested play state. It uses the same
+<=256-frame cancellation checks, 8,388,608-frame work ceiling and 32 MiB
+accounted candidate storage ceiling as linear preroll. The separate 8 MiB thread
+stack is reserved once per Service. An initial high-residency test fixture
+overflowed the platform-default test-thread stack; a reduced fixture passed on
+a 2 MiB test stack after sequentializing runtime construction. The dedicated
+worker still owns the supported preparation path. `size_of::<SessionPlayback>()`
+(104,568 bytes here) is not a peak-stack measurement, and 100-track worst-case
+stack use remains unmeasured. Enabled transport loops are refused because the
+operation currently models one monotonic Arrangement pass.
+
+`PreparedRevision::arrangement_seek_requires_preroll()` reports whether direct
+absolute-frame seeking would omit mutable Arrangement instruments or stateful
+track/return processors. Built-in Sine and Operator remain on the direct path
+because their notes are deterministic functions of note age and gate duration.
+This is a control-side policy query, not a full eligibility or publication
+fence. Native UI integration and measured 100-track readiness remain open.
 Canonical startup now opens output on the same bounded lifecycle worker. A
 font-validated loading window owns the pending handle; a weak polling task and
 non-owning window handle replace its root with the editor when output is ready.
