@@ -5,7 +5,9 @@ use crate::operator_waveform::{
     OperatorWaveform, OperatorWaveformBank, harmonic_cap_index, prepared_bank,
 };
 mod context;
+mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
+pub use tuning::OperatorTuning;
 
 /// Original immutable acyclic FM note, not a registered native device.
 /// Each envelope shapes its oscillator before modulation and carrier routing.
@@ -51,10 +53,43 @@ impl PreparedOperatorFm4 {
         envelopes: [OperatorEnvelope; OPERATORS],
         waveforms: [OperatorWaveform; OPERATORS],
     ) -> Result<Self, Invalid> {
+        Self::new_with_tuning(
+            sample_rate,
+            pitch,
+            velocity,
+            oscillators,
+            routing,
+            envelopes,
+            waveforms,
+            [OperatorTuning::Ratio; OPERATORS],
+        )
+    }
+
+    /// Prepare fixed or ratio tuning on control, retaining the legacy default.
+    #[allow(clippy::too_many_arguments)] // Mirrors the existing standalone constructor plus tuning.
+    pub fn new_with_tuning(
+        sample_rate: u32,
+        pitch: u8,
+        velocity: u8,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelopes: [OperatorEnvelope; OPERATORS],
+        waveforms: [OperatorWaveform; OPERATORS],
+        tuning: [OperatorTuning; OPERATORS],
+    ) -> Result<Self, Invalid> {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
         }
-        let core = PreparedFmCore::new(sample_rate, pitch, oscillators, routing)?;
+        let steps = tuning::prepared_steps(
+            sample_rate,
+            pitch,
+            &oscillators.map(|oscillator| oscillator.ratio),
+            &tuning,
+        )?;
+        let core = PreparedFmCore {
+            configuration: super::PreparedFmConfiguration::new(oscillators, routing),
+            steps,
+        };
         let mut harmonic_caps = [0_u8; OPERATORS];
         for index in 0..OPERATORS {
             if waveforms[index] != OperatorWaveform::Sine {
@@ -117,3 +152,5 @@ impl PreparedOperatorFm4 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tuning_tests;
