@@ -1,7 +1,8 @@
 use crate::ControlStyle;
 use gpui::{
-    Context, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathBuilder,
-    SharedString, Window, canvas, div, point, prelude::*, px, rgb,
+    AnchoredPositionMode, Context, Corner, EventEmitter, FocusHandle, Focusable, MouseButton,
+    MouseDownEvent, PathBuilder, SharedString, Window, anchored, canvas, deferred, div, point,
+    prelude::*, px, rgb,
 };
 
 #[derive(Debug, Clone)]
@@ -369,7 +370,7 @@ impl SelectorConfig {
     }
 }
 
-/// Compact choice field with a bounded inline popup.
+/// Compact choice field with a bounded foreground popup.
 pub struct Selector {
     id: SharedString,
     choices: Vec<SharedString>,
@@ -380,6 +381,7 @@ pub struct Selector {
     appearance: DiscreteControlAppearance,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
+    measured_size: std::rc::Rc<std::cell::Cell<gpui::Size<gpui::Pixels>>>,
 }
 
 impl Selector {
@@ -407,6 +409,7 @@ impl Selector {
             appearance: config.appearance,
             focus: cx.focus_handle(),
             focus_blur: None,
+            measured_size: std::rc::Rc::new(std::cell::Cell::new(gpui::size(px(0.0), px(0.0)))),
         }
     }
 
@@ -537,6 +540,7 @@ impl gpui::Render for Selector {
             .flex()
             .flex_col()
             .min_w_0()
+            .relative()
             .track_focus(&self.focus)
             .rounded(px(2.0))
             .border_1()
@@ -595,28 +599,62 @@ impl gpui::Render for Selector {
                     .child(div().flex_1().min_w_0().overflow_hidden().child(selected))
                     .child(div().text_color(rgb(self.style.muted)).child("▾")),
             );
+        let measured_size = self.measured_size.clone();
+        root = root.child(
+            canvas(
+                move |bounds, window, _| {
+                    if measured_size.replace(bounds.size) != bounds.size {
+                        window.refresh();
+                    }
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .left(px(0.0))
+            .right(px(0.0))
+            .top(px(0.0))
+            .bottom(px(0.0)),
+        );
         if self.appearance == DiscreteControlAppearance::CompactSelector {
             root = root.w_full();
         }
         if self.open && self.enabled {
             let options = self.choices.clone();
             let current = self.selected;
+            let compact = self.appearance == DiscreteControlAppearance::CompactSelector;
+            let field_height = if compact { 16.0 } else { 22.0 };
+            let option_height = if compact { 18.0 } else { 19.0 };
+            let style = self.style;
+            // Absolute children use the selector's content box; account for its one-pixel border
+            // on each side so the overlay aligns with the visible field frame.
+            let popup_width = self.measured_size.get().width + px(2.0);
+            let max_popup_height = (window.viewport_size().height - px(8.0)).max(px(1.0));
+            let mut popup = div()
+                .id(SharedString::from(format!("{}-popup", self.id)))
+                .debug_selector(|| format!("{}-popup", self.id))
+                .flex()
+                .flex_col()
+                .w(popup_width)
+                .max_h(max_popup_height)
+                .overflow_y_scroll()
+                .border_1()
+                .border_color(rgb(style.border))
+                .rounded(px(2.0))
+                .bg(rgb(style.surface))
+                .shadow_md()
+                .occlude();
             for (index, choice) in options.into_iter().enumerate() {
                 let listener = cx.listener(move |selector, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
                     selector.choose(index, window, cx)
                 });
-                root = root.child(
+                popup = popup.child(
                     div()
                         .id(SharedString::from(format!("{}-option-{index}", self.id)))
                         .debug_selector(|| format!("{}-option-{index}", self.id))
                         .flex()
-                        .h(px(
-                            if self.appearance == DiscreteControlAppearance::CompactSelector {
-                                18.0
-                            } else {
-                                19.0
-                            },
-                        ))
+                        .flex_shrink_0()
+                        .h(px(option_height))
                         .px(px(4.0))
                         .items_center()
                         .rounded(px(2.0))
@@ -634,8 +672,24 @@ impl gpui::Render for Selector {
                         .child(choice),
                 );
             }
+            root = root.child(
+                deferred(
+                    anchored()
+                        .anchor(Corner::TopLeft)
+                        .position(point(px(0.0), px(field_height)))
+                        .position_mode(AnchoredPositionMode::Local)
+                        .child(popup),
+                )
+                .with_priority(100),
+            );
         }
         root.debug_selector(|| self.id.to_string())
+            .on_mouse_down_out(cx.listener(|selector, _, _, cx| {
+                if selector.open {
+                    selector.open = false;
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(Self::key_down))
     }
 }
