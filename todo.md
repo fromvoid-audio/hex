@@ -1744,3 +1744,15 @@ native visual acceptance remain pending. See [Operator shell context contract]
   limits are recorded in docs/performance.md.
 - Native spectrum display/input/listening, paced throughput and physical device
   deadlines remain for user validation; final-source full local CI is the merge gate.
+
+
+### 11 october 2026 — pulse2294: shared checked operator ramp frame
+
+- Registered Operator shares current/next ramp interpolation once per sample;
+  voice identities, feedback boundaries, note age and private DSP state stay checked.
+-124device tests and strict crate Clippy pass. Preserved old/new registered release
+  fixtures retain exact PCM in18runs;16voice ramp rendering median drops about44–45%.
+  Dense handoff/steady costs and performance limitations remain explicit.
+- No storage/capacity widening:4032B/twin,8064B/pair,16voices/256events. Full final-tree
+  local CI is the merge gate; native listening and quiet/physical deadline gates
+  remain separate in Pulse2229/2226/2108.
