@@ -185,6 +185,58 @@ impl MutableInstrumentTrackRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn committed_ledger_is_empty(&self) -> bool {
+        self.primary.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_feedback_tail_is_active(&self) -> bool {
+        self.primary.is_empty() && !self.pair.committed_is_quiescent()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_occurrence_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Check whether this freshly prepared owner can take the exact committed
+    /// mutable history from `previous` without allocating or changing either
+    /// owner. The canonical revision descriptor and route checks remain the
+    /// caller's responsibility.
+    pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
+        self.primary.capacity() >= previous.primary.len()
+            && self.scratch.capacity() >= previous.primary.len()
+            && self.pair.can_inherit_from(&previous.pair)
+    }
+
+    /// Copy a preflighted committed history into both candidate twins and
+    /// both occurrence ledgers. Keeping the old owner intact until graph
+    /// retirement makes handoff rollback and callback ownership safe.
+    pub(crate) fn inherit_from(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if self.primary.capacity() < previous.primary.len()
+            || self.scratch.capacity() < previous.primary.len()
+            || !self.pair.can_inherit_from(&previous.pair)
+        {
+            return Err(MutableInstrumentRuntimeError::Runtime(
+                NativeInstrumentRuntimeError::IncompatibleHistory,
+            ));
+        }
+        self.pair
+            .inherit_from(&previous.pair)
+            .map_err(map_runtime_error)?;
+        self.primary.clear();
+        self.primary.extend_from_slice(&previous.primary);
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&previous.primary);
+        self.next_id = previous.next_id;
+        self.next_id_scratch = previous.next_id;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn ledger_capacity_bytes(&self) -> Option<usize> {
         self.primary
             .capacity()
