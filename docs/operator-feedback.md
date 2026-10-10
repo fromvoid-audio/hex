@@ -188,9 +188,9 @@ separately and is not part of the handoff or render sample.
 Capture `rustc -Vv`, the exact source commit and tree digest, release binary
 SHA-256, hardware/OS identity, full command, logs and timestamp with each
 measurement. Run the profile with no concurrent compilation or unrelated CPU
-load where practical; repeat runs and retain each raw log. No long release
-measurement has been accepted for this prerequisite yet: implementation smoke
-is not performance evidence. This offline microbenchmark does not prove CPAL
+load where practical; repeat runs and retain each raw log. Three repeated release workload rounds are retained under
+`artifacts/profiles/operator-feedback-2289/`; the accepted baseline and its
+limitations are recorded in `docs/performance.md`. This offline microbenchmark does not prove CPAL
 callback deadlines, device stress, listening quality, or parity/performance
 against Ableton Live. See `docs/performance.md` for accepted measurements and
 open gates.
