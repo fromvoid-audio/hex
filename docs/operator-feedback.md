@@ -34,10 +34,11 @@ The caller must keep using the configuration that prepared the voice. This API
 is standalone; source inspection and unit tests do not prove native audio
 callback admission or allocation behavior.
 
-## standalone parameter retarget kernel (Pulse2284)
+## standalone parameter retarget kernel (Pulse2284 and Pulse2285)
 
 `PreparedOperatorFeedbackRetarget` is a fixed, copyable control-prepared value
-borrowed while processing the voices that existed at the edit. It linearly
+borrowed while processing every voice on the runtime, including notes admitted
+after the edit. It linearly
 interpolates oscillator levels, carrier weights and effective self-feedback in
 their authored domains. The default duration is five milliseconds rounded to
 the nearest sample (221 frames at 44.1 kHz; 240 at 48 kHz). Callers may select
@@ -50,18 +51,30 @@ history remain unchanged.
 Preparation refuses unsupported configuration edits and changes into or out of
 the mutable-feedback processing class before altering voice state. Retargeting
 an active ramp starts from its interpolated value at the caller-provided sample
-boundary; the caller must advance one shared ramp clock consistently for all
-participating voices. New voices created under the target configuration during
-an active ramp are not members of that ramp. Their admission/playback behavior
-is intentionally left for the native host integration contract (Pulse2229).
+boundary. `continue_from_shared_ramp` prepares this continuation without a live
+voice, so the shared parameter trajectory remains defined even if all voices
+expire before its endpoint. The caller advances one shared ramp clock
+consistently for all voices. `enroll_in_retarget` enrolls a newly prepared
+target voice at that same global boundary without rendering. A host can call it as soon as it applies a
+NoteOn, before a later same-offset NoteOff; the voice then begins its envelope
+at age zero on the shared ramp. `process_frame_joining_retarget` is an atomic
+convenience for enrollment and the first sample. At the endpoint both use the
+ordinary target-configuration path. This keeps carried and newly admitted
+voices on the same parameter trajectory without replaying their phase,
+envelope or gate history.
+
 Each voice records the unique identity of the configuration that prepared it,
-so the kernel can pair it with that exact source and the ramp's exact target.
-The identity is not content-derived. A future host history-copy path that moves
-an exact voice to a separately constructed but equal configuration must call
-`rebind_after_exact_history_copy` after proving the copied voice history and
-configuration are identical. Legacy `process_frame` remains permissive to
-support its prior history-copy semantics, and refuses a voice while its ramp is
-active.
+so the kernel can pair it with that exact source and ramp target. The identity
+is not content-derived. A future host history-copy path that moves an exact
+voice and active ramp to separately constructed but equal configurations must
+preflight all voices, then use `rebind_target_after_exact_history_copy` and
+`rebind_after_exact_history_copy_with_ramp`. At clock zero an unprocessed
+source voice retains its source identity, while an already enrolled target
+voice is rebound to the replacement target. A voice carried directly from a
+preceding ramp retains that ramp's source token and participant bit. After ramp
+processing, only the exact old target identity is remapped. Legacy
+`process_frame` remains permissive to support its prior history-copy semantics,
+and refuses a voice while its ramp is active.
 
 On this 64-bit arm64 build, the standalone configuration is 744 bytes (40 bytes
 larger for retarget preparation data and identity), a feedback voice is 160
@@ -184,7 +197,7 @@ listening, physical callback deadlines, Session-loop behavior, or every
 generic pause/stop and seek edge case. The actual registered Operator callback
 allocation probe covers onset, held processing, exclusive NoteOff, release and
 shutdown, with all construction and reclamation outside measurement.
-Parameter edits prepare a candidate configuration; this change does not
-establish how active feedback voices respond to changed values. Continuous live
-updates to supported Operator parameters remain a separate acceptance item
-(Pulse2229).
+Parameter edits prepare a candidate configuration; the shared ramp/join/rebind
+helpers are kernel prerequisites and are not yet wired into live registered
+parameter edits. Continuous live updates to supported Operator parameters
+remain a separate acceptance item (Pulse2229).
