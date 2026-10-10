@@ -92,12 +92,14 @@ proprietary implementation or assets are copied.
 
 ## Stateful follow-ups
 
-DC removal, bass mono and Operator require mutable DSP state. Immutable
-`PreparedRevision` owns prepared configuration; mutable playback owns processing
-state. Before admitting stateful devices, define compatible state transfer by
-stable device ID across parameter edits, initialization on insertion/type changes,
-seek/loop/stop reset semantics, bounded event scheduling and control-side
-retirement. Native and offline paths must use the same processing rules.
+DC removal, bass mono and Operator require mutable DSP state. `hex-lattice` now
+defines a default-off mutable instrument runtime with fixed committed/scratch
+twins, bounded caller event slices, preflight, a finite declared release/output
+tail and committed-state quiescence query, plus hard reset. Engine admission
+still needs to gate analytic versus mutable preparation, transfer compatible
+state by stable device identity and instrument configuration, map source events
+to occurrence IDs, define route/tail ownership and retire runtime owners on
+control. Native and offline paths must share those processing rules.
 
 Stage an explicit single instrument slot before Operator, preserving the current
 sine instrument as the migration default. Do not pretend a matrix represents a
@@ -122,5 +124,9 @@ processing or exact Live response.
 Generic paired stateful processors, history transfer, transactional rendering and
 control retirement are now implemented. Original Utility filters use the same
 registered codec and native/offline path. Scope, bounds, probes and open performance
-gates are recorded in [stateful lattice](stateful-lattice.md); instruments still
-require their own event/voice contract.
+gates are recorded in [stateful lattice](stateful-lattice.md). Instruments now
+have a separate optional paired mutable-runtime contract with ordered caller-owned
+events, bounded per-definition capacity and declared tail quiescence. It is a
+test-only foundation; engine event generation, Arrangement/Session integration,
+outgoing tails, sustained chase and callback retirement/probes remain open. See
+[instrument slots](lattice-instruments.md).

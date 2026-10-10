@@ -1,5 +1,8 @@
 //! Registered analytic instrument preparation and compact immutable note samplers.
-use super::{MAX_NATIVE_DEVICE_TYPES, MAX_PARAMETERS_PER_DEVICE, StereoFrame};
+use super::{
+    MAX_NATIVE_DEVICE_TYPES, MAX_PARAMETERS_PER_DEVICE, PreparedMutableInstrumentRuntime,
+    StereoFrame,
+};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
 };
@@ -70,6 +73,17 @@ pub trait PreparedNativeInstrument: Send + Sync {
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedAnalyticNote, DeviceContractError>;
+
+    /// Optional fixed-storage mutable voice runtime. The default keeps
+    /// existing instruments analytic-only. A mutable-only instrument may
+    /// return an explicit unsupported-class error from `prepare_note`; callers
+    /// must select this capability and must never substitute an analytic
+    /// sampler when note preparation fails.
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
+        Ok(None)
+    }
 }
 
 /// Registered analytic instrument definition. Instruments use a separate
