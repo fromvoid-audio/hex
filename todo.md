@@ -1336,3 +1336,22 @@ automatic merges. Pulse2223 standalone bounded self-feedback DSP is separately
 in_progress and absent from this app; native feedback admission remains a later
 gate. Exact Live laws, full Operator, plugins, PDC and physical deadlines remain
 open.
+
+## 10 October 2026 — standalone Operator feedback kernel
+
+Pulse2223 adds an original compact sequential feedback voice in hex-devices.
+Four bounded amounts use prior fully shaped oscillator outputs as phase
+modulation; incoming cross-modulation prohibits feedback on that oscillator.
+Zero feedback preserves the existing analytic sampler exactly. Checked frame
+advance and NoteOff retain atomic failure semantics and finite envelope tails.
+
+84 device tests, strict device Clippy, formatting and architecture/style guards
+passed. Independent sine, periodic and outgoing-DAG recurrence oracles cover
+velocity/envelopes, partitions, zero-feedback exact PCM and release boundaries.
+The 152-byte voice borrows its 704-byte prepared configuration. Busy-host
+memoryless profiles do not time nonzero feedback or establish deadlines; missing
+measurement-time provenance is explicit in docs/operator-feedback.md.
+Exact-head full local CI and publication follow. Native feedback controls, state
+codec and runtime admission are separately tracked by Pulse2225, including safe
+same-Operator analytic/mutable transitions and preserved unavailable authored
+values. Current review63 app remains unchanged; no native feedback/parity claim.

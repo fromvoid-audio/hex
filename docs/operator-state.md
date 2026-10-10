@@ -3,9 +3,12 @@
 Pulse2170 added control-side metadata and validated settings for the original
 four-envelope FM kernel. Pulse2172 registers that metadata as the distinct
 `hex.instrument.operator` builtin and prepares it through the shared analytic
-context contract. This is a bounded original acyclic FM device with four periodic waveform
-choices, not full Operator behavior or proof of Live numerical parity. Feedback,
-filters, further waveform controls and remaining behavior remain separate work.
+context contract. This is a bounded original acyclic FM device with four periodic
+waveform choices, not full Operator behavior or proof of Live numerical parity.
+A standalone bounded self-feedback kernel is specified in
+[Operator feedback](operator-feedback.md), but its controls are not part of this
+state schema or the registered native device. Filters, further waveform
+controls and remaining behavior remain separate work.
 
 `hex.instrument.operator`, state version4, owns exactly304 bytes: the original
 224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32

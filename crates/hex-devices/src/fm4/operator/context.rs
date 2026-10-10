@@ -208,6 +208,64 @@ impl PreparedOperatorConfiguration {
             }
         })
     }
+
+    pub(super) fn feedback_amounts_are_valid(&self, feedback_turns: [f64; OPERATORS]) -> bool {
+        if feedback_turns
+            .iter()
+            .any(|amount| !amount.is_finite() || !(0.0..=1.0).contains(amount))
+        {
+            return false;
+        }
+        (0..OPERATORS).all(|target| {
+            feedback_turns[target] == 0.0
+                || (0..OPERATORS).all(|source| {
+                    source == target || self.configuration.routing.modulation[source][target] == 0.0
+                })
+        })
+    }
+
+    pub(super) fn sample_with_feedback(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        gate_frames: u64,
+        feedback_turns: [f64; OPERATORS],
+        previous_outputs: [f64; OPERATORS],
+    ) -> (f32, [f64; OPERATORS]) {
+        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
+            return (0.0, [0.0; OPERATORS]);
+        }
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
+        }
+        let phase_modulation =
+            std::array::from_fn(|index| previous_outputs[index] * feedback_turns[index]);
+        let (routed, signals) = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
+            self.configuration.routed_output_with_feedback::<true>(
+                table,
+                age_frames,
+                &note.steps,
+                amplitudes,
+                phase_modulation,
+            )
+        } else if let Some(bank) = self.waveform_bank {
+            let harmonic_caps = unpack_caps(note.harmonic_caps);
+            self.configuration
+                .routed_output_with_waveforms_and_feedback(
+                    table,
+                    bank,
+                    (age_frames, &note.steps),
+                    amplitudes,
+                    (&self.waveforms, &harmonic_caps),
+                    phase_modulation,
+                )
+        } else {
+            return (0.0, [0.0; OPERATORS]);
+        };
+        ((routed * note.velocity) as f32, signals)
+    }
 }
 
 impl PreparedOperatorNote {

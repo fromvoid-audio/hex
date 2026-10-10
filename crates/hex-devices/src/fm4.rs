@@ -1,14 +1,16 @@
 //! Original standalone phase-modulation kernel, a prerequisite for Operator.
 //!
 //! The built-in definition admits this bounded acyclic kernel to native MIDI
-//! playback. It does not provide feedback, mutable voices or Live algorithm
-//! numbering. State and note preparation validate on control; sampling uses
-//! fixed arrays and a borrowed sine table.
+//! playback. The legacy FM4 device remains memoryless; Operator's separate
+//! standalone feedback voice adds bounded sequential self-feedback without
+//! changing native admission. State and note preparation validate on control;
+//! sampling uses fixed arrays and borrowed tables.
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
 pub use operator::{
-    OperatorTuning, PreparedOperatorConfiguration, PreparedOperatorFm4, PreparedOperatorNote,
+    OperatorTuning, PreparedOperatorConfiguration, PreparedOperatorFeedbackVoice,
+    PreparedOperatorFm4, PreparedOperatorNote,
 };
 
 use crate::operator_waveform::{OperatorWaveform, OperatorWaveformBank};
@@ -48,7 +50,8 @@ impl Oscillator {
 }
 
 /// Validated directed graph: `modulation[source][target]`, plus output weights.
-/// Acyclic connections may use any oscillator order; self-feedback is refused.
+/// Cross-modulation edges form a DAG and may use any oscillator order. The
+/// separate Operator feedback voice handles self-feedback outside this matrix.
 #[derive(Debug, Clone, Copy)]
 pub struct Routing {
     modulation: [[f64; OPERATORS]; OPERATORS],
@@ -284,16 +287,38 @@ impl PreparedFmConfiguration {
         steps: &[u64; OPERATORS],
         operator_amplitudes: [f64; OPERATORS],
     ) -> f64 {
+        self.routed_output_with_feedback::<SHAPE_OPERATORS>(
+            table,
+            age_frames,
+            steps,
+            operator_amplitudes,
+            [0.0; OPERATORS],
+        )
+        .0
+    }
+
+    #[inline]
+    fn routed_output_with_feedback<const SHAPE_OPERATORS: bool>(
+        &self,
+        table: &SineTable,
+        age_frames: u64,
+        steps: &[u64; OPERATORS],
+        operator_amplitudes: [f64; OPERATORS],
+        feedback_turns: [f64; OPERATORS],
+    ) -> (f64, [f64; OPERATORS]) {
         let mut signals = [0.0; OPERATORS];
         for &target in &self.routing.order {
             if self.levels[target] == 0.0 {
                 continue;
             }
-            let modulation: f64 = signals
+            let mut modulation: f64 = signals
                 .iter()
                 .enumerate()
                 .map(|(source, signal)| signal * self.routing.modulation[source][target])
                 .sum();
+            if feedback_turns[target] != 0.0 {
+                modulation += feedback_turns[target];
+            }
             let phase = steps[target]
                 .wrapping_mul(age_frames)
                 .wrapping_add(self.phases[target])
@@ -305,11 +330,12 @@ impl PreparedFmConfiguration {
                 signal
             };
         }
-        signals
+        let output = signals
             .iter()
             .zip(self.routing.carriers)
             .map(|(signal, weight)| signal * weight)
-            .sum()
+            .sum();
+        (output, signals)
     }
 
     #[inline]
@@ -322,17 +348,42 @@ impl PreparedFmConfiguration {
         operator_amplitudes: [f64; OPERATORS],
         waveform_data: (&[OperatorWaveform; OPERATORS], &[u8; OPERATORS]),
     ) -> f64 {
+        self.routed_output_with_waveforms_and_feedback(
+            sine_table,
+            waveform_bank,
+            (age_frames, steps),
+            operator_amplitudes,
+            waveform_data,
+            [0.0; OPERATORS],
+        )
+        .0
+    }
+
+    #[inline]
+    fn routed_output_with_waveforms_and_feedback(
+        &self,
+        sine_table: &SineTable,
+        waveform_bank: &OperatorWaveformBank,
+        phase_data: (u64, &[u64; OPERATORS]),
+        operator_amplitudes: [f64; OPERATORS],
+        waveform_data: (&[OperatorWaveform; OPERATORS], &[u8; OPERATORS]),
+        feedback_turns: [f64; OPERATORS],
+    ) -> (f64, [f64; OPERATORS]) {
+        let (age_frames, steps) = phase_data;
         let (waveforms, harmonic_caps) = waveform_data;
         let mut signals = [0.0; OPERATORS];
         for &target in &self.routing.order {
             if self.levels[target] == 0.0 {
                 continue;
             }
-            let modulation: f64 = signals
+            let mut modulation: f64 = signals
                 .iter()
                 .enumerate()
                 .map(|(source, signal)| signal * self.routing.modulation[source][target])
                 .sum();
+            if feedback_turns[target] != 0.0 {
+                modulation += feedback_turns[target];
+            }
             let phase = steps[target]
                 .wrapping_mul(age_frames)
                 .wrapping_add(self.phases[target])
@@ -344,11 +395,12 @@ impl PreparedFmConfiguration {
             let signal = f64::from(oscillator) * self.levels[target];
             signals[target] = signal * operator_amplitudes[target];
         }
-        signals
+        let output = signals
             .iter()
             .zip(self.routing.carriers)
             .map(|(signal, weight)| signal * weight)
-            .sum()
+            .sum();
+        (output, signals)
     }
 }
 
