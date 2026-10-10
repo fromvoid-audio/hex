@@ -76,6 +76,68 @@ and the profile-relevant source diff SHA-256 is
 documentation/test-selector edits; renderer and profile-example source are
 unchanged since capture.
 
+## FM4 audible-operator pruning — 10 October 2026
+
+The FM4 sampler now evaluates only nonzero-level carrier operators and their
+nonzero-level modulation ancestors. All authored rates, oscillators and routing
+still undergo the existing control-side validation, including unreachable
+oscillators. The renderer and note representation did not grow; unreachable
+levels are stored as zero in fields already used by the prepared sampler.
+
+Matched baseline and optimized release runs use the same profile harness and
+commands on Apple M5 Pro arm64, macOS 26.6.2, at 48 kHz. Each has 100 warm-up and
+500 measured blocks at 128 and 512 frames, 100 tracks, two Utility effects at
+0.999 after the instrument, and notes starting together with 120-quarter-note
+gates inside 128-quarter-note clips. The 100×1 default case has one simultaneous
+note per track; 100×16 has 16. The four-stage case has 16 notes per track and
+FM4's four original operators connected as op1→op2→op3→op4 with one turn of
+modulation depth per edge and only op4 as carrier. Per-block timing excludes
+retaining the rendered samples; `render_sum` adds those per-block durations.
+End-to-end elapsed includes sample collection and the whole-run hash. Timing
+was not isolated from machine scheduling, so treat comparisons as observations,
+not physical callback deadlines.
+
+| Workload | Frames/block | Before render sum | After render sum | Before/after max block |
+| --- | ---: | ---: | ---: | ---: |
+| Default FM4, 100×1 | 128 | 0.114 s | 0.031 s | 331.8 / 168.8 µs |
+| Default FM4, 100×1 | 512 | 0.447 s | 0.125 s | 1,149.8 / 584.8 µs |
+| Default FM4, 100×16 | 128 | 1.785 s | 0.491 s | 5,715.2 / 1,442.6 µs |
+| Default FM4, 100×16 | 512 | 7.061 s | 1.930 s | 15,208.8 / 5,018.0 µs |
+| Four-stage FM4, 100×16 | 128 | 1.773 / 1.789 s | 1.851 / 1.894 s | 5,058 / 4,241 vs 6,019 / 5,941 µs |
+| Four-stage FM4, 100×16 | 512 | 7.094 / 7.203 s | 7.258 / 7.453 s | 15,675 / 18,210 vs 15,764 / 21,137 µs |
+
+Default workloads improved about 3.6× in summed render time in these runs.
+The fully audible graph cannot skip an operator and measured 2–6% more summed
+render time across two samples; its maximum-block values varied substantially.
+This is a small, noisy observed cost for the skip checks, not a settled
+no-regression result. All whole-run sample hashes match before/after exactly:
+`225650eeae882757` and `eb76194f945b90f1` for 100×1 default; `bb28535fd649ee75`
+and `1abd087ad07334d1` for 100×16 default; `a6e1157ffda996dd` and
+`2cbacb80da717faf` for the four-stage graph. These hashes cover PCM rendered
+over all measured blocks; separate tests remain the behavior oracle.
+
+Reproduce from the repository root using the saved binaries:
+
+```sh
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/admission-before/profile_instrument-baseline --fm4 --dense-sustain --one-note --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/audible-after/profile_instrument-after --fm4 --dense-sustain --one-note --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/admission-before/profile_instrument-baseline --fm4 --dense-sustain --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/audible-after/profile_instrument-after --fm4 --dense-sustain --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/admission-before/profile_instrument-baseline --fm4 --four-stage-fm4 --dense-sustain --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/profiles/fm4-audible-operators-20261010/audible-after/profile_instrument-after --fm4 --four-stage-fm4 --dense-sustain --warmup-blocks=100 --measured-blocks=500 --prepared-runtime
+```
+
+The baseline uses HEAD `721bc3e944dfc2f5104dd4f39cb183b4e401fad8`, profile
+harness diff SHA-256 `e5a72d5650186975237f735e7afa7a17eac503843774352af74a476fc7d616f6`,
+and binary SHA-256 `1394f147be0fc03d9a71c188846c627bb3729f2c4da5961cc05e1d3abf7c7898`.
+The optimized binary SHA-256 is
+`4fd09b169b19ec175de77df06f77f32ffaa2bd1bf716baeb6eb04130fc3a6497`; its
+FM4/profile source diff SHA-256 is recorded in
+`artifacts/profiles/fm4-audible-operators-20261010/audible-after/identity.txt`.
+Raw output, including repeated four-stage runs, and the preserved baseline
+binary/source identity are under
+`artifacts/profiles/fm4-audible-operators-20261010/`.
+
 ## Ordered instrument gap render profile — 10 October 2026
 
 On Apple M5 Pro arm64, the release `profile_instrument` fixture is 100 tracks ×

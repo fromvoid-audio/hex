@@ -74,15 +74,28 @@ filters/LFO/modulation, polyphony/stealing, spread/glide, antialiasing, native
 controls and measured reference parity are not supplied here. Below-Nyquist
 base oscillators do not imply band-limited FM sidebands.
 
+Preparation still validates every authored oscillator and route, even when an
+operator cannot reach a carrier. It then marks only nonzero-level carriers and
+their nonzero-level ancestors as audible, storing zero in the existing prepared
+level slots for all other operators. Sampling skips those slots without
+changing the payload size, the order of audible operators, or their floating-
+point evaluation. A zero-level intermediate modulator cuts off its upstream
+ancestors; signed-zero carrier weights and modulation depths do not make an
+operator audible. Tests compare the optimized sampler and packed note
+bit-for-bit with the previous full four-operator evaluation across quiet,
+normal and full velocities, gates and release ages, including signed-zero and
+zero-level-middle cases. Unreachable oscillators still undergo Nyquist
+validation.
+
 ## Source and performance evidence
 
-Nine FM4 tests compare isolated carrier frequencies/levels/phases, additive
+FM4 tests compare isolated carrier frequencies/levels/phases, additive
 output, two- and four-stage graphs against independently calculated sine formulas.
 They cover arbitrary routing order, cycles and malformed numbers, envelope
 boundaries/early releases, zero stages, velocity, overflow-safe large ages and
 sample-identical block partitions1/64/128/256/513. The packed sampler is compared
 sample-exactly with the standalone kernel across its attack, gate and release
-boundaries. All38 device tests and strict device all-target Clippy pass. The
+boundaries. All40 device tests and strict affected-package all-target Clippy pass. The
 admission change adds Arrangement/Session, streamed hybrid, export, save/reopen,
 panel and callback-probe coverage; full local integration checks remain with the
 integration owner. Native listening remains separate.
