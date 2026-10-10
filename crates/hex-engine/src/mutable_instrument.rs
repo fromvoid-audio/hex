@@ -538,3 +538,66 @@ pub(crate) fn validate_mutable_graph_budget(
     }
     Ok(())
 }
+
+/// Validate one prepared graph's combined stateful effects and mutable
+/// instruments before the candidate can be published or history committed.
+pub(crate) fn validate_prepared_graph_budget(
+    arrangement: &crate::Project,
+    session: &crate::PreparedSessionInventory,
+) -> Result<(), MutableInstrumentRuntimeError> {
+    let mut effect_count = 0_usize;
+    let mut effect_bytes = 0_usize;
+    for track in arrangement.tracks() {
+        effect_count = effect_count
+            .checked_add(track.stateful_device_count())
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        effect_bytes = effect_bytes
+            .checked_add(
+                track
+                    .stateful_device_declared_bytes()
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?,
+            )
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+    }
+    for bus in arrangement.return_buses() {
+        for device in bus.device_chain.iter() {
+            let Some(definition) = &device.definition else {
+                continue;
+            };
+            effect_count = effect_count
+                .checked_add(1)
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            effect_bytes = effect_bytes
+                .checked_add(
+                    definition
+                        .declared_runtime_bytes()
+                        .checked_mul(2)
+                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                )
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        }
+    }
+
+    let mut mutable_count = 0_usize;
+    let mut mutable_bytes = 0_usize;
+    for track in arrangement.tracks() {
+        let Some(track_id) = track.canonical_track_id() else {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        };
+        if let Some(factory) = session.mutable_instrument_factory(track_id) {
+            mutable_count = mutable_count
+                .checked_add(1)
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            mutable_bytes = mutable_bytes
+                .checked_add(
+                    factory
+                        .declared_twin_bytes()
+                        .checked_mul(2)
+                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                )
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        }
+    }
+
+    validate_mutable_graph_budget(effect_count, effect_bytes, mutable_count, mutable_bytes)
+}

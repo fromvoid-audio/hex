@@ -20,10 +20,35 @@ Schemas 1–16 strictly decode with empty return and send collections. Unknown
 device types and state payloads remain preserved without a dependency from
 `hex-project` or `hex-storage` on the DSP registry.
 
-This stage defines metadata and transactions only. Return tracks have no clips,
-instrument, Session cells or return-to-return route. Playback compilation
-explicitly refuses projects containing a return track or nonzero send until the
-Pulse2177 audio graph integration owns routing, class validation, path latency,
-bounded processing and lifecycle retirement. UI2178 must render return rows
-pinned above the Main row and expose their actual model operations. Neither
-audio routing nor native UI/listening acceptance is established here.
+Playback now implements the bounded acyclic topology regular track → Return →
+Main. Each regular source and effect chain is rendered once. A send taps the
+post-track-fader signal; each Return sums its input, processes its registered
+effect chain and matrix, applies Return gain/mute, then joins Main before the
+master gain is applied once. Returns have no source, instrument, Session cells,
+send targets or feedback path. Arrangement, SessionPlayback and prepared linear
+export share this compiled routing contract. A zero-send project keeps exact
+pre-routing Arrangement PCM.
+
+Return effects are compiled through the native effect registry. Stateful return
+processors must explicitly report `Some(0)` algorithmic latency; unknown and
+nonzero latency refuse candidate compilation before editor history is committed.
+Matrix-only effects are memoryless zero-latency transforms. This is a narrow
+admission rule, not general path compensation. Return chains and fixed 256-frame
+scratch are constructed on control. Compatible bus IDs inherit processor
+history after full preflight; new buses start fresh, seek/stop reset chains just
+like regular effects, and loop wrap keeps their history continuous. Filter
+outputs continue to render on zero input so tails decay.
+
+Prepared revisions count stateful regular-track and Return effects together
+with registered mutable-instrument runtime declarations against the shared
+active graph count and paired-byte caps. This check runs before a candidate can
+commit editor history, and SessionPlayback repeats it defensively before
+constructing runtimes.
+
+At a revision boundary, sends from a removed regular track stop immediately;
+its existing release tails keep the current Main-only behavior. Removing a
+Return cuts that bus at the boundary and retires its runtime on control. This
+bounded policy does not claim Live-equivalent send-tail routing. Allocation
+probes cover effectful Return rendering, compatible replacement and control-side
+retirement; they do not establish physical-device deadlines or listening
+acceptance. UI2178 still owns the pinned rows and native interactions above Main.

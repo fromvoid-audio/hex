@@ -11,6 +11,34 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
+        for (new_index, bus) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .enumerate()
+        {
+            let Some(old_index) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old_bus| old_bus.id == bus.id)
+            else {
+                continue;
+            };
+            let candidate = self
+                .return_chains
+                .get(new_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let old = previous
+                .return_chains
+                .get(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if !candidate.can_inherit_from(old) {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+        }
         for (new_index, new_route) in self.routes.iter().enumerate() {
             if let Some(old_index) = previous
                 .routes
@@ -601,6 +629,29 @@ impl SessionPlayback {
                     };
                     route.pending = Some(pending);
                 }
+            }
+        }
+        for (new_index, bus) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .enumerate()
+        {
+            let Some(old_index) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old_bus| old_bus.id == bus.id)
+            else {
+                continue;
+            };
+            if let (Some(candidate), Some(old)) = (
+                self.return_chains.get_mut(new_index),
+                previous.return_chains.get(old_index),
+            ) {
+                candidate.inherit_from(old);
             }
         }
 

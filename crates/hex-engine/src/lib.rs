@@ -454,11 +454,27 @@ pub struct Track {
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
     device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_bypassed: bool,
     mutable_instrument: bool,
     mutable_looping_source: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CompiledSend {
+    pub return_index: usize,
+    pub gain: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReturnBus {
+    pub id: hex_project::ReturnId,
+    pub gain: f32,
+    pub muted: bool,
+    pub matrix: Option<hex_lattice::StereoMatrix>,
+    pub device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -512,15 +528,27 @@ impl PreparedTrackMix {
 
     /// Add one source frame with the prepared per-channel coefficients.
     pub fn add_frame(self, destination: &mut Frame, source: Frame) {
-        if !self.muted {
-            self.add_unmuted(destination, source);
+        let processed = self.apply_frame(source);
+        destination[0] += processed[0];
+        destination[1] += processed[1];
+    }
+
+    /// Return this track's post-fader contribution for routing to sends.
+    pub(crate) fn apply_frame(self, source: Frame) -> Frame {
+        if self.muted {
+            return [0.0; 2];
         }
+        let source = self.effects.map_or(source, |matrix| matrix.apply(source));
+        [
+            source[0] * self.channel_gain[0],
+            source[1] * self.channel_gain[1],
+        ]
     }
 
     fn add_unmuted(self, destination: &mut Frame, source: Frame) {
-        let source = self.effects.map_or(source, |matrix| matrix.apply(source));
-        destination[0] += source[0] * self.channel_gain[0];
-        destination[1] += source[1] * self.channel_gain[1];
+        let source = self.apply_frame(source);
+        destination[0] += source[0];
+        destination[1] += source[1];
     }
 
     fn without_effects(self) -> Self {
@@ -553,6 +581,7 @@ impl Track {
             ordered_prefix: None,
             ordered_suffix: None,
             device_chain: std::sync::Arc::from([]),
+            sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
@@ -597,6 +626,7 @@ impl Track {
             ordered_prefix,
             ordered_suffix,
             device_chain: std::sync::Arc::from(device_chain),
+            sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
@@ -660,6 +690,18 @@ impl Track {
             .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
         instances.extend(self.device_chain.iter().cloned());
         hex_lattice::NativeRuntimeChain::new(instances)
+    }
+
+    pub(crate) fn with_sends(mut self, sends: Vec<CompiledSend>) -> Self {
+        self.sends = sends;
+        if !self.sends.is_empty() {
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        self
+    }
+
+    pub(crate) fn sends(&self) -> &[CompiledSend] {
+        &self.sends
     }
 
     pub(crate) fn has_stateful_devices(&self) -> bool {
@@ -1167,6 +1209,7 @@ pub(crate) struct InstrumentTrack {
 pub struct Project {
     sample_rate: u32,
     tracks: Vec<Track>,
+    return_buses: Vec<ReturnBus>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
@@ -1253,6 +1296,7 @@ impl Project {
                 .max(),
             sample_rate,
             tracks,
+            return_buses: Vec::new(),
             loop_region,
             master_gain,
             has_streamed_sources,
@@ -1263,11 +1307,13 @@ impl Project {
     pub(crate) fn with_compiled_tracks(
         sample_rate: u32,
         tracks: Vec<Track>,
+        return_buses: Vec<ReturnBus>,
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
         shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
+        project.return_buses = return_buses;
         project.shared_contexts = shared_contexts;
         project.audible_end_frame = project
             .tracks
@@ -1304,6 +1350,10 @@ impl Project {
 
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
+    }
+
+    pub(crate) fn return_buses(&self) -> &[ReturnBus] {
+        &self.return_buses
     }
 
     /// Whether any clip needs streamed pages to produce audio.
@@ -1344,11 +1394,15 @@ impl PreparedMasterGain {
 
 pub(crate) struct RendererRuntime {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
         let mut device_chains = Vec::new();
+        let mut return_chains = Vec::new();
+        let mut return_scratch = Vec::new();
         let mut runtime_error = None;
         if device_chains
             .try_reserve_exact(project.tracks.len())
@@ -1367,8 +1421,47 @@ impl RendererRuntime {
                 }
             }
         }
+        if runtime_error.is_none() {
+            if return_chains
+                .try_reserve_exact(project.return_buses.len())
+                .is_err()
+                || return_scratch
+                    .try_reserve_exact(project.return_buses.len())
+                    .is_err()
+            {
+                runtime_error = Some("return runtime allocation failed");
+            } else {
+                for bus in &project.return_buses {
+                    let mut instances = Vec::new();
+                    if instances.try_reserve_exact(bus.device_chain.len()).is_err() {
+                        runtime_error = Some("return device allocation failed");
+                        return Self {
+                            device_chains,
+                            return_chains,
+                            return_scratch,
+                            runtime_error,
+                        };
+                    }
+                    instances.extend(bus.device_chain.iter().cloned());
+                    match hex_lattice::NativeRuntimeChain::new(instances) {
+                        Ok(chain) => {
+                            return_chains.push(chain);
+                            return_scratch.push([[0.0; 2]; 256]);
+                        }
+                        Err(_) => {
+                            runtime_error = Some("return runtime preparation failed");
+                            return_chains.clear();
+                            return_scratch.clear();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         Self {
             device_chains,
+            return_chains,
+            return_scratch,
             runtime_error,
         }
     }
@@ -1377,12 +1470,19 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.reset();
         }
+        for chain in &mut self.return_chains {
+            chain.reset();
+        }
     }
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.device_chains
             .iter()
             .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+            || self
+                .return_chains
+                .iter()
+                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
     }
 
     pub(crate) fn can_inherit_from(
@@ -1391,7 +1491,7 @@ impl RendererRuntime {
         previous: &Self,
         previous_project: &Project,
     ) -> bool {
-        project.tracks().iter().enumerate().all(|(index, track)| {
+        let tracks_match = project.tracks().iter().enumerate().all(|(index, track)| {
             let Some(track_id) = track.canonical_track_id() else {
                 return true;
             };
@@ -1409,7 +1509,28 @@ impl RendererRuntime {
                 (Some(candidate), Some(old)) => candidate.can_inherit_from(old),
                 _ => false,
             }
-        })
+        });
+        tracks_match
+            && project
+                .return_buses()
+                .iter()
+                .enumerate()
+                .all(|(index, bus)| {
+                    let Some(previous_index) = previous_project
+                        .return_buses()
+                        .iter()
+                        .position(|old_bus| old_bus.id == bus.id)
+                    else {
+                        return true;
+                    };
+                    match (
+                        self.return_chains.get(index),
+                        previous.return_chains.get(previous_index),
+                    ) {
+                        (Some(candidate), Some(old)) => candidate.can_inherit_from(old),
+                        _ => false,
+                    }
+                })
     }
 
     pub(crate) fn inherit_from(
@@ -1432,6 +1553,21 @@ impl RendererRuntime {
             if let (Some(candidate), Some(old)) = (
                 self.device_chains.get_mut(index),
                 previous.device_chains.get(previous_index),
+            ) {
+                candidate.inherit_from(old);
+            }
+        }
+        for (index, bus) in project.return_buses().iter().enumerate() {
+            let Some(previous_index) = previous_project
+                .return_buses()
+                .iter()
+                .position(|old_bus| old_bus.id == bus.id)
+            else {
+                continue;
+            };
+            if let (Some(candidate), Some(old)) = (
+                self.return_chains.get_mut(index),
+                previous.return_chains.get(previous_index),
             ) {
                 candidate.inherit_from(old);
             }
@@ -1484,6 +1620,28 @@ impl RendererRuntime {
         let block_start = *position;
         for chain in &mut self.device_chains {
             chain.begin_block();
+        }
+        let has_return_routes = !project.return_buses.is_empty()
+            || project.tracks.iter().any(|track| !track.sends.is_empty());
+        if has_return_routes {
+            for chain in &mut self.return_chains {
+                chain.begin_block();
+            }
+            if let Err(error) =
+                self.render_return_routes(project, block_start, output, pages.as_deref_mut())
+            {
+                output.fill([0.0; 2]);
+                return Err(error);
+            }
+            for chain in &mut self.device_chains {
+                chain.commit_block();
+            }
+            for chain in &mut self.return_chains {
+                chain.commit_block();
+            }
+            project.master_gain.apply(output);
+            *position = next;
+            return Ok(());
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_stateful_devices();
@@ -1577,6 +1735,124 @@ impl RendererRuntime {
         // gain is deliberately post-sum rather than folded into track gains.
         project.master_gain.apply(output);
         *position = next;
+        Ok(())
+    }
+
+    fn render_return_routes<P: MediaPages + ?Sized>(
+        &mut self,
+        project: &Project,
+        block_start: u64,
+        output: &mut [Frame],
+        mut pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        for offset in (0..output.len()).step_by(256) {
+            let count = (output.len() - offset).min(256);
+            let start = block_start
+                .checked_add(offset as u64)
+                .ok_or(Invalid("render range overflow"))?;
+            let end = start
+                .checked_add(count as u64)
+                .ok_or(Invalid("render range overflow"))?;
+            let output_chunk = &mut output[offset..offset + count];
+            for scratch in &mut self.return_scratch {
+                scratch[..count].fill([0.0; 2]);
+            }
+            for (track_index, track) in project.tracks.iter().enumerate() {
+                let stateful = track.has_stateful_devices();
+                let ordered = track.requires_ordered_processing();
+                if !stateful && !ordered && track.sends.is_empty() {
+                    if let Some(provider) = pages.as_deref_mut() {
+                        track.render_unmuted_range_with_pages(
+                            start,
+                            end,
+                            output_chunk,
+                            None,
+                            provider,
+                        );
+                    } else {
+                        track.render_unmuted_range(start, end, output_chunk, None);
+                    }
+                    continue;
+                }
+
+                let mut scratch = [[0.0; 2]; 256];
+                let rendered = &mut scratch[..count];
+                if let Some(provider) = pages.as_deref_mut() {
+                    if ordered {
+                        track.render_audio_range_with_pages(start, end, rendered, provider);
+                    } else {
+                        track.render_unmuted_range_with_pages(start, end, rendered, None, provider);
+                    }
+                } else if ordered {
+                    track.render_audio_range(start, end, rendered);
+                } else {
+                    track.render_unmuted_range(start, end, rendered, None);
+                }
+                if ordered {
+                    if stateful {
+                        self.device_chains
+                            .get_mut(track_index)
+                            .ok_or(Invalid("native device runtime is unavailable"))?
+                            .process_range(0..track.instrument_position, rendered)
+                            .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                    } else {
+                        track.apply_ordered_prefix(rendered);
+                    }
+                    track.render_instrument_range(start, end, rendered, None);
+                    if stateful {
+                        let chain = self
+                            .device_chains
+                            .get_mut(track_index)
+                            .ok_or(Invalid("native device runtime is unavailable"))?;
+                        let effect_count = chain.len();
+                        chain
+                            .process_range(track.instrument_position..effect_count, rendered)
+                            .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                    } else {
+                        track.apply_ordered_suffix(rendered);
+                    }
+                } else if stateful {
+                    self.device_chains
+                        .get_mut(track_index)
+                        .ok_or(Invalid("native device runtime is unavailable"))?
+                        .process_block(rendered);
+                }
+                for (frame_index, source) in rendered.iter().copied().enumerate() {
+                    let mixed = track.mix.apply_frame(source);
+                    output_chunk[frame_index][0] += mixed[0];
+                    output_chunk[frame_index][1] += mixed[1];
+                    for send in &track.sends {
+                        let target = self
+                            .return_scratch
+                            .get_mut(send.return_index)
+                            .ok_or(Invalid("compiled return send target is missing"))?;
+                        target[frame_index][0] += mixed[0] * send.gain;
+                        target[frame_index][1] += mixed[1] * send.gain;
+                    }
+                }
+            }
+            for (index, bus) in project.return_buses.iter().enumerate() {
+                let bus_frames = self
+                    .return_scratch
+                    .get_mut(index)
+                    .ok_or(Invalid("return scratch is unavailable"))?;
+                let frames = &mut bus_frames[..count];
+                if let Some(chain) = self.return_chains.get_mut(index) {
+                    chain.process_block(frames);
+                } else {
+                    return Err(Invalid("return runtime is unavailable"));
+                }
+                if let Some(matrix) = bus.matrix {
+                    matrix.apply_block(frames);
+                }
+                if !bus.muted {
+                    for (destination, source) in output_chunk.iter_mut().zip(frames.iter()) {
+                        destination[0] += source[0] * bus.gain;
+                        destination[1] += source[1] * bus.gain;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
