@@ -9,10 +9,16 @@ Completed chronology and superseded work orders are preserved in the
 
 ## delivery rules
 
+- Use Pulse for project and issue planning. Discover IDs, check existing tickets
+  and read the current revision before selective updates. Keep pending acceptance
+  open; record unrelated discoveries as follow-up tickets. See
+  [the planning workflow](AGENTS.md#7-where-things-are-tracked).
 - Each new request gets its own focused PR; do not combine unrelated UI, DSP,
   hosting, or persistence changes. Large requests use several focused PRs.
 - Record the PR and actual checks here when a work unit lands. Source-complete,
-  native-accepted and merged are separate states. No automatic merging.
+  native-accepted and merged are separate states. After final diff review and a
+  green full local CI run on the exact unchanged commit, merge the focused PR
+  using the standing user authorization; keep native acceptance separate.
 - Keep pending acceptance checks. Remove duplicate or superseded tasks from this
   queue, while retaining useful history in the archive and owning documents.
 - Preserve unrelated work. Native UI and listening checks belong to the user;
