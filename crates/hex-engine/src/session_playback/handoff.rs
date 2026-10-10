@@ -1,7 +1,140 @@
 use super::*;
 use crate::MidiTiming;
 
+#[derive(Clone, Copy)]
+struct MutableCandidateSpan {
+    signature: crate::mutable_instrument::MutableOccurrenceSignature,
+    source_frame: u64,
+    end_frame: u64,
+}
+
 impl SessionPlayback {
+    fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
+        &self,
+        track_index: usize,
+        track_id: TrackId,
+        owner: RouteOwner,
+        previous: &Self,
+        timing: &T,
+    ) -> Result<
+        (
+            [Option<MutableCandidateSpan>; crate::mutable_instrument::MAX_MUTABLE_SPANS_PER_QUERY],
+            usize,
+            u64,
+        ),
+        SessionPlaybackError,
+    > {
+        let mut candidates = [None; crate::mutable_instrument::MAX_MUTABLE_SPANS_PER_QUERY];
+        let mut count = 0_usize;
+        let mut spans = MidiSpanBuffer::default();
+        let source_frame = match owner {
+            RouteOwner::Arrangement => {
+                let frame = previous.arrangement_frame;
+                let end = frame
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                let track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(track_index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let mut overflow = false;
+                let mut arithmetic_failure = false;
+                track
+                    .for_each_mutable_midi_span(frame, end, |span| {
+                        let Some(elapsed) = span.end.checked_sub(frame) else {
+                            arithmetic_failure = true;
+                            return;
+                        };
+                        let Some(end_frame) = previous.performance_frame.checked_add(elapsed)
+                        else {
+                            arithmetic_failure = true;
+                            return;
+                        };
+                        let Some(slot) = candidates.get_mut(count) else {
+                            overflow = true;
+                            return;
+                        };
+                        *slot = Some(MutableCandidateSpan {
+                            signature:
+                                crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                                    crate::mutable_instrument::MutableOccurrenceKey::new(
+                                        track_id,
+                                        span.clip,
+                                        span.note,
+                                        span.iteration,
+                                        previous.arrangement_loop_pass,
+                                    ),
+                                    span.onset_beat,
+                                    span.gate_end_beat,
+                                    span.pitch,
+                                    span.channel,
+                                    span.velocity,
+                                ),
+                            source_frame: span.start,
+                            end_frame,
+                        });
+                        count += 1;
+                    })
+                    .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+                if arithmetic_failure {
+                    return Err(SessionPlaybackError::ArithmeticOverflow);
+                }
+                if overflow {
+                    return Err(SessionPlaybackError::ReleaseBankFull);
+                }
+                frame
+            }
+            RouteOwner::Session { clip, launch } => {
+                let frame = previous.performance_frame;
+                let end = frame
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                let Some(prepared) = self.revision.session().midi_clip(clip) else {
+                    return Ok((candidates, 0, frame));
+                };
+                if prepared.track != track_id || !prepared.instrument_enabled() {
+                    return Ok((candidates, 0, frame));
+                }
+                prepared
+                    .instrument_template()
+                    .query(launch, timing, frame, end, &mut spans)
+                    .map_err(SessionPlaybackError::Midi)?;
+                for span in spans.spans().copied() {
+                    let Some(slot) = candidates.get_mut(count) else {
+                        return Err(SessionPlaybackError::ReleaseBankFull);
+                    };
+                    *slot = Some(MutableCandidateSpan {
+                        signature:
+                            crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                                crate::mutable_instrument::MutableOccurrenceKey::new(
+                                    track_id,
+                                    span.clip,
+                                    span.note,
+                                    span.iteration,
+                                    0,
+                                ),
+                                span.onset_beat,
+                                span.gate_end_beat,
+                                span.pitch,
+                                span.channel,
+                                span.velocity,
+                            ),
+                        source_frame: span.start_frame,
+                        end_frame: span.end_frame,
+                    });
+                    count += 1;
+                }
+                frame
+            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {
+                return Ok((candidates, 0, previous.performance_frame));
+            }
+        };
+        Ok((candidates, count, source_frame))
+    }
+
     pub(super) fn inherit_state(
         &mut self,
         previous: &mut Self,
@@ -201,11 +334,8 @@ impl SessionPlayback {
             },
         );
 
-        // A nonquiescent mutable owner is retained as an old-law tail. Until
-        // mutable occurrence suppression is available, refuse a candidate
-        // enabled source that would also emit a pre-cut occurrence for that
-        // track, including analytic candidates and tracks represented only by
-        // an already-carried mutable tail.
+        // Analytic candidates retain their existing no-chase rule. Mutable
+        // candidates are checked against owned dispatch proofs below.
         for (new_index, new_route) in self.routes.iter().enumerate() {
             let old_index = previous
                 .routes
@@ -239,6 +369,13 @@ impl SessionPlayback {
                 .get(new_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             if !new_track.instrument_slot_enabled() {
+                continue;
+            }
+            if self
+                .mutable_instruments
+                .get(new_index)
+                .is_some_and(Option::is_some)
+            {
                 continue;
             }
 
@@ -288,8 +425,9 @@ impl SessionPlayback {
             }
         }
 
-        // Mutable runtimes have no authored-age chase yet. Refuse a candidate
-        // whose active owner would require starting a pre-cut note midstream.
+        // A mutable candidate may retain only occurrences proven to have been
+        // dispatched under the old law. Missing or changed historical proof
+        // remains a no-chase refusal.
         for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
             if runtime.is_none() {
                 continue;
@@ -349,52 +487,38 @@ impl SessionPlayback {
                 // because there was no old route to match.
                 new_route.owner
             };
-            let active = match candidate_owner {
-                RouteOwner::Arrangement => {
-                    let track = self
-                        .revision
-                        .arrangement()
-                        .tracks()
-                        .get(new_index)
-                        .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    let frame = previous.arrangement_frame;
-                    let end = frame
-                        .checked_add(1)
-                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                    let mut active = false;
-                    track
-                        .for_each_mutable_midi_span(frame, end, |span| {
-                            active |= span.start < frame && span.end > frame;
-                        })
-                        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
-                    active
+            let (candidates, candidate_count, source_frame) = self.mutable_candidates_at_cut(
+                new_index,
+                new_route.id,
+                candidate_owner,
+                previous,
+                &candidate_timing,
+            )?;
+            for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                let exact = mutable_proof_deadline(previous, new_route.id, candidate.signature);
+                let carried = previous.suppressions.iter().any(|entry| {
+                    entry.mutable_signature == Some(candidate.signature)
+                        && entry.until_frame > previous.performance_frame
+                });
+                let same_key =
+                    mutable_key_has_live_proof(previous, new_route.id, candidate.signature.key())
+                        || previous.suppressions.iter().any(|entry| {
+                            entry.track == new_route.id
+                                && (entry.clip, entry.note, entry.iteration)
+                                    == (
+                                        candidate.signature.key().clip,
+                                        candidate.signature.key().note,
+                                        candidate.signature.key().iteration,
+                                    )
+                                && entry.until_frame > previous.performance_frame
+                                && entry.mutable_signature.is_some()
+                        });
+                if candidate.source_frame < source_frame && exact.is_none() && !carried {
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                RouteOwner::Session { clip, launch } => {
-                    let Some(prepared) = self.revision.session().midi_clip(clip) else {
-                        continue;
-                    };
-                    if !prepared.instrument_enabled()
-                        || !prepared.instrument_template().is_event_source()
-                    {
-                        false
-                    } else {
-                        let frame = previous.performance_frame;
-                        let end = frame
-                            .checked_add(1)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        prepared
-                            .instrument_template()
-                            .query(launch, &candidate_timing, frame, end, &mut self.spans)
-                            .map_err(SessionPlaybackError::Midi)?;
-                        self.spans
-                            .spans()
-                            .any(|span| span.start_frame < frame && span.end_frame > frame)
-                    }
+                if same_key && exact.is_none() && !carried {
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
-            };
-            if active {
-                return Err(SessionPlaybackError::MutableInstrumentChase);
             }
         }
 
@@ -758,8 +882,17 @@ impl SessionPlayback {
                         .and_then(|carried| {
                             carried
                                 .binary_search_by_key(
-                                    &(old_route.id, clip, note, iteration),
-                                    |entry| (entry.track, entry.clip, entry.note, entry.iteration),
+                                    &(old_route.id, clip, note, iteration, 0, None),
+                                    |entry| {
+                                        (
+                                            entry.track,
+                                            entry.clip,
+                                            entry.note,
+                                            entry.iteration,
+                                            entry.loop_pass,
+                                            entry.mutable_signature,
+                                        )
+                                    },
                                 )
                                 .ok()
                         });
@@ -881,10 +1014,12 @@ impl SessionPlayback {
                                     clip: span.clip,
                                     note: span.note,
                                     iteration: span.iteration,
+                                    loop_pass: 0,
                                     until_frame: candidate_end_frame
                                         .map_or(voice.end_frame(), |end| {
                                             end.max(voice.end_frame())
                                         }),
+                                    mutable_signature: None,
                                 },
                             )
                         {
@@ -922,7 +1057,9 @@ impl SessionPlayback {
                                 clip: span.clip,
                                 note: span.note,
                                 iteration: span.iteration,
+                                loop_pass: 0,
                                 until_frame,
+                                mutable_signature: None,
                             },
                         ) {
                             failure = Some(error);
@@ -932,6 +1069,58 @@ impl SessionPlayback {
                 if let Some(error) = failure {
                     return Err(error);
                 }
+            }
+        }
+        for new_index in 0..self.routes.len() {
+            if self
+                .mutable_instruments
+                .get(new_index)
+                .is_none_or(Option::is_none)
+            {
+                continue;
+            }
+            let route = self
+                .route_scratch
+                .get(new_index)
+                .copied()
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let (candidates, candidate_count, _) = self.mutable_candidates_at_cut(
+                new_index,
+                route.id,
+                route.owner,
+                previous,
+                &candidate_timing,
+            )?;
+            for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                let proof_deadline =
+                    mutable_proof_deadline(previous, route.id, candidate.signature);
+                let carried_deadline = previous
+                    .suppressions
+                    .iter()
+                    .filter(|entry| {
+                        entry.mutable_signature == Some(candidate.signature)
+                            && entry.until_frame > previous.performance_frame
+                    })
+                    .map(|entry| entry.until_frame)
+                    .max();
+                let Some(old_deadline) = proof_deadline.into_iter().chain(carried_deadline).max()
+                else {
+                    continue;
+                };
+                let key = candidate.signature.key();
+                add_or_extend_suppression(
+                    &mut self.suppression_scratch,
+                    self.release_capacity,
+                    MidiOccurrenceSuppression {
+                        track: key.track,
+                        clip: key.clip,
+                        note: key.note,
+                        iteration: key.iteration,
+                        loop_pass: key.loop_pass,
+                        until_frame: old_deadline.max(candidate.end_frame),
+                        mutable_signature: Some(candidate.signature),
+                    },
+                )?;
             }
         }
         for entry in &previous.releases {
@@ -989,7 +1178,9 @@ impl SessionPlayback {
                     clip: continuation.key.clip,
                     note: continuation.key.note,
                     iteration: continuation.key.iteration,
+                    loop_pass: 0,
                     until_frame: voice.end_frame(),
+                    mutable_signature: None,
                 });
             }
         }
@@ -1129,7 +1320,9 @@ impl SessionPlayback {
                             clip: key.clip,
                             note: key.note,
                             iteration: key.iteration,
+                            loop_pass: 0,
                             until_frame: voice.end_frame(),
+                            mutable_signature: None,
                         });
                     }
                 }
@@ -1137,8 +1330,16 @@ impl SessionPlayback {
         }
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
-        self.suppression_scratch
-            .sort_unstable_by_key(|entry| (entry.track, entry.clip, entry.note, entry.iteration));
+        self.suppression_scratch.sort_unstable_by_key(|entry| {
+            (
+                entry.track,
+                entry.clip,
+                entry.note,
+                entry.iteration,
+                entry.loop_pass,
+                entry.mutable_signature,
+            )
+        });
 
         // Only groups with live release voices or a nonquiescent mutable
         // instrument cross a publication boundary. Completed owners stay on
@@ -1603,6 +1804,7 @@ impl SessionPlayback {
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.performance_frame = previous.performance_frame;
         self.arrangement_frame = previous.arrangement_frame;
+        self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
@@ -1747,19 +1949,99 @@ impl SessionPlayback {
 }
 
 fn is_suppressed(playback: &SessionPlayback, track: TrackId, key: ContinuationKey) -> bool {
-    playback
-        .suppressions
-        .binary_search_by(|entry| {
-            (entry.track, entry.clip, entry.note, entry.iteration).cmp(&(
-                track,
-                key.clip,
-                key.note,
-                key.iteration,
-            ))
+    let target = (track, key.clip, key.note, key.iteration, 0);
+    let start = playback.suppressions.partition_point(|entry| {
+        (
+            entry.track,
+            entry.clip,
+            entry.note,
+            entry.iteration,
+            entry.loop_pass,
+        ) < target
+    });
+    playback.suppressions[start..]
+        .iter()
+        .take_while(|entry| {
+            (
+                entry.track,
+                entry.clip,
+                entry.note,
+                entry.iteration,
+                entry.loop_pass,
+            ) == target
         })
-        .ok()
-        .and_then(|index| playback.suppressions.get(index))
-        .is_some_and(|entry| entry.until_frame > playback.performance_frame)
+        .any(|entry| {
+            entry.mutable_signature.is_none() && entry.until_frame > playback.performance_frame
+        })
+}
+
+fn mutable_proof_deadline(
+    playback: &SessionPlayback,
+    track: TrackId,
+    signature: crate::mutable_instrument::MutableOccurrenceSignature,
+) -> Option<u64> {
+    let mut deadline = None;
+    if let Some(index) = playback.routes.iter().position(|route| route.id == track) {
+        for proof in playback
+            .mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .into_iter()
+            .flat_map(|runtime| runtime.proofs())
+        {
+            if proof.signature == signature
+                && proof.onset_frame < playback.performance_frame
+                && proof.quiet_deadline_frame > playback.performance_frame
+            {
+                deadline = Some(deadline.map_or(proof.quiet_deadline_frame, |current: u64| {
+                    current.max(proof.quiet_deadline_frame)
+                }));
+            }
+        }
+    }
+    for tail in playback
+        .tail_mutable_instruments
+        .iter()
+        .flatten()
+        .filter(|tail| tail.track_id == track)
+    {
+        for proof in tail.runtime.proofs() {
+            if proof.signature == signature
+                && proof.onset_frame < playback.performance_frame
+                && proof.quiet_deadline_frame > playback.performance_frame
+            {
+                deadline = Some(deadline.map_or(proof.quiet_deadline_frame, |current: u64| {
+                    current.max(proof.quiet_deadline_frame)
+                }));
+            }
+        }
+    }
+    deadline
+}
+
+fn mutable_key_has_live_proof(
+    playback: &SessionPlayback,
+    track: TrackId,
+    key: crate::mutable_instrument::MutableOccurrenceKey,
+) -> bool {
+    let matches_key = |proof: crate::mutable_instrument::MutableOccurrence| {
+        proof.signature.key() == key
+            && proof.onset_frame < playback.performance_frame
+            && proof.quiet_deadline_frame > playback.performance_frame
+    };
+    playback
+        .routes
+        .iter()
+        .position(|route| route.id == track)
+        .and_then(|index| playback.mutable_instruments.get(index))
+        .and_then(Option::as_ref)
+        .is_some_and(|runtime| runtime.proofs().any(matches_key))
+        || playback
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .filter(|tail| tail.track_id == track)
+            .any(|tail| tail.runtime.proofs().any(matches_key))
 }
 
 fn add_or_extend_suppression(
@@ -1773,7 +2055,16 @@ fn add_or_extend_suppression(
             existing.clip,
             existing.note,
             existing.iteration,
-        ) == (entry.track, entry.clip, entry.note, entry.iteration)
+            existing.loop_pass,
+            existing.mutable_signature,
+        ) == (
+            entry.track,
+            entry.clip,
+            entry.note,
+            entry.iteration,
+            entry.loop_pass,
+            entry.mutable_signature,
+        )
     }) {
         existing.until_frame = existing.until_frame.max(entry.until_frame);
         return Ok(());

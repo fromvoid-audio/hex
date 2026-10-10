@@ -348,6 +348,117 @@ struct MutableFeedbackRuntime {
     tail_left: u8,
 }
 
+/// Minimal mutable voice used to exercise an instrument with a real declared
+/// zero-frame release. Unlike `MutableFeedbackRuntime`, it has no feedback or
+/// post-gate tail, so the fixture's declared bound is truthful.
+#[derive(Clone, Copy, Default)]
+struct ZeroTailMutableRuntime {
+    active: bool,
+}
+
+struct ZeroTailMutableFactory;
+
+impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_twin_bytes(&self) -> usize {
+        std::mem::size_of::<ZeroTailMutableRuntime>()
+    }
+    fn max_events_per_block(&self) -> usize {
+        256
+    }
+    fn max_active_occurrences(&self) -> usize {
+        64
+    }
+    fn max_release_tail_frames(&self) -> u64 {
+        0
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        Box::new(ZeroTailMutableRuntime::default())
+    }
+}
+
+impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
+    fn preflight_events(
+        &self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        let mut active = self.active;
+        let mut previous_offset = 0;
+        for event in events.iter().copied() {
+            let (offset, is_on) = match event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
+                    (frame_offset, true)
+                }
+                hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                    (frame_offset, false)
+                }
+            };
+            if offset < previous_offset || offset >= frame_count {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            if is_on == active {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            active = is_on;
+            previous_offset = offset;
+        }
+        Ok(())
+    }
+
+    fn process_block(
+        &mut self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+    ) {
+        let mut event_index = 0;
+        for (frame_index, frame) in frames.iter_mut().enumerate() {
+            while let Some(event) = events.get(event_index).copied() {
+                let (offset, is_on) = match event {
+                    hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
+                        (frame_offset, true)
+                    }
+                    hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                        (frame_offset, false)
+                    }
+                };
+                if offset != frame_index {
+                    break;
+                }
+                self.active = is_on;
+                event_index += 1;
+            }
+            if self.active {
+                frame[0] += 0.25;
+                frame[1] += 0.25;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+    }
+    fn is_quiescent(&self) -> bool {
+        !self.active
+    }
+    fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
+        previous.as_any().is::<Self>()
+    }
+    fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            self.active = previous.active;
+        }
+    }
+    fn fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl MutableFeedbackRuntime {
     fn advance(voices: &mut [MutableFeedbackVoice; 64], frames: usize) {
         for _ in 0..frames {
@@ -3058,9 +3169,12 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                     iteration,
                     0,
                 ),
+                onset_beat: hex_project::BeatTime::from_raw(source_start << 32),
+                gate_end_beat: hex_project::BeatTime::from_raw(8 << 32),
                 source_start,
                 source_gate_end: 8,
                 pitch,
+                channel: 0,
                 velocity,
             })
             .unwrap();
@@ -3079,6 +3193,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
             0,
             &mut whole_output,
             &mut whole_onsets,
+            &[],
             &mut whole_events,
         )
         .unwrap();
@@ -3128,12 +3243,226 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 start as u64,
                 &mut partitioned_output[start..end],
                 &mut partitioned_onsets,
+                &[],
                 &mut partitioned_events,
             )
             .unwrap();
     }
     assert_eq!(partitioned_output, whole_output);
     partitioned.commit_block();
+}
+
+#[test]
+fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signature() {
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+    let key = crate::mutable_instrument::MutableOccurrenceKey::new(
+        track.id(),
+        clip.id(),
+        note.id(),
+        3,
+        2,
+    );
+    let onset = crate::mutable_instrument::MutableNoteOnset {
+        key,
+        onset_beat: BeatTime::from_raw(0),
+        gate_end_beat: BeatTime::from_raw(1 << 32),
+        source_start: 0,
+        source_gate_end: 1,
+        pitch: 60,
+        channel: 4,
+        velocity: 91,
+    };
+
+    let mut old =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    old.begin_block();
+    let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    onsets.push(onset).unwrap();
+    let mut events = Vec::new();
+    let mut audio = [[0.0; 2]; 4];
+    old.process_segment(track.id(), 0, 0, &mut audio, &mut onsets, &[], &mut events)
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            hex_lattice::NativeInstrumentEvent::NoteOn { .. },
+            hex_lattice::NativeInstrumentEvent::NoteOff { .. }
+        ]
+    ));
+    old.commit_block();
+    let proof = old.proofs().next().expect("gateoff keeps the owned proof");
+    let old_deadline = 1 + old.max_release_tail_frames();
+    assert_eq!(
+        proof.signature,
+        crate::mutable_instrument::MutableOccurrenceSignature::new(onset)
+    );
+    assert_eq!(proof.onset_frame, 0);
+    assert_eq!(proof.gate_end_frame, 1);
+    assert_eq!(proof.quiet_deadline_frame, old_deadline);
+    assert!(proof.note_off_sent);
+
+    let suppression = crate::midi_template::MidiOccurrenceSuppression {
+        track: key.track,
+        clip: key.clip,
+        note: key.note,
+        iteration: key.iteration,
+        loop_pass: key.loop_pass,
+        until_frame: old_deadline,
+        mutable_signature: Some(proof.signature),
+    };
+    let mut candidate =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    candidate.begin_block();
+    let mut candidate_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    candidate_onsets.push(onset).unwrap();
+    let mut candidate_events = Vec::new();
+    let mut candidate_audio = [[0.0; 2]; 4];
+    candidate
+        .process_segment(
+            track.id(),
+            0,
+            0,
+            &mut candidate_audio,
+            &mut candidate_onsets,
+            &[suppression],
+            &mut candidate_events,
+        )
+        .unwrap();
+    assert!(candidate_events.is_empty());
+    assert_eq!(candidate_audio, [[0.0; 2]; 4]);
+    candidate.commit_block();
+
+    // A changed authored payload is a distinct occurrence and must not be
+    // hidden by a same-ID suppression token.
+    let mut changed = onset;
+    changed.pitch += 1;
+    let mut changed_runtime =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    changed_runtime.begin_block();
+    let mut changed_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    changed_onsets.push(changed).unwrap();
+    let mut changed_events = Vec::new();
+    let mut changed_audio = [[0.0; 2]; 4];
+    changed_runtime
+        .process_segment(
+            track.id(),
+            0,
+            0,
+            &mut changed_audio,
+            &mut changed_onsets,
+            &[suppression],
+            &mut changed_events,
+        )
+        .unwrap();
+    assert!(matches!(
+        changed_events.first(),
+        Some(hex_lattice::NativeInstrumentEvent::NoteOn { pitch: 61, .. })
+    ));
+}
+
+#[test]
+fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = ZeroTailMutableFactory;
+    let mut runtime =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    let onset = crate::mutable_instrument::MutableNoteOnset {
+        key: crate::mutable_instrument::MutableOccurrenceKey::new(
+            track.id(),
+            clip.id(),
+            note.id(),
+            0,
+            0,
+        ),
+        onset_beat: BeatTime::from_raw(0),
+        gate_end_beat: BeatTime::from_raw(1 << 32),
+        source_start: 0,
+        source_gate_end: 4,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    };
+    let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    onsets.push(onset).unwrap();
+    let mut events = Vec::new();
+
+    runtime.begin_block();
+    let mut attack = [[0.0; 2]; 4];
+    runtime
+        .process_segment(track.id(), 0, 0, &mut attack, &mut onsets, &[], &mut events)
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [hex_lattice::NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            ..
+        }]
+    ));
+    assert_eq!(attack, [[0.25; 2]; 4]);
+    runtime.commit_block();
+    let proof = runtime
+        .proofs()
+        .next()
+        .expect("exclusive gate keeps its proof");
+    assert_eq!(proof.quiet_deadline_frame, 4);
+    assert!(!proof.note_off_sent);
+
+    // The next runtime block begins exactly at the exclusive gate boundary.
+    // Split it again to prove partition independence and one-shot delivery.
+    runtime.begin_block();
+    onsets.clear();
+    let mut release_boundary = [[0.0; 2]; 1];
+    runtime
+        .process_segment(
+            track.id(),
+            4,
+            4,
+            &mut release_boundary,
+            &mut onsets,
+            &[],
+            &mut events,
+        )
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [hex_lattice::NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            ..
+        }]
+    ));
+    assert_eq!(release_boundary, [[0.0; 2]; 1]);
+
+    let mut after_boundary = [[0.0; 2]; 3];
+    runtime
+        .process_segment(
+            track.id(),
+            5,
+            5,
+            &mut after_boundary,
+            &mut onsets,
+            &[],
+            &mut events,
+        )
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "the boundary NoteOff is sent exactly once"
+    );
+    assert_eq!(after_boundary, [[0.0; 2]; 3]);
+    assert!(runtime.speculative_is_quiescent());
+    runtime.commit_block();
+    assert!(runtime.committed_is_quiescent());
+    assert!(runtime.proofs().next().is_none());
 }
 
 #[test]
@@ -3161,9 +3490,12 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                     iteration,
                     0,
                 ),
+                onset_beat: hex_project::BeatTime::from_raw(source_start << 32),
+                gate_end_beat: hex_project::BeatTime::from_raw((source_start + 1) << 32),
                 source_start,
                 source_gate_end: source_start + 1,
                 pitch: 60,
+                channel: 0,
                 velocity: 100,
             })
             .unwrap();
@@ -3171,13 +3503,21 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
     let mut events = Vec::new();
     let mut frames = [[0.0; 2]; 256];
     runtime
-        .process_segment(track.id(), 0, 0, &mut frames, &mut onsets, &mut events)
+        .process_segment(track.id(), 0, 0, &mut frames, &mut onsets, &[], &mut events)
         .unwrap();
     assert_eq!(events.len(), 256);
     let mut release = [[0.0; 2]; 16];
     onsets.clear();
     runtime
-        .process_segment(track.id(), 256, 256, &mut release, &mut onsets, &mut events)
+        .process_segment(
+            track.id(),
+            256,
+            256,
+            &mut release,
+            &mut onsets,
+            &[],
+            &mut events,
+        )
         .unwrap();
     assert!(runtime.speculative_is_quiescent());
     runtime.commit_block();
@@ -3320,6 +3660,181 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
             .all(|tail| tail.runtime.committed_is_quiescent())
     );
     candidate.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+}
+
+#[test]
+fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_repeated_handoff() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let old_revision = revision_with_instrument_registry(&source, Arc::clone(&table), &registry);
+    let track = source.tracks()[0].id();
+    let clip_id = source.tracks()[0].midi_clips()[0].id();
+    let note = source.tracks()[0].midi_clips()[0].notes()[0].id();
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    for playback in [&mut previous, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut prefix = [[0.0; 2]; 1];
+    let mut reference_prefix = [[0.0; 2]; 1];
+    previous.render(&mut prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+    let proof = previous.mutable_instruments[0]
+        .as_ref()
+        .and_then(|runtime| runtime.proofs().next())
+        .expect("old mutable dispatch retains an occurrence proof");
+    assert_eq!(proof.signature.key().track, track);
+    assert_eq!(proof.signature.key().clip, clip_id);
+    assert_eq!(proof.signature.key().note, note);
+
+    let changed_source = with_test_instrument(&source, id, 1);
+    let changed_revision =
+        revision_with_instrument_registry(&changed_source, Arc::clone(&table), &registry);
+    let mut candidate = SessionPlayback::new(Arc::clone(&changed_revision)).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    let suppression = candidate
+        .suppressions
+        .iter()
+        .find(|entry| entry.mutable_signature == Some(proof.signature))
+        .copied()
+        .expect("exact pre-cut occurrence is suppressed for its full old/candidate tail");
+    assert_eq!(suppression.track, track);
+    assert!(suppression.until_frame >= proof.quiet_deadline_frame);
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = [[0.0; 2]; 32];
+    candidate.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+
+    // The carried old owner and its exact suppression move forward once;
+    // subsequent publications do not create a second tail for the same voice.
+    let mut next = SessionPlayback::new(Arc::clone(&changed_revision)).unwrap();
+    next.try_inherit_state_from(&mut candidate).unwrap();
+    assert_eq!(
+        next.tail_mutable_instruments
+            .iter()
+            .flatten()
+            .filter(|tail| tail.track_id == track)
+            .count(),
+        1
+    );
+    assert!(next.suppressions.iter().any(|entry| {
+        entry.mutable_signature == Some(proof.signature)
+            && entry.until_frame >= suppression.until_frame
+    }));
+    let mut repeated = [[0.0; 2]; 32];
+    let mut expected_repeated = [[0.0; 2]; 32];
+    next.render(&mut repeated).unwrap();
+    reference.render(&mut expected_repeated).unwrap();
+    assert_eq!(repeated, expected_repeated);
+}
+
+#[test]
+#[ignore = "manual release profile for repeated mutable-owner admission"]
+fn profile_mutable_occurrence_suppression_handoff() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const SAMPLES: usize = 100;
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut dense_snapshot = project(1.0, 0, 8 << 32).snapshot();
+    let first_new_id = dense_snapshot.next_id;
+    dense_snapshot.next_id += 63;
+    let clips = match &mut dense_snapshot.tracks[0].content {
+        TrackContentSnapshot::Instrument(clips)
+        | TrackContentSnapshot::Hybrid {
+            midi_clips: clips, ..
+        } => clips,
+        TrackContentSnapshot::Audio(_) => panic!("profile fixture has MIDI content"),
+    };
+    let notes = &mut clips[0].notes;
+    for index in 1..64_u64 {
+        notes.push(MidiNoteSnapshot {
+            id: first_new_id + index - 1,
+            start_raw: 0,
+            duration_raw: 8 << 32,
+            pitch: u8::try_from(40 + index).unwrap(),
+            channel: 0,
+            velocity: 100,
+        });
+    }
+    let dense_source = legacy_project_from_snapshot(dense_snapshot).unwrap();
+    let source = with_test_instrument(&dense_source, id, 0);
+    let mut playback = SessionPlayback::new(revision_with_instrument_registry(
+        &source,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 1];
+    playback.render(&mut prefix).unwrap();
+    assert_eq!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .map_or(0, |runtime| runtime.proofs().count()),
+        64
+    );
+    let mut timings = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        // Candidate preparation and destruction of the previous publication
+        // stay outside the measured handoff call.
+        let state = u8::try_from((sample + 1) % 2).unwrap();
+        let candidate_source = with_test_instrument(&source, id, state);
+        let revision =
+            revision_with_instrument_registry(&candidate_source, Arc::clone(&table), &registry);
+        let mut candidate = SessionPlayback::new(revision).unwrap();
+        let start = Instant::now();
+        candidate
+            .try_inherit_state_from(black_box(&mut playback))
+            .unwrap();
+        timings.push(start.elapsed().as_nanos());
+        black_box(candidate.suppressions.len());
+        playback = candidate;
+    }
+    timings.sort_unstable();
+    let p50 = timings[SAMPLES / 2];
+    let p95 = timings[(SAMPLES * 95).div_ceil(100) - 1];
+    let p99 = timings[(SAMPLES * 99).div_ceil(100) - 1];
+    println!(
+        "mutable occurrence handoff: samples={SAMPLES} dense_active_occurrences=64 frame={} proofs={} suppressions={} ledger_pair_bytes={} max_graph_host_bytes={}",
+        playback.performance_frame(),
+        playback.mutable_instruments[0]
+            .as_ref()
+            .map_or(0, |runtime| runtime.proofs().count()),
+        playback.suppressions.len(),
+        2 * crate::mutable_instrument::MAX_MUTABLE_OCCURRENCE_PROOFS
+            * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>(),
+        crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap(),
+    );
+    println!(
+        "handoff_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+        p50 as f64 / 1_000.0,
+        p95 as f64 / 1_000.0,
+        p99 as f64 / 1_000.0,
+        timings[SAMPLES - 1] as f64 / 1_000.0,
+    );
 }
 
 #[test]
@@ -3593,12 +4108,47 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     }
     let previous_frame = previous.performance_frame;
     let previous_routes = previous.routes.clone();
+    let previous_proofs: Vec<_> = previous.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .map(|proof| {
+            (
+                proof.signature,
+                proof.id,
+                proof.onset_frame,
+                proof.gate_end_frame,
+                proof.quiet_deadline_frame,
+                proof.note_off_sent,
+            )
+        })
+        .collect();
+    let previous_suppressions = previous.suppressions.clone();
     assert_eq!(
         candidate.try_inherit_state_from(&mut previous),
         Err(SessionPlaybackError::ReleaseBankFull)
     );
     assert_eq!(previous.performance_frame, previous_frame);
     assert_eq!(previous.routes, previous_routes);
+    assert_eq!(previous.suppressions, previous_suppressions);
+    assert_eq!(
+        previous.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .map(|proof| {
+                (
+                    proof.signature,
+                    proof.id,
+                    proof.onset_frame,
+                    proof.gate_end_frame,
+                    proof.quiet_deadline_frame,
+                    proof.note_off_sent,
+                )
+            })
+            .collect::<Vec<_>>(),
+        previous_proofs
+    );
     assert!(
         previous.mutable_instruments[0]
             .as_ref()

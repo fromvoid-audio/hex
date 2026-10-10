@@ -179,8 +179,11 @@ pub(crate) struct CompiledNoteSpan {
     pub(crate) start: u64,
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
+    pub(crate) onset_beat: BeatTime,
+    pub(crate) gate_end_beat: BeatTime,
     pub(crate) sampler_index: u16,
     pub(crate) pitch: u8,
+    pub(crate) channel: u8,
     pub(crate) velocity: u8,
     pub(crate) clip: ClipId,
     pub(crate) note: hex_project::NoteId,
@@ -294,60 +297,67 @@ pub(crate) fn compile_instrument_track(
             None
         };
         let mut emitted = 0_usize;
-        for_each_clip_occurrence(project, clip, |note, iteration, start, gate_end, _, _| {
-            if let Some((ordinals, samples)) = preview.as_mut() {
-                if ordinals.get(samples.len()).copied() == Some(emitted) {
-                    samples.push(crate::MidiPreviewSample {
-                        frame_start: start,
-                        frame_gate_end: gate_end,
+        for_each_clip_occurrence(
+            project,
+            clip,
+            |note, iteration, start, gate_end, onset_beat, off_beat| {
+                if let Some((ordinals, samples)) = preview.as_mut() {
+                    if ordinals.get(samples.len()).copied() == Some(emitted) {
+                        samples.push(crate::MidiPreviewSample {
+                            frame_start: start,
+                            frame_gate_end: gate_end,
+                            pitch: note.pitch(),
+                        });
+                    }
+                }
+                emitted = emitted
+                    .checked_add(1)
+                    .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+                if instrument.is_some() {
+                    let (sampler_index, end) = if mutable {
+                        let tail = mutable_tail_frames
+                            .ok_or(Invalid("mutable instrument tail declaration is missing"))?;
+                        (
+                            u16::MAX,
+                            gate_end
+                                .checked_add(tail)
+                                .ok_or(Invalid("midi release end frame overflow"))?,
+                        )
+                    } else {
+                        let bank = bank
+                            .as_ref()
+                            .ok_or(Invalid("midi note bank is missing after preparation"))?;
+                        let sampler_index = bank
+                            .index(note.pitch(), note.velocity())
+                            .ok_or(Invalid("midi note sampler key is missing from its bank"))?;
+                        let voice = bank
+                            .sampler(sampler_index)
+                            .ok_or(Invalid("midi note sampler index is invalid"))?;
+                        (
+                            sampler_index,
+                            gate_end
+                                .checked_add(voice.release_frames())
+                                .ok_or(Invalid("midi release end frame overflow"))?,
+                        )
+                    };
+                    spans.push(CompiledNoteSpan {
+                        start,
+                        gate_end,
+                        end,
+                        onset_beat,
+                        gate_end_beat: off_beat,
+                        sampler_index,
                         pitch: note.pitch(),
+                        channel: note.channel(),
+                        velocity: note.velocity(),
+                        clip: clip.id(),
+                        note: note.id(),
+                        iteration,
                     });
                 }
-            }
-            emitted = emitted
-                .checked_add(1)
-                .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-            if instrument.is_some() {
-                let (sampler_index, end) = if mutable {
-                    let tail = mutable_tail_frames
-                        .ok_or(Invalid("mutable instrument tail declaration is missing"))?;
-                    (
-                        u16::MAX,
-                        gate_end
-                            .checked_add(tail)
-                            .ok_or(Invalid("midi release end frame overflow"))?,
-                    )
-                } else {
-                    let bank = bank
-                        .as_ref()
-                        .ok_or(Invalid("midi note bank is missing after preparation"))?;
-                    let sampler_index = bank
-                        .index(note.pitch(), note.velocity())
-                        .ok_or(Invalid("midi note sampler key is missing from its bank"))?;
-                    let voice = bank
-                        .sampler(sampler_index)
-                        .ok_or(Invalid("midi note sampler index is invalid"))?;
-                    (
-                        sampler_index,
-                        gate_end
-                            .checked_add(voice.release_frames())
-                            .ok_or(Invalid("midi release end frame overflow"))?,
-                    )
-                };
-                spans.push(CompiledNoteSpan {
-                    start,
-                    gate_end,
-                    end,
-                    sampler_index,
-                    pitch: note.pitch(),
-                    velocity: note.velocity(),
-                    clip: clip.id(),
-                    note: note.id(),
-                    iteration,
-                });
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
         if emitted != occurrence_count {
             return Err(Invalid(
                 "midi preview occurrence count changed during compile",
