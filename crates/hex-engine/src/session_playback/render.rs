@@ -297,7 +297,15 @@ impl SessionPlayback {
                 .iter()
                 .any(|entry| entry.tail_group.is_none());
             let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence);
-            if (buffered || ordered) && (has_current_route || has_current_release) {
+            let has_current_effect_tail = !has_current_route
+                && !has_current_release
+                && self
+                    .device_chains
+                    .get(index)
+                    .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()));
+            if (buffered || ordered)
+                && (has_current_route || has_current_release || has_current_effect_tail)
+            {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
                 if ordered {

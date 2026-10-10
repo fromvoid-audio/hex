@@ -29,23 +29,25 @@ Completed chronology and superseded work orders are preserved in the
 ### latest source checkpoint
 
 The current user test app remains `hex-lattice-return-review-20261010-006866f.app`
-(PR38–87); it has not been replaced or launched by the agent. Source-ready,
-unmerged follow-ups are [PR88](https://github.com/PORTALSURFER/hex/pull/88)
-(cancellable seek worker), [PR89](https://github.com/PORTALSURFER/hex/pull/89)
-(interactive Arrangement preroll) and [PR90](https://github.com/PORTALSURFER/hex/pull/90)
-(effect-tail/quiescence contract). Each passed all16 exact-head local CI checks.
-They are combined locally on `codex/lattice-review-56`; that combined branch
-still needs its own exact-head checks and fresh bundle before user review.
+(PR38–87); it has not been replaced or launched by the agent. PR88–90 each passed
+all16 exact-head local checks. Native stateful seek is now
+[PR91](https://github.com/PORTALSURFER/hex/pull/91), sourcea46c968 and local CI
+`20261010T073917Z-696fac11`. Operator fixed tuning is
+[PR92](https://github.com/PORTALSURFER/hex/pull/92), sourcedc3da29 and local CI
+`20261010T074621Z-ab12cc35`. Captured track-effect tail retention (Pulse2203)
+passes all16 exact-head checks at52d6f56 (`20261010T074857Z-5b258f72`), including
+finite/work boundary refusal and retry tests. Combined source is on
+`codex/lattice-review-57`; exact combined checks and a fresh bundle remain pending.
 
-Pulse2192 is implementing native stateful seek admission/publication and
-cancellation; Pulse2203 is implementing captured track-effect suffix lifetime.
-Each has its own focused branch and future PR. Return-bus residual ownership
-(Pulse2204), constructor stack measurements (2195), mutable loop boundaries
-(2165), sustained performance (2108), complete Operator parity and plugin
-hosting remain open. One freely positioned instrument per track is confirmed.
-The interactive 100-track preparation profile has now been captured: 48,000
-frames at 48 kHz took 200–211 ms in nine fresh samples on an Apple M5 Pro.
-This is bounded background readiness evidence, not a native audio deadline or
+Pulse2208 is fixing cancellation between conditional seek queue admission and
+callback installation, in its own focused change. Pulse2204 is implementing
+separate detached Return-chain residual ownership. Source-derived Session Silence
+live-effect drain risk is recorded separately as Pulse2211. Constructor stack
+measurements (2195), mutable loop boundaries (2165), sustained performance (2108),
+complete Operator parity and plugin hosting remain open. One freely positioned
+instrument per track is confirmed. The interactive100-track preparation profile
+has been captured:48,000 frames at48kHz took200–211ms in nine fresh samples on an
+AppleM5Pro. This is background readiness evidence, not a native deadline or
 first-audible claim; see [performance](docs/performance.md).
 
 The implementation request covers every currently open Hex ticket in Pulse,
@@ -1096,3 +1098,13 @@ and69 descriptors; shared context/note sizes are688/48 bytes. Independent PCM,
 canonical refusal/history, opaque persistence and callback allocation checks pass.
 See [the contract](docs/operator-fixed-tuning.md). Full local CI, focused PR and
 combined native review/listening are pending; no full Operator parity claim.
+
+## 10 October2026 — source review57 integration checkpoint
+
+PR91 and92 plus Pulse2203 source are combined locally. Their focused pipelines
+pass; cancellation2208 is being integrated separately before the next native
+review build. The current006866f app remains available and unchanged. New Return
+residual ownership2204 has its own branch. No automatic merge or native
+acceptance is claimed. GitHub GraphQL PR creation hit a request rate limit;
+GitHub CLI REST creation succeeded. Codex attachment registration reached its
+100-identity limit, so verified PR links remain in Pulse and the ledger.
