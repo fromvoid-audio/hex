@@ -1211,3 +1211,15 @@ Utility/Operator behavior and save/reopen remain user acceptance. Transport wrap
 Arrangement source-loop linear export remains refused. No PR is auto-merged.
 Codex attachment registration reached100 identities; verified PR links remain
 in Pulse and this ledger. Performance comparison measurement is separate2218.
+
+## 10 October 2026 — Pulse2218 comparator evidence
+
+Measurement-only[PR99](https://github.com/PORTALSURFER/hex/pull/99), source54cbaf0,
+adds a real chain-comparator release fixture.27 lattice tests, strict all-target
+Clippy, formatting, release build/functional checks, CLI bounds/help and source
+guards pass. Busy-host paired272-chain medians:143334ns shared-Arc matches,
+2871083ns independent equal states,2900000ns final-device/final-byte mismatch.
+Full median/p95 table, exact source/binary hashes and background load are in
+[the report](docs/configuration-comparison.md). These are exploratory measurements,
+not idle baselines or callback deadline evidence. Pulse2219 tracks idle-host
+confirmation. Production behavior and the deliveredcd71021 app are unchanged.
