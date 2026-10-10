@@ -1,6 +1,6 @@
 # hex todo
 
-Updated 9 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
+Updated 10 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
 This file retains request order and repository evidence; [plan](docs/plan.md)
 owns milestone gates and [features](docs/features.md) owns capability assessment.
@@ -23,6 +23,28 @@ Completed chronology and superseded work orders are preserved in the
   automated source checks belong to the implementing agent.
 
 ## current priority — lattice devices
+
+### latest source checkpoint
+
+The current user test app remains `hex-lattice-return-review-20261010-006866f.app`
+(PR38–87); it has not been replaced or launched by the agent. Source-ready,
+unmerged follow-ups are [PR88](https://github.com/PORTALSURFER/hex/pull/88)
+(cancellable seek worker), [PR89](https://github.com/PORTALSURFER/hex/pull/89)
+(interactive Arrangement preroll) and [PR90](https://github.com/PORTALSURFER/hex/pull/90)
+(effect-tail/quiescence contract). Each passed all16 exact-head local CI checks.
+They are combined locally on `codex/lattice-review-56`; that combined branch
+still needs its own exact-head checks and fresh bundle before user review.
+
+Pulse2192 is implementing native stateful seek admission/publication and
+cancellation; Pulse2203 is implementing captured track-effect suffix lifetime.
+Each has its own focused branch and future PR. Return-bus residual ownership
+(Pulse2204), constructor stack measurements (2195), mutable loop boundaries
+(2165), sustained performance (2108), complete Operator parity and plugin
+hosting remain open. One freely positioned instrument per track is confirmed.
+The interactive 100-track preparation profile has now been captured: 48,000
+frames at 48 kHz took 200–211 ms in nine fresh samples on an Apple M5 Pro.
+This is bounded background readiness evidence, not a native audio deadline or
+first-audible claim; see [performance](docs/performance.md).
 
 The implementation request covers every currently open Hex ticket in Pulse,
 including work without an existing PR. The priority below orders dependencies;
@@ -1045,5 +1067,5 @@ admission/publication, route/Stop fencing, enabled transport loops, and measured
 100-track readiness remain open. Debug/release Service-worker checks and focused
 crate tests/Clippy pass. An ignored release profile now reuses the 100-track
 mutable fixture for both linear and interactive preroll; the interactive profile
-uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Root has not yet captured
-its release timing evidence.
+uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Captured release timing
+evidence and its limits are recorded in [performance](docs/performance.md).
