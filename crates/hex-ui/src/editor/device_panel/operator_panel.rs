@@ -10,6 +10,8 @@ use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView}
 use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
+pub(super) mod envelope;
+
 pub(super) const OPERATOR_FRAME_WIDTH: f32 = 580.0;
 const BODY_HEIGHT: f32 = 168.0;
 const SHELL_WIDTH: f32 = 210.0;
@@ -106,6 +108,12 @@ pub(super) fn render_body(
             "routing",
             state.page,
         ));
+    envelope::retire_hidden(
+        view,
+        cx,
+        device,
+        (state.page == OperatorPage::Envelope).then_some(state.selected_operator),
+    );
     let detail = match state.page {
         OperatorPage::Oscillator => oscillator_detail(
             view,
@@ -456,7 +464,7 @@ fn envelope_detail(
             })
             .unwrap_or(0.0)
     });
-    let graph = envelope_graph(values);
+    let graph = envelope::graph(view, cx, device, operator, values);
     let mut fields = div().w_full().flex().items_center().gap(px(2.0));
     for (field, label) in labels.iter().enumerate() {
         fields = fields.child(
@@ -489,32 +497,6 @@ fn envelope_detail(
         .gap(px(5.0))
         .child(graph)
         .child(fields)
-}
-
-fn envelope_graph(values: [f32; 6]) -> Stateful<Div> {
-    let [initial, peak, sustain, attack, decay, release] = values;
-    let total = (attack + decay + release + 0.25).max(f32::EPSILON);
-    let x_attack = attack / total;
-    let x_decay = (attack + decay) / total;
-    let x_release = (attack + decay + 0.25) / total;
-    let points = [
-        [0.0, initial],
-        [x_attack, peak],
-        [x_decay, sustain],
-        [x_release, sustain],
-        [1.0, 0.0],
-    ];
-    div()
-        .id("operator-envelope-graph")
-        .debug_selector(|| "operator-envelope-graph".into())
-        .relative()
-        .w_full()
-        .h(px(72.0))
-        .child(
-            hex_widgets::curve_plot(points, super::control_style())
-                .map(|plot| plot.size_full())
-                .unwrap_or_else(|| div()),
-        )
 }
 
 fn routing_detail(

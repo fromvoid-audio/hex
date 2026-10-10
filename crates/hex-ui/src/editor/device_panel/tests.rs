@@ -1174,6 +1174,404 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
 }
 
 #[gpui::test]
+fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _state, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("remove default instrument");
+    let _empty = receive_service_event(&service);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+            before: None,
+        })
+        .expect("add native Operator");
+    let initial = receive_service_event(&service).state;
+    let device = initial
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("Operator")
+        .id();
+    let get = |state: &ViewState, parameter: u32| {
+        operator_parameter_value(state, track, device, parameter)
+    };
+    let original_peak = get(&initial, 34);
+    let original_attack = get(&initial, 36);
+    let envelope_values: Vec<f32> = (33..=38)
+        .map(|parameter| match get(&initial, parameter) {
+            ParameterValue::Float(value) => value,
+            _ => panic!("Operator envelope value is not numeric"),
+        })
+        .collect();
+    let window =
+        ((envelope_values[3] + envelope_values[4] + envelope_values[5] + 0.25) * 1.5).max(0.5);
+    let path = std::env::temp_dir().join(format!(
+        "hex-operator-envelope-{}-{}.hex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos(),
+    ));
+    service
+        .submit(Request::SaveNew(path.clone()))
+        .expect("save initial Operator fixture");
+    let saved = receive_service_event(&service);
+    assert!(saved.save_complete);
+    assert!(saved.error.is_none());
+    let (handle, editor) = actor_editor_window(cx, service, saved.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let env_tab = Box::leak(format!("operator-page-{}-env", device.value()).into_boxed_str());
+    let tab_bounds = visual.debug_bounds(env_tab).expect("envelope tab");
+    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    let graph = visual
+        .debug_bounds("operator-envelope-graph")
+        .expect("editable Operator envelope graph");
+    let width = graph.size.width - px(14.0);
+    let peak = point(
+        graph.origin.x + px(7.0) + width * (envelope_values[3] / window),
+        graph.origin.y + px(7.0),
+    );
+    visual.simulate_click(peak, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("right");
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| get(state, 36) != original_attack)
+    });
+    let edited_attack = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("edited state");
+        assert_eq!(
+            get(state, 34),
+            original_peak,
+            "horizontal peak edit preserves level"
+        );
+        let ParameterValue::Float(attack) = get(state, 36) else {
+            panic!("attack remains numeric")
+        };
+        assert!(
+            attack
+                > match original_attack {
+                    ParameterValue::Float(value) => value,
+                    _ => -1.0,
+                }
+        );
+        attack
+    });
+
+    editor.update(cx, |view, cx| view.save_project(cx));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+            && !view.saving_project
+            && view.state.as_ref().is_some_and(|state| !state.unsaved)
+    });
+    let reload = Service::new(48_000, 8, 8_000_000).expect("reload service");
+    let _initial = receive_service_event(&reload);
+    reload
+        .submit(Request::Open(path.clone()))
+        .expect("reopen saved Operator project");
+    let reopened = receive_service_event(&reload).state;
+    assert_eq!(get(&reopened, 36), ParameterValue::Float(edited_attack));
+
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| get(state, 36) == original_attack)
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            get(view.state.as_ref().expect("undo state"), 34),
+            original_peak
+        );
+    });
+    let initial_parameter = hex_lattice_contract::ParameterId::from_static(33);
+    enter_typed_value(&mut visual, device, initial_parameter, "invalid");
+    let graph = visual
+        .debug_bounds("operator-envelope-graph")
+        .expect("envelope graph remains visible during numeric draft");
+    let peak = point(
+        graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * (envelope_values[3] / window),
+        graph.origin.y + px(7.0),
+    );
+    let moved = point(peak.x + px(12.0), peak.y);
+    visual.simulate_mouse_down(peak, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.pending_values.is_empty());
+        assert_eq!(
+            get(view.state.as_ref().expect("draft state"), 33),
+            ParameterValue::Float(0.0)
+        );
+        let key = ParameterKey {
+            device,
+            parameter: initial_parameter,
+        };
+        let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key)
+        else {
+            panic!("Operator initial value field remains cached")
+        };
+        entity.read_with(cx, |control, _| {
+            assert!(
+                control.is_editing(),
+                "invalid numeric draft stays available for repair"
+            )
+        });
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let _ = std::fs::remove_file(path);
+}
+
+#[gpui::test]
+fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
+    cx: &mut TestAppContext,
+) {
+    let (service, _state, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("remove default instrument");
+    let _empty = receive_service_event(&service);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+            before: None,
+        })
+        .expect("add native Operator");
+    let _operator_added = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "second device owner".into(),
+        }))
+        .expect("add second owner");
+    let second_added = receive_service_event(&service);
+    let second_track = match second_added.created.expect("created track") {
+        Created::Track(track) => track,
+        _ => panic!("created track result"),
+    };
+    let state = second_added.state;
+    let device = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("Operator")
+        .id();
+    let float_value = |state: &ViewState, parameter| match operator_parameter_value(
+        state, track, device, parameter,
+    ) {
+        ParameterValue::Float(value) => value,
+        _ => panic!("Operator envelope parameter is numeric"),
+    };
+    let original_release = float_value(&state, 38);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let env_tab = Box::leak(format!("operator-page-{}-env", device.value()).into_boxed_str());
+    let tab = visual.debug_bounds(env_tab).expect("envelope tab");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let release_endpoint = |visual: &mut VisualTestContext, state: &ViewState| {
+        let graph = visual
+            .debug_bounds("operator-envelope-graph")
+            .expect("envelope graph");
+        let attack = float_value(state, 36);
+        let decay = float_value(state, 37);
+        let release = float_value(state, 38);
+        let window = ((attack + decay + release + 0.25) * 1.5).max(0.5);
+        let x = (attack + decay + 0.25 + release) / window;
+        point(
+            graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * x,
+            graph.origin.y + graph.size.height - px(7.0),
+        )
+    };
+
+    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
+    let start = release_endpoint(&mut visual, &state_now);
+    let moved = point(start.x + px(16.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let snapshot = view.device_gesture.snapshot().expect("release drag begins");
+        assert_eq!(
+            snapshot.target,
+            GestureTarget::DeviceParameter {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(38),
+            }
+        );
+        assert!(
+            view.device_panel
+                .pending_values
+                .contains_key(&ParameterKey {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(38),
+                })
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| float_value(state, 38) == original_release)
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .pending_values
+                .contains_key(&ParameterKey {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(38),
+                })
+        );
+    });
+
+    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
+    let start = release_endpoint(&mut visual, &state_now);
+    let graph = visual
+        .debug_bounds("operator-envelope-graph")
+        .expect("graph after cancel");
+    let outside = point(graph.origin.x + graph.size.width + px(16.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_gesture.snapshot().is_some(),
+            "pointer capture continues past the plot edge"
+        );
+    });
+    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| float_value(state, 38) > original_release)
+    });
+    let committed_release = editor.read_with(cx, |view, _| {
+        float_value(view.state.as_ref().expect("committed state"), 38)
+    });
+
+    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
+    let start = release_endpoint(&mut visual, &state_now);
+    let moved = point(start.x - px(12.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_some()));
+    editor.update(cx, |view, cx| {
+        view.device_panel
+            .operator_pages
+            .get_mut(&device)
+            .expect("Operator page")
+            .page = operator_panel::OperatorPage::Oscillator;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            float_value(view.state.as_ref().expect("page state"), 38),
+            committed_release
+        );
+        assert!(
+            !view
+                .device_panel
+                .pending_values
+                .contains_key(&ParameterKey {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(38),
+                })
+        );
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel
+                .operator_pages
+                .get(&device)
+                .expect("page")
+                .page,
+            operator_panel::OperatorPage::Oscillator
+        );
+        assert!(view.device_panel.operator_envelope_graphs.is_empty());
+    });
+
+    editor.update(cx, |view, cx| {
+        view.device_panel
+            .operator_pages
+            .get_mut(&device)
+            .expect("Operator page")
+            .page = operator_panel::OperatorPage::Envelope;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
+    let start = release_endpoint(&mut visual, &state_now);
+    let moved = point(start.x - px(12.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(second_track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.owner,
+            Some(DevicePanelOwner::Track(track))
+        );
+        assert!(
+            view.device_gesture.snapshot().is_some(),
+            "owner switching keeps the active graph visible until its gesture ends"
+        );
+    });
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view.device_panel.owner == Some(DevicePanelOwner::Track(second_track))
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel.pending_values.is_empty());
+        assert!(view.device_panel.operator_envelope_graphs.is_empty());
+    });
+}
+
+#[gpui::test]
 fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     cx: &mut TestAppContext,
 ) {
@@ -3872,6 +4270,27 @@ fn parameter_value(
         .into_iter()
         .find(|item| item.descriptor.id == parameter)
         .expect("parameter")
+        .value
+}
+
+fn operator_parameter_value(
+    state: &ViewState,
+    track: TrackId,
+    device: DeviceId,
+    parameter: u32,
+) -> ParameterValue {
+    let instrument = state
+        .project
+        .track(track)
+        .and_then(hex_project::Track::instrument)
+        .filter(|instrument| instrument.id() == device)
+        .expect("canonical Operator instrument");
+    hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, instrument.state())
+        .expect("Operator parameter view")
+        .parameters
+        .into_iter()
+        .find(|item| item.descriptor.id.value() == parameter)
+        .expect("Operator envelope parameter")
         .value
 }
 

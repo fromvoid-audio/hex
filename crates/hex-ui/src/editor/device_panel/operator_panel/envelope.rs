@@ -1,0 +1,604 @@
+//! Editable Operator envelope graphs translated through canonical device gestures.
+use super::super::*;
+use super::id;
+use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
+use hex_widgets::{ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode};
+
+const HOLD_SECONDS: f32 = 0.25;
+const TIME_LIMIT_SECONDS: f32 = 120.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::editor::device_panel) struct GraphKey {
+    device: DeviceId,
+    operator: usize,
+}
+
+pub(in crate::editor::device_panel) struct GraphControl {
+    entity: Entity<ResponseGraph>,
+    selected_node: u32,
+    _subscription: Subscription,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::editor::device_panel) struct GraphGesture {
+    node_id: u32,
+    window_seconds: f32,
+    initial: [f32; 6],
+}
+
+pub(super) fn graph(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    operator: usize,
+    values: [f32; 6],
+) -> Stateful<Div> {
+    let key = GraphKey { device, operator };
+    view.device_panel
+        .operator_envelope_graphs
+        .entry(key)
+        .or_insert_with(|| {
+            let style = super::super::control_style();
+            let entity = cx.new(|graph_cx| {
+                let mut graph = ResponseGraph::new(
+                    graph_cx,
+                    format!("operator-envelope-{}-{operator}", device.value()),
+                    style,
+                );
+                graph.set_editable(true, graph_cx);
+                graph
+            });
+            let subscription =
+                cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
+                    handle_event(view, key, *event, cx);
+                });
+            GraphControl {
+                entity,
+                selected_node: 1,
+                _subscription: subscription,
+            }
+        });
+    let window = view
+        .device_panel
+        .operator_envelope_gestures
+        .get(&key)
+        .map_or_else(|| display_window(values), |gesture| gesture.window_seconds);
+    let selected = view
+        .device_panel
+        .operator_envelope_graphs
+        .get(&key)
+        .map_or(1, |graph| graph.selected_node);
+    let model = graph_model(values, window, selected);
+    let Some(control) = view.device_panel.operator_envelope_graphs.get(&key) else {
+        return div().id("operator-envelope-graph-unavailable");
+    };
+    let graph_entity = control.entity.clone();
+    graph_entity.update(cx, |graph, cx| {
+        let _ = graph.set_model(model, super::super::control_style(), cx);
+    });
+    div()
+        .id(ElementId::Name(
+            format!("operator-envelope-graph-{}-{operator}", device.value()).into(),
+        ))
+        .debug_selector(|| "operator-envelope-graph".into())
+        .relative()
+        .w_full()
+        .h(px(72.0))
+        .child(graph_entity)
+}
+
+fn display_window([_, _, _, attack, decay, release]: [f32; 6]) -> f32 {
+    ((attack + decay + release + HOLD_SECONDS) * 1.5).max(0.5)
+}
+
+fn graph_model(values: [f32; 6], window: f32, selected: u32) -> ResponseGraphModel {
+    let [initial, peak, sustain, attack, decay, release] = values;
+    let axis = window.max(HOLD_SECONDS + f32::EPSILON);
+    let x_attack = (attack / axis).clamp(0.0, 1.0);
+    let x_decay = ((attack + decay) / axis).clamp(x_attack, 1.0);
+    let x_release = ((attack + decay + HOLD_SECONDS) / axis).clamp(x_decay, 1.0);
+    let x_end = ((attack + decay + HOLD_SECONDS + release) / axis).clamp(x_release, 1.0);
+    let points = vec![
+        [0.0, initial.clamp(0.0, 1.0)],
+        [x_attack, peak.clamp(0.0, 1.0)],
+        [x_decay, sustain.clamp(0.0, 1.0)],
+        [x_release, sustain.clamp(0.0, 1.0)],
+        [x_end, 0.0],
+        [1.0, 0.0],
+    ];
+    ResponseGraphModel {
+        primary: points.clone(),
+        secondary: points,
+        nodes: vec![
+            node(0, [0.0, initial], selected),
+            node(1, [x_attack, peak], selected),
+            node(2, [x_decay, sustain], selected),
+            node(3, [x_end, 0.0], selected),
+        ],
+    }
+}
+
+fn node(id: u32, position: [f32; 2], selected: u32) -> ResponseGraphNode {
+    ResponseGraphNode {
+        id,
+        position: [position[0].clamp(0.0, 1.0), position[1].clamp(0.0, 1.0)],
+        enabled: true,
+        selected: id == selected,
+    }
+}
+
+fn handle_event(
+    view: &mut EditorView,
+    key: GraphKey,
+    event: ResponseGraphEvent,
+    cx: &mut Context<EditorView>,
+) {
+    if event.phase == hex_widgets::ResponseGraphPhase::Select {
+        if event.node_id > 3 || !finalize_controls(view, cx) {
+            return;
+        }
+        if let Some(graph) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
+            graph.selected_node = event.node_id;
+        }
+        cx.notify();
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Begin {
+        begin_gesture(view, key, event, cx);
+        return;
+    }
+    let Some(gesture) = view
+        .device_panel
+        .operator_envelope_gestures
+        .get(&key)
+        .copied()
+    else {
+        return;
+    };
+    if gesture.node_id != event.node_id {
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Cancel {
+        cancel_key_gesture(view, key);
+        cx.notify();
+        return;
+    }
+    let Some((target, values)) = edit_values(key.operator, gesture, event.position) else {
+        return;
+    };
+    store_pending(view, key, target, values);
+    let result = if matches!(event.phase, hex_widgets::ResponseGraphPhase::Commit) {
+        match values {
+            EditValues::Single(value) => view.finish_device_gesture(value),
+            EditValues::Pair(value) => view.finish_device_pair_gesture(value),
+        }
+    } else {
+        match values {
+            EditValues::Single(value) => view.change_device_gesture(value),
+            EditValues::Pair(value) => view.change_device_pair_gesture(value),
+        }
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.to_owned());
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Commit {
+        view.device_panel.operator_envelope_gestures.remove(&key);
+    }
+    cx.notify();
+}
+
+fn begin_gesture(
+    view: &mut EditorView,
+    key: GraphKey,
+    event: ResponseGraphEvent,
+    cx: &mut Context<EditorView>,
+) {
+    if event.node_id > 3 || !finalize_controls(view, cx) || view.device_gesture.snapshot().is_some()
+    {
+        return;
+    }
+    let Some([initial, peak, sustain, attack, decay, release]) = envelope_values(view, key) else {
+        return;
+    };
+    let base = 33 + key.operator as u32 * 6;
+    let gesture = GraphGesture {
+        node_id: event.node_id,
+        window_seconds: display_window([initial, peak, sustain, attack, decay, release]),
+        initial: [initial, peak, sustain, attack, decay, release],
+    };
+    let begin_result = match event.node_id {
+        0 => view.begin_device_gesture(
+            GestureTarget::DeviceParameter {
+                device: key.device,
+                parameter: id(base),
+            },
+            ParameterValue::Float(initial),
+        ),
+        1 => view.begin_device_pair_gesture(
+            key.device,
+            id(base + 1),
+            id(base + 3),
+            ParameterPairValue {
+                first: ParameterValue::Float(peak),
+                second: ParameterValue::Float(attack),
+            },
+        ),
+        2 => view.begin_device_pair_gesture(
+            key.device,
+            id(base + 2),
+            id(base + 4),
+            ParameterPairValue {
+                first: ParameterValue::Float(sustain),
+                second: ParameterValue::Float(decay),
+            },
+        ),
+        3 => view.begin_device_gesture(
+            GestureTarget::DeviceParameter {
+                device: key.device,
+                parameter: id(base + 5),
+            },
+            ParameterValue::Float(release),
+        ),
+        _ => return,
+    };
+    if let Err(error) = begin_result {
+        view.device_panel.message = Some(error.to_owned());
+        return;
+    }
+    view.device_panel
+        .operator_envelope_gestures
+        .insert(key, gesture);
+    if let Some(graph) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
+        graph.selected_node = event.node_id;
+    }
+    let Some((target, values)) = edit_values(key.operator, gesture, event.position) else {
+        let _ = view.cancel_device_gesture();
+        view.device_panel.operator_envelope_gestures.remove(&key);
+        return;
+    };
+    store_pending(view, key, target, values);
+    cx.notify();
+}
+
+#[derive(Clone, Copy)]
+enum EditValues {
+    Single(ParameterValue),
+    Pair(ParameterPairValue),
+}
+
+fn edit_values(
+    operator: usize,
+    gesture: GraphGesture,
+    [x, y]: [f32; 2],
+) -> Option<(u32, EditValues)> {
+    let [_, _, _, attack, decay, release] = gesture.initial;
+    let window = gesture.window_seconds;
+    let x = x.clamp(0.0, 1.0);
+    let y = y.clamp(0.0, 1.0);
+    let base = 33 + operator as u32 * 6;
+    Some(match gesture.node_id {
+        0 => (base, EditValues::Single(ParameterValue::Float(y))),
+        1 => {
+            let max_attack =
+                (window - decay - release - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
+            let next_attack = (x * window).clamp(0.0, max_attack);
+            (
+                base + 1,
+                EditValues::Pair(ParameterPairValue {
+                    first: ParameterValue::Float(y),
+                    second: ParameterValue::Float(next_attack),
+                }),
+            )
+        }
+        2 => {
+            let max_decay =
+                (window - attack - release - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
+            let next_decay = (x * window - attack).clamp(0.0, max_decay);
+            (
+                base + 2,
+                EditValues::Pair(ParameterPairValue {
+                    first: ParameterValue::Float(y),
+                    second: ParameterValue::Float(next_decay),
+                }),
+            )
+        }
+        3 => {
+            let max_release =
+                (window - attack - decay - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
+            let next_release = (x * window - attack - decay - HOLD_SECONDS).clamp(0.0, max_release);
+            (
+                base + 5,
+                EditValues::Single(ParameterValue::Float(next_release)),
+            )
+        }
+        _ => return None,
+    })
+}
+
+fn store_pending(view: &mut EditorView, key: GraphKey, target: u32, values: EditValues) {
+    let base = 33 + key.operator as u32 * 6;
+    match values {
+        EditValues::Single(value) => {
+            view.device_panel.pending_values.insert(
+                ParameterKey {
+                    device: key.device,
+                    parameter: id(target),
+                },
+                value,
+            );
+        }
+        EditValues::Pair(pair) => {
+            let second = match target {
+                parameter if parameter == base + 1 => base + 3,
+                parameter if parameter == base + 2 => base + 4,
+                _ => return,
+            };
+            view.device_panel.pending_values.insert(
+                ParameterKey {
+                    device: key.device,
+                    parameter: id(target),
+                },
+                pair.first,
+            );
+            view.device_panel.pending_values.insert(
+                ParameterKey {
+                    device: key.device,
+                    parameter: id(second),
+                },
+                pair.second,
+            );
+        }
+    }
+}
+
+fn clear_pending(view: &mut EditorView, key: GraphKey, node_id: u32) {
+    let base = 33 + key.operator as u32 * 6;
+    let indices: &[u32] = match node_id {
+        0 => &[0],
+        1 => &[1, 3],
+        2 => &[2, 4],
+        3 => &[5],
+        _ => &[],
+    };
+    for index in indices {
+        view.device_panel.pending_values.remove(&ParameterKey {
+            device: key.device,
+            parameter: id(base + index),
+        });
+    }
+}
+
+fn envelope_values(view: &mut EditorView, key: GraphKey) -> Option<[f32; 6]> {
+    let parameters = view
+        .device_panel
+        .views
+        .get(&key.device)
+        .and_then(|(_, _, view)| view.as_ref().ok())?
+        .parameters
+        .clone();
+    let base = 33 + key.operator as u32 * 6;
+    let mut values = [0.0; 6];
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = match super::value(view, key.device, &parameters, id(base + index as u32))? {
+            ParameterValue::Float(value) if value.is_finite() => value,
+            _ => return None,
+        };
+    }
+    Some(values)
+}
+
+pub(in crate::editor::device_panel) fn retire_removed(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    alive: &HashSet<DeviceId>,
+) {
+    let stale: Vec<_> = view
+        .device_panel
+        .operator_envelope_graphs
+        .keys()
+        .filter(|key| !alive.contains(&key.device))
+        .copied()
+        .collect();
+    for key in stale {
+        cancel_key_gesture(view, key);
+        if let Some(graph) = view.device_panel.operator_envelope_graphs.remove(&key) {
+            graph.entity.update(cx, |graph, cx| graph.cancel(cx));
+        }
+    }
+}
+
+pub(in crate::editor::device_panel) fn retire_hidden(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    visible_operator: Option<usize>,
+) {
+    let stale: Vec<_> = view
+        .device_panel
+        .operator_envelope_graphs
+        .keys()
+        .filter(|key| key.device == device && Some(key.operator) != visible_operator)
+        .copied()
+        .collect();
+    for key in stale {
+        cancel_key_gesture(view, key);
+        if let Some(graph) = view.device_panel.operator_envelope_graphs.remove(&key) {
+            graph.entity.update(cx, |graph, cx| graph.cancel(cx));
+        }
+    }
+}
+
+pub(in crate::editor::device_panel) fn cancel_all(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) {
+    let active: Vec<_> = view
+        .device_panel
+        .operator_envelope_gestures
+        .keys()
+        .copied()
+        .collect();
+    for key in active {
+        cancel_key_gesture(view, key);
+    }
+    let graphs = std::mem::take(&mut view.device_panel.operator_envelope_graphs);
+    for (_, graph) in graphs {
+        graph.entity.update(cx, |graph, cx| graph.cancel(cx));
+    }
+    view.device_panel.operator_envelope_gestures.clear();
+}
+
+fn cancel_key_gesture(view: &mut EditorView, key: GraphKey) {
+    let Some(gesture) = view.device_panel.operator_envelope_gestures.remove(&key) else {
+        return;
+    };
+    clear_pending(view, key, gesture.node_id);
+    let Some(snapshot) = view.device_gesture.snapshot() else {
+        return;
+    };
+    if gesture_target_matches(key, gesture.node_id, snapshot.target) {
+        let _ = view.cancel_device_gesture();
+    }
+}
+
+fn gesture_target_matches(key: GraphKey, node_id: u32, target: GestureTarget) -> bool {
+    let base = 33 + key.operator as u32 * 6;
+    match (node_id, target) {
+        (0, GestureTarget::DeviceParameter { device, parameter }) => {
+            device == key.device && parameter == id(base)
+        }
+        (
+            1,
+            GestureTarget::DeviceParameterPair {
+                device,
+                first,
+                second,
+            },
+        ) => device == key.device && first == id(base + 1) && second == id(base + 3),
+        (
+            2,
+            GestureTarget::DeviceParameterPair {
+                device,
+                first,
+                second,
+            },
+        ) => device == key.device && first == id(base + 2) && second == id(base + 4),
+        (3, GestureTarget::DeviceParameter { device, parameter }) => {
+            device == key.device && parameter == id(base + 5)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_hold_mapping_keeps_all_stage_points_ordered_with_headroom() {
+        let values = [0.0, 0.9, 0.6, 0.005, 0.1, 0.1];
+        let window = display_window(values);
+        assert!((window - 0.6825).abs() < 0.00001);
+        let model = graph_model(values, window, 1);
+        assert!(model.validate().is_ok());
+        assert_eq!(model.nodes[3].position[1], 0.0);
+        assert!(model.nodes[3].position[0] < 1.0);
+    }
+
+    #[test]
+    fn stage_mappings_keep_the_hold_fixed_and_respect_available_axis() {
+        let gesture = GraphGesture {
+            node_id: 1,
+            window_seconds: 1.0,
+            initial: [0.0, 1.0, 0.7, 0.1, 0.2, 0.1],
+        };
+        let (_, EditValues::Pair(attack)) = edit_values(0, gesture, [0.9, 0.4]).unwrap() else {
+            panic!("peak should edit paired peak and attack")
+        };
+        assert_eq!(attack.first, ParameterValue::Float(0.4));
+        assert_eq!(attack.second, ParameterValue::Float(0.45));
+
+        let decay_gesture = GraphGesture {
+            node_id: 2,
+            ..gesture
+        };
+        let (_, EditValues::Pair(decay)) = edit_values(0, decay_gesture, [0.8, 0.3]).unwrap()
+        else {
+            panic!("sustain should edit paired sustain and decay")
+        };
+        assert_eq!(decay.first, ParameterValue::Float(0.3));
+        assert!(
+            (match decay.second {
+                ParameterValue::Float(value) => value,
+                _ => -1.0,
+            } - 0.55)
+                .abs()
+                < 0.00001
+        );
+
+        let release_gesture = GraphGesture {
+            node_id: 3,
+            ..gesture
+        };
+        let (_, EditValues::Single(ParameterValue::Float(release))) =
+            edit_values(0, release_gesture, [1.0, 0.0]).unwrap()
+        else {
+            panic!("release endpoint should edit a scalar release")
+        };
+        assert!((release - 0.45).abs() < 0.00001);
+
+        let initial_gesture = GraphGesture {
+            node_id: 0,
+            ..gesture
+        };
+        assert!(matches!(
+            edit_values(3, initial_gesture, [0.0, 0.35]),
+            Some((51, EditValues::Single(ParameterValue::Float(value)))) if (value - 0.35).abs() < 0.00001
+        ));
+        assert!(matches!(
+            edit_values(
+                3,
+                GraphGesture {
+                    node_id: 1,
+                    ..gesture
+                },
+                [0.2, 0.6]
+            ),
+            Some((
+                52,
+                EditValues::Pair(ParameterPairValue {
+                    first: ParameterValue::Float(0.6),
+                    second: ParameterValue::Float(_),
+                })
+            ))
+        ));
+        assert!(matches!(
+            edit_values(
+                3,
+                GraphGesture {
+                    node_id: 2,
+                    ..gesture
+                },
+                [0.4, 0.25]
+            ),
+            Some((
+                53,
+                EditValues::Pair(ParameterPairValue {
+                    first: ParameterValue::Float(0.25),
+                    second: ParameterValue::Float(_),
+                })
+            ))
+        ));
+        assert!(matches!(
+            edit_values(
+                3,
+                GraphGesture {
+                    node_id: 3,
+                    ..gesture
+                },
+                [0.9, 0.0]
+            ),
+            Some((56, EditValues::Single(ParameterValue::Float(_))))
+        ));
+    }
+}
