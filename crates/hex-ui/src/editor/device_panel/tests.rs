@@ -348,6 +348,7 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
             Some(drag::NativeDeviceDropTarget {
                 track,
                 before: Some(existing),
+                replace: None,
             })
         );
     });
@@ -483,6 +484,261 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
     let panel_after = visual.debug_bounds("device-panel").expect("device panel");
     assert_eq!(panel_after.size.height, px(213.0));
     assert_eq!(panel_after.size.height, panel_before.size.height);
+}
+
+#[gpui::test]
+fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_old_ui(
+    cx: &mut TestAppContext,
+) {
+    let (service, _state, track, effect, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ONE,
+            length: hex_project::BeatTime::from_quarters(4).expect("clip length"),
+        }))
+        .expect("place clip before replacement");
+    let initial = receive_service_event(&service).state;
+    let initial_revision = initial.revision;
+    let original_track = initial.project.track(track).expect("track").clone();
+    let instrument = original_track.instrument().expect("default sine").id();
+    let (handle, editor) = actor_editor_window(cx, service, initial, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let operator_source = visual
+        .debug_bounds("browser-device-instrument-hex.instrument.operator")
+        .expect("operator browser row");
+    let utility_card = visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-card-{}", effect.value()).into_boxed_str(),
+        ))
+        .expect("effect card");
+    let operator_down = operator_source.center();
+    visual.simulate_mouse_down(operator_down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(operator_down.x + px(12.0), operator_down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        point(utility_card.origin.x + px(24.0), utility_card.center().y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let target = view
+            .active_native_device_drag
+            .as_ref()
+            .and_then(|drag| drag.destination.get())
+            .expect("drop target over effect card");
+        assert_eq!(target.replace, None, "effects are not replacement targets");
+    });
+    let effect_drop = point(utility_card.origin.x + px(24.0), utility_card.center().y);
+    visual.simulate_mouse_up(effect_drop, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.message.as_deref() == Some("instrument slot is already occupied")
+    });
+    editor.read_with(cx, |view, _| {
+        let current = view.state.as_ref().expect("state");
+        assert_eq!(current.revision, initial_revision);
+        assert_eq!(
+            current
+                .project
+                .track(track)
+                .expect("track")
+                .instrument()
+                .map(hex_project::Device::id),
+            Some(instrument)
+        );
+    });
+
+    let source = visual
+        .debug_bounds("browser-device-instrument-hex.instrument.operator")
+        .expect("operator browser row after rejected effect-card drop");
+    let card_selector =
+        Box::leak(format!("device-drop-card-{}", instrument.value()).into_boxed_str());
+    let card = visual.debug_bounds(card_selector).expect("instrument card");
+    assert_eq!(card.size.width, px(DEVICE_FRAME_WIDTH));
+    let down = source.center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let sine_destination = card.center();
+    visual.simulate_mouse_move(sine_destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let target = view
+            .active_native_device_drag
+            .as_ref()
+            .and_then(|drag| drag.destination.get())
+            .expect("replacement target on right side of wide card");
+        assert_eq!(target.track, track);
+        assert_eq!(target.before, None);
+        assert_eq!(target.replace, Some(instrument));
+    });
+    visual.simulate_mouse_up(sine_destination, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .and_then(|track| track.instrument())
+            .is_some_and(|device| {
+                device.state().type_id().as_str() == Ok("hex.instrument.operator")
+            })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drop = view
+            .last_enqueued_native_device_drop
+            .expect("replacement drop request");
+        assert_eq!(drop.project_generation, view.project_generation);
+        assert_eq!(drop.revision, initial_revision);
+        assert_eq!(drop.track, track);
+        assert_eq!(drop.before, None);
+        assert_eq!(drop.replace, Some(instrument));
+        assert!(matches!(
+            drop.source,
+            hex_session::service::NativeDeviceDropSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                type_id,
+            } if type_id.as_str() == Ok("hex.instrument.operator")
+        ));
+        let current = view.state.as_ref().expect("state");
+        let current_track = current.project.track(track).expect("track");
+        assert_eq!(
+            current_track.instrument().map(hex_project::Device::id),
+            Some(instrument)
+        );
+        assert_eq!(current_track.devices(), original_track.devices());
+        assert_eq!(current_track.clips(), original_track.clips());
+        assert_eq!(current_track.midi_clips(), original_track.midi_clips());
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .any(|key| key.device == instrument)
+        );
+    });
+
+    let sine_source = visual
+        .debug_bounds("browser-device-instrument-hex.instrument.sine")
+        .expect("sine browser row");
+    let operator_card = visual
+        .debug_bounds(card_selector)
+        .expect("wide Operator card");
+    assert_eq!(
+        operator_card.size.width,
+        px(operator_panel::OPERATOR_FRAME_WIDTH)
+    );
+    let right_side = point(
+        operator_card.origin.x + operator_card.size.width - px(16.0),
+        operator_card.center().y,
+    );
+    let operator_view = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("state");
+        hex_engine::native_device_view_for_class(
+            NativeDeviceClass::Instrument,
+            state
+                .project
+                .track(track)
+                .expect("track")
+                .instrument()
+                .expect("operator")
+                .state(),
+        )
+        .expect("operator parameter view")
+    });
+    editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            instrument,
+            operator_panel::OperatorPanelState {
+                selected_operator: 3,
+                page: operator_panel::OperatorPage::Routing,
+            },
+        );
+        let parameter = operator_view.parameters[0];
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device: instrument,
+                parameter: parameter.descriptor.id,
+            },
+            parameter.value,
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let sine_down = sine_source.center();
+    visual.simulate_mouse_down(sine_down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(sine_down.x + px(12.0), sine_down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(right_side, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(right_side, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .and_then(|track| track.instrument())
+            .is_some_and(|device| device.state().type_id().as_str() == Ok("hex.instrument.sine"))
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view
+                .device_panel
+                .controls
+                .keys()
+                .any(|key| key.device == instrument)
+        );
+        assert!(
+            !view
+                .device_panel
+                .pending_values
+                .keys()
+                .any(|key| key.device == instrument)
+        );
+        assert!(!view.device_panel.operator_pages.contains_key(&instrument));
+        assert_ne!(
+            view.device_panel.message.as_deref(),
+            Some("device target is no longer available")
+        );
+    });
+
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .and_then(|track| track.instrument())
+            .is_some_and(|device| {
+                device.state().type_id().as_str() == Ok("hex.instrument.operator")
+            })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .any(|key| key.device == instrument)
+        );
+        assert_ne!(
+            view.device_panel.message.as_deref(),
+            Some("device target is no longer available")
+        );
+    });
 }
 
 #[gpui::test]
@@ -1581,25 +1837,46 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
 
     let rail = visual
         .debug_bounds("device-chain-scroll")
         .expect("visible rail bounds");
-    let outside = point(
-        rail.origin.x + rail.size.width + px(2.0),
-        rail.origin.y + rail.size.height / 2.0,
-    );
-    let clipped_card_contains_pointer = device_ids.iter().any(|device| {
-        let selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
-        visual
-            .debug_bounds(selector)
-            .is_some_and(|bounds| bounds.contains(&outside))
-    });
-    assert!(
-        clipped_card_contains_pointer,
-        "fixture reaches overflow card bounds"
-    );
+    let outside = device_ids
+        .iter()
+        .find_map(|device| {
+            let selector =
+                Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
+            let bounds = visual.debug_bounds(selector)?;
+            let card_right = bounds.origin.x + bounds.size.width;
+            let rail_right = rail.origin.x + rail.size.width;
+            let clipped_left = if bounds.origin.x > rail_right {
+                bounds.origin.x
+            } else {
+                rail_right
+            };
+            let visible_top = if bounds.origin.y > rail.origin.y {
+                bounds.origin.y
+            } else {
+                rail.origin.y
+            };
+            let rail_bottom = rail.origin.y + rail.size.height;
+            let card_bottom = bounds.origin.y + bounds.size.height;
+            let visible_bottom = if card_bottom < rail_bottom {
+                card_bottom
+            } else {
+                rail_bottom
+            };
+            if card_right <= clipped_left || visible_bottom <= visible_top {
+                return None;
+            }
+            Some(point(
+                clipped_left + (card_right - clipped_left) / 2.0,
+                visible_top + (visible_bottom - visible_top) / 2.0,
+            ))
+        })
+        .expect("fixture reaches a card beyond the visible rail");
 
     let source = visual
         .debug_bounds("browser-device-effect-hex.utility")
@@ -1687,7 +1964,8 @@ fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAp
             drag.destination.get(),
             Some(drag::NativeDeviceDropTarget {
                 track,
-                before: None
+                before: None,
+                replace: None,
             })
         );
     });

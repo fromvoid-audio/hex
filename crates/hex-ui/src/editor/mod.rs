@@ -378,6 +378,17 @@ pub(super) fn open_pending(
     bootstrap::open(cx, request)
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EnqueuedNativeDeviceDrop {
+    pub(super) project_generation: u64,
+    pub(super) revision: u64,
+    pub(super) source: hex_session::service::NativeDeviceDropSource,
+    pub(super) track: TrackId,
+    pub(super) before: Option<hex_project::DeviceId>,
+    pub(super) replace: Option<hex_project::DeviceId>,
+}
+
 pub(super) struct EditorView {
     service: Service,
     audio: Option<PreparedOutput>,
@@ -491,13 +502,7 @@ pub(super) struct EditorView {
         hex_lattice_contract::DeviceTypeId,
     )>,
     #[cfg(test)]
-    last_enqueued_native_device_drop: Option<(
-        u64,
-        u64,
-        hex_session::service::NativeDeviceDropSource,
-        TrackId,
-        Option<hex_project::DeviceId>,
-    )>,
+    last_enqueued_native_device_drop: Option<EnqueuedNativeDeviceDrop>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]

@@ -60,6 +60,9 @@ pub(super) struct NativeDeviceDropTarget {
     /// Canonical ordered-chain node before which the device should land.
     /// `None` appends existing devices; new browser instruments default to front.
     pub(super) before: Option<hex_project::DeviceId>,
+    /// Explicit replacement intent, set only when a browser instrument is
+    /// released over the existing instrument card itself.
+    pub(super) replace: Option<hex_project::DeviceId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
