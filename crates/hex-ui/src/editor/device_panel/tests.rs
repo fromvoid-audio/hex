@@ -1828,26 +1828,40 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
     let rail = visual
         .debug_bounds("device-chain-scroll")
         .expect("visible rail bounds");
-    let overflow_pointer = device_ids.iter().find_map(|device| {
-        let selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
-        let bounds = visual.debug_bounds(selector)?;
-        let x = rail.origin.x + rail.size.width + px(1.0);
-        let y = bounds.origin.y + bounds.size.height / 2.0;
-        let point = point(x, y);
-        (bounds.contains(&point) && y >= rail.origin.y && y <= rail.origin.y + rail.size.height)
-            .then_some(point)
-    });
-    let Some(outside) = overflow_pointer else {
-        assert!(
-            device_ids.iter().any(|device| {
-                let selector =
-                    Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
-                visual.debug_bounds(selector).is_some()
-            }),
-            "fixture has visible device cards"
-        );
-        panic!("fixture reaches a card beyond the visible rail");
-    };
+    let outside = device_ids
+        .iter()
+        .find_map(|device| {
+            let selector =
+                Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
+            let bounds = visual.debug_bounds(selector)?;
+            let card_right = bounds.origin.x + bounds.size.width;
+            let rail_right = rail.origin.x + rail.size.width;
+            let clipped_left = if bounds.origin.x > rail_right {
+                bounds.origin.x
+            } else {
+                rail_right
+            };
+            let visible_top = if bounds.origin.y > rail.origin.y {
+                bounds.origin.y
+            } else {
+                rail.origin.y
+            };
+            let rail_bottom = rail.origin.y + rail.size.height;
+            let card_bottom = bounds.origin.y + bounds.size.height;
+            let visible_bottom = if card_bottom < rail_bottom {
+                card_bottom
+            } else {
+                rail_bottom
+            };
+            if card_right <= clipped_left || visible_bottom <= visible_top {
+                return None;
+            }
+            Some(point(
+                clipped_left + (card_right - clipped_left) / 2.0,
+                visible_top + (visible_bottom - visible_top) / 2.0,
+            ))
+        })
+        .expect("fixture reaches a card beyond the visible rail");
 
     let source = visual
         .debug_bounds("browser-device-effect-hex.utility")
