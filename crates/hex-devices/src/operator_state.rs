@@ -1,7 +1,8 @@
 //! Original Operator control state and registered shared-context instrument.
 //!
-//! Generic opaque version-1 data holds 56 little-endian finite f32 fields.
+//! Version-2 data preserves the version-1 float prefix and appends four shape choices.
 //! The old FM4 device keeps its separate type, state layout and global ADSR.
+use crate::operator_waveform::OperatorWaveform;
 use crate::{
     SineTable,
     fm4::{
@@ -20,12 +21,16 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 1;
+pub const OPERATOR_STATE_VERSION: u32 = 2;
+const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;
 const ENVELOPE_FIELDS: usize = 6;
 const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
-const PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
-const PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
+const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
+const WAVEFORM_COUNT: usize = OPERATORS;
+const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT;
+const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
+const PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -52,6 +57,14 @@ pub mod parameter {
             return ParameterId::from_static(0);
         }
         ParameterId::from_static(33 + (operator - 1) * 6 + field as u32)
+    }
+
+    /// Operator numbers are one-based. Zero denotes an invalid endpoint.
+    pub const fn waveform(operator: u32) -> ParameterId {
+        if operator == 0 || operator > 4 {
+            return ParameterId::from_static(0);
+        }
+        ParameterId::from_static(56 + operator)
     }
 }
 
@@ -107,6 +120,26 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         index += 1;
         envelope += 1;
     }
+    let waveforms = [
+        "op1 waveform",
+        "op2 waveform",
+        "op3 waveform",
+        "op4 waveform",
+    ];
+    let mut operator = 0;
+    while operator < OPERATORS {
+        result[index] = ParameterDescriptor {
+            id: ParameterId::from_static((57 + operator) as u32),
+            label: waveforms[operator],
+            kind: ParameterKind::Choice {
+                labels: OperatorWaveform::labels(),
+            },
+            default: ParameterValue::Choice(0),
+            presentation: ParameterPresentation::Linear,
+        };
+        index += 1;
+        operator += 1;
+    }
     result
 }
 
@@ -116,6 +149,7 @@ static PARAMETERS: [ParameterDescriptor; PARAMETER_COUNT] = parameters();
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OperatorSettings {
     fields: [f32; FIELD_COUNT],
+    waveforms: [OperatorWaveform; OPERATORS],
 }
 
 impl OperatorSettings {
@@ -127,21 +161,29 @@ impl OperatorSettings {
                 fields[descriptor.id.value() as usize - 1] = value;
             }
         }
-        Self { fields }
+        Self {
+            fields,
+            waveforms: [OperatorWaveform::Sine; OPERATORS],
+        }
     }
 
     pub fn from_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
         if state.type_id() != OPERATOR_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
-        if state.state_version() != OPERATOR_STATE_VERSION {
-            return Err(DeviceContractError::UnsupportedStateVersion);
-        }
-        if state.payload().len() != PAYLOAD_BYTES {
+        let expected_len = match state.state_version() {
+            LEGACY_STATE_VERSION => LEGACY_PAYLOAD_BYTES,
+            OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
+            _ => return Err(DeviceContractError::UnsupportedStateVersion),
+        };
+        if state.payload().len() != expected_len {
             return Err(DeviceContractError::MalformedState);
         }
         let mut fields = [0.0; FIELD_COUNT];
-        for (index, bytes) in state.payload().chunks_exact(size_of::<f32>()).enumerate() {
+        for (index, bytes) in state.payload()[..LEGACY_PAYLOAD_BYTES]
+            .chunks_exact(size_of::<f32>())
+            .enumerate()
+        {
             let bytes: [u8; 4] = bytes
                 .try_into()
                 .map_err(|_| DeviceContractError::MalformedState)?;
@@ -150,7 +192,21 @@ impl OperatorSettings {
                 .ok_or(DeviceContractError::MalformedState)?;
             *field = f32::from_le_bytes(bytes);
         }
-        let result = Self { fields };
+        let mut waveforms = [OperatorWaveform::Sine; OPERATORS];
+        if state.state_version() == OPERATOR_STATE_VERSION {
+            for (index, bytes) in state.payload()[LEGACY_PAYLOAD_BYTES..]
+                .chunks_exact(size_of::<u32>())
+                .enumerate()
+            {
+                let bytes: [u8; 4] = bytes
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?;
+                let choice = u32::from_le_bytes(bytes);
+                waveforms[index] = OperatorWaveform::from_choice(choice)
+                    .ok_or(DeviceContractError::MalformedState)?;
+            }
+        }
+        let result = Self { fields, waveforms };
         result.kernel_parts()?;
         Ok(result)
     }
@@ -163,6 +219,9 @@ impl OperatorSettings {
             .map_err(|_| DeviceContractError::RuntimeAllocation)?;
         for field in self.fields {
             payload.extend_from_slice(&field.to_le_bytes());
+        }
+        for waveform in self.waveforms {
+            payload.extend_from_slice(&waveform.choice().to_le_bytes());
         }
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
@@ -178,7 +237,7 @@ impl OperatorSettings {
         ),
         DeviceContractError,
     > {
-        for descriptor in PARAMETERS {
+        for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
             ))?;
@@ -227,8 +286,14 @@ impl OperatorSettings {
         sample_rate: u32,
     ) -> Result<PreparedOperatorConfiguration, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorConfiguration::new(sample_rate, oscillators, routing, envelopes)
-            .map_err(|_| DeviceContractError::InvalidParameterValue)
+        PreparedOperatorConfiguration::new_with_waveforms(
+            sample_rate,
+            oscillators,
+            routing,
+            envelopes,
+            self.waveforms,
+        )
+        .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
 
     /// Standalone control preparation only; no native sampler/registry admission.
@@ -239,13 +304,14 @@ impl OperatorSettings {
         velocity: u8,
     ) -> Result<PreparedOperatorFm4, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorFm4::new(
+        PreparedOperatorFm4::new_with_waveforms(
             sample_rate,
             pitch,
             velocity,
             oscillators,
             routing,
             envelopes,
+            self.waveforms,
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -276,8 +342,8 @@ impl NativeDeviceMetadata for OperatorMetadata {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        OperatorSettings::from_state(state)?;
-        Ok(state.clone())
+        let settings = OperatorSettings::from_state(state)?;
+        settings.to_state()
     }
     fn read_parameter(
         &self,
@@ -285,10 +351,17 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
-        let index = parameter_index(parameter)?;
+        if let Some(index) = waveform_index(parameter) {
+            return settings
+                .waveforms
+                .get(index)
+                .copied()
+                .map(|waveform| ParameterValue::Choice(waveform.choice()))
+                .ok_or(DeviceContractError::UnknownParameter);
+        }
         settings
             .fields
-            .get(index)
+            .get(parameter_index(parameter)?)
             .copied()
             .map(ParameterValue::Float)
             .ok_or(DeviceContractError::UnknownParameter)
@@ -304,10 +377,18 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .find(|descriptor| descriptor.id == parameter)
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
+        let mut settings = OperatorSettings::from_state(state)?;
+        if let Some(index) = waveform_index(parameter) {
+            let ParameterValue::Choice(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            settings.waveforms[index] = OperatorWaveform::from_choice(value)
+                .ok_or(DeviceContractError::InvalidParameterValue)?;
+            return settings.to_state();
+        }
         let ParameterValue::Float(value) = value else {
             return Err(DeviceContractError::InvalidParameterValue);
         };
-        let mut settings = OperatorSettings::from_state(state)?;
         let field = settings
             .fields
             .get_mut(parameter_index(parameter)?)
@@ -392,6 +473,9 @@ impl PreparedSharedAnalyticContext for PreparedOperatorContext {
         let Some(note) = PreparedOperatorNote::from_shared_payload(note.payload()) else {
             return [0.0; 2];
         };
+        if !self.configuration.note_matches_configuration(&note) {
+            return [0.0; 2];
+        }
         let sample = self
             .configuration
             .sample(self.sine_table, &note, age_frames, gate_frames);
@@ -402,6 +486,7 @@ impl PreparedSharedAnalyticContext for PreparedOperatorContext {
 fn parameter_index(parameter: ParameterId) -> Result<usize, DeviceContractError> {
     if !PARAMETERS
         .iter()
+        .take(FLOAT_PARAMETER_COUNT)
         .any(|descriptor| descriptor.id == parameter)
     {
         return Err(DeviceContractError::UnknownParameter);
@@ -410,6 +495,11 @@ fn parameter_index(parameter: ParameterId) -> Result<usize, DeviceContractError>
         .ok()
         .and_then(|id| id.checked_sub(1))
         .ok_or(DeviceContractError::UnknownParameter)
+}
+
+fn waveform_index(parameter: ParameterId) -> Option<usize> {
+    let index = parameter.value().checked_sub(57)? as usize;
+    (index < OPERATORS).then_some(index)
 }
 
 #[cfg(test)]

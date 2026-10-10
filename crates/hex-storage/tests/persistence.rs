@@ -283,6 +283,15 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
 
 #[test]
 fn registered_operator_nondefault_envelope_roundtrips_as_opaque_state() {
+    check_operator_opaque_roundtrip(1);
+}
+
+#[test]
+fn registered_operator_waveform_choices_roundtrip_as_opaque_state() {
+    check_operator_opaque_roundtrip(2);
+}
+
+fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
         .execute(Command::AddMidiTrack {
@@ -294,7 +303,7 @@ fn registered_operator_nondefault_envelope_roundtrips_as_opaque_state() {
         _ => panic!("track"),
     };
 
-    // A valid version-1 Operator envelope expressed only through the existing
+    // Valid Operator envelopes and waveform choices use only the existing
     // opaque state contract; storage must preserve it without a device-codec edge.
     let mut fields = [0.0_f32; 56];
     fields[0] = 1.0;
@@ -310,10 +319,15 @@ fn registered_operator_nondefault_envelope_roundtrips_as_opaque_state() {
         let offset = 32 + operator * 6;
         fields[offset..offset + 6].copy_from_slice(&[0.0, 1.0, 0.7, 0.005, 0.1, 0.1]);
     }
-    let payload = fields.into_iter().flat_map(f32::to_le_bytes).collect();
+    let mut payload: Vec<u8> = fields.into_iter().flat_map(f32::to_le_bytes).collect();
+    if state_version == 2 {
+        for choice in [1_u32, 2, 3, 0] {
+            payload.extend_from_slice(&choice.to_le_bytes());
+        }
+    }
     let state = NativeDeviceState::new(
         DeviceTypeId::new("hex.instrument.operator").unwrap(),
-        1,
+        state_version,
         payload,
     )
     .unwrap();

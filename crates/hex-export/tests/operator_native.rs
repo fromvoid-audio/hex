@@ -75,8 +75,7 @@ fn expected(age: u64) -> f32 {
     ((TAU * 440.0 * age as f64 / f64::from(RATE)).sin() * envelope) as f32
 }
 
-#[test]
-fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and_release() {
+fn operator_revision(state: hex_lattice_contract::NativeDeviceState) -> Arc<PreparedRevision> {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let track = match editor
         .execute(Command::AddMidiTrack {
@@ -96,7 +95,7 @@ fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and
     editor
         .execute(Command::ReplaceDeviceState {
             device: instrument,
-            state: operator_state(),
+            state,
         })
         .expect("register Operator state");
     let clip = match editor
@@ -121,7 +120,7 @@ fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and
         })
         .expect("MIDI note");
 
-    let revision = Arc::new(
+    Arc::new(
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
@@ -129,7 +128,12 @@ fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and
             None,
         )
         .expect("prepared registered Operator"),
-    );
+    )
+}
+
+#[test]
+fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and_release() {
+    let revision = operator_revision(operator_state());
     let directory = TestDir::new();
     let path = directory.0.join("operator.wav");
     let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
@@ -149,5 +153,45 @@ fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and
             (i32::from(left) - i32::from(expected_sample)).abs() <= 1,
             "PCM16 mismatch at frame {frame_index}: got {left}, expected {expected_sample}"
         );
+    }
+}
+
+#[test]
+fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
+    let mut state = operator_state();
+    for (parameter, choice) in [(57, 1), (58, 2), (59, 3)] {
+        state = patch_native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &state,
+            ParameterId::from_static(parameter),
+            ParameterValue::Choice(choice),
+        )
+        .expect("periodic waveform choice");
+    }
+    let revision = operator_revision(state);
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .expect("prepared mixed-wave playback");
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let mut expected = vec![[0.0; 2]; 6_500];
+    for block in expected.chunks_mut(97) {
+        playback
+            .render(block)
+            .expect("partitioned mixed-wave render");
+    }
+    let directory = TestDir::new();
+    let path = directory.0.join("mixed-operator.wav");
+    let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
+        .expect("mixed-wave prepared export");
+    assert_eq!(report.frames, 6_500);
+    let bytes = fs::read(path).expect("exported mixed-wave PCM");
+    assert_eq!(bytes.len(), 44 + 6_500 * 4);
+    for (samples, frame) in bytes[44..].chunks_exact(4).zip(expected) {
+        for (channel, sample) in frame.into_iter().enumerate() {
+            let offset = channel * 2;
+            let actual = i16::from_le_bytes([samples[offset], samples[offset + 1]]);
+            let expected = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
+            assert_eq!(actual, expected, "export and playback disagree");
+        }
     }
 }
