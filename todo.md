@@ -842,3 +842,32 @@ tests (3), engine suite (153 passed/1 ignored), lattice suite (24) and strict
 Clippy pass. Architecture, UI-style, GPUI-patch and format guards pass. Full
 local CI and parent integration review remain outstanding. Do not mark Pulse2181
 done or describe this as seek support.
+
+Pulse2182 Arrangement preroll foundation (source checkpoint):
+`SessionPlayback::prepare_arrangement_preroll` constructs an independent,
+Arrangement-only candidate from the same prepared revision and renders forward
+from frame zero in bounded 256-frame blocks. The caller chooses the replay-frame
+budget; the hard limit is 8,388,608 frames, cancellation is checked before
+construction, at each block boundary and before return, and accounted candidate
+runtime storage is capped at 32 MiB. Preflight includes runtime chains, mutable
+instrument twins and ledgers, route/tail/release/scratch/context tables; shared
+immutable graph data and allocator bookkeeping are excluded. Actual vector
+capacities are checked after construction. Enabled Arrangement transport loops
+are explicitly refused. Tests compare future PCM for held and ended-gate mutable
+instrument feedback, stateful Utility track/return effects and sends; they also
+cover pause/play, zero frame, cancellation, budget/cap boundaries, loop refusal,
+render failure, source immutability and measured preflight-vs-actual accounting
+(20,638,328 bytes on this fixture, including the 2,048-byte render scratch). A
+100-stateful-track release profile fixture is present and passes a debug smoke
+run, but clean exact-head release timing evidence remains pending. This is not
+live seek or native publication: live route fencing, Session ownership, loop
+reconstruction and supersede/Stop admission remain deferred to 2164/2165. Targeted
+preroll tests (8 passed/1 ignored), all SessionPlayback tests (108 passed/2
+ignored), lattice tests (24 passed), affected strict Clippy and architecture,
+GPUI-patch, UI-style and format guards pass. Additional regressions prove a
+declared storage-budget refusal occurs before candidate runtime factories,
+cancellation is observed after the final rendered block, zero-frame play stays
+playing, and an empty project can advance beyond its content with exact clocks
+and silence while leaving the source untouched. Full clean-head local CI and
+native seek integration/acceptance remain pending. Keep Pulse2182 open until
+integrated acceptance is complete.

@@ -15,7 +15,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -8556,6 +8556,424 @@ fn mutable_checkpoint_restores_held_and_released_feedback_with_owned_occurrence_
             id_after
         );
     }
+}
+
+#[test]
+fn arrangement_preroll_reconstructs_held_and_released_mutable_feedback() {
+    let (prepared, _) = mutable_checkpoint_fixture(1 << 32);
+    let untouched = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    caller.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut caller_prefix = [[0.0; 2]; 37];
+    caller.render(&mut caller_prefix).unwrap();
+    let caller_frame = caller.performance_frame();
+
+    // A held note exercises both oscillator/voice continuation and feedback.
+    // The later target is past the note gate and exercises the ended-gate tail.
+    for target in [256_u64, 24_704] {
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut remaining = target;
+        let partitions = [19_usize, 64, 7, 127, 43];
+        let mut partition_index = 0;
+        while remaining != 0 {
+            let count =
+                remaining.min(partitions[partition_index % partitions.len()] as u64) as usize;
+            let mut prefix = vec![[0.0; 2]; count];
+            uninterrupted.render(&mut prefix).unwrap();
+            remaining -= count as u64;
+            partition_index += 1;
+        }
+        let mut expected = [[0.0; 2]; 193];
+        uninterrupted.render(&mut expected).unwrap();
+
+        let mut candidate = caller
+            .prepare_arrangement_preroll(target, target, true, &AtomicBool::new(false))
+            .unwrap();
+        assert!(Arc::ptr_eq(&candidate.revision, &prepared));
+        assert_eq!(candidate.arrangement_frame(), target);
+        assert_eq!(candidate.performance_frame(), target);
+        assert!(candidate.playing());
+        let mut actual = [[0.0; 2]; 193];
+        candidate.render(&mut actual).unwrap();
+        assert_eq!(actual, expected, "preroll continuation differs at {target}");
+    }
+
+    assert_eq!(caller.performance_frame(), caller_frame);
+    assert!(caller.playing());
+    assert_eq!(untouched.performance_frame(), 0);
+    assert!(!untouched.playing());
+}
+
+#[test]
+fn arrangement_preroll_keeps_mutable_source_and_return_send_history_aligned() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
+    let track_effect_id = snapshot.next_id;
+    let return_id = track_effect_id + 1;
+    let return_effect_id = track_effect_id + 2;
+    snapshot.next_id = track_effect_id + 3;
+    let filter_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        id: track_effect_id,
+        bypassed: false,
+        state: filter_state.clone(),
+    });
+    snapshot.tracks[0]
+        .sends
+        .push(hex_project::SendLevelSnapshot {
+            return_track: return_id,
+            gain: 0.5,
+        });
+    snapshot
+        .return_tracks
+        .push(hex_project::ReturnTrackSnapshot {
+            id: return_id,
+            name: "return".into(),
+            gain: 0.75,
+            muted: false,
+            devices: vec![DeviceSnapshot {
+                id: return_effect_id,
+                bypassed: false,
+                state: filter_state,
+            }],
+        });
+    let source = Project::from_snapshot(snapshot).unwrap();
+    let prepared = revision_with_instrument_registry(&source, table, &registry);
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    assert_eq!(caller.device_chains[0].stateful_count(), 1);
+    assert_eq!(caller.return_chains[0].stateful_count(), 1);
+    let mut expected_source = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    expected_source.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 512];
+    expected_source.render(&mut prefix).unwrap();
+    let mut expected = [[0.0; 2]; 129];
+    expected_source.render(&mut expected).unwrap();
+
+    let mut candidate = caller
+        .prepare_arrangement_preroll(512, 512, true, &AtomicBool::new(false))
+        .unwrap();
+    let mut actual = [[0.0; 2]; 129];
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+#[test]
+fn arrangement_preroll_checks_work_cancellation_loop_and_pause_contracts() {
+    let prepared = revision(
+        &project(0.5, 0, 1 << 32),
+        Arc::new(hex_devices::SineTable::new()),
+    );
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        caller
+            .prepare_arrangement_preroll(256, 256, false, &cancelled)
+            .unwrap_err(),
+        ArrangementPrerollError::Cancelled
+    );
+    assert_eq!(
+        caller
+            .prepare_arrangement_preroll(257, 256, false, &AtomicBool::new(false))
+            .unwrap_err(),
+        ArrangementPrerollError::WorkBudgetExceeded
+    );
+    assert_eq!(
+        caller
+            .prepare_arrangement_preroll(
+                u64::MAX,
+                MAX_ARRANGEMENT_PREROLL_FRAMES,
+                false,
+                &AtomicBool::new(false),
+            )
+            .unwrap_err(),
+        ArrangementPrerollError::WorkBudgetExceeded
+    );
+
+    let paused = caller
+        .prepare_arrangement_preroll(256, 256, false, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(paused.performance_frame(), 256);
+    assert_eq!(paused.arrangement_frame(), 256);
+    assert!(!paused.playing());
+
+    let polls = AtomicUsize::new(0);
+    let error = caller
+        .prepare_arrangement_preroll_checked(
+            512,
+            512,
+            true,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            || polls.fetch_add(1, Ordering::Relaxed) >= 3,
+        )
+        .unwrap_err();
+    assert_eq!(error, ArrangementPrerollError::Cancelled);
+    assert_eq!(caller.performance_frame(), 0);
+    assert!(!caller.playing());
+
+    let final_block_polls = AtomicUsize::new(0);
+    let error = caller
+        .prepare_arrangement_preroll_checked(
+            256,
+            256,
+            true,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            || final_block_polls.fetch_add(1, Ordering::Relaxed) >= 3,
+        )
+        .unwrap_err();
+    assert_eq!(error, ArrangementPrerollError::Cancelled);
+    assert_eq!(final_block_polls.load(Ordering::Relaxed), 4);
+    assert_eq!(caller.performance_frame(), 0);
+    assert!(!caller.playing());
+}
+
+#[test]
+fn arrangement_preroll_accepts_zero_frame_and_refuses_transport_loop() {
+    let prepared = revision(
+        &project(0.5, 0, 1 << 32),
+        Arc::new(hex_devices::SineTable::new()),
+    );
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let zero = caller
+        .prepare_arrangement_preroll(0, 0, false, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(zero.performance_frame(), 0);
+    assert_eq!(zero.arrangement_frame(), 0);
+    assert!(!zero.playing());
+    let zero_playing = caller
+        .prepare_arrangement_preroll(0, 0, true, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(zero_playing.performance_frame(), 0);
+    assert_eq!(zero_playing.arrangement_frame(), 0);
+    assert!(zero_playing.playing());
+
+    let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
+    looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
+    let looped = Project::from_snapshot(looped_snapshot).unwrap();
+    let looped = revision(&looped, Arc::new(hex_devices::SineTable::new()));
+    let looped_caller = SessionPlayback::new(Arc::clone(&looped)).unwrap();
+    assert_eq!(
+        looped_caller
+            .prepare_arrangement_preroll(128, 128, false, &AtomicBool::new(false))
+            .unwrap_err(),
+        ArrangementPrerollError::UnsupportedTransportLoop
+    );
+}
+
+#[test]
+fn arrangement_preroll_empty_project_can_advance_beyond_content_end() {
+    let empty_project = Project::new(48_000).unwrap();
+    let empty_revision = revision(&empty_project, Arc::new(hex_devices::SineTable::new()));
+    let empty_caller = SessionPlayback::new(Arc::clone(&empty_revision)).unwrap();
+    let mut candidate = empty_caller
+        .prepare_arrangement_preroll(12_345, 12_345, true, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(candidate.performance_frame(), 12_345);
+    assert_eq!(candidate.arrangement_frame(), 12_345);
+    assert!(candidate.playing());
+    let mut silence = [[1.0, -1.0]; 16];
+    candidate.render(&mut silence).unwrap();
+    assert!(silence.iter().all(|frame| *frame == [0.0, 0.0]));
+    assert_eq!(empty_caller.performance_frame(), 0);
+    assert!(!empty_caller.playing());
+}
+
+#[test]
+fn arrangement_preroll_refuses_storage_preflight_before_runtime_factory() {
+    let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let counter = Arc::new(AtomicUsize::new(0));
+    MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
+    MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
+        bytes.set(Some(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES));
+    });
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    assert!(preflight > 1);
+    let result =
+        caller.prepare_arrangement_preroll_checked(256, 256, true, preflight - 1, || false);
+    assert_eq!(
+        result.unwrap_err(),
+        ArrangementPrerollError::StorageBudgetExceeded
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+    assert_eq!(caller.performance_frame(), 0);
+    assert!(!caller.playing());
+    MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = None);
+}
+
+#[test]
+fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
+    let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let candidate = caller
+        .prepare_arrangement_preroll(1_024, 1_024, false, &AtomicBool::new(false))
+        .unwrap();
+    let actual = candidate.accounted_runtime_storage_bytes().unwrap();
+    let actual_with_scratch = actual + super::preroll::PREROLL_SCRATCH_BYTES;
+    assert!(
+        actual_with_scratch <= preflight,
+        "actual_with_scratch={actual_with_scratch}, preflight={preflight}"
+    );
+    assert!(preflight <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    eprintln!("preroll runtime storage: preflight={preflight} actual={actual_with_scratch}");
+}
+
+#[test]
+fn arrangement_preroll_returns_no_candidate_when_source_render_fails() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source_project = session_audio_midi_arrangement_mix_project();
+    let asset = source_project
+        .assets()
+        .find(|asset| asset.id().value() == 4)
+        .unwrap();
+    let streamed = StreamedSourceMetadata::new(
+        StreamSourceKey::new(82, asset.id()),
+        asset.source_sample_rate(),
+        source_project.sample_rate(),
+        asset.source_frames(),
+        asset.playback_frames(),
+        asset.conversion_version(),
+        [0x82; 32],
+    )
+    .unwrap();
+    let prepared_audio = source_project
+        .assets()
+        .map(|asset| {
+            let source = if asset.id().value() == 4 {
+                PreparedAudioSource::Streamed(Arc::new(streamed.clone()))
+            } else {
+                PreparedAudioSource::Resident(
+                    crate::Audio::new(48_000, vec![[0.25, -0.25]; 32]).unwrap(),
+                )
+            };
+            (asset.id(), source)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            &source_project,
+            &prepared_audio,
+            82,
+            table,
+            None,
+        )
+        .unwrap(),
+    );
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let error = caller
+        .prepare_arrangement_preroll(256, 256, true, &AtomicBool::new(false))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ArrangementPrerollError::Playback(SessionPlaybackError::MediaPagesUnavailable)
+    );
+    assert_eq!(caller.performance_frame(), 0);
+    assert!(!caller.playing());
+}
+
+#[test]
+#[ignore = "release-only timing evidence; run with --release and --ignored"]
+fn arrangement_preroll_profiles_100_stateful_tracks() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0).snapshot();
+    let mut next_id = snapshot.next_id;
+    fn remap_midi_clips(clips: &mut [hex_project::MidiClipSnapshot], next_id: &mut u64) {
+        for clip in clips {
+            clip.id = *next_id;
+            *next_id += 1;
+            for note in &mut clip.notes {
+                note.id = *next_id;
+                *next_id += 1;
+            }
+        }
+    }
+    for track_index in 1..100 {
+        let mut track = snapshot.tracks[0].clone();
+        track.id = next_id;
+        next_id += 1;
+        track.name = format!("track {track_index}");
+        for device in &mut track.devices {
+            device.id = next_id;
+            next_id += 1;
+        }
+        if let Some(instrument) = track.instrument.as_mut() {
+            instrument.id = next_id;
+            next_id += 1;
+        }
+        match &mut track.content {
+            TrackContentSnapshot::Audio(clips) => {
+                for clip in clips {
+                    clip.id = next_id;
+                    next_id += 1;
+                }
+            }
+            TrackContentSnapshot::Instrument(clips) => remap_midi_clips(clips, &mut next_id),
+            TrackContentSnapshot::Hybrid {
+                audio_clips,
+                midi_clips,
+            } => {
+                for clip in audio_clips {
+                    clip.id = next_id;
+                    next_id += 1;
+                }
+                remap_midi_clips(midi_clips, &mut next_id);
+            }
+        }
+        snapshot.tracks.push(track);
+    }
+    snapshot.next_id = next_id;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let prepared = revision_with_instrument_registry(&project, table, &registry);
+    let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let target = 16_384;
+    let storage = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    assert_eq!(caller.route_count(), 100);
+    let mut elapsed = Vec::new();
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        let candidate = caller
+            .prepare_arrangement_preroll(target, target, false, &AtomicBool::new(false))
+            .unwrap();
+        elapsed.push(start.elapsed());
+        assert_eq!(candidate.performance_frame(), target);
+        assert!(!candidate.playing());
+    }
+    eprintln!(
+        "100-track mutable preroll: sample_rate=48000 target_frames={target} blocks={} storage_upper_bound={storage} elapsed={elapsed:?}",
+        target / 256
+    );
 }
 
 #[test]

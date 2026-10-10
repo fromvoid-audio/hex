@@ -22,6 +22,10 @@ pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
 };
+mod preroll;
+pub use preroll::{
+    ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+};
 
 const QUARTER_RAW: u64 = 1_u64 << 32;
 const FOUR_QUARTERS_RAW: u64 = QUARTER_RAW * 4;

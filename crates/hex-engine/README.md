@@ -45,6 +45,17 @@ the same Session route kernel. Providerless rendering refuses a nonempty playing
 streamed project before changing output or runtime state. This is an engine
 rendering contract only: native catalog admission, prewarming, and publication
 are not wired here. Arrangement export remains resident and finite.
+
+`SessionPlayback::prepare_arrangement_preroll` builds a fresh Arrangement-only
+candidate and advances it from frame zero in control-side blocks of at most 256
+frames. Callers provide an explicit replay-frame budget, bounded by 8,388,608
+frames; candidate-owned runtime storage, including the fixed render scratch, is
+preflighted and checked against a 32 MiB accounting ceiling. Cancellation is
+checked before construction, at each block boundary and before return. The candidate preserves the exact immutable
+prepared revision and the source playback is untouched. Enabled Arrangement
+transport loops are refused. This API does not inspect live route ownership,
+restore Session routes, or establish native seek/publication readiness; live
+route fencing and supersede/Stop admission remain a separate integration layer.
 Prepared Playback honors the
 compiled half-open loop region with bounded spans; Renderer and CLI export remain
 linear arrangement renders. Compilation never runs inside a callback.
