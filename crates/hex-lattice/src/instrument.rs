@@ -13,6 +13,68 @@ use std::fmt;
 /// targets. The fixed payload can hold the validated standalone FM4 kernel.
 pub const ANALYTIC_NOTE_PAYLOAD_WORDS: usize = 41;
 
+/// Shared analytic instruments prepare a compact note payload against one
+/// immutable configuration context. This payload is deliberately smaller than
+/// `PreparedAnalyticNote`, whose existing fixed layout remains unchanged.
+pub const SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS: usize = 8;
+
+/// Maximum declared immutable context storage admitted by the engine for one
+/// shared analytic configuration. The declaration includes all context-owned
+/// allocations and is validated on the control side.
+pub const MAX_SHARED_ANALYTIC_CONTEXT_BYTES: usize = 4_096;
+
+/// Copyable per-note data prepared by a shared immutable context. Context
+/// implementations must make this payload self-contained with respect to the
+/// borrowed context and deterministic for a fixed context, pitch, and velocity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedSharedAnalyticNote {
+    payload: [u64; SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
+    release_frames: u64,
+}
+
+impl PreparedSharedAnalyticNote {
+    pub const fn new(
+        payload: [u64; SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
+        release_frames: u64,
+    ) -> Self {
+        Self {
+            payload,
+            release_frames,
+        }
+    }
+
+    pub const fn release_frames(&self) -> u64 {
+        self.release_frames
+    }
+
+    pub const fn payload(&self) -> &[u64; SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS] {
+        &self.payload
+    }
+}
+
+/// Control-prepared immutable configuration shared by many note occurrences.
+/// Implementations perform all validation and pitch/velocity preparation in
+/// `prepare_note`; `sample` borrows compact note data and must be deterministic,
+/// allocation-free, and free of interior mutation.
+pub trait PreparedSharedAnalyticContext: Send + Sync {
+    /// Total bytes owned by this context, including allocations reachable only
+    /// through it. The host checks this against its finite per-context limit.
+    fn declared_context_bytes(&self) -> usize;
+
+    fn prepare_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<PreparedSharedAnalyticNote, DeviceContractError>;
+
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age_frames: u64,
+        gate_frames: u64,
+    ) -> StereoFrame;
+}
+
 /// Type-erased immutable analytic note data. The safe function pointer is
 /// prepared on the control side and receives authored age and gate duration;
 /// `sample` borrows this value to avoid copying its bounded payload per frame;
@@ -73,6 +135,20 @@ pub trait PreparedNativeInstrument: Send + Sync {
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedAnalyticNote, DeviceContractError>;
+
+    /// Optional shared immutable analytic context. For the same prepared
+    /// instrument state and sample rate, context preparation must describe the
+    /// same future PCM law; the host may reuse a prior context with exact state
+    /// identity. `prepare_note` must be deterministic for fixed context,
+    /// pitch and velocity. When present, the engine stores one bounded context
+    /// owner per prepared instrument configuration and small copyable note
+    /// payloads in source banks and releases. The context is created on the
+    /// control side, never in the callback.
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
+        Ok(None)
+    }
 
     /// Optional fixed-storage mutable voice runtime. The default keeps
     /// existing instruments analytic-only. A mutable-only instrument may

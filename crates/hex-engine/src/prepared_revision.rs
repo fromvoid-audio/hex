@@ -1,9 +1,7 @@
 //! Exact control-side products for one accepted canonical project revision.
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
-    compile::{
-        PreparedAudioSource, project_with_prepared_audio_sources_and_midi_preview_and_table,
-    },
+    compile::PreparedAudioSource,
 };
 use hex_devices::SineTable;
 use hex_project::{
@@ -105,20 +103,34 @@ impl PreparedRevision {
     ) -> Result<Self, Invalid> {
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
+            project,
+            instruments,
+            previous_session.map(|previous| previous.shared_contexts().as_ref()),
+        )?;
+        if shared_contexts.payload_bytes()
+            > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+        {
+            return Err(Invalid(
+                "shared instrument context revision budget exceeded",
+            ));
+        }
         let (arrangement, midi_preview) =
-            crate::compile::project_with_midi_preview_and_table_and_instrument_registry(
+            crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
                 project,
                 media,
                 Some(Arc::clone(&sine_table)),
                 &effects,
                 instruments,
+                Some(Arc::clone(&shared_contexts)),
             )?;
-        let session = PreparedSessionInventory::prepare_with_media_and_instrument_registry(
+        let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
             project,
             media,
             sine_table,
             previous_session,
             instruments,
+            shared_contexts,
         )?;
         let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
@@ -174,20 +186,38 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
+            project,
+            &instruments,
+            previous_session.map(|previous| previous.shared_contexts().as_ref()),
+        )?;
+        if shared_contexts.payload_bytes()
+            > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+        {
+            return Err(Invalid(
+                "shared instrument context revision budget exceeded",
+            ));
+        }
         let (arrangement, midi_preview) =
-            project_with_prepared_audio_sources_and_midi_preview_and_table(
+            crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
                 project,
                 sources,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
+                Some(Arc::clone(&shared_contexts)),
             )?;
-        let session = PreparedSessionInventory::prepare_with_prepared_audio_sources(
-            project,
-            sources,
-            expected_generation,
-            sine_table,
-            previous_session,
-        )?;
+        let session =
+            PreparedSessionInventory::prepare_with_prepared_audio_sources_and_shared_contexts(
+                project,
+                sources,
+                expected_generation,
+                sine_table,
+                previous_session,
+                &instruments,
+                shared_contexts,
+            )?;
         let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?

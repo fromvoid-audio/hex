@@ -16,6 +16,9 @@ preconstructed transactional effect and instrument twins with checked compatible
 histories. Mutable instrument event batches are caller-owned and preflighted
 before scratch-state processing; runtime factories declare finite output-tail
 bounds and expose committed-state quiescence for later control-side retirement.
+Analytic instruments may also prepare an immutable shared context and compact
+copyable note payloads; the host enforces per-context and per-revision byte
+bounds, while the engine owns revision and release leases.
 
 ## Does not own
 

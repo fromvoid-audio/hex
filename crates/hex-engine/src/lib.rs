@@ -876,7 +876,7 @@ impl Track {
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, hex_lattice::PreparedAnalyticNote),
+        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
             .checked_add(1)
@@ -1124,11 +1124,17 @@ impl Track {
                         };
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            let sample = voice.sample(relative, span.gate_end - span.start);
-                            self.source_mix.add_unmuted(
-                                &mut target[(frame_position - chunk_start) as usize],
-                                sample,
-                            );
+                            if let Some(sample) = voice.sample(
+                                &instrument.shared_contexts,
+                                &[],
+                                relative,
+                                span.gate_end - span.start,
+                            ) {
+                                self.source_mix.add_unmuted(
+                                    &mut target[(frame_position - chunk_start) as usize],
+                                    sample,
+                                );
+                            }
                         }
                     },
                 );
@@ -1153,6 +1159,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
     pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
+    pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
 }
 
@@ -1164,6 +1171,7 @@ pub struct Project {
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
+    shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
     /// Accounted Arrangement note-bank bytes, including each bank's entry
@@ -1248,6 +1256,7 @@ impl Project {
             loop_region,
             master_gain,
             has_streamed_sources,
+            shared_contexts: Arc::new(shared_analytic::SharedAnalyticContextTable::default()),
         })
     }
 
@@ -1256,8 +1265,10 @@ impl Project {
         tracks: Vec<Track>,
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
+        shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
+        project.shared_contexts = shared_contexts;
         project.audible_end_frame = project
             .tracks
             .iter()
@@ -1275,6 +1286,10 @@ impl Project {
             })
             .max();
         Ok(project)
+    }
+
+    pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
+        &self.shared_contexts
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -1811,6 +1826,7 @@ mod prepared_revision;
 mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
+mod shared_analytic;
 
 pub mod compile;
 
