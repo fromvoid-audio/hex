@@ -49,7 +49,7 @@ scene-level focus with no applicable track or clip shows the compact empty state
 Changing focus never opens a closed pane or closes an open pane. When a clip
 selection disappears, the open pane shows a truthful empty state at the last
 valid clip-detail body height (228 px initially, or 38 px after Session audio).
-Device content keeps its existing 188 px geometry. These heights are view-local
+Device content uses the fixed 228 px geometry. These heights are view-local
 and are not persisted. Worker snapshots, selection reconciliation and Undo/Redo
 do not choose the pane content; they may clear a selection, leaving the open pane
 truthful about the missing context.

@@ -512,7 +512,7 @@ pub(super) struct EditorView {
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
     theme_settings: theme_settings::ThemeSettingsState,
-    context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
+    context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,

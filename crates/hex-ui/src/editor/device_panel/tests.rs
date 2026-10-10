@@ -277,7 +277,7 @@ fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mu
         "removing the instrument leaves the chain without a placeholder block"
     );
     let panel_after_instrument = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel_after_instrument.size.height, px(188.0));
+    assert_eq!(panel_after_instrument.size.height, px(228.0));
     assert_eq!(panel_after_instrument.size.height, panel_before.size.height);
 
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -405,7 +405,7 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
     let panel_before = visual
         .debug_bounds("device-panel")
         .expect("fixed device panel");
-    assert_eq!(panel_before.size.height, px(188.0));
+    assert_eq!(panel_before.size.height, px(228.0));
     let source = visual
         .debug_bounds("browser-device-instrument-hex.instrument.fm4")
         .expect("registered FM4 browser entry after sine");
@@ -481,14 +481,12 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
         "FM4's real carrier descriptor is rendered"
     );
     let panel_after = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel_after.size.height, px(188.0));
+    assert_eq!(panel_after.size.height, px(228.0));
     assert_eq!(panel_after.size.height, panel_before.size.height);
 }
 
 #[gpui::test]
-fn utility_left_mode_disables_width_and_mid_side_controls_without_losing_values(
-    cx: &mut TestAppContext,
-) {
+fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut TestAppContext) {
     let (service, mut state, track, device, _, _) = actor_utility_fixture();
     let descriptors = hex_engine::native_device_descriptors_for_class(
         hex_engine::NativeDeviceClass::Effect,
@@ -508,11 +506,12 @@ fn utility_left_mode_disables_width_and_mid_side_controls_without_losing_values(
     let channel = parameter("channel");
     let mid_side = parameter("mid-side");
     let mid_side_balance = parameter("mid-side balance");
+    assert_eq!(descriptors.len(), 14);
     for (parameter, value) in [
         (width, ParameterValue::Float(2.5)),
-        (mid_side, ParameterValue::Bool(true)),
+        (mid_side, ParameterValue::Bool(false)),
         (mid_side_balance, ParameterValue::Float(-0.4)),
-        (channel, ParameterValue::Choice(1)),
+        (channel, ParameterValue::Choice(0)),
     ] {
         service
             .submit(Request::SetDeviceParameter {
@@ -524,213 +523,115 @@ fn utility_left_mode_disables_width_and_mid_side_controls_without_losing_values(
         state = receive_service_event(&service).state;
     }
 
-    let initial_revision = state.revision;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 1;
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device,
+                parameter: mid_side,
+            },
+            ParameterValue::Bool(true),
+        );
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let width_slider = Box::leak(
+    let panel = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel.size.height, px(228.0));
+    let frame_selector = Box::leak(format!("effect-device-{}", device.value()).into_boxed_str());
+    let frame = visual.debug_bounds(frame_selector).expect("utility frame");
+    assert_eq!(frame.size.width, px(184.0));
+    let input_selector = Box::leak(format!("utility-input-{}", device.value()).into_boxed_str());
+    let output_selector = Box::leak(format!("utility-output-{}", device.value()).into_boxed_str());
+    let input = visual.debug_bounds(input_selector).expect("input column");
+    let output = visual.debug_bounds(output_selector).expect("output column");
+    assert_eq!(input.size.width, px(82.0));
+    assert_eq!(output.size.width, px(82.0));
+    let body_selector = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let body = visual.debug_bounds(body_selector).expect("Utility body");
+    assert_eq!(body.size.height, px(179.0));
+    let mode_knob = Box::leak(
         format!(
-            "device-{}-parameter-{}-slider",
-            device.value(),
-            width.value()
-        )
-        .into_boxed_str(),
-    );
-    let width_bounds = visual
-        .debug_bounds(width_slider)
-        .expect("disabled width slider");
-    let width_click = point(width_bounds.center().x, width_bounds.center().y);
-    let balance_slider = Box::leak(
-        format!(
-            "device-{}-parameter-{}-slider",
+            "device-{}-parameter-{}-knob",
             device.value(),
             mid_side_balance.value()
         )
         .into_boxed_str(),
     );
-    let balance_bounds = visual
-        .debug_bounds(balance_slider)
-        .expect("disabled mid-side balance slider");
-    let balance_click = point(balance_bounds.center().x, balance_bounds.center().y);
-    let mid_side_toggle = Box::leak(
-        format!("device-{}-parameter-{}", device.value(), mid_side.value()).into_boxed_str(),
-    );
-    let toggle_bounds = visual
-        .debug_bounds(mid_side_toggle)
-        .expect("disabled mid-side toggle");
-    let toggle_click = point(toggle_bounds.center().x, toggle_bounds.center().y);
-    let channel_selector = Box::leak(
-        format!("device-{}-parameter-{}", device.value(), channel.value()).into_boxed_str(),
-    );
-    let channel_bounds = visual
-        .debug_bounds(channel_selector)
-        .expect("channel selector");
-    editor.read_with(cx, |view, _| {
-        let current = view.state.as_ref().expect("state");
-        let utility_state = current.project.track(track).expect("track").devices()[0].state();
-        assert_eq!(current.revision, initial_revision);
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                width,
-            )
-            .unwrap(),
-            ParameterValue::Float(2.5)
-        );
-        assert!(current.can_undo);
+    let mode_bounds = visual
+        .debug_bounds(mode_knob)
+        .expect("pending mid-side dial");
+    assert!(mode_bounds.origin.x >= input.origin.x);
+    assert!(mode_bounds.origin.x + mode_bounds.size.width <= input.origin.x + input.size.width);
+    editor.update(cx, |view, cx| {
+        view.device_panel.pending_values.remove(&ParameterKey {
+            device,
+            parameter: mid_side,
+        });
+        view.worker_requests_pending = 0;
+        cx.notify();
     });
-
-    visual.simulate_mouse_down(width_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(
-        point(width_click.x + px(24.0), width_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    visual.simulate_mouse_up(
-        point(width_click.x + px(24.0), width_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    visual.simulate_mouse_down(balance_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(
-        point(balance_click.x + px(24.0), balance_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    visual.simulate_mouse_up(
-        point(balance_click.x + px(24.0), balance_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    visual.simulate_mouse_down(toggle_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(toggle_click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        let current = view.state.as_ref().expect("state");
-        assert_eq!(current.revision, initial_revision);
-        assert!(view.pending_requests.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
-        let utility_state = current.project.track(track).expect("track").devices()[0].state();
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                width,
-            )
-            .unwrap(),
-            ParameterValue::Float(2.5)
-        );
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                mid_side,
-            )
-            .unwrap(),
-            ParameterValue::Bool(true)
-        );
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                mid_side_balance,
-            )
-            .unwrap(),
-            ParameterValue::Float(-0.4)
-        );
-    });
-
-    let channel_click = point(channel_bounds.center().x, channel_bounds.center().y);
-    visual.simulate_mouse_down(channel_click, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let swap_selector = Box::leak(
-        format!(
-            "device-{}-parameter-{}-option-3",
-            device.value(),
-            channel.value()
-        )
-        .into_boxed_str(),
+    let width_knob = Box::leak(
+        format!("device-{}-parameter-{}-knob", device.value(), width.value()).into_boxed_str(),
     );
-    let swap = visual.debug_bounds(swap_selector).expect("swap option");
-    let swap_click = point(swap.center().x, swap.center().y);
-    visual.simulate_mouse_down(swap_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(swap_click, MouseButton::Left, Modifiers::default());
-    pump_until(&editor, cx, |view| {
-        view.state.as_ref().is_some_and(|state| {
-            state.project.track(track).is_some_and(|track| {
-                hex_engine::native_device_parameter_for_class(
-                    hex_engine::NativeDeviceClass::Effect,
-                    track.devices()[0].state(),
-                    channel,
-                ) == Ok(ParameterValue::Choice(3))
-            })
+    assert!(
+        visual.debug_bounds(width_knob).is_some(),
+        "canonical width mode is shown after pending state clears"
+    );
+    let gain_value =
+        Box::leak(format!("device-{}-parameter-1-value", device.value()).into_boxed_str());
+    let gain_bounds = visual.debug_bounds(gain_value).expect("gain readout");
+    assert!(gain_bounds.origin.x >= output.origin.x);
+    assert!(gain_bounds.origin.x + gain_bounds.size.width <= output.origin.x + output.size.width);
+    let readout = |parameter: u32| {
+        editor.read_with(cx, |view, _| {
+            let Some(ParameterControl::Float { entity, .. }) =
+                view.device_panel.controls.get(&ParameterKey {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+                })
+            else {
+                panic!("Utility numeric control is mounted")
+            };
+            entity.read_with(cx, |control, _| control.display_text().to_owned())
         })
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        let current = view.state.as_ref().expect("state");
-        let utility_state = current.project.track(track).expect("track").devices()[0].state();
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                width,
-            )
-            .unwrap(),
-            ParameterValue::Float(2.5),
-            "re-enabling width preserves its stored value"
-        );
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                utility_state,
-                mid_side,
-            )
-            .unwrap(),
-            ParameterValue::Bool(true),
-            "re-enabling mid-side preserves its stored value"
-        );
-        let view = hex_engine::native_device_view_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            utility_state,
-        )
-        .unwrap();
-        assert!(
-            view.parameters
-                .iter()
-                .filter(|parameter| matches!(
-                    parameter.descriptor.label,
-                    "width" | "mid-side" | "mid-side balance"
-                ))
-                .all(|parameter| parameter.enabled)
-        );
-    });
+    };
+    assert_eq!(readout(1), "0.00 db");
+    assert_eq!(readout(2), "c");
+    assert_eq!(readout(3), "250%");
+    assert_eq!(readout(13), "200 hz");
+    let audition = visual
+        .debug_bounds(Box::leak(
+            format!("utility-bass-mono-audition-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("headphone audition control");
+    assert_eq!(audition.size.width, px(24.0));
+    for suffix in ["device-bypass", "device-remove"] {
+        let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
+        let action = visual.debug_bounds(selector).expect("header action");
+        assert!(action.origin.x >= frame.origin.x);
+        assert!(action.origin.x + action.size.width <= frame.origin.x + frame.size.width);
+    }
 
-    visual.simulate_mouse_down(width_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(
-        point(width_click.x + px(20.0), width_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    visual.simulate_mouse_up(
-        point(width_click.x + px(20.0), width_click.y),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    pump_until(&editor, cx, |view| {
-        view.state.as_ref().is_some_and(|state| {
-            state.project.track(track).is_some_and(|track| {
-                hex_engine::native_device_parameter_for_class(
-                    hex_engine::NativeDeviceClass::Effect,
-                    track.devices()[0].state(),
-                    width,
-                ) != Ok(ParameterValue::Float(2.5))
-            })
-        })
-    });
-    visual.simulate_mouse_down(toggle_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(toggle_click, MouseButton::Left, Modifiers::default());
+    let dial = visual
+        .debug_bounds(Box::leak(
+            format!("utility-width-dial-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("width mode affordance");
+    let position = point(dial.center().x, dial.center().y);
+    visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    let menu = visual
+        .debug_bounds("context-menu-panel")
+        .expect("shared popup");
+    let item = visual.debug_bounds("context-menu-item").expect("mode item");
+    assert!(menu.origin.x >= px(0.0));
+    let select = point(item.center().x, item.center().y);
+    visual.simulate_mouse_down(select, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(select, MouseButton::Left, Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.state.as_ref().is_some_and(|state| {
             state.project.track(track).is_some_and(|track| {
@@ -738,9 +639,338 @@ fn utility_left_mode_disables_width_and_mid_side_controls_without_losing_values(
                     hex_engine::NativeDeviceClass::Effect,
                     track.devices()[0].state(),
                     mid_side,
-                ) == Ok(ParameterValue::Bool(false))
+                ) == Ok(ParameterValue::Bool(true))
             })
         })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "device-{}-parameter-{}-knob",
+                    device.value(),
+                    mid_side_balance.value()
+                )
+                .into_boxed_str(),
+            ))
+            .is_some()
+    );
+    let mode_key = ParameterKey {
+        device,
+        parameter: mid_side,
+    };
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.device_panel.pending_values.contains_key(&mode_key),
+            "the acknowledged mode request retires its pending display value"
+        );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Undo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                state.project.track(track).unwrap().devices()[0].state(),
+                mid_side,
+            ) == Ok(ParameterValue::Bool(false))
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(width_knob).is_some(),
+        "undo restores width mode"
+    );
+    let mid_side_knob = Box::leak(
+        format!(
+            "device-{}-parameter-{}-knob",
+            device.value(),
+            mid_side_balance.value()
+        )
+        .into_boxed_str(),
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(!view.device_panel.pending_values.contains_key(&mode_key));
+    });
+
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Redo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                state.project.track(track).unwrap().devices()[0].state(),
+                mid_side,
+            ) == Ok(ParameterValue::Bool(true))
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(mid_side_knob).is_some(),
+        "redo restores mid/side mode"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(!view.device_panel.pending_values.contains_key(&mode_key));
+    });
+
+    editor.read_with(cx, |view, _| {
+        let utility = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()[0]
+            .state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility,
+                width,
+            ),
+            Ok(ParameterValue::Float(2.5)),
+            "switching modes preserves the hidden width value"
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility,
+                mid_side_balance,
+            ),
+            Ok(ParameterValue::Float(-0.4))
+        );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue_device_barrier(Request::SetDeviceParameter {
+            device,
+            parameter: channel,
+            value: ParameterValue::Choice(1),
+        }));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                state.project.track(track).unwrap().devices()[0].state(),
+                channel,
+            ) == Ok(ParameterValue::Choice(1))
+        })
+    });
+    editor.read_with(cx, |view, _| {
+        let utility = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()[0]
+            .state();
+        let rendered = hex_engine::native_device_view_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            utility,
+        )
+        .unwrap();
+        assert!(
+            rendered
+                .parameters
+                .iter()
+                .filter(|parameter| matches!(
+                    parameter.descriptor.label,
+                    "width" | "mid-side" | "mid-side balance"
+                ))
+                .all(|parameter| !parameter.enabled)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility,
+                width,
+            ),
+            Ok(ParameterValue::Float(2.5))
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                utility,
+                mid_side_balance,
+            ),
+            Ok(ParameterValue::Float(-0.4))
+        );
+    });
+}
+
+#[gpui::test]
+fn utility_mode_popup_finalizes_numeric_draft_and_closes_on_escape_or_owner_removal(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let gain_value =
+        Box::leak(format!("device-{}-parameter-1-value", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(gain_value).expect("gain readout");
+    let click = point(bounds.center().x, bounds.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("6.00 db");
+    visual.run_until_parked();
+
+    let dial = visual
+        .debug_bounds(Box::leak(
+            format!("utility-width-dial-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("width dial");
+    let position = point(dial.center().x, dial.center().y);
+    visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_some());
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                state.project.track(track).unwrap().devices()[0].state(),
+                hex_lattice_contract::ParameterId::from_static(1),
+            )
+            .is_ok_and(|value| {
+                matches!(value, ParameterValue::Float(value) if (value - 10.0_f32.powf(6.0 / 20.0)).abs() < 0.0001)
+            })
+        })
+    });
+
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    let dial = visual
+        .debug_bounds(Box::leak(
+            format!("utility-width-dial-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("width dial after escape");
+    let position = point(dial.center().x, dial.center().y);
+    visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+
+    let dial = visual
+        .debug_bounds(Box::leak(
+            format!("utility-width-dial-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("width dial after escape");
+    let position = point(dial.center().x, dial.center().y);
+    visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_down(
+        point(px(5.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(px(5.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+
+    let dial = visual
+        .debug_bounds(Box::leak(
+            format!("utility-width-dial-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("width dial after outside dismissal");
+    let position = point(dial.center().x, dial.center().y);
+    visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-menu-panel").is_some());
+
+    editor.update(cx, |view, cx| {
+        view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(device)));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .project
+                .track(track)
+                .is_some_and(|track| track.devices().is_empty())
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+}
+
+#[gpui::test]
+fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
+    let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel.size.height, px(228.0));
+    let frame = visual
+        .debug_bounds(Box::leak(
+            format!("effect-device-{}", device.value()).into_boxed_str(),
+        ))
+        .expect("return Utility frame");
+    assert_eq!(frame.size.width, px(184.0));
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("utility-input-{}", device.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("utility-output-{}", device.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn utility_default_width_and_audio_readouts_use_reference_units(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        for (parameter, expected) in [(2, "c"), (3, "100%"), (13, "200 hz")] {
+            let Some(ParameterControl::Float { entity, .. }) =
+                view.device_panel.controls.get(&ParameterKey {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+                })
+            else {
+                panic!("Utility default numeric control is mounted")
+            };
+            entity.read_with(cx, |control, _| {
+                assert_eq!(control.display_text(), expected)
+            });
+        }
     });
 }
 
@@ -1109,17 +1339,12 @@ fn utility_gain_is_presented_in_db_and_typed_values_remain_linear_canonical(
         );
     });
 
-    let slider = Box::leak(
-        format!(
-            "device-{}-parameter-{}-slider",
-            device.value(),
-            gain.value()
-        )
-        .into_boxed_str(),
+    let dial = Box::leak(
+        format!("device-{}-parameter-{}-knob", device.value(), gain.value()).into_boxed_str(),
     );
-    let slider_bounds = visual.debug_bounds(slider).expect("gain slider");
+    let dial_bounds = visual.debug_bounds(dial).expect("gain dial");
     visual.simulate_click(
-        point(slider_bounds.center().x, slider_bounds.center().y),
+        point(dial_bounds.center().x, dial_bounds.center().y),
         Modifiers::default(),
     );
     visual.simulate_keystrokes("up");
@@ -1181,7 +1406,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    enter_typed_value(&mut visual, device, parameter, "2.5");
+    enter_typed_value(&mut visual, device, parameter, "250%");
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
         let snapshot = view.device_gesture.snapshot().expect("synchronous begin");
@@ -1232,7 +1457,7 @@ fn typed_numeric_owner_finalization_saves_actor_state_and_undo_restores_it(
     let (handle, editor) = actor_editor_window(cx, service, saved.state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    enter_typed_value(&mut visual, device, numeric_parameter, "2.5");
+    enter_typed_value(&mut visual, device, numeric_parameter, "250%");
     editor.update(cx, |view, cx| view.save_project(cx));
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -1334,19 +1559,19 @@ fn hiding_a_returned_pointer_gesture_finishes_the_overlay_without_history(cx: &m
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
-    let slider_selector = Box::leak(
+    let dial_selector = Box::leak(
         format!(
-            "device-{}-parameter-{}-slider",
+            "device-{}-parameter-{}-knob",
             device.value(),
             parameter.value()
         )
         .into_boxed_str(),
     );
-    let slider = visual
-        .debug_bounds(slider_selector)
-        .expect("rendered balance slider");
-    let start = point(slider.center().x, slider.center().y);
-    let moved = point(start.x + gpui::px(60.0), start.y);
+    let dial = visual
+        .debug_bounds(dial_selector)
+        .expect("rendered balance dial");
+    let start = point(dial.center().x, dial.center().y);
+    let moved = point(start.x, start.y - gpui::px(60.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
@@ -1416,7 +1641,7 @@ fn same_update_typed_value_on_clean_close_opens_prompt_and_cancel_keeps_it(
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    enter_typed_value(&mut visual, device, parameter, "3.0");
+    enter_typed_value(&mut visual, device, parameter, "300%");
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
@@ -1505,7 +1730,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    enter_typed_value(&mut visual, second_device, parameter, "2.5");
+    enter_typed_value(&mut visual, second_device, parameter, "250%");
 
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {

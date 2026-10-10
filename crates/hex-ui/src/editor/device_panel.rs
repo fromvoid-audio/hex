@@ -13,23 +13,26 @@ use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
-    ControlStyle, NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
-    NumericEventPhase, NumericScale, NumericSpec, Selector, SelectorChanged, SelectorConfig,
-    Toggle, ToggleChanged, ToggleConfig, device_frame,
+    ControlStyle, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
+    NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
+    NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
+    device_frame, rounded_device_frame,
 };
 use std::collections::{HashMap, HashSet};
 
 mod send_controls;
+mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{
     commit_owned_numeric_edit, dispatch_numeric_gesture, finalize_send_controls_for_track,
 };
 
-const DEVICE_PANEL_HEIGHT: f32 = 188.0;
+const DEVICE_PANEL_HEIGHT: f32 = 228.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
 const DEVICE_FRAME_WIDTH: f32 = 286.0;
+pub(super) const UTILITY_FRAME_WIDTH: f32 = 184.0;
 const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
     - DEVICE_PANEL_BORDER_WIDTH
     - DEVICE_PANEL_HEADER_HEIGHT
@@ -39,9 +42,9 @@ const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
     - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ParameterKey {
-    device: DeviceId,
-    parameter: hex_lattice_contract::ParameterId,
+pub(super) struct ParameterKey {
+    pub(super) device: DeviceId,
+    pub(super) parameter: hex_lattice_contract::ParameterId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -87,7 +90,7 @@ enum ParameterControl {
 
 #[derive(Default)]
 pub(super) struct DevicePanelState {
-    owner: Option<DevicePanelOwner>,
+    pub(super) owner: Option<DevicePanelOwner>,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -101,13 +104,13 @@ pub(super) struct DevicePanelState {
     >,
     effect_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
-    pending_values: HashMap<ParameterKey, ParameterValue>,
+    pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     add_menu_open: bool,
     message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DevicePanelOwner {
+pub(super) enum DevicePanelOwner {
     Track(TrackId),
     Return(hex_project::ReturnId),
 }
@@ -949,38 +952,53 @@ fn render_effect(
     ));
     let rendered = match &device_view {
         Ok(device_view) => {
-            let mut body = div()
-                .id(ElementId::Name(
-                    format!("device-body-{}", device_id.value()).into(),
-                ))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .w_full()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_wrap()
-                .content_start()
-                .gap(px(2.0))
-                .p(px(3.0));
-            for parameter in &device_view.parameters {
-                body = body.child(parameter_control(
-                    view,
-                    cx,
-                    device_id,
-                    DeviceControlIdentity {
-                        class: NativeDeviceClass::Effect,
-                        type_id: device_view.type_id,
-                    },
-                    parameter,
-                ));
+            let body = if device_view.type_id.as_str() == Ok("hex.utility") {
+                utility_panel::render_body(view, cx, device_id, device_view)
+            } else {
+                let mut body = div()
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .w_full()
+                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap(px(2.0))
+                    .p(px(3.0));
+                for parameter in &device_view.parameters {
+                    body = body.child(parameter_control(
+                        view,
+                        cx,
+                        device_id,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Effect,
+                            type_id: device_view.type_id,
+                        },
+                        parameter,
+                    ));
+                }
+                body
+            };
+            if device_view.type_id.as_str() == Ok("hex.utility") {
+                rounded_device_frame(
+                    theme::text(device_view.name.clone()),
+                    control_style(),
+                    header_actions,
+                    body,
+                    4.0,
+                )
+            } else {
+                device_frame(
+                    theme::text(device_view.name.clone()),
+                    control_style(),
+                    header_actions,
+                    body,
+                )
             }
-            device_frame(
-                theme::text(device_view.name.clone()),
-                control_style(),
-                header_actions,
-                body,
-            )
         }
         Err(error) => {
             let body = div()
@@ -996,18 +1014,18 @@ fn render_effect(
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 .child(theme::text(format!("unsupported device state · {error}")));
-            device_frame(
-                theme::text(
-                    device
-                        .state()
-                        .type_id()
-                        .as_str()
-                        .unwrap_or("unknown device"),
-                ),
-                control_style(),
-                header_actions,
-                body,
-            )
+            let title = theme::text(
+                device
+                    .state()
+                    .type_id()
+                    .as_str()
+                    .unwrap_or("unknown device"),
+            );
+            if device.state().type_id().as_str() == Ok("hex.utility") {
+                rounded_device_frame(title, control_style(), header_actions, body, 4.0)
+            } else {
+                device_frame(title, control_style(), header_actions, body)
+            }
         }
     };
     view.device_panel.views.insert(
@@ -1019,10 +1037,15 @@ fn render_effect(
         ),
     );
     let selector = format!("effect-device-{}", device_id.value());
+    let frame_width = if device.state().type_id().as_str() == Ok("hex.utility") {
+        UTILITY_FRAME_WIDTH
+    } else {
+        DEVICE_FRAME_WIDTH
+    };
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(DEVICE_FRAME_WIDTH))
+        .w(px(frame_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
         .child(rendered)
@@ -1697,12 +1720,37 @@ fn parameter_control(
     identity: DeviceControlIdentity,
     parameter: &NativeDeviceParameterView,
 ) -> Div {
-    let style = control_style();
-    let key = ParameterKey {
+    parameter_control_with_presentation(
+        view,
+        cx,
         device,
-        parameter: parameter.descriptor.id,
-    };
-    let descriptor = parameter.descriptor;
+        identity,
+        parameter,
+        ControlPresentation::Standard,
+        ControlText::default(),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlPresentation {
+    Standard,
+    CompactDial,
+    InlineValue,
+    CompactButton,
+    CompactSelector,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ControlText {
+    label: Option<&'static str>,
+    codec: Option<utility_panel::NumericDisplayCodec>,
+}
+
+pub(super) fn effective_parameter_value(
+    view: &mut EditorView,
+    key: ParameterKey,
+    canonical_value: ParameterValue,
+) -> ParameterValue {
     let gesture_value = view.device_gesture.snapshot().filter(|snapshot| {
         snapshot.target
             == (GestureTarget::DeviceParameter {
@@ -1719,16 +1767,35 @@ fn parameter_control(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    let value = gesture_value.map_or_else(
+    gesture_value.map_or_else(
         || {
             view.device_panel
                 .pending_values
                 .get(&key)
                 .copied()
-                .unwrap_or(parameter.value)
+                .unwrap_or(canonical_value)
         },
         |snapshot| snapshot.value,
-    );
+    )
+}
+
+fn parameter_control_with_presentation(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameter: &NativeDeviceParameterView,
+    presentation: ControlPresentation,
+    display: ControlText,
+) -> Div {
+    let style = control_style();
+    let display_label = display.label;
+    let key = ParameterKey {
+        device,
+        parameter: parameter.descriptor.id,
+    };
+    let descriptor = parameter.descriptor;
+    let value = effective_parameter_value(view, key, parameter.value);
     let enabled = parameter.enabled;
     let compatible = matches!(
         (descriptor.kind, value),
@@ -1782,7 +1849,9 @@ fn parameter_control(
         if let Some(mut old) = view.device_panel.controls.remove(&key) {
             cancel_control(view, cx, key, &mut old);
         }
-        if create_parameter_control(view, cx, key, identity, descriptor, value, style).is_none() {
+        if create_parameter_control(view, cx, key, identity, parameter, presentation, display)
+            .is_none()
+        {
             return unsupported_parameter(descriptor.label);
         }
     }
@@ -1800,7 +1869,12 @@ fn parameter_control(
                     control.set_enabled(enabled, cx);
                 });
             }
-            div().w(px(136.0)).h(px(26.0)).child(entity.clone())
+            let (width, height) = match presentation {
+                ControlPresentation::CompactDial => (82.0, 51.0),
+                ControlPresentation::InlineValue => (56.0, 18.0),
+                _ => (136.0, 26.0),
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
         }
         Some(ParameterControl::Bool { entity, .. }) => {
             if let ParameterValue::Bool(value) = value {
@@ -1815,7 +1889,17 @@ fn parameter_control(
                     control.set_enabled(enabled, cx);
                 });
             }
-            div().w(px(136.0)).h(px(22.0)).child(entity.clone())
+            let (width, height) = if presentation == ControlPresentation::CompactButton {
+                let width = match display_label {
+                    Some("bass mono" | "mono") => 82.0,
+                    Some("bass mono audition") => 24.0,
+                    _ => 40.0,
+                };
+                (width, 17.0)
+            } else {
+                (136.0, 22.0)
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
         }
         Some(ParameterControl::Choice { entity, .. }) => {
             if let ParameterValue::Choice(value) = value {
@@ -1830,7 +1914,12 @@ fn parameter_control(
                     control.set_enabled(enabled, cx);
                 });
             }
-            div().w(px(136.0)).h(px(22.0)).child(entity.clone())
+            let (width, height) = if presentation == ControlPresentation::CompactSelector {
+                (82.0, 18.0)
+            } else {
+                (136.0, 22.0)
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
     }
@@ -1841,10 +1930,17 @@ fn create_parameter_control(
     cx: &mut Context<EditorView>,
     key: ParameterKey,
     identity: DeviceControlIdentity,
-    descriptor: &'static ParameterDescriptor,
-    value: ParameterValue,
-    style: ControlStyle,
+    parameter: &NativeDeviceParameterView,
+    presentation: ControlPresentation,
+    display: ControlText,
 ) -> Option<()> {
+    let descriptor = parameter.descriptor;
+    let value = parameter.value;
+    let style = control_style();
+    let ControlText {
+        label: display_label,
+        codec: display_codec,
+    } = display;
     let id = format!(
         "device-{}-parameter-{}",
         key.device.value(),
@@ -1863,7 +1959,7 @@ fn create_parameter_control(
                 ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
-            let spec = NumericSpec::new(
+            let mut spec = NumericSpec::new(
                 f64::from(min),
                 f64::from(max),
                 default,
@@ -1872,15 +1968,28 @@ fn create_parameter_control(
                 unit.map(|unit| std::sync::Arc::<str>::from(theme::text(unit).as_ref())),
             )
             .ok()?;
+            if let Some(codec) = display_codec {
+                spec = codec.apply(spec);
+            }
+            let kind = match presentation {
+                ControlPresentation::CompactDial => NumericControlKind::Knob,
+                _ => NumericControlKind::HorizontalSlider,
+            };
+            let appearance = match presentation {
+                ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
+                ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
+                _ => NumericControlAppearance::Standard,
+            };
             let config = NumericControlConfig::new(
                 id,
-                theme::text(descriptor.label),
-                NumericControlKind::HorizontalSlider,
+                theme::text(display_label.unwrap_or(descriptor.label)),
+                kind,
                 spec,
                 f64::from(value),
                 style,
             )
-            .ok()?;
+            .ok()?
+            .with_appearance(appearance);
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
@@ -1909,7 +2018,23 @@ fn create_parameter_control(
             Some(())
         }
         (ParameterKind::Bool, ParameterValue::Bool(value)) => {
-            let config = ToggleConfig::new(id, theme::text(descriptor.label), value, style).ok()?;
+            let appearance = if presentation == ControlPresentation::CompactButton {
+                if display_label == Some("bass mono audition") {
+                    DiscreteControlAppearance::CompactIconButton
+                } else {
+                    DiscreteControlAppearance::CompactButton
+                }
+            } else {
+                DiscreteControlAppearance::Standard
+            };
+            let config = ToggleConfig::new(
+                id,
+                theme::text(display_label.unwrap_or(descriptor.label)),
+                value,
+                style,
+            )
+            .ok()?
+            .with_appearance(appearance);
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
@@ -1938,7 +2063,14 @@ fn create_parameter_control(
         }
         (ParameterKind::Choice { labels }, ParameterValue::Choice(value)) => {
             let choices = labels.iter().copied().map(theme::text);
-            let config = SelectorConfig::new(id, choices, value as usize, style).ok()?;
+            let appearance = if presentation == ControlPresentation::CompactSelector {
+                DiscreteControlAppearance::CompactSelector
+            } else {
+                DiscreteControlAppearance::Standard
+            };
+            let config = SelectorConfig::new(id, choices, value as usize, style)
+                .ok()?
+                .with_appearance(appearance);
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
             let subscription =
@@ -2019,7 +2151,7 @@ fn empty_panel(message: &str) -> Stateful<Div> {
     div()
         .id("device-panel-empty")
         .debug_selector(|| "device-panel-empty".into())
-        .h(px(188.0))
+        .h(px(228.0))
         .w_full()
         .flex_shrink_0()
         .flex()
