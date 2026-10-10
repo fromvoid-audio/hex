@@ -75,6 +75,23 @@ arrangement controls and device-rail rendering live in focused editor modules,
 keeping the shared device panel and Arrangement modules from accumulating another
 large return-specific branch. Browser
 instrument drops and cross-owner device moves are refused with a visible reason.
-The audio dependency is now integrated into this branch. Positive service/device
-workflow, save/reopen and full local checks remain integration gates; native UI
-and listening acceptance remain for the user.
+The audio dependency is integrated into this branch. Session service acceptance
+now covers add/send, undo/redo, Utility insertion and parameter patches, bypass,
+same-return reorder/removal, stale gesture cancellation, and schema-17
+save/reopen with PCM comparisons. UI fixtures cover stale numeric drafts when a
+return is removed and ensure clip/sample drops over the pinned return area clear
+their target and preview rather than resolving a regular track. The regular
+track's single instrument remains freely movable in its chain. Focused UI/session
+tests, affected strict Clippy, formatting and source guards pass. Full clean-head
+local CI and native UI/listening acceptance remain open; the user performs the
+native interaction and audition checks.
+
+The initial three-run 100-track/16-return routing profile was repeated at clean
+audio commit `5c8d3e5`; all runs retain PCM digest
+`2d913f742d1d6255`. The repeated p50 values are 211.1–226.0 µs, p99 values
+267.5–295.3 µs and maxima 308.2–335.6 µs. These are short release microbench
+samples and do not establish physical audio deadline or listening acceptance.
+Logs and manifest are retained at
+`artifacts/profiles/return-routing-20261010/committed-5c8d3e5/` in the primary
+checkout; they supplement, rather than replace, the original dirty-source
+profile evidence.

@@ -765,6 +765,13 @@ Per-track send menus show named destinations and current linear values with
 validated 0.1 steps; continuous drag/type editing with one undo step is deferred
 to Pulse2179. Return-only rail and device rendering are extracted into focused
 editor modules; step arithmetic clamps roundoff to exact 0/2 endpoints without
-rounding interior saved levels. The 2 send-step tests, 9 Arrangement/Main UI tests,
-18 device-panel tests, strict hex-ui Clippy, format and source guards pass. Audio source is integrated; positive service/device workflow and save/reopen
-validation, full local checks and native user acceptance remain open.
+rounding interior saved levels. Acceptance now includes the service PCM/send and
+Utility workflow, undo/redo, bypass/reorder/remove, active-gesture cancellation,
+schema-17 save/reopen, regular-chain instrument positioning, removed-return
+numeric-draft cancellation and clip/sample drop-target clearing. The 2 send-step,
+9 Arrangement/Main, 19 device-panel, 1 clip/sample drop UI and 2 session integration
+tests pass, as do affected strict Clippy, format and source guards. Full clean-head
+local CI and native user UI/listening acceptance remain open. The 100-track/16-return
+audio profile has three additional clean-commit repetitions with matching PCM
+digest; see [return-track performance evidence](docs/performance.md) and
+[return-track contract](docs/return-tracks.md).
