@@ -1278,3 +1278,22 @@ preserves project/history/redo and previous nonzero PCM in an Editor regression;
 service dirty/revision updates remain success-only by inspection and existing
 transactional tests. Full exact-head local CI, PR publication and a fresh combined
 build remain pending. No schema changes or callback preparation were added.
+
+## 10 October 2026 — review62 capacity test build
+
+Focused [PR101](https://github.com/PORTALSURFER/hex/pull/101), source4ecdca9,
+passed all16 exact-head local checks20261010T094432Z-8ab91655, stale=false.
+Combined source6b6c9fd passed all16 checks20261010T094503Z-122314a1,
+stale=false. Optimized release38.38seconds; strictly verified ad-hoc app:
+artifacts/hex-lattice-capacity-review-20261010-6b6c9fd.app. Adjacent manifest
+records64 integrated source PR links (38–101), source and binarySHA256
+c6de3241127134d620a0153694252ce206682733ec855f91574da028ccdd8346.
+
+The app includes actual mutable device-capacity admission and Session cache
+revalidation. User MIDI playback/looping, instrument reorder and save/reopen
+acceptance remain pending; the app was not launched by the agent. Earlier apps
+remain intact. Pulse2220 is ready_for_review; attachment registration reached
+100 identities, so verified PR links remain in Pulse and this ledger. No hosted
+CI or automatic merge. Pulse2222 per-oscillator amplitude velocity sensitivity
+is active separately and absent from this app. Full Operator/reference parity,
+plugin hosting, PDC and physical deadline acceptance remain open.
