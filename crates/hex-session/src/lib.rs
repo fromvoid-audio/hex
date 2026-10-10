@@ -332,6 +332,14 @@ impl Session {
                 return Ok(hex_engine::NativeDeviceClass::Effect);
             }
         }
+        if self
+            .project()
+            .return_tracks()
+            .iter()
+            .any(|track| track.devices().iter().any(|effect| effect.id() == device))
+        {
+            return Ok(hex_engine::NativeDeviceClass::Effect);
+        }
         Err(SessionError::Invalid("device no longer exists"))
     }
 

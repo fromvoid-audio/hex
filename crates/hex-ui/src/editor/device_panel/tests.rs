@@ -72,6 +72,64 @@ fn actor_utility_fixture() -> (
     )
 }
 
+fn actor_return_utility_fixture() -> (
+    Service,
+    Arc<ViewState>,
+    TrackId,
+    hex_project::ReturnId,
+    DeviceId,
+    hex_lattice_contract::ParameterId,
+) {
+    let service = Service::new(48_000, 8, 8_000_000).expect("service");
+    let _initial = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "regular source".into(),
+        }))
+        .expect("regular track request");
+    let track_event = receive_service_event(&service);
+    let Created::Track(track) = track_event.created.expect("regular track") else {
+        panic!("regular track result")
+    };
+    service
+        .submit(Request::Edit(Command::AddReturnTrack {
+            name: "send bus".into(),
+        }))
+        .expect("return track request");
+    let return_event = receive_service_event(&service);
+    let Created::ReturnTrack(return_track) = return_event.created.expect("return track") else {
+        panic!("return track result")
+    };
+    service
+        .submit(Request::Edit(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .expect("Utility state"),
+        }))
+        .expect("Utility request");
+    let device_event = receive_service_event(&service);
+    let state = device_event.state;
+    let device = state
+        .project
+        .return_tracks()
+        .iter()
+        .find(|candidate| candidate.id() == return_track)
+        .expect("return owner")
+        .devices()[0]
+        .id();
+    (
+        service,
+        state,
+        track,
+        return_track,
+        device,
+        hex_lattice_contract::ParameterId::from_static(1),
+    )
+}
+
 fn actor_editor_window(
     cx: &mut TestAppContext,
     service: Service,
@@ -1655,6 +1713,75 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             view.device_panel.message.as_deref(),
             Some("device target is no longer available")
         );
+    });
+}
+
+#[gpui::test]
+fn invalid_return_numeric_draft_is_cancelled_when_its_owner_is_removed(cx: &mut TestAppContext) {
+    let (service, state, track, return_track, device, parameter) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let selector = Box::leak(
+        format!(
+            "device-{}-parameter-{}-value",
+            device.value(),
+            parameter.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual
+        .debug_bounds(selector)
+        .expect("return Utility gain field");
+    let click = point(
+        value.origin.x + value.size.width / 2.0,
+        value.origin.y + value.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    visual.run_until_parked();
+    let old_control = editor.read_with(cx, |view, _| {
+        let Some(ParameterControl::Float { entity, .. }) = view
+            .device_panel
+            .controls
+            .get(&ParameterKey { device, parameter })
+        else {
+            panic!("return numeric field entity should be cached")
+        };
+        entity.clone()
+    });
+    old_control.read_with(cx, |control, _| assert!(control.is_editing()));
+
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveReturnTrack(return_track))));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.return_tracks().is_empty())
+    });
+    visual.run_until_parked();
+    old_control.read_with(cx, |control, _| {
+        assert!(
+            !control.is_editing(),
+            "removed return owner cancels the draft"
+        )
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel.controls.is_empty());
+        assert!(view.state.as_ref().unwrap().project.track(track).is_some());
+        assert_eq!(view.device_panel.message, None);
     });
 }
 

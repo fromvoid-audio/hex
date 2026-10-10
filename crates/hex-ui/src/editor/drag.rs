@@ -763,21 +763,28 @@ impl super::EditorView {
                 device,
                 class,
                 type_id,
-            } => state.project.tracks().iter().any(|track| {
-                track.ordered_device_chain().any(|node| {
-                    let (candidate, candidate_class) = match node {
-                        hex_project::TrackDeviceRef::Instrument(device) => {
-                            (device, hex_engine::NativeDeviceClass::Instrument)
-                        }
-                        hex_project::TrackDeviceRef::Effect(device) => {
-                            (device, hex_engine::NativeDeviceClass::Effect)
-                        }
-                    };
-                    candidate.id() == device
-                        && candidate_class == class
-                        && candidate.state().type_id() == type_id
+            } => {
+                state.project.tracks().iter().any(|track| {
+                    track.ordered_device_chain().any(|node| {
+                        let (candidate, candidate_class) = match node {
+                            hex_project::TrackDeviceRef::Instrument(device) => {
+                                (device, hex_engine::NativeDeviceClass::Instrument)
+                            }
+                            hex_project::TrackDeviceRef::Effect(device) => {
+                                (device, hex_engine::NativeDeviceClass::Effect)
+                            }
+                        };
+                        candidate.id() == device
+                            && candidate_class == class
+                            && candidate.state().type_id() == type_id
+                    })
+                }) || state.project.return_tracks().iter().any(|track| {
+                    class == hex_engine::NativeDeviceClass::Effect
+                        && track.devices().iter().any(|candidate| {
+                            candidate.id() == device && candidate.state().type_id() == type_id
+                        })
                 })
-            }),
+            }
         }
     }
 

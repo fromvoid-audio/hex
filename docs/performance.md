@@ -78,6 +78,19 @@ Commands and timing scope match the mutable-tail comparison below.
 
 # Performance requirements and baseline — 8 October 2026
 
+## Clean return-routing profile repeat — 10 October 2026
+
+The 100-track/16-return release routing workload was repeated three times at
+clean audio commit `5c8d3e5`, preserving PCM digest
+`2d913f742d1d6255` in every run. The three p50 values span 211.1–226.0 µs, p99
+267.5–295.3 µs, and maxima 308.2–335.6 µs. These are short headless samples;
+they do not establish physical callback deadlines or listening acceptance.
+
+The immutable logs and manifest are retained at
+`artifacts/profiles/return-routing-20261010/committed-5c8d3e5/` in the primary
+checkout. This clean-source repeat supplements the original dirty-source profile
+evidence and does not replace it.
+
 ## Mutable tail ownership checkpoint — 10 October 2026
 
 The retained mutable-owner bank and selective suffix-history handoff were

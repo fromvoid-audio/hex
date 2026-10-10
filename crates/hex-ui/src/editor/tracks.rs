@@ -929,6 +929,29 @@ impl EditorView {
                         cx.notify();
                     },
                 )),
+            )
+            .child(
+                button(
+                    "↗",
+                    "edit return sends",
+                    ("track-return-sends", track_id.value()),
+                )
+                .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
+                .text_color(rgb(theme::color(
+                    if self.send_menu_track == Some(track_id) {
+                        theme::PaletteRole::Secondary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                )))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.send_menu_track = if view.send_menu_track == Some(track_id) {
+                        None
+                    } else {
+                        Some(track_id)
+                    };
+                    cx.notify();
+                })),
             );
         let header = div()
             .w(px(TRACK_HEADER_WIDTH))
@@ -936,6 +959,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .flex_col()
+            .relative()
             .justify_center()
             .px_1()
             .border_l_2()
@@ -952,6 +976,11 @@ impl EditorView {
             }))
             .child(track_name_view)
             .child(track_controls);
+        let header = if self.send_menu_track == Some(track_id) {
+            header.child(self.return_send_menu(track, cx))
+        } else {
+            header
+        };
         div()
             .w_full()
             .h(px(TRACK_ROW_HEIGHT))
