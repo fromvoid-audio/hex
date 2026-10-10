@@ -219,11 +219,28 @@ impl NativeRuntimeChain {
     /// Preflight every twin before copying any state. Matching identities whose
     /// runtime compatibility changed remain freshly reset on the candidate.
     pub fn can_inherit_from(&self, previous: &Self) -> bool {
+        self.can_inherit_from_excluding_old_range(previous, 0..0)
+    }
+
+    /// Preflight history inheritance while leaving a range of old chain entries
+    /// with a retained tail owner. Exclusion is resolved by old stable device
+    /// identity, so candidate reordering cannot accidentally inherit a tail's
+    /// history into the new signal path.
+    pub fn can_inherit_from_excluding_old_range(
+        &self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+    ) -> bool {
+        if excluded_old_range.start > excluded_old_range.end
+            || excluded_old_range.end > previous.entries.len()
+        {
+            return false;
+        }
         self.entries.iter().all(|entry| {
             let Some(new_runtime) = entry.primary.as_ref() else {
                 return true;
             };
-            let Some(old) = previous.entries.iter().find(|old| {
+            let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 old.track_id == entry.track_id
                     && old.device_id == entry.device_id
                     && old.device_type == entry.device_type
@@ -233,6 +250,9 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
+            if excluded_old_range.contains(&old_index) {
+                return true;
+            }
             let Some(old_runtime) = old.primary.as_deref() else {
                 return true;
             };
@@ -248,19 +268,45 @@ impl NativeRuntimeChain {
     /// Identity also includes the stable device type, runtime version and rate;
     /// persisted state versions may change while physical history is retained.
     pub fn inherit_from(&mut self, previous: &Self) {
+        self.inherit_from_excluding_old_range_unchecked(previous, 0..0);
+    }
+
+    /// Copy compatible histories except entries retained by an old tail owner.
+    /// Callers must preflight the same range before entering their commit phase.
+    pub fn inherit_from_excluding_old_range(
+        &mut self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+    ) -> Result<(), DeviceContractError> {
+        if excluded_old_range.start > excluded_old_range.end
+            || excluded_old_range.end > previous.entries.len()
+        {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        self.inherit_from_excluding_old_range_unchecked(previous, excluded_old_range);
+        Ok(())
+    }
+
+    fn inherit_from_excluding_old_range_unchecked(
+        &mut self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+    ) {
         for entry in &mut self.entries {
-            if let Some(old) = previous.entries.iter().find(|old| {
+            if let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 old.track_id == entry.track_id
                     && old.device_id == entry.device_id
                     && old.device_type == entry.device_type
                     && old.runtime_version == entry.runtime_version
                     && old.sample_rate == entry.sample_rate
                     && old.primary.is_some()
-            }) && let (Some(primary), Some(scratch), Some(old_primary)) = (
-                entry.primary.as_mut(),
-                entry.scratch.as_mut(),
-                old.primary.as_deref(),
-            ) && primary.can_copy_history_from(old_primary)
+            }) && !excluded_old_range.contains(&old_index)
+                && let (Some(primary), Some(scratch), Some(old_primary)) = (
+                    entry.primary.as_mut(),
+                    entry.scratch.as_mut(),
+                    old.primary.as_deref(),
+                )
+                && primary.can_copy_history_from(old_primary)
             {
                 primary.copy_history_from(old_primary);
                 scratch.copy_history_from(old_primary);
@@ -826,6 +872,52 @@ mod tests {
         let mut reset_history = [[1.0, 1.0]];
         incompatible_rate.process_block(&mut reset_history);
         assert_eq!(reset_history, [[1.0, 1.0]]);
+    }
+
+    #[test]
+    fn selective_inheritance_excludes_old_suffix_by_identity_after_reorder() {
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&IndependentDefinition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepared = registry
+            .prepare_processor(
+                &registry
+                    .default_state(DeviceTypeId::from_static("test.independent"))
+                    .unwrap(),
+                48_000,
+            )
+            .unwrap()
+            .unwrap();
+        let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
+        let instance = |device_id| PreparedProcessorInstance {
+            track_id: 3,
+            device_id,
+            device_type: DeviceTypeId::from_static("test.independent"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            definition: Some(std::sync::Arc::clone(&prepared)),
+        };
+        let mut previous = NativeRuntimeChain::new(vec![instance(9), instance(10)]).unwrap();
+        previous.begin_block();
+        let mut old_signal = [[1.0, 1.0]];
+        previous.process_block(&mut old_signal);
+        previous.commit_block();
+        assert_eq!(old_signal, [[1.0, 1.0]]);
+
+        // Device 10 is the retained old suffix but moves to index 0 in the
+        // candidate; device 9 is an inherited processor despite moving to 1.
+        let mut candidate = NativeRuntimeChain::new(vec![instance(10), instance(9)]).unwrap();
+        assert!(!candidate.can_inherit_from_excluding_old_range(&previous, 1..3));
+        assert!(candidate.can_inherit_from_excluding_old_range(&previous, 1..2));
+        candidate
+            .inherit_from_excluding_old_range(&previous, 1..2)
+            .unwrap();
+        candidate.begin_block();
+        let mut fresh_audio = [[0.0, 0.0]];
+        candidate.process_block(&mut fresh_audio);
+        // The new suffix starts fresh (device 10 contributes zero); device 9
+        // retains its prefix history and contributes one.
+        assert_eq!(fresh_audio, [[1.0, 1.0]]);
     }
 
     #[test]

@@ -322,8 +322,9 @@ The feedback test covers Arrangement and Session scheduling, block partitioning,
 short in-query notes, event limits and hybrid additive prefix/instrument/suffix
 rendering. Legacy finite Arrangement renderers refuse an enabled mutable track
 before advancing time or emitting audio. Mutable Arrangement loops, Session
-source loops, live-state seeks, active-state graph replacement and quantized
-mutable route changes are explicitly refused; Stop is the hard reset. A
+source loops, live-state seeks and quantized mutable route changes are explicitly
+refused; Stop is the hard reset. Live mutable state can cross a revision handoff
+when the bounded tail preflight succeeds. A
 candidate mutable Arrangement owner also refuses a pre-cut sounding note,
 including a newly added track. Route commands check the actual candidate
 Arrangement owner, so returning from a quiet Session route refuses while an
@@ -331,21 +332,39 @@ Arrangement note is already sounding. A future pending route inherited from an
 analytic graph is refused before handoff. These are finite proof gates, not
 general mutable instrument behavior.
 
-Host storage is accounted separately from the declared DSP runtime budget. On
-the current 64-bit arm64 build, each mutable route's primary/scratch occurrence
-ledgers reserve 7,168 bytes; the per-track `Option` owner slot is 136 bytes; the
-shared onset buffer is 13,832 bytes; and each event is 24 bytes. A checked
-worst-case formula for 256 tracks, two 64-entry ledgers per track, one shared
-192-entry onset buffer, a 256-event vector and its two vector headers is
-1,889,848 bytes per SessionPlayback. Runtime pair payloads are separately
-limited with all stateful processors to 256 instances and 2 MiB of declared twin
-storage per graph. An active/candidate graph pair can therefore account for up
-to 3,779,696 bytes of this host component plus 4 MiB of declared twin payload;
-this is not a whole-process maximum and excludes allocator overhead, prepared
-MIDI banks and other prepared/retired owners.
+This engine path remains a test-only admission seam. Pulse 2160 now carries a
+nonquiescent mutable runtime pair and its occurrence ledger through revision
+handoff together with the old effect chain and captured suffix. Enabled source
+replacement keeps old gate deadlines; removing or bypassing the instrument
+clamps held gates to the publication frame and emits NoteOff at offset zero,
+preserving feedback and release state. Already-releasing notes keep their
+existing deadlines. Tail rendering adds mutable and copied analytic releases
+before running the old suffix and old track mix once. Completed tail owners stay
+attached until their graph retires on the control side.
 
-This engine path remains a test-only admission seam. Mutable runtime retirement
-with old suffix settings, musical chase/partial-note continuity, a production
-mutable instrument, and prepared shared-playback export are deferred to Pulses
-2160, later Operator work, and 2159 respectively. Do not claim full mutable
-instrument or export support from these tests.
+When a mutable owner retains an old chain, candidate history inheritance skips
+the old suffix entries by stable device identity. The retained chain keeps its
+full old suffix history for tail rendering; compatible prefix and unrelated
+track histories still transfer, while matching candidate suffix twins start
+fresh for new input. This avoids using one filter history for both the outgoing
+old signal and the candidate signal when an effect moves across the instrument
+gap.
+
+Mutable tail groups share the 256-group/stateful-instance ceiling and 2 MiB
+declared twin-storage ceiling. Each live mutable owner reserves its declared
+maximum of 64 voices against the existing 16,384-entry release bank. Preflight
+refuses before ownership changes when groups, voices or bytes do not fit.
+Seek refuses while a mutable tail is nonquiescent; Stop resets active and tail
+runtime state. The component host-storage formula includes active owner slots,
+their two ledgers, all 256 retained tail-owner slots and their two ledgers, the
+shared 192-span onset buffer and 256-event buffer. On this 64-bit arm64 build it
+is 3,761,744 bytes per maximal SessionPlayback; an active/candidate pair is
+7,523,488 bytes of this component. The declared payload limits are separate:
+each graph admits up to 2 MiB active pairs and up to 2 MiB retained tails. Old,
+candidate and retired publication owners can coexist, so these figures are not
+a process-wide peak bound and omit allocator overhead and other graph assets.
+
+This is still a proof-only path. Mutable chase, seek/chase and loop behavior,
+effect residual-tail quiescence, built-in mutable admission and prepared export
+remain deferred to Pulses 2163, 2164, 2165, 2162, later Operator work and 2159.
+Do not claim general mutable instrument or export support from these tests.

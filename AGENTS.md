@@ -168,9 +168,12 @@ in the same change. Keep APIs narrow, module sizes readable, errors explicit,
 public responsibilities documented, and dependencies acyclic. Put related behavior
 and tests with their owning crate; don't duplicate state across boundaries.
 
-Two explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
+Explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
 `hex-lattice-contract` as dev-dependencies for canonical prepared-publication and
-active-device allocation fixtures. Production audio
+active-device allocation fixtures. Under the non-default `allocation-probe`
+feature, `hex-audio` may also use `hex-lattice` as a dev-dependency and enable
+the engine's `instrument-test-support` feature to inject a bounded mutable
+instrument fixture through normal revision preparation. Production audio
 must continue to depend only on engine and its device/queue libraries. The
 architecture guard distinguishes this narrow dev edge from runtime dependencies.
 

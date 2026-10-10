@@ -90,6 +90,27 @@ impl PreparedRevision {
         })
     }
 
+    /// Hidden fixture seam for integration tests that need the real prepared
+    /// revision pipeline with an injected mutable instrument definition.
+    /// This method is absent from ordinary engine builds.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn prepare_with_test_instrument_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_with_instrument_registry(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            instruments,
+        )
+    }
+
     /// Prepare Arrangement playback and the Session inventory from one mixed
     /// resident/streamed bank. Streamed bindings are validated against the
     /// supplied nonzero project-open generation by the shared compiler resolver.

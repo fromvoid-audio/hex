@@ -643,6 +643,10 @@ impl Track {
         self.instrument_id.is_some() && !self.instrument_bypassed && self.instrument.is_some()
     }
 
+    pub(crate) fn instrument_slot_enabled(&self) -> bool {
+        self.instrument_id.is_some() && !self.instrument_bypassed
+    }
+
     pub(crate) fn new_device_runtime(
         &self,
     ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {

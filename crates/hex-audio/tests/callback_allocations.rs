@@ -12,7 +12,7 @@ use hex_engine::{
     SineTable,
     playback::{Playback, PlaybackCommand},
 };
-use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, ParameterId, ParameterValue};
 use hex_project::{
     AssetId, BeatTime, Command, Created, Editor, Project, SceneId, Tempo, TrackContentSnapshot,
     TrackId,
@@ -23,6 +23,251 @@ use std::{collections::BTreeMap, error::Error, sync::Arc};
 const RATE: u32 = fixture::RATE;
 const BLOCK: usize = 1_024;
 type Candidate = (Arc<PreparedRevision>, Project);
+
+const MUTABLE_FIXTURE_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.audio.mutable");
+
+struct MutableFixtureDefinition;
+struct MutableFixturePrepared {
+    level: f32,
+}
+struct MutableFixtureFactory {
+    level: f32,
+}
+#[derive(Clone, Copy, Default)]
+struct MutableFixtureVoice {
+    id: u64,
+    active: bool,
+    gated: bool,
+    release: u8,
+}
+struct MutableFixtureRuntime {
+    key: u32,
+    level: f32,
+    voices: [MutableFixtureVoice; 64],
+}
+
+impl hex_lattice_contract::NativeDeviceMetadata for MutableFixtureDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        MUTABLE_FIXTURE_TYPE
+    }
+    fn display_name(&self) -> Option<&'static str> {
+        Some("mutable callback fixture")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+    fn default_state(
+        &self,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])
+    }
+    fn migrate_state(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        if state.type_id() == MUTABLE_FIXTURE_TYPE
+            && state.state_version() == 1
+            && state.payload().len() == 1
+            && (1..=2).contains(&state.payload()[0])
+        {
+            Ok(state.clone())
+        } else {
+            Err(hex_lattice_contract::DeviceContractError::MalformedState)
+        }
+    }
+    fn read_parameter(
+        &self,
+        _: &hex_lattice_contract::NativeDeviceState,
+        _: ParameterId,
+    ) -> Result<hex_lattice_contract::ParameterValue, hex_lattice_contract::DeviceContractError>
+    {
+        Err(hex_lattice_contract::DeviceContractError::UnknownParameter)
+    }
+    fn patch_parameter(
+        &self,
+        _: &hex_lattice_contract::NativeDeviceState,
+        _: ParameterId,
+        _: hex_lattice_contract::ParameterValue,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        Err(hex_lattice_contract::DeviceContractError::UnknownParameter)
+    }
+}
+
+impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
+    fn prepare_instrument(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        _: u32,
+    ) -> Result<
+        Box<dyn hex_lattice::PreparedNativeInstrument>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        let state = self.migrate_state(state)?;
+        Ok(Box::new(MutableFixturePrepared {
+            level: f32::from(state.payload()[0]) * 0.0001,
+        }))
+    }
+}
+
+impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+        Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<
+        Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        Ok(Some(Box::new(MutableFixtureFactory { level: self.level })))
+    }
+}
+
+impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_twin_bytes(&self) -> usize {
+        std::mem::size_of::<MutableFixtureRuntime>()
+    }
+    fn max_events_per_block(&self) -> usize {
+        256
+    }
+    fn max_active_occurrences(&self) -> usize {
+        64
+    }
+    fn max_release_tail_frames(&self) -> u64 {
+        8
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        Box::new(MutableFixtureRuntime {
+            key: self.level.to_bits(),
+            level: self.level,
+            voices: [MutableFixtureVoice::default(); 64],
+        })
+    }
+}
+
+impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
+    fn preflight_events(
+        &self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        for event in events {
+            let (offset, id, on) = match *event {
+                hex_lattice::NativeInstrumentEvent::NoteOn {
+                    frame_offset,
+                    occurrence_id,
+                    ..
+                } => (frame_offset, occurrence_id, true),
+                hex_lattice::NativeInstrumentEvent::NoteOff {
+                    frame_offset,
+                    occurrence_id,
+                } => (frame_offset, occurrence_id, false),
+            };
+            if offset >= frame_count
+                || (on
+                    && self
+                        .voices
+                        .iter()
+                        .any(|voice| voice.active && voice.id == id))
+                || (!on
+                    && !self
+                        .voices
+                        .iter()
+                        .any(|voice| voice.active && voice.gated && voice.id == id))
+            {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+        }
+        Ok(())
+    }
+    fn process_block(
+        &mut self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+    ) {
+        let mut event_index = 0;
+        for (frame_index, frame) in frames.iter_mut().enumerate() {
+            while events.get(event_index).is_some_and(|event| match *event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                    frame_offset == frame_index
+                }
+            }) {
+                match events[event_index] {
+                    hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
+                        if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
+                            *voice = MutableFixtureVoice {
+                                id: occurrence_id,
+                                active: true,
+                                gated: true,
+                                release: 8,
+                            };
+                        }
+                    }
+                    hex_lattice::NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                        if let Some(voice) = self
+                            .voices
+                            .iter_mut()
+                            .find(|voice| voice.active && voice.id == occurrence_id)
+                        {
+                            voice.gated = false;
+                        }
+                    }
+                }
+                event_index += 1;
+            }
+            let active = self.voices.iter().any(|voice| voice.active);
+            if active {
+                frame[0] += self.level;
+                frame[1] += self.level;
+            }
+            for voice in &mut self.voices {
+                if voice.active && !voice.gated {
+                    voice.release = voice.release.saturating_sub(1);
+                    if voice.release == 0 {
+                        *voice = MutableFixtureVoice::default();
+                    }
+                }
+            }
+        }
+    }
+    fn reset(&mut self) {
+        self.voices = [MutableFixtureVoice::default(); 64];
+    }
+    fn is_quiescent(&self) -> bool {
+        self.voices.iter().all(|voice| !voice.active)
+    }
+    fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|old| self.key == old.key)
+    }
+    fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
+        if let Some(old) = previous.as_any().downcast_ref::<Self>() {
+            self.voices = old.voices;
+        }
+    }
+    fn fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 fn measured_block(callback: &mut prepared::Callback, output: &mut [Frame]) -> AllocationInfo {
     let mut render_failed = false;
@@ -116,6 +361,122 @@ fn assert_project_audio_oracle(
 ) -> Result<(), Box<dyn Error>> {
     let expected = fixture::finite_session_oracle(project, media, scene, elapsed, actual.len())?;
     compare_output(actual, &expected);
+    Ok(())
+}
+
+#[test]
+fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "mutable".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let scene = match editor.execute(Command::AddScene { name: "a".into() })? {
+        Created::Scene(scene) => scene,
+        _ => return Err("expected Session scene".into()),
+    };
+    let clip = match editor.execute(Command::CreateSessionMidiClip {
+        track,
+        scene,
+        name: "source".into(),
+        source_length: BeatTime::from_quarters(4)?,
+    })? {
+        Created::SessionClip(clip) => clip,
+        _ => return Err("expected MIDI clip".into()),
+    };
+    let note = match editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(1)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })? {
+        Created::Note(note) => note,
+        _ => return Err("expected created MIDI note".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let first_project = editor.project().clone();
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let first = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        &first_project,
+        &media,
+        Arc::clone(&table),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial publication failed")?;
+    control
+        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
+            scene,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .map_err(|_| "mutable scene launch failed")?;
+    let mut output = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![2])?,
+    })?;
+    editor.execute(Command::RemoveMidiNote(note))?;
+    let second = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(first.session()),
+        &registry,
+    )?);
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&second))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "stateful handoff publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+
+    // At 120 bpm the one-quarter note ends after 24,000 performance frames.
+    // Continue through the gate and the declared eight-frame release tail.
+    for _ in 0..190 {
+        measured_block(&mut callback, &mut output);
+    }
+    assert!(output.iter().flatten().all(|sample| *sample == 0.0));
+    assert!(control.status.rejected_revision().is_none());
+
+    let final_playback = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
+    control
+        .publish(final_playback)
+        .map_err(|_| "retirement publication failed")?;
+    measured_block(&mut callback, &mut output);
+    let mut reclaimed = 0;
+    let reclaimed_allocations = measure(|| reclaimed = control.reclaim());
+    assert!(reclaimed > 0, "retired graphs should reclaim on control");
+    assert_eq!(reclaimed_allocations.count_total, 0);
+    assert!(reclaimed_allocations.count_current < 0);
+    assert!(reclaimed_allocations.bytes_current < 0);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
     Ok(())
 }
 

@@ -64,7 +64,11 @@ retained outliers and the separate physical deadline gate.
 
 hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
 hex-project as a dev-dependency to build canonical prepared revisions for the
-callback boundary.
+callback boundary. The non-default `allocation-probe` feature also activates
+hex-engine's hidden `instrument-test-support` preparation seam and uses
+hex-lattice as a dev-dependency. This injects a fixed-storage mutable proof
+instrument into the real prepared callback path; neither dependency edge exists
+in production audio.
 
 ## Does not own
 

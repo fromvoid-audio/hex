@@ -38,6 +38,9 @@ impl SessionPlayback {
             for runtime in self.mutable_instruments.iter_mut().flatten() {
                 runtime.rollback_block();
             }
+            for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+                tail.runtime.rollback_block();
+            }
         }
         result
     }
@@ -57,6 +60,9 @@ impl SessionPlayback {
         }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -151,6 +157,9 @@ impl SessionPlayback {
         }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.commit_block();
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.commit_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();
@@ -397,6 +406,7 @@ impl SessionPlayback {
         }
         // Removed stateless tracks retain their copied linear mix. Stateful
         // tails are grouped by their captured old runtime chain and old mix.
+        let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut tail_cursor = release_cursor;
         while tail_cursor < self.release_scratch.len() {
             let release = self
@@ -427,6 +437,85 @@ impl SessionPlayback {
             for release in &self.release_scratch[group_start..tail_cursor] {
                 render_release_raw(release, table, performance_frame, tail_output)?;
             }
+            if let Some(tail) = self
+                .tail_mutable_instruments
+                .get_mut(group_index)
+                .and_then(Option::as_mut)
+            {
+                let rendered = rendered_mutable_tails
+                    .get_mut(group_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                *rendered = true;
+                if !tail.runtime.speculative_is_quiescent() {
+                    process_mutable_tail(
+                        tail,
+                        &mut self.mutable_onsets,
+                        &mut self.mutable_events,
+                        performance_frame,
+                        tail_output,
+                    )?;
+                }
+            }
+            if !chain.is_empty() {
+                let suffix_start = self
+                    .tail_suffix_starts
+                    .get(group_index)
+                    .copied()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let effect_count = chain.len();
+                chain
+                    .process_range(suffix_start..effect_count, tail_output)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+            if let Some(matrix) = self
+                .tail_suffix_matrices
+                .get(group_index)
+                .copied()
+                .flatten()
+            {
+                matrix.apply_block(tail_output);
+            }
+            let mix = self
+                .tail_mixes
+                .get(group_index)
+                .copied()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
+                mix.add_frame(destination, source);
+            }
+        }
+        for group_index in 0..self.tail_mutable_instruments.len() {
+            if rendered_mutable_tails
+                .get(group_index)
+                .copied()
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            let Some(tail) = self
+                .tail_mutable_instruments
+                .get_mut(group_index)
+                .and_then(Option::as_mut)
+            else {
+                continue;
+            };
+            if tail.runtime.speculative_is_quiescent() {
+                continue;
+            }
+            let mut tail_buffer = [[0.0; 2]; 256];
+            let tail_output = &mut tail_buffer[..output.len()];
+            process_mutable_tail(
+                tail,
+                &mut self.mutable_onsets,
+                &mut self.mutable_events,
+                performance_frame,
+                tail_output,
+            )?;
+            let chain = self
+                .tail_groups
+                .get_mut(group_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
             if !chain.is_empty() {
                 let suffix_start = self
                     .tail_suffix_starts
@@ -457,6 +546,26 @@ impl SessionPlayback {
         }
         Ok(())
     }
+}
+
+fn process_mutable_tail(
+    tail: &mut super::MutableInstrumentTail,
+    onsets: &mut MutableOnsetBuffer,
+    events: &mut Vec<hex_lattice::NativeInstrumentEvent>,
+    performance_frame: u64,
+    output: &mut [Frame],
+) -> Result<(), SessionPlaybackError> {
+    onsets.clear();
+    tail.runtime
+        .process_segment(
+            tail.track_id,
+            performance_frame,
+            performance_frame,
+            output,
+            onsets,
+            events,
+        )
+        .map_err(|_| SessionPlaybackError::MutableInstrumentRuntime)
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
