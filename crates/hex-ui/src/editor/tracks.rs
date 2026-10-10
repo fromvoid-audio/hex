@@ -10,7 +10,7 @@ use super::waveform::{
     waveform_summary_view, waveform_view_at,
 };
 use super::{EditorView, ViewState};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
 };
@@ -51,7 +51,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(Palette::CLIP_FILL))
+        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.88);
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children([clip_grid_layer(&lines, start, end)]);
@@ -68,7 +68,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
                 .left(px(4.0))
                 .right(px(4.0))
                 .h(px(1.0))
-                .bg(rgb(Palette::CLIP_TEXT)),
+                .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
         );
     }
     ghost.child(
@@ -79,7 +79,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             .right(px(3.0))
             .h(px(10.0))
             .text_xs()
-            .text_color(rgb(Palette::CLIP_TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
             .line_clamp(1)
             .child(theme::text(payload.ghost_label.clone())),
     )
@@ -180,9 +180,9 @@ pub(super) fn clip_grid_layer(
                     .left(relative((offset as f64 / width as f64) as f32))
                     .w(px(if line.meter_marker { 1.5 } else { 1.0 }))
                     .bg(rgb(if line.meter_marker {
-                        Palette::CORAL
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        Palette::GRID
+                        theme::color(theme::PaletteRole::Grid)
                     }))
                     .opacity(if line.meter_marker || line.bar_start {
                         0.42
@@ -233,7 +233,7 @@ impl EditorView {
             .h(px(TRACK_ROW_HEIGHT))
             .overflow_hidden()
             .border_r_1()
-            .border_color(rgb(Palette::BORDER))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     if let Some(position) = event.mouse_position() {
@@ -411,9 +411,9 @@ impl EditorView {
                     0.68
                 })
                 .bg(rgb(if selected_clip {
-                    Palette::CLIP_SELECTED
+                    theme::color(theme::PaletteRole::ClipSelected)
                 } else {
-                    Palette::CLIP_FILL
+                    theme::color(theme::PaletteRole::ClipFill)
                 }))
                 .border_1()
                 .border_color(rgb(0x000000))
@@ -439,7 +439,7 @@ impl EditorView {
                         .top(relative(top))
                         .w(relative(w))
                         .h(px(2.0))
-                        .bg(rgb(Palette::CYAN)),
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                 );
             }
             midi_shape_budget = midi_shape_budget.saturating_sub(shown);
@@ -451,8 +451,8 @@ impl EditorView {
                         .bottom_0()
                         .px_1()
                         .text_xs()
-                        .text_color(rgb(Palette::TEXT))
-                        .bg(rgb(Palette::RAISED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
@@ -518,7 +518,7 @@ impl EditorView {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(0x000000))
-                        .bg(rgb(Palette::CLIP_FILL))
+                        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     let shapes = midi_trim_note_shapes(
                         &state.project,
@@ -537,7 +537,7 @@ impl EditorView {
                                 .top(relative(top))
                                 .w(relative(shape_width))
                                 .h(px(2.0))
-                                .bg(rgb(Palette::CYAN)),
+                                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                         );
                     }
                     clip_area = clip_area.children([overlay]);
@@ -574,7 +574,7 @@ impl EditorView {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(0x000000))
-                        .bg(rgb(Palette::CLIP_FILL))
+                        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if let Some(waveform) = state.waveforms.get(&asset) {
                         preview = preview.child(super::waveform::waveform_view_cached(
@@ -618,7 +618,7 @@ impl EditorView {
                     .min_w(px(3.0))
                     .border_1()
                     .border_color(rgb(0x000000))
-                    .bg(rgb(Palette::CLIP_FILL))
+                    .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
                     .opacity(0.88)
                     .children([clip_grid_layer(grid, visible_start, visible_end)]);
                 if let ClipPosition::Audio { .. } = preview.position
@@ -680,7 +680,7 @@ impl EditorView {
                         .bottom(px(3.0))
                         .left(relative(left as f32))
                         .w(px(2.0))
-                        .bg(rgb(Palette::CYAN)),
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                 );
             }
         }
@@ -690,7 +690,7 @@ impl EditorView {
                     .debug_selector(|| format!("time-selection-focus-{}", track_id.value()))
                     .absolute()
                     .inset_0()
-                    .bg(rgb(Palette::CYAN))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
                     .opacity(0.035),
             );
         }
@@ -789,7 +789,7 @@ impl EditorView {
                 .right_0()
                 .bottom_0()
                 .h(px(1.0))
-                .bg(rgb(Palette::BORDER)),
+                .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
@@ -827,7 +827,9 @@ impl EditorView {
             )
             .drag_over::<TrimDrag>(move |style, drag, _, _| {
                 if drag.source_track == track_id {
-                    style.border_1().border_color(rgb(Palette::CORAL))
+                    style
+                        .border_1()
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 } else {
                     style
                 }
@@ -850,7 +852,7 @@ impl EditorView {
             .cursor_pointer()
             .truncate()
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(track.name()))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
@@ -886,7 +888,7 @@ impl EditorView {
                 div()
                     .w(px(34.0))
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(format!("{:.0}%", track.gain() * 100.0))),
             )
             .child(
@@ -900,9 +902,9 @@ impl EditorView {
                     ("track-mute", track_id.value()),
                 )
                 .text_color(rgb(if track.muted() {
-                    Palette::CORAL
+                    theme::color(theme::PaletteRole::Primary)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 }))
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.toggle_mute(track_id);
@@ -916,9 +918,9 @@ impl EditorView {
                     ("track-solo", track_id.value()),
                 )
                 .text_color(rgb(if track.soloed() {
-                    Palette::CORAL
+                    theme::color(theme::PaletteRole::Primary)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 }))
                 .on_click(cx.listener(
                     move |view, event: &gpui::ClickEvent, _, cx| {
@@ -938,14 +940,14 @@ impl EditorView {
             .border_l_2()
             .border_b_1()
             .border_color(rgb(if selected {
-                Palette::CORAL
+                theme::color(theme::PaletteRole::Primary)
             } else {
-                Palette::BORDER
+                theme::color(theme::PaletteRole::Border)
             }))
             .bg(rgb(if selected {
-                Palette::RAISED
+                theme::color(theme::PaletteRole::Raised)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
             .child(track_name_view)
             .child(track_controls);
@@ -1051,11 +1053,11 @@ impl EditorView {
             .cursor_pointer()
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
             .bg(rgb(if selected {
-                Palette::CLIP_SELECTED
+                theme::color(theme::PaletteRole::ClipSelected)
             } else {
-                Palette::CLIP_FILL
+                theme::color(theme::PaletteRole::ClipFill)
             }))
-            .hover(|style| style.bg(rgb(Palette::CLIP_HOVER)));
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::ClipHover))));
         content = content.border_1().border_color(rgb(0x000000));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -1078,7 +1080,7 @@ impl EditorView {
                             .items_center()
                             .px_1()
                             .text_xs()
-                            .text_color(rgb(Palette::MUTED))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                             .child(theme::text("missing media")),
                     );
                 }
@@ -1114,7 +1116,8 @@ impl EditorView {
                             }
                         }
                         if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(Palette::CYAN));
+                            window
+                                .paint_path(path, rgb(theme::color(theme::PaletteRole::Secondary)));
                         }
                     },
                 )

@@ -1,5 +1,5 @@
 use crate::app::{Daw, TRACK_COLORS};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_engine::live::{Command, Mode, NAMES, TRACKS};
 
@@ -15,7 +15,7 @@ impl Daw {
                 .px_1()
                 .items_center()
                 .border_r_1()
-                .border_color(rgb(Palette::GRID));
+                .border_color(rgb(theme::color(theme::PaletteRole::Grid)));
             for scene in 0..2 {
                 let label = if scene == 0 { "a" } else { "b" };
                 clips = clips.child(
@@ -29,10 +29,10 @@ impl Daw {
                         .cursor_pointer()
                         .border_l_2()
                         .border_color(rgb(TRACK_COLORS[track]))
-                        .bg(rgb(Palette::CLIP))
-                        .hover(|style| style.bg(rgb(Palette::HOVER)))
+                        .bg(rgb(theme::color(theme::PaletteRole::Clip)))
+                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                         .text_xs()
-                        .text_color(rgb(Palette::TEXT))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                         .child(theme::text(format!("{} · {}", NAMES[track], label)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.selected = track;
@@ -48,7 +48,7 @@ impl Daw {
                     .bottom_0()
                     .left(gpui::relative(position))
                     .w(px(1.0))
-                    .bg(rgb(Palette::CORAL)),
+                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
             );
             rows = rows.child(
                 div()
@@ -56,7 +56,7 @@ impl Daw {
                     .flex_shrink_0()
                     .flex()
                     .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .child(clips)
                     .child(self.track(self.selected == track, track, cx)),
             );
@@ -85,17 +85,17 @@ impl Daw {
             .h(px(24.0))
             .flex()
             .border_b_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::SURFACE));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         for beat in 0..8 {
             ruler = ruler.child(
                 div()
                     .flex_1()
                     .border_l_1()
-                    .border_color(rgb(Palette::GRID))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Grid)))
                     .px_1()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(format!("{}.{}", beat / 4 + 1, beat % 4 + 1))),
             );
         }
@@ -108,7 +108,7 @@ impl Daw {
             .relative()
             .flex_1()
             .min_h_0()
-            .bg(rgb(Palette::BACKGROUND));
+            .bg(rgb(theme::color(theme::PaletteRole::Background)));
         if trailing_header {
             grid = grid.mr(px(100.0));
         }
@@ -120,7 +120,7 @@ impl Daw {
                     .bottom_0()
                     .left(gpui::relative(beat as f32 / 8.0))
                     .w(px(1.0))
-                    .bg(rgb(Palette::GRID)),
+                    .bg(rgb(theme::color(theme::PaletteRole::Grid))),
             );
         }
         for row in 1..6 {
@@ -131,7 +131,7 @@ impl Daw {
                     .right_0()
                     .top(gpui::relative(row as f32 / 6.0))
                     .h(px(1.0))
-                    .bg(rgb(Palette::GRID)),
+                    .bg(rgb(theme::color(theme::PaletteRole::Grid))),
             );
         }
         grid
@@ -153,17 +153,17 @@ impl Daw {
             .px_2()
             .cursor_pointer()
             .bg(rgb(if selected {
-                Palette::RAISED
+                theme::color(theme::PaletteRole::Raised)
             } else {
-                Palette::SURFACE
+                theme::color(theme::PaletteRole::Surface)
             }))
             .border_l_2()
             .border_color(rgb(TRACK_COLORS[track]))
             .text_xs()
             .text_color(rgb(if selected {
-                Palette::TEXT
+                theme::color(theme::PaletteRole::Text)
             } else {
-                Palette::MUTED
+                theme::color(theme::PaletteRole::Muted)
             }))
             .child(theme::text(NAMES[track]))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -192,14 +192,14 @@ impl Daw {
                 .flex_shrink_0()
                 .flex()
                 .border_b_1()
-                .border_color(rgb(Palette::BORDER))
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(
                     div()
                         .w(px(100.0))
                         .flex_shrink_0()
                         .px_2()
                         .text_xs()
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("scene")),
                 )
                 .child(track_labels),
@@ -210,7 +210,7 @@ impl Daw {
                 .flex_shrink_0()
                 .flex()
                 .border_b_1()
-                .border_color(rgb(Palette::BORDER));
+                .border_color(rgb(theme::color(theme::PaletteRole::Border)));
             row = row.child(
                 div()
                     .w(px(100.0))
@@ -221,9 +221,9 @@ impl Daw {
                     .px_2()
                     .text_xs()
                     .text_color(rgb(if active_scene == scene {
-                        Palette::CORAL
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        Palette::MUTED
+                        theme::color(theme::PaletteRole::Muted)
                     }))
                     .child(theme::text(format!(
                         "scene {}",
@@ -254,7 +254,7 @@ impl Daw {
                         .items_center()
                         .px_1()
                         .border_l_1()
-                        .border_color(rgb(Palette::GRID))
+                        .border_color(rgb(theme::color(theme::PaletteRole::Grid)))
                         .child(
                             div()
                                 .w_full()
@@ -264,9 +264,9 @@ impl Daw {
                                 .px_2()
                                 .border_l_2()
                                 .border_color(rgb(TRACK_COLORS[track]))
-                                .bg(rgb(Palette::CLIP))
+                                .bg(rgb(theme::color(theme::PaletteRole::Clip)))
                                 .text_xs()
-                                .text_color(rgb(Palette::TEXT))
+                                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                                 .child(theme::text(format!(
                                     "{} · {}",
                                     NAMES[track],

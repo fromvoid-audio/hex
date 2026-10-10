@@ -1,7 +1,7 @@
 //! Arrangement time selection, range movement and worker clipboard routing.
 use super::edit_cursor::EditCursor;
 use super::{EditorMode, EditorView};
-use crate::theme::Palette;
+use crate::theme;
 use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
 use hex_project::{Command, TrackId};
 use hex_session::service::Request;
@@ -159,7 +159,7 @@ impl EditorView {
             track: first_track,
             frame,
             generation,
-            pulse_color: Palette::TEXT,
+            pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
         self.time_selection = Some(selection);
@@ -285,7 +285,7 @@ impl EditorView {
             track,
             frame,
             generation,
-            pulse_color: Palette::TEXT,
+            pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
         self.time_selection = Some(selection);
@@ -881,7 +881,9 @@ impl EditorView {
             let fraction = viewport.fraction(frame)?;
             let color = self
                 .edit_cursor
-                .map_or(Palette::TEXT, |cursor| cursor.color());
+                .map_or(theme::color(theme::PaletteRole::Text), |cursor| {
+                    cursor.color()
+                });
             return Some(
                 div()
                     .id(("edit-cursor-line", track.value()))
@@ -918,7 +920,7 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(Palette::CYAN))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
                 .opacity(0.13)
                 .child(
                     div()
@@ -929,7 +931,7 @@ impl EditorView {
                         .w_full()
                         .h(relative(SELECTION_HANDLE_FRACTION))
                         .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(Palette::TEXT))),
+                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
                 ),
         )
     }
@@ -951,7 +953,9 @@ impl EditorView {
             let fraction = viewport.fraction(frame)?;
             let color = self
                 .edit_cursor
-                .map_or(Palette::TEXT, |cursor| cursor.color());
+                .map_or(theme::color(theme::PaletteRole::Text), |cursor| {
+                    cursor.color()
+                });
             return Some(
                 div()
                     .id("main-project-edit-cursor")
@@ -988,7 +992,7 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(Palette::CYAN))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
                 .opacity(0.13)
                 .child(
                     div()
@@ -999,7 +1003,7 @@ impl EditorView {
                         .w_full()
                         .h(relative(SELECTION_HANDLE_FRACTION))
                         .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(Palette::TEXT))),
+                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
                 ),
         )
     }
@@ -1036,7 +1040,7 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(Palette::CYAN))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
                 .opacity(0.12)
                 .cursor(if preview.copy_modifier {
                     CursorStyle::DragCopy

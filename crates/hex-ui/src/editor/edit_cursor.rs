@@ -1,6 +1,6 @@
 //! View-only Arrangement insertion position, distinct from the audio playhead.
 use super::{EditorMode, EditorView, time_selection::TimeSelection};
-use crate::theme::Palette;
+use crate::theme;
 use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
@@ -25,8 +25,8 @@ impl EditCursor {
         let blend = (1.0 - (phase * std::f64::consts::TAU).cos()) * 0.5;
         let mut color = 0;
         for shift in [16, 8, 0] {
-            let white = f64::from((Palette::TEXT >> shift) & 0xff);
-            let cyan = f64::from((Palette::CYAN >> shift) & 0xff);
+            let white = f64::from((theme::color(theme::PaletteRole::Text) >> shift) & 0xff);
+            let cyan = f64::from((theme::color(theme::PaletteRole::Secondary) >> shift) & 0xff);
             let channel = (white + (cyan - white) * blend).round() as u32;
             color |= channel << shift;
         }
@@ -88,7 +88,7 @@ impl EditorView {
             track,
             frame,
             generation: self.project_generation,
-            pulse_color: Palette::TEXT,
+            pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
         self.time_selection = Some(TimeSelection {
@@ -211,7 +211,8 @@ impl EditorView {
                             path.line_to(points[2]);
                             path.close();
                             if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(Palette::TEXT));
+                                window
+                                    .paint_path(path, rgb(theme::color(theme::PaletteRole::Text)));
                             }
                         }
                     },
@@ -357,24 +358,24 @@ mod tests {
             track,
             frame: 0,
             generation: 0,
-            pulse_color: Palette::TEXT,
+            pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: now,
         };
         assert!(!cursor.pulse(now));
-        assert_eq!(cursor.color(), Palette::TEXT);
+        assert_eq!(cursor.color(), theme::color(theme::PaletteRole::Text));
         assert!(cursor.pulse(now + Duration::from_millis(300)));
         let midpoint = cursor.color();
-        assert_ne!(midpoint, Palette::TEXT);
-        assert_ne!(midpoint, Palette::CYAN);
+        assert_ne!(midpoint, theme::color(theme::PaletteRole::Text));
+        assert_ne!(midpoint, theme::color(theme::PaletteRole::Secondary));
         assert!(cursor.pulse(now + Duration::from_millis(600)));
-        assert_eq!(cursor.color(), Palette::CYAN);
+        assert_eq!(cursor.color(), theme::color(theme::PaletteRole::Secondary));
         assert!(cursor.pulse(now + Duration::from_millis(900)));
         assert_eq!(cursor.color(), midpoint);
         assert!(cursor.pulse(now + Duration::from_millis(1_200)));
-        assert_eq!(cursor.color(), Palette::TEXT);
+        assert_eq!(cursor.color(), theme::color(theme::PaletteRole::Text));
         // A skipped timer tick resumes the same phase, rather than toggling once.
         assert!(cursor.pulse(now + Duration::from_millis(3_000)));
-        assert_eq!(cursor.color(), Palette::CYAN);
+        assert_eq!(cursor.color(), theme::color(theme::PaletteRole::Secondary));
         assert!(!cursor.pulse(now + Duration::from_millis(3_000)));
     }
 }

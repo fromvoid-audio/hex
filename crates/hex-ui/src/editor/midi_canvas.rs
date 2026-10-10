@@ -2,7 +2,7 @@
 use super::midi_drag::{self, NotePreview};
 use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
     canvas, div, fill, point, prelude::*, px, relative, rgb, size,
@@ -167,9 +167,9 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .overflow_hidden()
-            .bg(rgb(Palette::BACKGROUND))
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
             .border_1()
-            .border_color(rgb(Palette::BORDER))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .debug_selector(|| "midi-note-roll".into());
@@ -206,9 +206,9 @@ impl EditorView {
                         width,
                         1.0,
                         if row % 6 == 0 {
-                            Palette::BORDER
+                            theme::color(theme::PaletteRole::Border)
                         } else {
-                            Palette::GRID
+                            theme::color(theme::PaletteRole::Grid)
                         },
                     );
                 }
@@ -236,9 +236,9 @@ impl EditorView {
                         1.0,
                         height,
                         if raw % (4 * BeatTime::ONE.raw()) == 0 {
-                            Palette::BORDER
+                            theme::color(theme::PaletteRole::Border)
                         } else {
-                            Palette::GRID
+                            theme::color(theme::PaletteRole::Grid)
                         },
                     );
                 }
@@ -249,7 +249,13 @@ impl EditorView {
                     let x = (marker.saturating_sub(beat_start.raw()) as f64 / raw_span as f64)
                         as f32
                         * width;
-                    quad(x, 0.0, 1.0, height, Palette::CORAL);
+                    quad(
+                        x,
+                        0.0,
+                        1.0,
+                        height,
+                        theme::color(theme::PaletteRole::Primary),
+                    );
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
@@ -270,14 +276,20 @@ impl EditorView {
                     };
                     let y = note.y * height;
                     let w = right - x;
-                    quad(x, y + 1.0, w, (height / 24.0 - 2.0).max(1.0), Palette::CYAN);
+                    quad(
+                        x,
+                        y + 1.0,
+                        w,
+                        (height / 24.0 - 2.0).max(1.0),
+                        theme::color(theme::PaletteRole::Secondary),
+                    );
                     if w >= 6.0 && note.leading_edge_visible {
                         quad(
                             x,
                             y + 1.0,
                             1.0,
                             (height / 24.0 - 2.0).max(1.0),
-                            Palette::TEXT,
+                            theme::color(theme::PaletteRole::Text),
                         );
                     }
                     if w >= 6.0 && note.trailing_edge_visible {
@@ -286,7 +298,7 @@ impl EditorView {
                             y + 1.0,
                             1.0,
                             (height / 24.0 - 2.0).max(1.0),
-                            Palette::TEXT,
+                            theme::color(theme::PaletteRole::Text),
                         );
                     }
                 }
@@ -314,7 +326,7 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / 24.0 - 2.0).max(1.0),
-                        Palette::CORAL,
+                        theme::color(theme::PaletteRole::Primary),
                     );
                     if w >= 6.0 && note.leading_edge_visible {
                         quad(
@@ -322,7 +334,7 @@ impl EditorView {
                             y + 1.0,
                             1.0,
                             (height / 24.0 - 2.0).max(1.0),
-                            Palette::TEXT,
+                            theme::color(theme::PaletteRole::Text),
                         );
                     }
                     if w >= 6.0 && note.trailing_edge_visible {
@@ -331,7 +343,7 @@ impl EditorView {
                             y + 1.0,
                             1.0,
                             (height / 24.0 - 2.0).max(1.0),
-                            Palette::TEXT,
+                            theme::color(theme::PaletteRole::Text),
                         );
                     }
                 }
@@ -346,7 +358,7 @@ impl EditorView {
                                 rect.y * height + 1.0,
                                 right - x,
                                 (height / 24.0 - 2.0).max(1.0),
-                                Palette::CORAL,
+                                theme::color(theme::PaletteRole::Primary),
                             );
                         }
                     }
@@ -366,7 +378,7 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / 24.0 - 2.0).max(1.0),
-                                Palette::CORAL,
+                                theme::color(theme::PaletteRole::Primary),
                             );
                         }
                     }
@@ -393,7 +405,7 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / 24.0 - 2.0).max(1.0),
-                                Palette::CORAL,
+                                theme::color(theme::PaletteRole::Primary),
                             );
                         }
                     }
@@ -404,10 +416,34 @@ impl EditorView {
                     let top = first[1].min(last[1]);
                     let width = (first[0] - last[0]).abs();
                     let height = (first[1] - last[1]).abs();
-                    quad(left, top, width.max(1.0), 1.0, Palette::CORAL);
-                    quad(left, top + height, width.max(1.0), 1.0, Palette::CORAL);
-                    quad(left, top, 1.0, height.max(1.0), Palette::CORAL);
-                    quad(left + width, top, 1.0, height.max(1.0), Palette::CORAL);
+                    quad(
+                        left,
+                        top,
+                        width.max(1.0),
+                        1.0,
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                    quad(
+                        left,
+                        top + height,
+                        width.max(1.0),
+                        1.0,
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                    quad(
+                        left,
+                        top,
+                        1.0,
+                        height.max(1.0),
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                    quad(
+                        left + width,
+                        top,
+                        1.0,
+                        height.max(1.0),
+                        theme::color(theme::PaletteRole::Primary),
+                    );
                 }
 
                 let rendered_context = super::midi_stroke::StrokeContext {
@@ -938,9 +974,9 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .flex_row()
-            .bg(rgb(Palette::SURFACE))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_t_1()
-            .border_color(rgb(Palette::BORDER));
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         let source_button = |field,
                              label: &'static str,
                              minus_tooltip: &'static str,
@@ -977,7 +1013,7 @@ impl EditorView {
             let mut group = div().flex().items_center().gap(px(2.0)).child(
                 div()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(format!("{displayed} {value_text}"))),
             );
             if field == super::midi_source_controls::SourceField::Looping {
@@ -1024,8 +1060,8 @@ impl EditorView {
             .gap(px(3.0))
             .p(px(4.0))
             .border_r_1()
-            .border_color(rgb(Palette::BORDER))
-            .bg(rgb(Palette::RAISED))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .debug_selector(|| "midi-source-controls".into());
         let source_row = |control| {
             div()
@@ -1343,7 +1379,7 @@ impl EditorView {
                     .flex_shrink_0()
                     .truncate()
                     .text_xs()
-                    .text_color(rgb(Palette::MUTED))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(status)),
             );
         let roll_area = div()
@@ -1453,7 +1489,7 @@ impl EditorView {
             .w(px(38.0))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(Palette::SURFACE));
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         for row in 0..24_u8 {
             let pitch = low.saturating_add(23).saturating_sub(row);
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
@@ -1474,14 +1510,18 @@ impl EditorView {
                     .items_center()
                     .pl(px(2.0))
                     .text_size(px(7.0))
-                    .text_color(rgb(if black { Palette::MUTED } else { Palette::TEXT }))
-                    .bg(rgb(if black {
-                        Palette::BACKGROUND
+                    .text_color(rgb(if black {
+                        theme::color(theme::PaletteRole::Muted)
                     } else {
-                        Palette::RAISED
+                        theme::color(theme::PaletteRole::Text)
+                    }))
+                    .bg(rgb(if black {
+                        theme::color(theme::PaletteRole::Background)
+                    } else {
+                        theme::color(theme::PaletteRole::Raised)
                     }))
                     .border_b_1()
-                    .border_color(rgb(Palette::BORDER))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .child(theme::text(label)),
             );
         }
@@ -1514,8 +1554,8 @@ impl EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .bg(rgb(Palette::RAISED))
-            .hover(|s| s.bg(rgb(Palette::HOVER)))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: tooltip.into(),

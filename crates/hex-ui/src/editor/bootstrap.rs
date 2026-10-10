@@ -2,7 +2,7 @@
 use super::{
     EditorView, MAX_RESIDENT_FRAMES, Quit, editor_window_options, header, install_close_guard,
 };
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{App, AppContext, Context, FocusHandle, Window, div, prelude::*, rgb};
 use hex_audio::{PreparedOutput, RecoveryOpen};
 use hex_session::service::Service;
@@ -92,8 +92,8 @@ impl Render for Bootstrap {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(Palette::BACKGROUND))
-            .text_color(rgb(Palette::TEXT))
+            .bg(rgb(theme::color(theme::PaletteRole::Background)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
             .key_context("hex_bootstrap")

@@ -1,6 +1,6 @@
 //! Compact descriptor-driven native device chain in the shared detail pane.
 use super::EditorView;
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{
     App, Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb,
 };
@@ -66,17 +66,20 @@ impl DevicePanelState {
     }
 }
 
-fn control_style() -> ControlStyle {
+pub(super) fn control_style() -> ControlStyle {
     ControlStyle {
-        background: Palette::BACKGROUND,
-        surface: Palette::SURFACE,
-        raised: Palette::RAISED,
-        rail: Palette::BORDER,
-        border: Palette::BORDER,
-        text: Palette::TEXT,
-        muted: Palette::MUTED,
-        accent: Palette::CYAN,
-        hover: Palette::HOVER,
+        background: theme::color(theme::PaletteRole::Background),
+        surface: theme::color(theme::PaletteRole::Surface),
+        raised: theme::color(theme::PaletteRole::Raised),
+        rail: theme::color(theme::PaletteRole::Border),
+        border: theme::color(theme::PaletteRole::Border),
+        text: theme::readable_text(
+            theme::color(theme::PaletteRole::Surface),
+            theme::color(theme::PaletteRole::Text),
+        ),
+        muted: theme::color(theme::PaletteRole::Muted),
+        accent: theme::color(theme::PaletteRole::Secondary),
+        hover: theme::color(theme::PaletteRole::Hover),
         font_size: 9.0,
     }
 }
@@ -305,9 +308,9 @@ fn render_track(
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .bg(rgb(Palette::SURFACE))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_t_1()
-        .border_color(rgb(Palette::BORDER));
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)));
 
     let mut chain = div()
         .id("device-chain-scroll")
@@ -367,7 +370,7 @@ fn render_track(
                     .flex_shrink_0()
                     .p(px(5.0))
                     .text_xs()
-                    .text_color(rgb(Palette::CORAL))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .child(theme::text(format!("unsupported device state · {error}")));
                 device_frame(
                     theme::text(
@@ -397,8 +400,8 @@ fn render_track(
         .flex()
         .items_center()
         .justify_center()
-        .text_color(rgb(Palette::CYAN))
-        .hover(|style| style.bg(rgb(Palette::RAISED)))
+        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
                 description: "add native device".into(),
@@ -425,16 +428,16 @@ fn render_track(
         .gap(px(5.0))
         .px(px(5.0))
         .text_xs()
-        .bg(rgb(Palette::SURFACE))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
                 .text_color(rgb(if view.device_panel.message.is_some() {
-                    Palette::CORAL
+                    theme::color(theme::PaletteRole::Primary)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 }))
                 .child(theme::text(title)),
         )
@@ -463,7 +466,7 @@ fn render_add_menu(
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
-        .bg(rgb(Palette::RAISED));
+        .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     match catalog {
         Ok(entries) if entries.is_empty() => {
             menu = menu.child(menu_message("no native devices available"));
@@ -482,8 +485,8 @@ fn render_add_menu(
                         .flex()
                         .items_center()
                         .text_xs()
-                        .text_color(rgb(Palette::TEXT))
-                        .hover(|style| style.bg(rgb(Palette::HOVER)))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .child(theme::text(entry.name))
                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -526,9 +529,9 @@ fn device_actions(
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
             if bypassed {
-                Palette::MUTED
+                theme::color(theme::PaletteRole::Muted)
             } else {
-                Palette::CYAN
+                theme::color(theme::PaletteRole::SecondaryText)
             },
         )
         .on_click(cx.listener(move |view, _, _, cx| {
@@ -546,7 +549,7 @@ fn device_actions(
             format!("device-up-{}", id.value()),
             "‹",
             "move device left",
-            Palette::TEXT,
+            theme::color(theme::PaletteRole::Text),
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if let Some(before) = before_up
@@ -566,7 +569,7 @@ fn device_actions(
             format!("device-down-{}", id.value()),
             "›",
             "move device right",
-            Palette::TEXT,
+            theme::color(theme::PaletteRole::Text),
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if has_down && finalize_controls(view, cx) {
@@ -584,7 +587,7 @@ fn device_actions(
             format!("device-remove-{}", id.value()),
             "×",
             "remove device",
-            Palette::CORAL,
+            theme::color(theme::PaletteRole::Primary),
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -610,7 +613,7 @@ fn action_button(
         .justify_center()
         .text_size(px(10.0))
         .text_color(rgb(color))
-        .hover(|style| style.bg(rgb(Palette::HOVER)))
+        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
@@ -628,6 +631,7 @@ fn parameter_control(
     type_id: hex_lattice_contract::DeviceTypeId,
     parameter: &NativeDeviceParameterView,
 ) -> Div {
+    let style = control_style();
     let key = ParameterKey {
         device,
         parameter: parameter.descriptor.id,
@@ -701,7 +705,7 @@ fn parameter_control(
         if let Some(mut old) = view.device_panel.controls.remove(&key) {
             cancel_control(view, cx, key, &mut old);
         }
-        if create_parameter_control(view, cx, key, type_id, descriptor, value).is_none() {
+        if create_parameter_control(view, cx, key, type_id, descriptor, value, style).is_none() {
             return unsupported_parameter(descriptor.label);
         }
     }
@@ -709,21 +713,38 @@ fn parameter_control(
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
                     let _ = control.set_external_value(f64::from(value), cx);
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
                 });
             }
             div().w(px(136.0)).h(px(26.0)).child(entity.clone())
         }
         Some(ParameterControl::Bool { entity, .. }) => {
             if let ParameterValue::Bool(value) = value {
-                entity.update(cx, |control, cx| control.set_checked(value, cx));
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    control.set_checked(value, cx);
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                });
             }
             div().w(px(136.0)).h(px(22.0)).child(entity.clone())
         }
         Some(ParameterControl::Choice { entity, .. }) => {
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
                     let _ = control.set_selected(value as usize, cx);
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
                 });
             }
             div().w(px(136.0)).h(px(22.0)).child(entity.clone())
@@ -739,8 +760,8 @@ fn create_parameter_control(
     type_id: hex_lattice_contract::DeviceTypeId,
     descriptor: &'static ParameterDescriptor,
     value: ParameterValue,
+    style: ControlStyle,
 ) -> Option<()> {
-    let style = control_style();
     let id = format!(
         "device-{}-parameter-{}",
         key.device.value(),
@@ -904,7 +925,7 @@ fn unsupported_parameter(label: &str) -> Div {
         .flex()
         .items_center()
         .text_xs()
-        .text_color(rgb(Palette::MUTED))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(format!("{label} · unsupported")))
 }
 
@@ -915,7 +936,7 @@ fn menu_message(message: &str) -> Div {
         .items_center()
         .px(px(4.0))
         .text_xs()
-        .text_color(rgb(Palette::MUTED))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(message))
 }
 
@@ -929,9 +950,9 @@ fn empty_panel(message: &str) -> Stateful<Div> {
         .flex()
         .items_center()
         .px(px(8.0))
-        .bg(rgb(Palette::SURFACE))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_xs()
-        .text_color(rgb(Palette::MUTED))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(message))
 }
 

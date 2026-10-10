@@ -28,6 +28,9 @@ impl EditorView {
         if self.close_prompt_open {
             return false;
         }
+        if !self.prepare_theme_window_close(window, cx) {
+            return false;
+        }
         let _ = super::device_panel::finalize_controls(self, cx);
         self.finalize_device_gesture_for_close();
         if self.requires_close_confirmation(cx) {
@@ -41,6 +44,9 @@ impl EditorView {
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.close_prompt_open {
+            return;
+        }
+        if !self.prepare_theme_window_close(window, cx) {
             return;
         }
         let _ = super::device_panel::finalize_controls(self, cx);

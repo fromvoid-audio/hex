@@ -1,6 +1,6 @@
 //! Shared compact detail pane for Arrangement and Session audio/MIDI selections.
 use super::{EditorMode, EditorView};
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 
 impl EditorView {
@@ -55,9 +55,9 @@ impl EditorView {
             .items_center()
             .gap(px(5.0))
             .px(px(5.0))
-            .bg(rgb(Palette::SURFACE))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_t_1()
-            .border_color(rgb(Palette::BORDER))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .text_xs()
             .debug_selector(|| "clip-view-toggle-row".into());
         row = row.child(
@@ -68,8 +68,8 @@ impl EditorView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(Palette::CYAN))
-                .hover(|style| style.bg(rgb(Palette::RAISED)))
+                .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
                 .debug_selector(|| "clip-view-toggle".into())
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
@@ -100,7 +100,7 @@ impl EditorView {
         );
         row = row.child(
             div()
-                .text_color(rgb(Palette::MUTED))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(label)),
         );
         row = row.child(
@@ -112,11 +112,11 @@ impl EditorView {
                 .flex()
                 .items_center()
                 .text_color(rgb(if self.device_panel_active {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 } else {
-                    Palette::CYAN
+                    theme::color(theme::PaletteRole::Secondary)
                 }))
-                .hover(|style| style.bg(rgb(Palette::RAISED)))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
                 .cursor(gpui::CursorStyle::PointingHand)
                 .child(theme::text("clip"))
                 .on_click(cx.listener(|view, _, window, cx| {
@@ -139,11 +139,11 @@ impl EditorView {
                 .flex()
                 .items_center()
                 .text_color(rgb(if self.device_panel_active {
-                    Palette::CYAN
+                    theme::color(theme::PaletteRole::SecondaryText)
                 } else {
-                    Palette::MUTED
+                    theme::color(theme::PaletteRole::Muted)
                 }))
-                .hover(|style| style.bg(rgb(Palette::RAISED)))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
                 .cursor(gpui::CursorStyle::PointingHand)
                 .child(theme::text("devices"))
                 .on_click(cx.listener(|view, _, window, cx| {
@@ -163,7 +163,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .bg(rgb(Palette::SURFACE))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(row)
             .debug_selector(|| "clip-view".into());
         if open {
@@ -178,7 +178,7 @@ impl EditorView {
                         .flex()
                         .items_center()
                         .text_xs()
-                        .text_color(rgb(Palette::MUTED))
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("no clip selected")),
                 );
             }

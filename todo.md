@@ -248,7 +248,10 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   editable colors. Persist across reload using the preferences boundary, validate
   malformed settings, retain defaults and offer reset. Keep waveform/clip contrast,
   focus visibility, lowercase labels and bundled typography. Confirm role mapping
-  when implementing; current palette has more than four independent constants.
+  when implementing. Four roles, cached derived tokens, RGB pickers, preview/
+  cancel/reset/save and versioned independent preferences are now implemented.
+  Focused source checks pass; clean full CI and native acceptance remain open.
+  Contract: [theme settings](docs/theme-settings.md).
 - [ ] **native device model/runtime** — canonical IDs, parameter/state/history
   persistence, one MIDI instrument slot and serial audio effects, with shared
   native/offline behavior. Define mutable DSP lifecycle, prepared graph ownership,

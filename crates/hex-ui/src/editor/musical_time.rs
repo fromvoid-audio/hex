@@ -1,7 +1,7 @@
 //! UI-only snap selection and bounded musical timeline helpers.
 
 use super::viewport::Viewport;
-use crate::theme::{self, Palette};
+use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_project::{BeatTime, Command, Meter, MeterPosition, Project, Tempo};
 use hex_session::service::Request;
@@ -782,7 +782,13 @@ impl super::EditorView {
                     cx,
                 ),
             ])
-            .child(div().w(px(1.0)).h(px(14.0)).mx_1().bg(rgb(Palette::BORDER)))
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .mx_1()
+                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
+            )
             .children([self.time_button(
                 &meter_label,
                 "cycle meter at cursor snapped quarter · 4/4, 3/4, 6/8, 5/4",
@@ -802,7 +808,7 @@ impl super::EditorView {
             .items_center()
             .justify_center()
             .text_xs()
-            .text_color(rgb(Palette::TEXT))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.into(),
@@ -830,10 +836,10 @@ impl super::EditorView {
             .justify_center()
             .cursor_pointer()
             .text_xs()
-            .bg(rgb(Palette::RAISED))
-            .text_color(rgb(Palette::TEXT))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .opacity(if enabled { 1.0 } else { 0.45 })
-            .hover(|style| style.bg(rgb(Palette::HOVER)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.into(),

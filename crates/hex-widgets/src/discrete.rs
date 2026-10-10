@@ -72,6 +72,20 @@ impl Toggle {
         self.checked
     }
 
+    /// Update caller-owned styling without recreating the focused control.
+    pub fn set_external_style(
+        &mut self,
+        style: ControlStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let style = style.validate()?;
+        if self.style != style {
+            self.style = style;
+            cx.notify();
+        }
+        Ok(())
+    }
+
     pub fn set_checked(&mut self, checked: bool, cx: &mut Context<Self>) {
         if self.checked != checked {
             self.checked = checked;
@@ -256,6 +270,20 @@ impl Selector {
 
     pub fn selected(&self) -> usize {
         self.selected
+    }
+
+    /// Update caller-owned styling without discarding popup or focus state.
+    pub fn set_external_style(
+        &mut self,
+        style: ControlStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let style = style.validate()?;
+        if self.style != style {
+            self.style = style;
+            cx.notify();
+        }
+        Ok(())
     }
 
     pub fn is_open(&self) -> bool {

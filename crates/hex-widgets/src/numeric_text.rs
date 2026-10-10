@@ -1,9 +1,9 @@
-use crate::numeric_control::NumericControl;
+use crate::{ControlStyle, numeric_control::NumericControl};
 use gpui::{
     App, Bounds, Context, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     GlobalElementId, LayoutId, MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style,
     TextRun, UTF16Selection, UnderlineStyle, Window, fill, point, prelude::*, px, relative, rgb,
-    rgba, size,
+    size,
 };
 use std::ops::Range;
 
@@ -261,7 +261,7 @@ impl Element for NumericTextElement {
                         bounds.bottom(),
                     ),
                 ),
-                rgba(0x70e8e366),
+                rgb(selection_tint(input.style)),
             )
         });
         let cursor = (input.editing && input.selected.is_empty()).then(|| {
@@ -330,6 +330,18 @@ impl Element for NumericTextElement {
     }
 }
 
+fn selection_tint(style: ControlStyle) -> u32 {
+    const OPACITY: f32 = 0.4;
+    let blend = |accent: u32, surface: u32, shift: u32| {
+        let accent = ((accent >> shift) & 0xff) as f32;
+        let surface = ((surface >> shift) & 0xff) as f32;
+        (accent * OPACITY + surface * (1.0 - OPACITY)).round() as u32
+    };
+    (blend(style.accent, style.surface, 16) << 16)
+        | (blend(style.accent, style.surface, 8) << 8)
+        | blend(style.accent, style.surface, 0)
+}
+
 fn range_utf16_to_bytes(text: &str, range: Range<usize>) -> Range<usize> {
     utf16_to_byte(text, range.start)..utf16_to_byte(text, range.end)
 }
@@ -354,4 +366,34 @@ fn byte_offset_to_utf16(text: &str, offset: usize) -> usize {
         .take_while(|(index, _)| *index < offset)
         .map(|(_, character)| character.len_utf16())
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::selection_tint;
+    use crate::ControlStyle;
+
+    fn style(accent: u32) -> ControlStyle {
+        ControlStyle {
+            background: 0x202020,
+            surface: 0x303030,
+            raised: 0x383838,
+            rail: 0x282828,
+            border: 0x505050,
+            text: 0xe0e0e0,
+            muted: 0xaaaaaa,
+            accent,
+            hover: 0x404040,
+            font_size: 10.0,
+        }
+    }
+
+    #[test]
+    fn numeric_text_selection_tint_tracks_the_injected_secondary_accent() {
+        assert_ne!(
+            selection_tint(style(0x55ddee)),
+            selection_tint(style(0xee8844))
+        );
+        assert_ne!(selection_tint(style(0x55ddee)), style(0x303030).surface);
+    }
 }
