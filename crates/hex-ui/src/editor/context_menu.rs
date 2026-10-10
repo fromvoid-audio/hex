@@ -1,13 +1,28 @@
-use super::{EditorView, ViewState};
+use super::{EditorView, ViewState, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
-use hex_project::{Command, TrackId};
+use hex_lattice_contract::{ParameterId, ParameterValue};
+use hex_project::{Command, DeviceId, TrackId};
 use hex_session::service::Request;
 
 #[derive(Clone)]
 pub(super) struct InsertTrackAction {
     generation: u64,
     before_track: Option<TrackId>,
+}
+
+#[derive(Clone)]
+pub(super) struct UtilityModeAction {
+    generation: u64,
+    owner: device_panel::DevicePanelOwner,
+    device: DeviceId,
+    mid_side: bool,
+}
+
+#[derive(Clone)]
+pub(super) enum EditorContextAction {
+    InsertTrack(InsertTrackAction),
+    UtilityMode(UtilityModeAction),
 }
 
 impl EditorView {
@@ -37,11 +52,56 @@ impl EditorView {
             previous_focus,
             items: vec![MenuItem {
                 label: "insert track",
-                action: InsertTrackAction {
+                action: EditorContextAction::InsertTrack(InsertTrackAction {
                     generation: self.project_generation,
                     before_track,
-                },
+                }),
             }],
+        });
+        cx.notify();
+    }
+
+    pub(super) fn open_utility_mode_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        device: DeviceId,
+        enabled: bool,
+        mid_side: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !enabled || !device_panel::finalize_controls(self, cx) {
+            return;
+        }
+        let Some(owner) = self.device_panel.owner else {
+            return;
+        };
+        let previous_focus = self
+            .context_menu
+            .take()
+            .and_then(|menu| menu.previous_focus)
+            .or_else(|| window.focused(cx));
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        let (label, target_mode) = if mid_side {
+            ("switch to width", false)
+        } else {
+            ("switch to mid/side", true)
+        };
+        self.context_menu = Some(PopupMenu {
+            position,
+            items: vec![MenuItem {
+                label,
+                action: EditorContextAction::UtilityMode(UtilityModeAction {
+                    generation: self.project_generation,
+                    owner,
+                    device,
+                    mid_side: target_mode,
+                }),
+            }],
+            selected: 0,
+            focus,
+            previous_focus,
         });
         cx.notify();
     }
@@ -55,31 +115,64 @@ impl EditorView {
 
     fn select_context_item(
         &mut self,
-        action: InsertTrackAction,
+        action: EditorContextAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.dismiss_context_menu(window, cx);
-        if action.generation != self.project_generation {
-            return;
+        match action {
+            EditorContextAction::InsertTrack(action) => {
+                if action.generation != self.project_generation {
+                    return;
+                }
+                let Some(state) = &self.state else {
+                    return;
+                };
+                if action
+                    .before_track
+                    .is_some_and(|track| state.project.track(track).is_none())
+                {
+                    self.error = Some("track insertion anchor no longer exists".into());
+                    cx.notify();
+                    return;
+                }
+                let name = format!("track {}", state.project.tracks().len() + 1);
+                self.enqueue(Request::Edit(Command::InsertTrack {
+                    name,
+                    before_track: action.before_track,
+                }));
+                cx.notify();
+            }
+            EditorContextAction::UtilityMode(action) => {
+                if action.generation != self.project_generation
+                    || self.device_panel.owner != Some(action.owner)
+                {
+                    return;
+                }
+                let available = self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| utility_device_exists(&state.project, action.device));
+                if !available {
+                    return;
+                }
+                let key = device_panel::ParameterKey {
+                    device: action.device,
+                    parameter: ParameterId::from_static(9),
+                };
+                let value = ParameterValue::Bool(action.mid_side);
+                self.device_panel.pending_values.insert(key, value);
+                if !self.enqueue_device_barrier(Request::SetDeviceParameter {
+                    device: action.device,
+                    parameter: key.parameter,
+                    value,
+                }) {
+                    self.device_panel.pending_values.remove(&key);
+                    self.error = Some("could not change Utility width mode".into());
+                }
+                cx.notify();
+            }
         }
-        let Some(state) = &self.state else {
-            return;
-        };
-        if action
-            .before_track
-            .is_some_and(|track| state.project.track(track).is_none())
-        {
-            self.error = Some("track insertion anchor no longer exists".into());
-            cx.notify();
-            return;
-        }
-        let name = format!("track {}", state.project.tracks().len() + 1);
-        self.enqueue(Request::Edit(Command::InsertTrack {
-            name,
-            before_track: action.before_track,
-        }));
-        cx.notify();
     }
 
     fn navigate_context_menu(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -97,10 +190,26 @@ impl EditorView {
     }
 
     pub(super) fn context_menu_overlay(
-        &self,
-        window: &Window,
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
+        if self.context_menu.as_ref().is_some_and(|menu| {
+            menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::UtilityMode(action) => {
+                    let owner_matches = self.device_panel.owner == Some(action.owner);
+                    let device_exists = self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| utility_device_exists(&state.project, action.device));
+                    !owner_matches || !device_exists || action.generation != self.project_generation
+                }
+            })
+        }) {
+            self.dismiss_context_menu(window, cx);
+            return None;
+        }
         self.context_menu.as_ref().map(|menu| {
             crate::context_menu::popup(
                 menu,
@@ -112,6 +221,22 @@ impl EditorView {
             )
         })
     }
+}
+
+fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
+    project.tracks().iter().any(|track| {
+        track.ordered_device_chain().any(|node| {
+            let device = match node {
+                hex_project::TrackDeviceRef::Instrument(device)
+                | hex_project::TrackDeviceRef::Effect(device) => device,
+            };
+            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+        })
+    }) || project.return_tracks().iter().any(|track| {
+        track.devices().iter().any(|device| {
+            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+        })
+    })
 }
 
 fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {

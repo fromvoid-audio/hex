@@ -1422,3 +1422,28 @@ No agent app launch or automatic merge. Previous apps remain intact. Codex
 attachment limit100 prevented PR attachment; verified link retained in Pulse
 and this ledger. Vendor future-compatibility warnings remain Pulse2143; no
 physical deadline,64-voice support or full Live feedback-law parity claim.
+
+## 10 October 2026 — native-device UI focus
+
+User accepted review65 feedback/playback, modulation availability and save/reopen.
+PR104 stays open until an explicit merge decision. Live Operator parameter
+updates2229 returned to todo after architecture research only; no source edits.
+
+Pulse2232 is the active focused Utility UI PR: replace the generic wrapped list
+with compact Input/Output grouping, visible knobs/switches and a mode-dependent
+width/M-S control. Preserve existing canonical gestures, theme/font, fixed rail,
+reordering and regular/Return-device behavior. Operator's dedicated oscillator/
+envelope/routing panel follows separately under2233. Pulse remains planning
+authority; native visual/input acceptance belongs to the user.
+
+Utility visual acceptance now requires Live-style widget shapes, rounded corners
+and composition, rendered independently with Hex theme colors. A generic
+two-column arrangement is insufficient. The fixed device rail is 228px and
+Utility uses a narrow 184px frame; verify reference proportions and all control bounds.
+
+Utility source is frozen for publication validation: shared compact widget shapes,
+rounded 184px frame, UI-only percent/side/hz codecs and shared popup behavior.
+The mode value uses common pending retirement; switch/ack/undo/redo regression
+passes. Targeted UI tests: 368 passed, 2 existing ignored; strict package clippy,
+desktop build, fmt and architecture/UI/GPUI guards passed. Full local CI and
+fresh signed combined build follow; native visual/input acceptance remains open.

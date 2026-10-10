@@ -155,13 +155,22 @@ separate acceptance gates.
 
 ### fixed-height chain geometry
 
-The bottom device panel is fixed at 188 px. Its header, top border and 3 px chain
-padding define the usable chain height; each 286 px device frame fills that height
-and derives its body height from the shared frame header and border tokens. The
+The bottom device panel is fixed at 228 px. Its header, top border and 3 px chain
+padding define the usable chain height; regular device frames are 286 px wide and
+derive their body height from the shared frame header and border tokens. The
 add-device menu overlays the chain, so opening it does not resize the panel or
-device cards. Parameter bodies scroll vertically inside their frames when the
-current Utility layout has more controls than fit at once; the chain itself keeps
-its horizontal scroll. Native wheel and touchpad feel still requires review.
+device cards. The chain itself keeps its horizontal scroll. Native wheel and
+touchpad feel still requires review.
+
+The built-in Utility uses a dedicated 184 px rounded device frame inside that
+same rail. Its two 82 px columns reproduce Live's compact input/output control
+composition: channel and polarity, width or mid/side, mono and bass mono controls
+on the input side; gain, balance, mute and dc on the output side. Bass mono cutoff
+and its audition control share one compact row. Right-clicking width opens the
+shared editor popup to switch width and mid/side; unavailable left/right modes
+disable the width and mid/side controls without changing their stored values. These
+controls reuse the same parameter entities, edit gestures and history path as
+other lattice devices. Numerical/audio parity with Live remains unclaimed.
 
 
 ## panel native review checklist

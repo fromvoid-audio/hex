@@ -341,7 +341,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(188.0));
+    assert_eq!(panel.size.height, px(228.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
     let chain = visual
@@ -360,7 +360,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
     assert_eq!(instrument_card.size.width, px(286.0));
-    assert_eq!(effect_card.size.width, px(286.0));
+    assert_eq!(effect_card.size.width, px(184.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -420,31 +420,14 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             format!("device-body-{}", device_id.value()).into_boxed_str(),
         ))
         .expect("bounded device controls viewport");
-    let before_scroll_last = visual
+    let last_control = visual
         .debug_bounds(last_parameter_selector)
         .expect("last utility control is rendered");
-    let scroll_point = point(
-        device_body.origin.x + device_body.size.width / 2.0,
-        device_body.origin.y + device_body.size.height / 2.0,
-    );
-    visual.simulate_event(gpui::ScrollWheelEvent {
-        position: scroll_point,
-        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-900.0))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
-    let scrolled_last = visual
-        .debug_bounds(last_parameter_selector)
-        .expect("last utility control remains rendered after scrolling");
-    assert_ne!(
-        before_scroll_last.origin.y, scrolled_last.origin.y,
-        "the internal device body scrolls its overflow controls"
-    );
     assert!(
-        scrolled_last.origin.y >= device_body.origin.y
-            && scrolled_last.origin.y + scrolled_last.size.height
+        last_control.origin.y >= device_body.origin.y
+            && last_control.origin.y + last_control.size.height
                 <= device_body.origin.y + device_body.size.height,
-        "the final utility parameter can be scrolled fully into the fixed body viewport"
+        "the compact Utility panel keeps its final control visible in the fixed body viewport"
     );
 
     let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");
