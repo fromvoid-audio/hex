@@ -300,7 +300,7 @@ mod tests {
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].name, "utility");
-        assert_eq!(instruments.len(), 2);
+        assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()
             .find(|entry| entry.name == "sine")
@@ -309,6 +309,10 @@ mod tests {
             .iter()
             .find(|entry| entry.name == "fm4")
             .expect("FM4 instrument is registered");
+        let operator = instruments
+            .iter()
+            .find(|entry| entry.name == "operator")
+            .expect("Operator instrument is registered");
 
         let state = crate::default_native_device_state_for_class(
             NativeDeviceClass::Instrument,
@@ -360,6 +364,22 @@ mod tests {
             fm4.parameters
         );
         assert!(native_device_view_for_class(NativeDeviceClass::Effect, &fm4_state).is_err());
+
+        let operator_state = crate::default_native_device_state_for_class(
+            NativeDeviceClass::Instrument,
+            operator.type_id,
+        )
+        .unwrap();
+        let operator_view =
+            native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
+        assert_eq!(operator_view.name, "operator");
+        assert_eq!(operator_view.parameters.len(), 52);
+        assert_eq!(
+            native_device_descriptors_for_class(NativeDeviceClass::Instrument, operator.type_id)
+                .unwrap(),
+            operator.parameters
+        );
+        assert!(native_device_view_for_class(NativeDeviceClass::Effect, &operator_state).is_err());
 
         let effect_state = crate::default_native_device_state_for_class(
             NativeDeviceClass::Effect,

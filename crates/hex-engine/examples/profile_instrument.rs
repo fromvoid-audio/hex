@@ -22,6 +22,7 @@ const MEASURED_BLOCKS: usize = 3_000;
 struct Workload {
     instrument_position: usize,
     fm4: bool,
+    operator: bool,
     four_stage_fm4: bool,
     dense_sustain: bool,
     one_note: bool,
@@ -104,7 +105,12 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             instrument: Some(hex_project::DeviceSnapshot {
                 id: instrument_id,
                 bypassed: false,
-                state: if workload.fm4 {
+                state: if workload.operator {
+                    hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Instrument,
+                        DeviceTypeId::from_static("hex.instrument.operator"),
+                    )?
+                } else if workload.fm4 {
                     let mut state = hex_engine::default_native_device_state_for_class(
                         hex_engine::NativeDeviceClass::Instrument,
                         DeviceTypeId::from_static("hex.instrument.fm4"),
@@ -241,6 +247,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workload = Workload {
         instrument_position,
         fm4: arguments.iter().any(|argument| argument == "--fm4"),
+        operator: arguments.iter().any(|argument| argument == "--operator"),
         four_stage_fm4: arguments
             .iter()
             .any(|argument| argument == "--four-stage-fm4"),
@@ -251,6 +258,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     if workload.four_stage_fm4 && !workload.fm4 {
         return Err("--four-stage-fm4 requires --fm4".into());
+    }
+    if workload.operator && workload.fm4 {
+        return Err("--operator cannot be combined with --fm4 or --four-stage-fm4".into());
     }
     let short_profile = arguments.iter().any(|argument| argument == "--short");
     let warmup_blocks = parse_profile_count(
@@ -266,7 +276,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("instrument position: {instrument_position}");
     println!(
         "instrument={} four_stage_fm4={} notes_per_track={} dense_sustain={} warmup_blocks={} measured_blocks={}",
-        if workload.fm4 { "fm4" } else { "sine" },
+        if workload.operator {
+            "operator"
+        } else if workload.fm4 {
+            "fm4"
+        } else {
+            "sine"
+        },
         workload.four_stage_fm4,
         if workload.one_note {
             1

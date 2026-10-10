@@ -71,5 +71,38 @@ impl PreparedOperatorConfiguration {
     }
 }
 
+impl PreparedOperatorNote {
+    /// Encode only the already prepared phase increments and velocity. The
+    /// shared-context host supplies the configuration separately.
+    pub(crate) fn into_shared_payload(
+        self,
+    ) -> [u64; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS] {
+        let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[..OPERATORS].copy_from_slice(&self.steps);
+        payload[OPERATORS] = self.velocity.to_bits();
+        payload
+    }
+
+    /// Decode the private, control-created payload without allocation. Reject
+    /// malformed values defensively; supported notes are emitted by
+    /// `PreparedOperatorConfiguration::prepare_note` above.
+    pub(crate) fn from_shared_payload(
+        payload: &[u64; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
+    ) -> Option<Self> {
+        if payload[OPERATORS + 1..].iter().any(|word| *word != 0) {
+            return None;
+        }
+        let steps = std::array::from_fn(|index| payload[index]);
+        if steps.contains(&0) {
+            return None;
+        }
+        let velocity = f64::from_bits(payload[OPERATORS]);
+        if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+            return None;
+        }
+        Some(Self { steps, velocity })
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -1,10 +1,11 @@
 # original Operator control state
 
-Pulse2170 adds control-side metadata and validated settings for the original
-four-envelope FM kernel. This is a preparation contract, not a selectable device
-or proof of Live numerical parity. Native admission depends on Pulse2169's
-shared-context playback and retirement contract. Feedback, filters, additional
-waveforms and the remaining Operator behavior remain separate work.
+Pulse2170 added control-side metadata and validated settings for the original
+four-envelope FM kernel. Pulse2172 registers that metadata as the distinct
+`hex.instrument.operator` builtin and prepares it through the shared analytic
+context contract. This is a bounded original acyclic sine-core device, not full
+Operator behavior or proof of Live numerical parity. Feedback, filters,
+additional waveforms and remaining Operator behavior remain separate work.
 
 `hex.instrument.operator`, state version1, owns exactly224 bytes: 56
 little-endian f32 fields. The first12 fields are ratio, level and phase in
@@ -29,10 +30,11 @@ operator. These bounds/defaults are Hex choices. The public Live manual supplies
 the control inventory, not measured transfer curves; see the
 [envelope law](operator-envelopes.md) and [FM composition](operator-fm.md).
 
-`OperatorSettings` decodes/prepares on control. `OperatorMetadata` implements
-the shared metadata contract without registering an instrument factory. Tests
-exercise every editable field, malformed data, atomic cycle refusal and exact
-round trips. Independent continuous-sine/power-curve PCM oracles check all four
-operator bindings with NoteOff during attack, decay and sustain. The complete
-54-test device suite passes, including independent forward/reverse routing and
-signed-carrier PCM checks; native integration and listening remain open.
+`OperatorSettings` decodes/prepares on control. The registered factory creates a
+bounded immutable context and compacts each prepared note to four phase steps
+plus velocity in the existing eight-word payload. Sampling borrows the shared
+context; inline analytic sampling explicitly refuses this processing class.
+Tests exercise every editable field, malformed data, atomic cycle refusal and
+exact round trips. Independent PCM coverage includes the device kernel and
+registered Arrangement, Session, seek, loop and old-context handoff paths.
+Native listening and full Live feature parity remain open.

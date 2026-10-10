@@ -1663,6 +1663,7 @@ impl EditorView {
             hex_engine::NativeDeviceClass::Effect => "effect",
         };
         let type_id = entry.type_id;
+        let debug_type = type_id.as_str().unwrap_or("invalid").to_owned();
         let name = entry.name.to_lowercase();
         let payload = self.state.as_ref().map(|state| drag::NativeDeviceDrag {
             project_generation: self.project_generation,
@@ -1672,7 +1673,7 @@ impl EditorView {
         });
         let row = div()
             .id(("browser-device", index))
-            .debug_selector(move || format!("browser-device-{class_label}-{index}"))
+            .debug_selector(move || format!("browser-device-{class_label}-{debug_type}"))
             .h(px(ROW_HEIGHT))
             .px_1()
             .flex()

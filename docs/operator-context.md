@@ -46,6 +46,8 @@ speed gain. They are not physical device deadlines or large-project acceptance.
 Reproduce with `cargo run --release -p hex-devices --example profile_fm4` and
 `cargo run --release -p hex-devices --example profile_operator_context`.
 
-Native registration/admission, shared releases across revision retirement,
-device UI and user listening remain open. Full local CI is recorded in the PR
-and Pulse ticket for this focused change.
+Pulse2172 adds the registered shared-context adapter and exercises it through
+Arrangement, Session, callback and export paths; the standalone kernel and its
+measurements above remain unchanged. Mutable feedback, the remaining Operator
+feature set and native listening remain open. Full local CI is recorded in the
+focused PR and Pulse ticket.
