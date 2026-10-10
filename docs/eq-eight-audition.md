@@ -34,5 +34,38 @@ other enabled bands are excluded, exercise neutral-enabled and disabled bands,
 and check reset, mode/enable handoff, partitioned crossfade and coefficient
 handoff. This validates the fixed standalone kernel. It does not add graph or
 project control plumbing, runtime callback allocation instrumentation, user
-access or UI, Live behavior claims, audible host acceptance or performance
-measurements; those remain separate integration and acceptance work.
+access or UI, Live behavior claims or audible host acceptance; those remain separate
+integration and acceptance work. Registered standalone allocation and release
+measurements are recorded below; they do not establish callback lease behavior.
+
+## local kernel evidence (11 october)
+
+The unchanged DSP implementation at commit
+`410e99069a5387cd76dc5c28d1c8aa7222b4f411` was compared with main
+`140ef2b6efc589c6024171507a9104121da781b5`. A local ignored Rust fixture uses
+`EQ8_DEFINITION` through `NativeDeviceDefinition::prepare_processor`, constructs
+and clones the registered concrete runtime outside measurement, then measures
+processing, checked selection changes, compatible history transfers and reset
+with pinned allocation-counter 0.8.1. Total and signed-net allocation counts and
+bytes were all zero. This is a standalone registered kernel probe, not a CPAL
+callback or the future host audition lease.
+
+On Apple M5 Pro, macOS 26.6.2, rustc 1.98.1, nine optimized runs interleaved three
+old-normal/new-normal/new-audition rounds at 48 khz/128 frames, eight enabled
+bands, 100 warm-up and 2000 measured blocks. Runtime size increased from 3632 to
+3792 bytes, retaining the 4096-byte per-twin limit. Old normal p50 ranged
+21.54–21.67 μs, new normal 21.63–21.67 μs, and audition 23.54 μs; normal-output
+checksums matched across versions and repeats. Raw p95/max timings are retained,
+including scheduling outliers; these figures do not establish physical device
+deadlines or Live parity. No Cargo or other profile ran during the timed window
+2026-10-10 22:05:16–22:05:17 UTC; OS scheduling was uncontrolled.
+
+Ignored evidence `artifacts/profiles/eq8-audition-2292/` retains the fixture,
+manifest/lock, both executables, per-run JSON, allocation probe and `summary.json`
+with source, hardware and binary hashes. Reproduce the standalone fixture with
+`cargo build --release --offline --features audition --manifest-path
+artifacts/profiles/eq8-audition-2292/fixture/Cargo.toml`, then run its executable
+with `probe`, `normal` or `solo`. The retained baseline executable was built
+without the audition feature before applying this change. Source unit tests cover
+all shapes/lanes, non-neutral output gain, whole-versus-partitioned release,
+latest-request supersession, reset and compatible/incompatible handoff.

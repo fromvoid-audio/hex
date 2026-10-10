@@ -1715,3 +1715,16 @@ native visual acceptance remain pending. See [Operator shell context contract]
   project timings overlap and remain over budget. See
   [performance evidence](docs/performance.md); Pulse2226 stays open.
 - Full exact-final-tree local CI and primary diff review are the merge gates.
+
+
+### 11 october 2026 — pulse2292: bounded eq8 audition dsp prerequisite
+
+- Added transient checked band/lane audition with 128-byte parallel history,
+  always-running normal EQ, bounded 256-frame fades and compatible handoff/reset.
+- Runtime remains bounded: measured 3632 → 3792 bytes; registered standalone
+  counter probes have zero total/net counts and bytes, release evidence is in
+  `docs/eq-eight-audition.md` and `docs/performance.md`.
+- Kernel tests cover shapes/lanes, output gain, exact normal history after release,
+  partition invariance, superseded switches and disable/mode/reset cancellation.
+- Parent Pulse2253 still owns the headphone UI, callback lease/cancellation and
+  user listening acceptance; this prerequisite does not expose a control.
