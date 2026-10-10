@@ -1756,3 +1756,24 @@ native visual acceptance remain pending. See [Operator shell context contract]
 - No storage/capacity widening:4032B/twin,8064B/pair,16voices/256events. Full final-tree
   local CI is the merge gate; native listening and quiet/physical deadline gates
   remain separate in Pulse2229/2226/2108.
+
+
+### 11 october 2026 — pulse2296: compatible eq8 parameter history
+
+- Added default-false Lattice retarget proof; registered EQ8 opts in only for
+  matching rate/mode/enabled-bank topology. Ordered identity, matrix/bypass and
+  both-twin history preflight remain checked; unchanged graphs skip the new check.
+- Arrangement and Return adopt compatible gain/Q/type history once rather than
+  accumulating old current-chain tails. Independently owned instrument-release
+  suffixes and older carried Return tails stay separate.
+- Independent Arrangement PCM and copied-history Return oracles, explicit
+  incompatibility/twin tests and real callback zero-total/net allocation probes
+  pass; original Utility Return coverage is preserved.
+- Original rapid-edit baseline hits ReleaseBankFull; repaired version completes
+  six2,000-block stress runs without changing capacity. Matched shorter release
+  comparison and environmental limits are in docs/performance.md.
+- Full exact final-tree local CI/review are the merge gates; audition lease/UI
+  wiring remains separate Pulse2253 and native acceptance remains open.
+- Pulse2297's proposed contributor signature is unnecessary: filter residual
+  history remains valid across input changes. Cancellation/correction is pending
+  live tracker recovery; do not implement that speculative subsystem.

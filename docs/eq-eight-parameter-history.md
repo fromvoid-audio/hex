@@ -33,6 +33,8 @@ PCM checksums. Preparation and retired-owner destruction are outside both timing
 intervals. Supported blocks are 128/256 frames; this headless fixture is neither
 native listening acceptance nor a physical callback deadline test.
 
-Validation and measured results are recorded with exact source/CI evidence in
-`docs/performance.md` after execution. Live reference response/tail parity remains
+Focused Arrangement/Return PCM and prepared callback allocation regressions pass.
+The repaired profiler completes six longer rapid-edit runs; the old baseline
+refuses with `ReleaseBankFull`, so matched shorter timings and explicit limits
+are recorded in `docs/performance.md`. Full final-tree local CI is the merge gate. Live reference response/tail parity remains
 unverified; the implementation is independent.
