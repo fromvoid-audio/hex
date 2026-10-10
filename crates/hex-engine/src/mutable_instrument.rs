@@ -17,8 +17,8 @@ pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 /// The MIDI compiler admits at most 64 overlapping source intervals per
 /// instrument, including the declared release tail. This fixed proof capacity
 /// therefore covers every dispatched occurrence whose old-law tail can still
-/// be audible, without tying proof storage to the runtime's gate-only voice
-/// declaration.
+/// be audible. The runtime's `max_active_occurrences` declaration is
+/// implementation-defined and does not specify how released voices count.
 pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
 const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
 
@@ -365,8 +365,9 @@ impl MutableInstrumentTrackRuntime {
         events.clear();
         onsets.sort_canonically();
 
-        self.scratch
-            .retain(|occurrence| occurrence.quiet_deadline_frame > performance_start);
+        self.scratch.retain(|occurrence| {
+            !occurrence.note_off_sent || occurrence.quiet_deadline_frame > performance_start
+        });
         for occurrence in &mut self.scratch {
             if !occurrence.note_off_sent && occurrence.gate_end_frame < performance_start {
                 return Err(MutableInstrumentRuntimeError::OrphanedGate);
@@ -403,7 +404,7 @@ impl MutableInstrumentTrackRuntime {
                 continue;
             }
             self.scratch
-                .retain(|proof| proof.quiet_deadline_frame > onset_frame);
+                .retain(|proof| !proof.note_off_sent || proof.quiet_deadline_frame > onset_frame);
             if self
                 .scratch
                 .iter()

@@ -440,10 +440,15 @@ source Arc or revision pointer survives in the proof.
 The proof ledger has 64 preallocated slots per runtime twin. That bound follows
 the compiler's maximum of 64 simultaneously intersecting `[start, end)` spans,
 including each declared release tail. It is independent of the runtime's
-`max_active_occurrences`, which describes gated voices and was not tightened.
-Proofs expire at `actual gate end + outgoing declared tail`, or at the cut plus
-that old tail when bypass/removal sends an early NoteOff. A whole-runtime quiet
-commit may clear proofs sooner. The unchanged host-storage accounting formula
+`max_active_occurrences`, whose counting semantics are runtime-defined and do
+not specify whether or how released voices count; that declaration was not
+tightened.
+After a gateoff is delivered, proofs expire at `actual gate end + outgoing
+declared tail`, or at the cut plus that old tail when bypass/removal sends an
+early NoteOff. A still-unsent NoteOff remains proven through its exact gate
+boundary even when the declared tail is zero; it is pruned only after the
+NoteOff is delivered and the deadline has passed. A whole-runtime quiet commit
+may clear proofs sooner. The unchanged host-storage accounting formula
 uses `size_of::<MutableOccurrence>()` for both twins on every active and retained
 owner; on this 64-bit arm64 build, that component is 6,910,544 bytes at 256
 tracks, up from 3,761,744 bytes (an increase of 3,148,800 bytes). Device-declared

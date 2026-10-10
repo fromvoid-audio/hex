@@ -348,6 +348,117 @@ struct MutableFeedbackRuntime {
     tail_left: u8,
 }
 
+/// Minimal mutable voice used to exercise an instrument with a real declared
+/// zero-frame release. Unlike `MutableFeedbackRuntime`, it has no feedback or
+/// post-gate tail, so the fixture's declared bound is truthful.
+#[derive(Clone, Copy, Default)]
+struct ZeroTailMutableRuntime {
+    active: bool,
+}
+
+struct ZeroTailMutableFactory;
+
+impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_twin_bytes(&self) -> usize {
+        std::mem::size_of::<ZeroTailMutableRuntime>()
+    }
+    fn max_events_per_block(&self) -> usize {
+        256
+    }
+    fn max_active_occurrences(&self) -> usize {
+        64
+    }
+    fn max_release_tail_frames(&self) -> u64 {
+        0
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        Box::new(ZeroTailMutableRuntime::default())
+    }
+}
+
+impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
+    fn preflight_events(
+        &self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        let mut active = self.active;
+        let mut previous_offset = 0;
+        for event in events.iter().copied() {
+            let (offset, is_on) = match event {
+                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
+                    (frame_offset, true)
+                }
+                hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                    (frame_offset, false)
+                }
+            };
+            if offset < previous_offset || offset >= frame_count {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            if is_on == active {
+                return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            active = is_on;
+            previous_offset = offset;
+        }
+        Ok(())
+    }
+
+    fn process_block(
+        &mut self,
+        events: &[hex_lattice::NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+    ) {
+        let mut event_index = 0;
+        for (frame_index, frame) in frames.iter_mut().enumerate() {
+            while let Some(event) = events.get(event_index).copied() {
+                let (offset, is_on) = match event {
+                    hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
+                        (frame_offset, true)
+                    }
+                    hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                        (frame_offset, false)
+                    }
+                };
+                if offset != frame_index {
+                    break;
+                }
+                self.active = is_on;
+                event_index += 1;
+            }
+            if self.active {
+                frame[0] += 0.25;
+                frame[1] += 0.25;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+    }
+    fn is_quiescent(&self) -> bool {
+        !self.active
+    }
+    fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
+        previous.as_any().is::<Self>()
+    }
+    fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            self.active = previous.active;
+        }
+    }
+    fn fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl MutableFeedbackRuntime {
     fn advance(voices: &mut [MutableFeedbackVoice; 64], frames: usize) {
         for _ in 0..frames {
@@ -3254,6 +3365,104 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         changed_events.first(),
         Some(hex_lattice::NativeInstrumentEvent::NoteOn { pitch: 61, .. })
     ));
+}
+
+#[test]
+fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = ZeroTailMutableFactory;
+    let mut runtime =
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    let onset = crate::mutable_instrument::MutableNoteOnset {
+        key: crate::mutable_instrument::MutableOccurrenceKey::new(
+            track.id(),
+            clip.id(),
+            note.id(),
+            0,
+            0,
+        ),
+        onset_beat: BeatTime::from_raw(0),
+        gate_end_beat: BeatTime::from_raw(1 << 32),
+        source_start: 0,
+        source_gate_end: 4,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    };
+    let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+    onsets.push(onset).unwrap();
+    let mut events = Vec::new();
+
+    runtime.begin_block();
+    let mut attack = [[0.0; 2]; 4];
+    runtime
+        .process_segment(track.id(), 0, 0, &mut attack, &mut onsets, &[], &mut events)
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [hex_lattice::NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            ..
+        }]
+    ));
+    assert_eq!(attack, [[0.25; 2]; 4]);
+    runtime.commit_block();
+    let proof = runtime
+        .proofs()
+        .next()
+        .expect("exclusive gate keeps its proof");
+    assert_eq!(proof.quiet_deadline_frame, 4);
+    assert!(!proof.note_off_sent);
+
+    // The next runtime block begins exactly at the exclusive gate boundary.
+    // Split it again to prove partition independence and one-shot delivery.
+    runtime.begin_block();
+    onsets.clear();
+    let mut release_boundary = [[0.0; 2]; 1];
+    runtime
+        .process_segment(
+            track.id(),
+            4,
+            4,
+            &mut release_boundary,
+            &mut onsets,
+            &[],
+            &mut events,
+        )
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [hex_lattice::NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            ..
+        }]
+    ));
+    assert_eq!(release_boundary, [[0.0; 2]; 1]);
+
+    let mut after_boundary = [[0.0; 2]; 3];
+    runtime
+        .process_segment(
+            track.id(),
+            5,
+            5,
+            &mut after_boundary,
+            &mut onsets,
+            &[],
+            &mut events,
+        )
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "the boundary NoteOff is sent exactly once"
+    );
+    assert_eq!(after_boundary, [[0.0; 2]; 3]);
+    assert!(runtime.speculative_is_quiescent());
+    runtime.commit_block();
+    assert!(runtime.committed_is_quiescent());
+    assert!(runtime.proofs().next().is_none());
 }
 
 #[test]

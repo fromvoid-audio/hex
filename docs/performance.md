@@ -88,9 +88,10 @@ tail bank. Candidate construction and previous-publication destruction stay
 outside the timed call. Apple M5 Pro arm64, macOS26.6.2, 48 kHz. One release
 sample produced p50 35.250 µs, p95 36.416 µs, p99 41.500 µs and max 47.625 µs.
 This measures the new admission path, which had no valid equivalent baseline:
-the prior implementation refused this historical mutable chase. It is a
-control-side handoff microbenchmark, not callback timing or a many-track
-deadline claim.
+the prior implementation refused this historical mutable chase. This is a
+headless measurement of the handoff operation used by the callback path, timed
+on the control thread; it is not callback timing or a many-track deadline
+claim.
 
 The unchanged 100-track canonical handoff profile remains comparable. One
 baseline run at base `6f46b5c7df6f790cf08080eb7e5b7d615bb87bd3` measured p50 /
