@@ -1516,6 +1516,174 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
 }
 
 #[test]
+fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        id: 6,
+        asset: 4,
+        start: 0,
+        duration: 32,
+        source_offset: 0,
+        source_length: 32,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(32).unwrap(),
+    }]);
+    snapshot.next_id = 7;
+    let source_project = legacy_project_from_snapshot(snapshot).unwrap();
+    let old_project = with_utility_filter_state(&source_project, true, false);
+    let mut bypassed_snapshot = old_project.snapshot();
+    bypassed_snapshot.tracks[0].devices[0].bypassed = true;
+    let bypassed_project = legacy_project_from_snapshot(bypassed_snapshot).unwrap();
+    let changed_configuration = with_utility_filter_state(&old_project, false, true);
+    let mut unchanged_snapshot = old_project.snapshot();
+    unchanged_snapshot.tracks[0].name = "renamed".into();
+    let unchanged_project = legacy_project_from_snapshot(unchanged_snapshot).unwrap();
+    let mut changed_mix_snapshot = old_project.snapshot();
+    changed_mix_snapshot.tracks[0].gain = 0.25;
+    let changed_mix_project = legacy_project_from_snapshot(changed_mix_snapshot).unwrap();
+
+    let media = audio_media(
+        &old_project,
+        &crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
+        &crate::Audio::new(48_000, vec![[0.0, 0.0]; 32]).unwrap(),
+    );
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let old_revision = prepare(&old_project);
+
+    let start_old = || {
+        let mut playback = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 32];
+        playback.render(&mut prefix).unwrap();
+        assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+        assert!(!playback.device_chains[0].committed_range_is_quiescent(0..1));
+        playback
+    };
+
+    let mut reference = start_old();
+    let mut expected = [[0.0; 2]; 256];
+    let mut offset = 0;
+    for size in [1, 7, 31, 64, 153] {
+        reference
+            .render(&mut expected[offset..offset + size])
+            .unwrap();
+        offset += size;
+    }
+    assert_eq!(offset, expected.len());
+
+    // A non-device edit preserves the same owner; history transfers once to
+    // the candidate and does not create a second retained old suffix.
+    let mut unchanged_previous = start_old();
+    let mut unchanged = SessionPlayback::new(prepare(&unchanged_project)).unwrap();
+    unchanged
+        .try_inherit_state_from(&mut unchanged_previous)
+        .unwrap();
+    assert_eq!(unchanged.tail_groups.iter().flatten().count(), 0);
+    let mut unchanged_output = [[0.0; 2]; 256];
+    unchanged.render(&mut unchanged_output).unwrap();
+    assert_eq!(unchanged_output, expected);
+
+    // A bypass/device-configuration edit detaches the old output settings.
+    let mut old_for_bypass = start_old();
+    let mut bypassed = SessionPlayback::new(prepare(&bypassed_project)).unwrap();
+    bypassed
+        .try_inherit_state_from(&mut old_for_bypass)
+        .unwrap();
+    assert_eq!(bypassed.tail_groups.iter().flatten().count(), 1);
+    assert!(bypassed.tail_output_active[0]);
+    let mut bypassed_output = [[0.0; 2]; 256];
+    bypassed.render(&mut bypassed_output).unwrap();
+    assert_eq!(bypassed_output, expected);
+
+    // A compatible runtime can inherit physical filter history across a
+    // parameter edit, but that history belongs to the old configuration for
+    // outgoing residual audio and must not also be copied into the candidate.
+    let mut old_for_configuration = start_old();
+    let mut changed = SessionPlayback::new(prepare(&changed_configuration)).unwrap();
+    changed
+        .try_inherit_state_from(&mut old_for_configuration)
+        .unwrap();
+    assert_eq!(changed.tail_groups.iter().flatten().count(), 1);
+    assert!(changed.tail_output_active[0]);
+    let mut changed_output = [[0.0; 2]; 256];
+    changed.render(&mut changed_output).unwrap();
+    assert_eq!(changed_output, expected);
+
+    let mut old_for_mix = start_old();
+    let mut changed_mix = SessionPlayback::new(prepare(&changed_mix_project)).unwrap();
+    changed_mix
+        .try_inherit_state_from(&mut old_for_mix)
+        .unwrap();
+    assert_eq!(changed_mix.tail_groups.iter().flatten().count(), 1);
+    let mut changed_mix_output = [[0.0; 2]; 256];
+    changed_mix.render(&mut changed_mix_output).unwrap();
+    assert_eq!(changed_mix_output, expected);
+}
+
+#[test]
+fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        id: 6,
+        asset: 4,
+        start: 0,
+        duration: 32,
+        source_offset: 0,
+        source_length: 32,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(32).unwrap(),
+    }]);
+    snapshot.next_id = 7;
+    let project = with_utility_filter_state(
+        &legacy_project_from_snapshot(snapshot).unwrap(),
+        true,
+        false,
+    );
+    let mut media = BTreeMap::new();
+    let asset_id = project.assets().next().unwrap().id();
+    media.insert(
+        asset_id,
+        crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
+    );
+    let table_for_revision = Arc::clone(&table);
+    let mut old = SessionPlayback::new(Arc::new(
+        PreparedRevision::prepare(&project, &media, table_for_revision, None).unwrap(),
+    ))
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 32];
+    old.render(&mut prefix).unwrap();
+    assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    let mut expected = [[0.0; 2]; 256];
+    old.render(&mut expected).unwrap();
+    assert!(expected.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    let mut previous = SessionPlayback::new(Arc::clone(&old.revision)).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut previous_prefix = [[0.0; 2]; 32];
+    previous.render(&mut previous_prefix).unwrap();
+
+    let mut editor = Editor::new(project, 8).unwrap();
+    let track_id = editor.project().tracks()[0].id();
+    editor.execute(Command::RemoveTrack(track_id)).unwrap();
+    let candidate_revision =
+        Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+    let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(candidate.tail_groups.iter().flatten().count(), 1);
+    let mut actual = [[0.0; 2]; 256];
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -1663,7 +1831,7 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
 }
 
 #[test]
-fn completed_tail_group_is_retained_on_old_owner_and_its_slot_is_reusable() {
+fn active_tail_group_moves_with_its_unquiescent_suffix_across_revision() {
     let table = Arc::new(hex_devices::SineTable::new());
     let base = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
     let base_revision = revision(&base, Arc::clone(&table));
@@ -1688,23 +1856,16 @@ fn completed_tail_group_is_retained_on_old_owner_and_its_slot_is_reusable() {
     first.try_inherit_state_from(&mut previous).unwrap();
     assert_eq!(first.tail_groups.iter().flatten().count(), 1);
 
-    // Model a completed release while retaining its owner until old-graph
-    // retirement. The next candidate may reuse its numeric slot, but must not
-    // take or drop the completed chain on the callback handoff path.
-    let mut next_release = *first.releases.first().unwrap();
-    first.releases.clear();
-    // Keep a distinct live release on the current track. The next handoff
-    // must allocate a tail group for it and can reuse slot zero only if the
-    // completed group remains on the retired graph.
-    next_release.tail_group = None;
-    next_release.track_index = 0;
-    first.releases.push(next_release);
+    // This suffix is still producing residual output, so the next candidate
+    // must inherit its group and continue advancing it. A quiescent group may
+    // remain on the old owner for control-side retirement instead.
     let changed_again = with_utility_filter_state(&base, true, false);
     let mut second = SessionPlayback::new(revision(&changed_again, table)).unwrap();
     second.try_inherit_state_from(&mut first).unwrap();
-    assert!(first.tail_groups[0].is_some());
+    assert!(first.tail_groups[0].is_none());
     assert_eq!(second.tail_groups[0].as_ref().unwrap().stateful_count(), 1);
     assert_eq!(second.tail_groups.iter().flatten().count(), 1);
+    assert!(second.tail_output_active[0]);
 }
 
 #[test]
