@@ -251,7 +251,17 @@ full disks with a useful error and a defined recovery path.
 5. **Test proportionally.** Musical scheduling, DSP, persistence, graph ownership,
    and recording need meaningful tests. Include malformed inputs and boundary
    cases. Do not add tests that merely mirror implementation or make cosmetic
-   edits require unrelated test suites.
+   edits require unrelated test suites. For every reported bug, add or strengthen a
+   focused regression test at the owning boundary: reproduce the failure before
+   the fix and pass after it. Test observable behavior, not the implementation's
+   shape. If reliable automation is currently unavailable, document the concrete
+   limitation and a follow-up in Pulse; retain the manual reproducer instead of
+   inventing a weak test.
+   Keep the suite clean and lean: reuse existing fixtures and coverage, prefer a
+   small deterministic reproducer, and consolidate redundant tests. Avoid broad
+   snapshot churn, duplicate assertions and slow exhaustive matrices without a
+   demonstrated risk. Preserve meaningful boundary, lifecycle and malformed-input
+   coverage; suite size alone is not a quality measure.
 6. **Keep GPUI thin and inspect it visually.** Separate UI display state from
    authoritative audio/project state. Draw cached waveform summaries and visible
    content; do not traverse/render a whole project every frame. Consolidate design
@@ -370,10 +380,22 @@ never bypass this workflow without an explicit user instruction.
   review. The PR description explains the resulting behavior, validation and
   remaining limitations. Record native UI/listening acceptance separately from
   automated checks.
-- Review the final PR diff and resolve meaningful findings before merging. Merge
-  only after required checks pass and the user authorizes the merge; a request to
-  implement, commit, push or open a PR is not by itself merge authorization.
-  Never force-push `main`, skip required checks or weaken branch protection.
+- Review the final PR diff and resolve meaningful findings before merging.
+  As requested on 10 October 2026, the user gives standing authorization to merge
+  focused, completed PRs immediately when full local CI passes on the exact final
+  commit and unchanged source digest. Do not wait for another approval or for
+  native UI/listening tests. A quick, stale, partial, failed or interrupted run
+  does not qualify. Merge dependencies first and revalidate after source changes
+  or conflict resolution; verify that integration preserves the tested behavior.
+  Known unresolved correctness bugs must be repaired before merging, even if an
+  incomplete test suite is green. Never force-push `main`, skip required checks
+  or weaken branch protection.
+- Native UI/listening acceptance remains separate evidence and may happen after
+  merge. Keep unverified behavior visible in Pulse; merging does not establish
+  feature parity, physical deadlines or manual acceptance. When later testing
+  finds a bug, open a focused fix PR with regression coverage as described above.
+  This is an agent-operated local CI/merge policy, not a claim that a background
+  merge service or GitHub enforcement is installed.
 - Attach every created PR to the current Codex task. Confirm the actual merge
   result before reporting completion, then update the local checkout without
   overwriting unrelated or unsaved work.
@@ -456,8 +478,9 @@ No hosted/release pipeline, generated scorecard or devlog is currently configure
 The local validation runner is not hosted CI. Use Pulse for planning rather than
 inventing a second authority.
 Do not commit, push, publish, choose a distribution license, or change permissions
-unless the user authorizes that action. Inspect checkout topology and status before editing. The workspace now uses Git
-on `main` with the private `PORTALSURFER/hex` remote, created at user request on
+unless the user authorizes that action; the standing PR merge authorization above
+applies. Inspect checkout topology and status before editing. The workspace now uses
+Git on `main` with the private `PORTALSURFER/hex` remote, created at user request on
 9 October 2026.
 
 ## 8. Keeping projects and compatibility complete
