@@ -41,6 +41,13 @@ processor definitions must keep their runtime byte declaration consistent with
 the fixed payload they construct. Callers must compare actual accounting with
 the preflight estimate and enforce their aggregate cap.
 
+The `configuration_profile` example measures the real
+`NativeRuntimeChain::configuration_matches_range` comparator over the maximum
+regular-track and return-chain inventory using explicitly synthetic opaque
+state. See [configuration comparison](../../docs/configuration-comparison.md)
+for fixture bounds, invocation, and interpretation. It does not construct
+deployable effects or measure an audio callback deadline.
+
 ## Does not own
 
 This crate does not own device algorithms, graph scheduling, project state,
