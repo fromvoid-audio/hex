@@ -33,6 +33,7 @@ fn valid_snapshot() -> Snapshot {
             balance: 0.0,
             muted: true,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
@@ -130,6 +131,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
             balance: 0.0,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Audio(Vec::new()),
         })
         .collect();

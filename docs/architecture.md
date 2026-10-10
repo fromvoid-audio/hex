@@ -4,7 +4,9 @@
 
 The native device DSP system is named **lattice**. Its staged implementation,
 canonical model boundary and mutable-state dependencies are specified in
-[lattice](lattice.md); desktop device chains are not yet implemented.
+[lattice](lattice.md). Canonical registered linear effect chains are implemented
+in the prepared engine; desktop device controls and mutable processors remain
+separate dependencies.
 
 `hex-engine` owns immutable compiled `Project -> Track -> Clip -> Audio` playback data.
 `hex-project` owns canonical editable Arrangement and Session metadata. Audio uses
@@ -85,14 +87,15 @@ of these substitutes for the others.
 
 | Crate | Owns | Depends on |
 | --- | --- | --- |
-| hex-lattice | Validated memoryless stereo matrix DSP and ordered composition | std |
-| hex-devices | Prepared original sine/envelope and linear Utility DSP | hex-lattice, std |
-| hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | std |
+| hex-lattice-contract | Neutral device identifiers, descriptors and versioned opaque state | std |
+| hex-lattice | Native processing registry and validated memoryless stereo matrix DSP | hex-lattice-contract, std |
+| hex-devices | Registered original sine/envelope and linear Utility DSP | hex-lattice, hex-lattice-contract, std |
+| hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | hex-lattice-contract, std |
 | hex-media | Bounded control-side WAV decode and cached waveform peaks | hex-engine, std |
 | hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, std |
 | hex-storage | Versioned project metadata and recoverable file creation | hex-project, serde, serde_json, std |
 | hex-export | Fixed-block linear PCM16 WAV rendering and create-new file publication | hex-engine, std |
-| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering | hex-project, hex-devices, std |
+| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering | hex-project, hex-devices, hex-lattice, std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
 | hex-library | Bounded nonrecursive folder/WAV/project listings with original paths | std |
 | hex-ui | GPUI views, interaction/display state, required typography and browser navigation | hex-engine, hex-audio, hex-session, hex-project, hex-library, GPUI |

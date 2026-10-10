@@ -1,5 +1,50 @@
 # Performance requirements and baseline — 8 October 2026
 
+## Lattice chain integration baseline — 9 October 2026
+
+The exact parent `0a2d70b` active Arrangement profile on Apple M5 Pro uses
+`cargo run --release -p hex-engine --example profile_arrangement -- --active`:
+100 tracks × 100 clips, 48 kHz, 128-frame blocks, 100 sustained active loops
+plus sparse clips. Five positions establish scalar/optimized equality before
+40 timed advancing positions; scalar and optimized timings alternate. There is
+no separate warm-up phase or output device. Background load is uncontrolled.
+
+The parent block-span renderer measured median 31.46 µs, p95 45.04 µs,
+maximum 98.12 µs; scalar median 760.50 µs, p95 944.04 µs, maximum 1012.12 µs.
+Both produced digest `a7db7404bf70aac8`. Evidence is retained locally in
+`artifacts/lattice-arrangement-before-profile.log`. The fixed demo's `profile`
+example does not exercise canonical prepared track mixes and is not a substitute
+for this comparison.
+
+Three source-frozen after runs retain the same output digest. Block-span
+medians were 41.04 / 32.46 / 28.67 µs, p95 60.71 / 46.46 / 39.46 µs and
+maxima 89.96 / 47.46 / 45.75 µs. Scalar medians varied from 608.46 to
+866.25 µs in the same runs. Retain all runs in
+`artifacts/lattice-arrangement-after-profile.log`; do not select only the
+fastest run or claim a statistically established no-regression result. These
+timings alone establish neither device deadlines nor a regression budget.
+
+`cargo run --release -p hex-engine --example profile_utility` separately
+measures canonical preparation and rendering of 100 tracks, each with one
+resident looping clip and 0/1/16/64 active Utility instances. Each instance
+uses linear gain 1.001; an independent sequential-gain oracle validates output
+within absolute 0.0001 before timing. Fixture construction, prepared destruction,
+media decode and device I/O are outside timed regions. Preparation uses 5
+warm-up/20 measured iterations; rendering uses 40 warm-up/1,000 measured
+advancing 128-frame blocks at 48 kHz on the same machine.
+
+| Instances per track | Preparation median / p95 µs | Render median / p95 µs | Render max µs |
+| --- | --- | --- | --- |
+| 0 | 9.29 / 9.42 | 24.92 / 36.08 | 149.00 |
+| 1 | 25.00 / 29.54 | 29.38 / 39.12 | 113.79 |
+| 16 | 225.62 / 240.88 | 24.54 / 29.67 | 82.50 |
+| 64 | 778.00 / 818.83 | 23.25 / 26.96 | 87.75 |
+
+Evidence: `artifacts/lattice-utility-profile.log`. Fusion keeps linear-chain
+render work independent of instance count after preparation. These short runs
+do not establish performance of filters, instruments, plugins, native UI edits
+or sustained physical callback deadlines; background load remains uncontrolled.
+
 ## Clip fade integration profile
 
 The before/after run uses `cargo run --release -p hex-engine --example profile_loop`

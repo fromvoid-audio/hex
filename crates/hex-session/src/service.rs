@@ -107,6 +107,16 @@ pub fn prepare_audio_preview(
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    AddNativeDevice {
+        track: hex_project::TrackId,
+        type_id: Box<hex_lattice_contract::DeviceTypeId>,
+        before: Option<hex_project::DeviceId>,
+    },
+    SetDeviceParameter {
+        device: hex_project::DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        value: hex_lattice_contract::ParameterValue,
+    },
     Import(PathBuf),
     ImportToTrack {
         path: PathBuf,
@@ -265,6 +275,7 @@ impl Service {
     }
 
     /// Submit without waiting for worker capacity.
+    #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
         if matches!(&request, Request::Export(_)) {
             if self
@@ -307,6 +318,7 @@ impl Service {
     }
 }
 
+#[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
 fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), SubmitError> {
     match sender.try_send(request) {
         Ok(()) => Ok(()),
@@ -642,6 +654,65 @@ fn run_worker(
                     }
                 } else {
                     error = Some("time clipboard is empty · copy a selection first".into());
+                }
+            }
+            Request::AddNativeDevice {
+                track,
+                type_id,
+                before,
+            } => match hex_engine::default_native_device_state(*type_id) {
+                Ok(state) => {
+                    let before_project = session.project().clone();
+                    match session.command_prepared_revision(
+                        Command::InsertDevice {
+                            track,
+                            before,
+                            state,
+                        },
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    ) {
+                        Ok((result, prepared)) if session.project() != &before_project => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some("device added".into());
+                        }
+                        Ok(_) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+            },
+            Request::SetDeviceParameter {
+                device,
+                parameter,
+                value,
+            } => {
+                let patched = session
+                    .project()
+                    .device(device)
+                    .ok_or_else(|| "device is missing".to_owned())
+                    .and_then(|entry| {
+                        hex_engine::patch_native_device_parameter(entry.state(), parameter, value)
+                            .map_err(|reason| reason.to_string().to_lowercase())
+                    });
+                match patched {
+                    Ok(state) => {
+                        let before_project = session.project().clone();
+                        match session.command_prepared_revision(
+                            Command::ReplaceDeviceState { device, state },
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((_, prepared)) if session.project() != &before_project => {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                                status = Some("device parameter changed".into());
+                            }
+                            Ok(_) => status = Some("no change".into()),
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                    Err(reason) => error = Some(reason),
                 }
             }
             Request::Edit(command) => {
@@ -1687,6 +1758,185 @@ mod service_tests {
         assert_eq!(preview.waveform.source_frames, 48);
         assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
         assert!(!preview.waveform.bins.is_empty());
+    }
+
+    #[test]
+    fn native_device_parameter_requests_patch_latest_actor_state() {
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "devices".into(),
+            }))
+            .expect("track request");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("device request");
+        let added = next_event(&service);
+        assert!(added.error.is_none());
+        let device = added.state.project.tracks()[0].devices()[0].id();
+        let gain = hex_lattice_contract::ParameterId::new(1).unwrap();
+        let width = hex_lattice_contract::ParameterId::new(3).unwrap();
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: gain,
+                value: hex_lattice_contract::ParameterValue::Float(2.0),
+            })
+            .expect("gain request");
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: width,
+                value: hex_lattice_contract::ParameterValue::Float(2.5),
+            })
+            .expect("width request");
+        let gain_changed = next_event(&service);
+        let width_changed = next_event(&service);
+        assert!(gain_changed.error.is_none());
+        assert!(width_changed.error.is_none());
+        let state = width_changed
+            .state
+            .project
+            .device(device)
+            .expect("device remains")
+            .state();
+        assert_eq!(
+            hex_engine::native_device_parameter(state, gain).unwrap(),
+            hex_lattice_contract::ParameterValue::Float(2.0)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(state, width).unwrap(),
+            hex_lattice_contract::ParameterValue::Float(2.5)
+        );
+        service
+            .submit(Request::Undo)
+            .expect("undo latest parameter");
+        let undone = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                gain
+            )
+            .unwrap(),
+            hex_lattice_contract::ParameterValue::Float(2.0)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                width
+            )
+            .unwrap(),
+            hex_lattice_contract::ParameterValue::Float(1.0)
+        );
+
+        let revision = undone.state.revision;
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: hex_lattice_contract::ParameterId::new(999).unwrap(),
+                value: hex_lattice_contract::ParameterValue::Float(0.0),
+            })
+            .expect("invalid parameter request");
+        let rejected = next_event(&service);
+        assert_eq!(
+            rejected.error.as_deref(),
+            Some("device parameter is unknown")
+        );
+        assert_eq!(rejected.state.revision, revision);
+    }
+
+    #[test]
+    fn failed_device_chain_compile_preserves_candidate_revision_and_undo_state() {
+        let service = Service::new(48_000, 64, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "dense devices".into(),
+            }))
+            .expect("track request");
+        let mut state = next_event(&service).state;
+        let track = state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        let mut devices = Vec::new();
+        for _ in 0..24 {
+            service
+                .submit(Request::AddNativeDevice {
+                    track,
+                    type_id: Box::new(type_id),
+                    before: None,
+                })
+                .expect("device request");
+            let event = next_event(&service);
+            assert!(event.error.is_none());
+            devices.push(
+                event.state.project.tracks()[0]
+                    .devices()
+                    .last()
+                    .unwrap()
+                    .id(),
+            );
+            state = event.state;
+        }
+        let gain = hex_lattice_contract::ParameterId::new(1).unwrap();
+        let mut last_accepted = None;
+        let mut rejected_device = None;
+        for device in devices.iter().copied() {
+            let before_revision = state.revision;
+            service
+                .submit(Request::SetDeviceParameter {
+                    device,
+                    parameter: gain,
+                    value: hex_lattice_contract::ParameterValue::Float(56.234_13),
+                })
+                .expect("gain request");
+            let event = next_event(&service);
+            if event.error.is_some() {
+                assert_eq!(event.state.revision, before_revision);
+                assert_eq!(
+                    hex_engine::native_device_parameter(
+                        event.state.project.device(device).unwrap().state(),
+                        gain
+                    )
+                    .unwrap(),
+                    hex_lattice_contract::ParameterValue::Float(1.0)
+                );
+                rejected_device = Some(device);
+                break;
+            }
+            last_accepted = Some(device);
+            state = event.state;
+        }
+        let rejected = rejected_device.expect("serial gain chain should overflow");
+        let revision = state.revision;
+        service
+            .submit(Request::Undo)
+            .expect("undo last accepted parameter");
+        let undone = next_event(&service);
+        assert_eq!(undone.state.revision, revision + 1);
+        let accepted = last_accepted.expect("at least one parameter accepted");
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(accepted).unwrap().state(),
+                gain
+            )
+            .unwrap(),
+            hex_lattice_contract::ParameterValue::Float(1.0)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(rejected).unwrap().state(),
+                gain
+            )
+            .unwrap(),
+            hex_lattice_contract::ParameterValue::Float(1.0)
+        );
     }
 
     fn next_event(service: &Service) -> Event {

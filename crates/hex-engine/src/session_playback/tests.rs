@@ -44,6 +44,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             balance: 0.0,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Audio(Vec::new()),
         }],
         session: SessionSnapshot {
@@ -101,6 +102,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         balance: 0.0,
         muted: false,
         soloed: false,
+        devices: Vec::new(),
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
             id: 8,
             start_raw: 0,
@@ -176,6 +178,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         balance: 0.0,
         muted: false,
         soloed: false,
+        devices: Vec::new(),
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
             id: 13,
             asset: 4,
@@ -203,6 +206,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             balance: 0.0,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: 2,
                 start_raw: 0,
@@ -257,6 +261,107 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
     })
     .unwrap()
+}
+
+#[test]
+fn removed_track_release_retains_its_original_device_matrix() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, DeviceSnapshot, Editor};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = project(0.5, 0, 8 << 32);
+    let mut snapshot = base.snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            utility_parameter::INVERT_RIGHT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        id: 8,
+        bypassed: false,
+        state,
+    });
+    snapshot.next_id = 9;
+    let old_project = Project::from_snapshot(snapshot).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::LaunchClip {
+        clip,
+        quantization: LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    old.render(&mut before).unwrap();
+
+    let mut editor = Editor::new(old_project, 8).unwrap();
+    let track_id = editor.project().tracks()[0].id();
+    editor.execute(Command::RemoveTrack(track_id)).unwrap();
+    let mut next = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    next.try_inherit_state_from(&old).unwrap();
+    let mut tail = [[0.0; 2]; 64];
+    next.render(&mut tail).unwrap();
+    assert!(tail.iter().any(|frame| frame[0].abs() > 1.0e-5));
+    assert!(tail.iter().all(|frame| frame[1] == -frame[0]));
+}
+
+#[test]
+fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::DeviceSnapshot;
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = project(0.5, 0, 8 << 32);
+    let mut old_snapshot = base.snapshot();
+    old_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let state = UTILITY_DEFINITION.default_state().unwrap();
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            utility_parameter::INVERT_RIGHT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        id: 8,
+        bypassed: false,
+        state,
+    });
+    old_snapshot.next_id = 9;
+    let old_project = Project::from_snapshot(old_snapshot).unwrap();
+    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    let clip = old.revision.session().midi_clips()[0].id;
+    old.apply(SessionPlaybackCommand::LaunchClip {
+        clip,
+        quantization: LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = [[0.0; 2]; 64];
+    old.render(&mut before).unwrap();
+
+    let mut new_snapshot = old_project.snapshot();
+    let previous_state = &new_snapshot.tracks[0].devices[0].state;
+    new_snapshot.tracks[0].devices[0].state = UTILITY_DEFINITION
+        .patch_parameter(
+            previous_state,
+            utility_parameter::INVERT_RIGHT,
+            ParameterValue::Bool(false),
+        )
+        .unwrap();
+    let new_project = Project::from_snapshot(new_snapshot).unwrap();
+    let mut next = SessionPlayback::new(revision(&new_project, Arc::clone(&table))).unwrap();
+    next.try_inherit_state_from(&old).unwrap();
+    let mut tail = [[0.0; 2]; 64];
+    next.render(&mut tail).unwrap();
+    assert!(tail.iter().any(|frame| frame[0].abs() > 1.0e-5));
+    assert!(tail.iter().all(|frame| frame[1] == -frame[0]));
 }
 
 fn with_session_note_id(project: &Project, note_id: u64) -> Project {
@@ -1384,6 +1489,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             balance: 0.2,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
@@ -1569,6 +1675,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
         balance: 0.0,
         muted: false,
         soloed: false,
+        devices: Vec::new(),
         content: TrackContentSnapshot::Instrument(Vec::new()),
     });
     snapshot.session.cells[0].track = 7;

@@ -86,6 +86,70 @@ impl fmt::Display for Invalid {
 }
 impl std::error::Error for Invalid {}
 
+pub fn default_native_device_state(
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    registry
+        .default_state(type_id)
+        .map_err(|_| Invalid("native device default state is invalid"))
+}
+
+pub fn patch_native_device_parameter(
+    state: &hex_lattice_contract::NativeDeviceState,
+    parameter: hex_lattice_contract::ParameterId,
+    value: hex_lattice_contract::ParameterValue,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    registry
+        .patch_parameter(state, parameter, value)
+        .map_err(|error| {
+            use hex_lattice_contract::DeviceContractError as Error;
+            Invalid(match error {
+                Error::InvalidId => "device parameter id is invalid",
+                Error::InvalidStateVersion => "device state version is invalid",
+                Error::StateTooLarge => "native device state exceeds its size limit",
+                Error::WrongDeviceType => "device state has the wrong type",
+                Error::UnsupportedStateVersion => "device state version is unsupported",
+                Error::MalformedState => "native device state is malformed",
+                Error::UnknownParameter => "device parameter is unknown",
+                Error::InvalidParameterValue => "device parameter value is invalid",
+                Error::InvalidDescriptor => "native device parameter descriptor is invalid",
+                Error::DuplicateDeviceType => "native device registry contains a duplicate type",
+            })
+        })
+}
+
+pub fn native_device_parameter(
+    state: &hex_lattice_contract::NativeDeviceState,
+    parameter: hex_lattice_contract::ParameterId,
+) -> Result<hex_lattice_contract::ParameterValue, Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let definition = registry
+        .definition(state.type_id())
+        .ok_or(Invalid("native device type is unavailable"))?;
+    let migrated = registry
+        .migrate_state(state)
+        .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
+    definition
+        .read_parameter(&migrated, parameter)
+        .map_err(|_| Invalid("native device parameter is unavailable"))
+}
+
+pub fn native_device_descriptors(
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> Result<&'static [hex_lattice_contract::ParameterDescriptor], Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    registry
+        .definition(type_id)
+        .map(|definition| definition.descriptors())
+        .ok_or(Invalid("native device type is unavailable"))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tempo(f64);
 impl Tempo {
@@ -367,10 +431,20 @@ pub struct Track {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedTrackMix {
     channel_gain: Frame,
+    effects: Option<hex_lattice::StereoMatrix>,
     muted: bool,
 }
 impl PreparedTrackMix {
     pub fn new(gain: f32, balance: f32, muted: bool) -> Result<Self, Invalid> {
+        Self::with_effects(gain, balance, muted, None)
+    }
+
+    pub(crate) fn with_effects(
+        gain: f32,
+        balance: f32,
+        muted: bool,
+        effects: Option<hex_lattice::StereoMatrix>,
+    ) -> Result<Self, Invalid> {
         if !gain.is_finite() || gain < 0.0 {
             return Err(Invalid("gain must be finite and nonnegative"));
         }
@@ -382,6 +456,7 @@ impl PreparedTrackMix {
                 gain * (1.0 - balance.max(0.0)),
                 gain * (1.0 + balance.min(0.0)),
             ],
+            effects: effects.filter(|matrix| matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]),
             muted,
         })
     }
@@ -402,6 +477,7 @@ impl PreparedTrackMix {
     }
 
     fn add_unmuted(self, destination: &mut Frame, source: Frame) {
+        let source = self.effects.map_or(source, |matrix| matrix.apply(source));
         destination[0] += source[0] * self.channel_gain[0];
         destination[1] += source[1] * self.channel_gain[1];
     }
@@ -427,17 +503,18 @@ impl Track {
         })
     }
 
-    pub(crate) fn with_audio_and_instrument(
+    pub(crate) fn with_audio_instrument_and_effects(
         clips: Vec<Clip>,
         gain: f32,
         muted: bool,
         balance: f32,
         instrument: Option<InstrumentTrack>,
+        effects: Option<hex_lattice::StereoMatrix>,
     ) -> Result<Self, Invalid> {
         Ok(Self {
             track_id: None,
             clips,
-            mix: PreparedTrackMix::new(gain, balance, muted)?,
+            mix: PreparedTrackMix::with_effects(gain, balance, muted, effects)?,
             instrument,
         })
     }

@@ -187,6 +187,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             balance: 0.0,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Audio(clips),
         }],
         session: Default::default(),

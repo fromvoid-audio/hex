@@ -76,6 +76,7 @@ Cargo.toml                   workspace configuration and safety/style lints
 Cargo.lock                   pinned resolved dependencies
 crates/
   hex-lattice/               validated memoryless stereo DSP primitives
+  hex-lattice-contract/      neutral native device metadata and versioned state
   hex-devices/               independently testable original instrument DSP
   hex-project/               canonical control-side IDs, edits, history and snapshots
   hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
@@ -118,9 +119,13 @@ models, codecs, DSP, device I/O, UI, and startup in one giant crate. Conversely,
 do not create a crate for every helper or empty speculative subsystem: split when
 there is a real responsibility or independently testable boundary.
 
-Current direction: `hex-project` and `hex-lattice` have no workspace dependency;
-`hex-devices` owns original device algorithms and depends on `hex-lattice` for
-stereo processing primitives. The native DSP system is named **lattice**; read
+Current direction: `hex-lattice-contract` has no workspace dependency;
+`hex-project` depends only on its neutral device metadata/state contract, never
+DSP implementations. This deliberate shared-contract edge supports modular
+devices without per-device storage branches. `hex-lattice` depends on the contract
+and owns native processing/registration and stereo primitives; `hex-devices`
+owns registered algorithms and depends on lattice and its contract.
+The native DSP system is named **lattice**; read
 `docs/lattice.md` for staged device integration and stateful lifecycle gates.
 `hex-engine` depends
 on hex-project/hex-devices and has no UI/device-I/O dependency;
@@ -156,8 +161,9 @@ in the same change. Keep APIs narrow, module sizes readable, errors explicit,
 public responsibilities documented, and dependencies acyclic. Put related behavior
 and tests with their owning crate; don't duplicate state across boundaries.
 
-One explicit test-only edge is allowed: `hex-audio` may use `hex-project` as a
-dev-dependency for canonical prepared-publication fixtures. Production audio
+Two explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
+`hex-lattice-contract` as dev-dependencies for canonical prepared-publication and
+active-device allocation fixtures. Production audio
 must continue to depend only on engine and its device/queue libraries. The
 architecture guard distinguishes this narrow dev edge from runtime dependencies.
 

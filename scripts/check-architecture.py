@@ -7,13 +7,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
-    'hex-project': set(),
-    'hex-lattice': set(),
-    'hex-devices': {'hex-lattice'},
+    'hex-lattice-contract': set(),
+    'hex-project': {'hex-lattice-contract'},
+    'hex-lattice': {'hex-lattice-contract'},
+    'hex-devices': {'hex-lattice', 'hex-lattice-contract'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project'},
-    'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export'},
-    'hex-engine': {'hex-project', 'hex-devices'},
+    'hex-storage': {'hex-project', 'hex-lattice-contract'},
+    'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
+    'hex-engine': {'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
@@ -25,7 +26,7 @@ ALLOWED = {
 }
 # Canonical publication fixtures need the authored model only in audio tests.
 # This does not grant the production device/callback crate ownership of editing.
-DEV_ALLOWED = {'hex-audio': {'hex-project'}}
+DEV_ALLOWED = {'hex-audio': {'hex-project', 'hex-lattice-contract'}}
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop'},
               'gpui_platform': {'hex-ui', 'hex-desktop'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},

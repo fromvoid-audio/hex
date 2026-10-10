@@ -1,7 +1,7 @@
 use crate::StorageError;
 use hex_project::{
-    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, IDENTITY_CONVERSION, Meter, MeterPoint,
-    MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
+    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
+    MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
     SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
@@ -118,6 +118,47 @@ pub(crate) struct DocumentV13 {
     tempo_points: Vec<TempoPointDto>,
     meter_points: Vec<MeterPointDto>,
     session: SessionDtoV12,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentV14 {
+    format: String,
+    version: u32,
+    sample_rate: u32,
+    next_id: u64,
+    assets: Vec<AssetV2>,
+    tracks: Vec<TrackV14>,
+    #[serde(deserialize_with = "deserialize_required_loop_region")]
+    loop_region: Option<LoopRegionDto>,
+    master_gain: f32,
+    tempo_points: Vec<TempoPointDto>,
+    meter_points: Vec<MeterPointDto>,
+    session: SessionDtoV12,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackV14 {
+    id: u64,
+    name: String,
+    gain: f32,
+    balance: f32,
+    muted: bool,
+    soloed: bool,
+    audio_clips: Vec<ClipV7>,
+    midi_clips: Vec<MidiClipDtoV10>,
+    devices: Vec<DeviceDtoV14>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceDtoV14 {
+    id: u64,
+    bypassed: bool,
+    type_id: String,
+    state_version: u32,
+    payload: Vec<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -465,6 +506,129 @@ where
     D: serde::Deserializer<'de>,
 {
     Option::<LoopRegionDto>::deserialize(deserializer)
+}
+
+impl DocumentV14 {
+    pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
+        let base = DocumentV13::from_project(project)?;
+        let tracks = base
+            .tracks
+            .into_iter()
+            .zip(project.tracks())
+            .map(|(track, authored)| -> Result<TrackV14, StorageError> {
+                let devices = authored
+                    .devices()
+                    .iter()
+                    .map(|device| {
+                        let state = device.state();
+                        Ok(DeviceDtoV14 {
+                            id: device.id().value(),
+                            bypassed: device.bypassed(),
+                            type_id: state
+                                .type_id()
+                                .as_str()
+                                .map_err(|_| {
+                                    StorageError::Invalid("invalid native device type id")
+                                })?
+                                .to_owned(),
+                            state_version: state.state_version(),
+                            payload: state.payload().to_vec(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, StorageError>>()?;
+                Ok(TrackV14 {
+                    id: track.id,
+                    name: track.name,
+                    gain: track.gain,
+                    balance: track.balance,
+                    muted: track.muted,
+                    soloed: track.soloed,
+                    audio_clips: track.audio_clips,
+                    midi_clips: track.midi_clips,
+                    devices,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(Self {
+            format: base.format,
+            version: 14,
+            sample_rate: base.sample_rate,
+            next_id: base.next_id,
+            assets: base.assets,
+            tracks,
+            loop_region: base.loop_region,
+            master_gain: base.master_gain,
+            tempo_points: base.tempo_points,
+            meter_points: base.meter_points,
+            session: base.session,
+        })
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+        let doc: Self = serde_json::from_slice(bytes)?;
+        if doc.format != "hex-project" || doc.version != 14 {
+            return Err(StorageError::Invalid(
+                "unsupported project format or version",
+            ));
+        }
+        let mut device_rows = Vec::with_capacity(doc.tracks.len());
+        let tracks = doc
+            .tracks
+            .into_iter()
+            .map(|track| {
+                let devices = track
+                    .devices
+                    .into_iter()
+                    .map(device_dto_into_snapshot)
+                    .collect::<Result<Vec<_>, _>>()?;
+                device_rows.push((track.id, devices));
+                Ok(TrackV13 {
+                    id: track.id,
+                    name: track.name,
+                    gain: track.gain,
+                    balance: track.balance,
+                    muted: track.muted,
+                    soloed: track.soloed,
+                    audio_clips: track.audio_clips,
+                    midi_clips: track.midi_clips,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let legacy = DocumentV13 {
+            format: doc.format,
+            version: 13,
+            sample_rate: doc.sample_rate,
+            next_id: doc.next_id,
+            assets: doc.assets,
+            tracks,
+            loop_region: doc.loop_region,
+            master_gain: doc.master_gain,
+            tempo_points: doc.tempo_points,
+            meter_points: doc.meter_points,
+            session: doc.session,
+        };
+        let bytes = serde_json::to_vec(&legacy)?;
+        let mut snapshot = DocumentV13::decode(&bytes)?.snapshot();
+        for track in &mut snapshot.tracks {
+            if let Some((_, devices)) = device_rows.iter().find(|(id, _)| *id == track.id) {
+                track.devices = devices.clone();
+            }
+        }
+        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+    }
+}
+
+fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, StorageError> {
+    let type_id = hex_lattice_contract::DeviceTypeId::new(&device.type_id)
+        .map_err(|_| StorageError::Invalid("invalid native device type id"))?;
+    let state =
+        hex_lattice_contract::NativeDeviceState::new(type_id, device.state_version, device.payload)
+            .map_err(|_| StorageError::Invalid("invalid native device state envelope"))?;
+    Ok(DeviceSnapshot {
+        id: device.id,
+        bypassed: device.bypassed,
+        state,
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1200,6 +1364,7 @@ impl DocumentV13 {
                     balance: track.balance,
                     muted: track.muted,
                     soloed: track.soloed,
+                    devices: Vec::new(),
                     content: TrackContentSnapshot::Hybrid {
                         audio_clips: clips_v7_into_snapshot(track.audio_clips)?,
                         midi_clips: track
@@ -1244,6 +1409,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 14 {
+            return DocumentV14::decode(bytes);
         }
         if header.version == 13 {
             return DocumentV13::decode(bytes);
@@ -1415,6 +1583,7 @@ impl DocumentV10 {
                             balance: t.balance,
                             muted: t.muted,
                             soloed: t.soloed,
+                            devices: Vec::new(),
                             content,
                         })
                     })
@@ -1536,6 +1705,7 @@ impl DocumentV9 {
                     balance: t.balance,
                     muted: t.muted,
                     soloed: t.soloed,
+                    devices: Vec::new(),
                     content,
                 })
             })
@@ -1805,6 +1975,7 @@ fn tracks_legacy_into_snapshot(
                 muted: track.muted,
                 soloed: false,
                 balance: 0.0,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -1822,6 +1993,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
                 muted: track.muted,
                 soloed: track.soloed,
                 balance: 0.0,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -1839,6 +2011,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
                 balance: track.balance,
                 muted: track.muted,
                 soloed: track.soloed,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(clips_into_snapshot(track.clips)?),
             })
         })
@@ -1880,6 +2053,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 balance: track.balance,
                 muted: track.muted,
                 soloed: track.soloed,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(clips),
             })
         })
@@ -1921,6 +2095,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 balance: track.balance,
                 muted: track.muted,
                 soloed: track.soloed,
+                devices: Vec::new(),
                 content: TrackContentSnapshot::Audio(clips),
             })
         })

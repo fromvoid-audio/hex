@@ -1,5 +1,21 @@
 # GPUI and audio runtime
 
+## Native device integration
+
+The first lattice chain admits memoryless linear stereo effects. Canonical
+device state is an opaque versioned envelope; registered definitions parse it
+and prepare a fused ordered matrix on the session worker. `PreparedTrackMix`
+applies that transform before track gain/balance and master summation across
+Arrangement and Session sources. Captured outgoing Session voices keep their
+source revision's mix. Payloads and device codecs never enter the callback.
+
+Native parameter requests carry device/parameter IDs and typed values. The
+worker patches the latest canonical state and compiles the candidate before
+committing history. These are discrete edits; continuous gesture coalescing and
+grouped undo are separate Pulse ticket 65. Stateful devices, an instrument slot
+and full latency compensation remain separate dependencies. See
+[lattice](lattice.md) for the contract and acceptance limits.
+
 ## Default canonical editor
 
 Desktop composes PreparedOutput and the hex-session worker; GPUI owns only

@@ -6,13 +6,24 @@ Own musical state, typed playback commands, timing, and deterministic rendering.
 
 ## Dependencies
 
-hex-project, hex-devices, and the Rust standard library; no UI/device-stream dependencies.
+hex-project, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
+library; no UI/device-stream dependencies.
 
 ## Does not own
 
 GPUI, device streams, file dialogs, packaging, UI state, or control networking.
 
 Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
+
+Canonical native effect chains resolve through a borrowed validated registry.
+Device implementations own codecs and preparation; the engine composes admitted
+memoryless matrices in chain order on control. `PreparedTrackMix` shares the
+result across audio/MIDI Arrangement and Session paths, before track and master
+mixing. Unknown types, future state versions and invalid payloads refuse
+preparation even when bypassed. The default registry admits linear Utility;
+`compile::project_with_registry` also supports independently registered test
+definitions. Stateful devices and instrument replacement remain separate work.
+See [lattice](../../docs/lattice.md).
 
 The control-side compiler resolves canonical metadata through a prepared media
 bank and creates immutable playback snapshots. The explicit

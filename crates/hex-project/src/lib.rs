@@ -3,6 +3,8 @@
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
+mod device;
+pub use device::{Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK};
 mod edit;
 pub use clip_fragment::preview_clip_fragment;
 pub use conversion::{
@@ -27,9 +29,10 @@ pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
 pub use snapshot::{
-    AssetSnapshot, ClipSnapshot, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot,
-    SceneSnapshot, SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
-    SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
+    AssetSnapshot, ClipSnapshot, DeviceSnapshot, MidiClipSnapshot, MidiNoteSnapshot,
+    MidiSourceSnapshot, SceneSnapshot, SessionAudioClipSnapshot, SessionCellContentSnapshot,
+    SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot,
+    TrackSnapshot,
 };
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 pub use timebase::{
@@ -61,6 +64,7 @@ identifier!(AssetId);
 identifier!(ClipId);
 identifier!(NoteId);
 identifier!(SceneId);
+identifier!(DeviceId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +309,7 @@ pub struct Track {
     pub(crate) balance: f32,
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
+    pub(crate) devices: Vec<Device>,
     pub(crate) content: TrackContent,
 }
 impl Track {
@@ -326,6 +331,9 @@ impl Track {
     }
     pub fn soloed(&self) -> bool {
         self.soloed
+    }
+    pub fn devices(&self) -> &[Device] {
+        &self.devices
     }
     /// Beat-anchored audio clips on this hybrid track.
     pub fn clips(&self) -> &[Clip] {
@@ -493,6 +501,19 @@ impl Project {
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(Invalid("track no longer exists"))
+    }
+    pub fn device(&self, id: DeviceId) -> Option<&Device> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.devices())
+            .find(|device| device.id() == id)
+    }
+    pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
+        self.tracks
+            .iter_mut()
+            .flat_map(|track| track.devices.iter_mut())
+            .find(|device| device.id == id)
+            .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {
         self.tracks

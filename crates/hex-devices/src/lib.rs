@@ -1,6 +1,15 @@
 //! Prepared stateless tone generation for the original Hex sine instrument.
 pub mod utility;
 
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 1] =
+    [&utility::UTILITY_DEFINITION];
+
+/// The immutable catalog of original built-in linear effects.
+pub fn native_registry()
+-> Result<hex_lattice::NativeDeviceRegistry<'static>, hex_lattice_contract::DeviceContractError> {
+    hex_lattice::NativeDeviceRegistry::new(&BUILTIN_NATIVE_DEVICES)
+}
+
 use std::fmt;
 
 const TABLE_BITS: u32 = 11;

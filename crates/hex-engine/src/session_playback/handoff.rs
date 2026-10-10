@@ -247,13 +247,6 @@ impl SessionPlayback {
                 .filter(|index| *index != usize::MAX);
             if let Some(index) = new_index {
                 copied.track_index = index;
-                copied.mix = self
-                    .revision
-                    .arrangement()
-                    .tracks()
-                    .get(index)
-                    .ok_or(SessionPlaybackError::UnknownTrack)?
-                    .mix();
             } else {
                 copied.track_index = usize::MAX;
             }
@@ -354,27 +347,14 @@ impl SessionPlayback {
                         .get(old_index)
                         .copied()
                         .filter(|index| *index != usize::MAX);
-                    let (track_index, mix) = if let Some(index) = new_index {
-                        let mix = self
-                            .revision
-                            .arrangement()
-                            .tracks()
-                            .get(index)
-                            .ok_or(SessionPlaybackError::UnknownTrack)?
-                            .mix();
-                        (index, mix)
-                    } else {
-                        (
-                            usize::MAX,
-                            previous
-                                .revision
-                                .arrangement()
-                                .tracks()
-                                .get(old_index)
-                                .ok_or(SessionPlaybackError::UnknownTrack)?
-                                .mix(),
-                        )
-                    };
+                    let track_index = new_index.unwrap_or(usize::MAX);
+                    let mix = previous
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(old_index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?
+                        .mix();
                     let continuation = matches.then_some(SessionContinuation {
                         key,
                         onset_beat: span.onset_beat,

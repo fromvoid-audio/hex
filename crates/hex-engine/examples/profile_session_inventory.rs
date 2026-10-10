@@ -31,6 +31,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             balance: (index % 5) as f32 * 0.2 - 0.4,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContentSnapshot::Instrument(Vec::new()),
         });
         for scene in 1..=2 {

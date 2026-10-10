@@ -18,6 +18,11 @@ paste compiles before history commit. Successful project opening clears it.
 files into validated audio, converts source rates and supplies cached peak summaries. `hex-engine`
 compiles the canonical snapshot into offline playback. The crate uses the
 standard library for its bounded resident media map and dedicated worker.
+`hex-lattice-contract` supplies typed native device and parameter identifiers,
+values and opaque state. Add-device and parameter requests resolve definitions
+through the engine; the worker patches its latest canonical state and compiles
+before history commits. Discrete requests each create a history step; continuous
+gesture grouping/coalescing remains a separate dependency.
 `hex-storage` owns schema serialization and durable file operations; the session
 worker coordinates open, create-new Save As, and token-checked rolling-recovery
 Save Current with media validation. Opened/saved document paths and exact file

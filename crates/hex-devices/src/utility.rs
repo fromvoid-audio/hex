@@ -1,9 +1,29 @@
 //! Original, immutable, zero-latency stereo Utility processing.
+use hex_lattice::NativeDeviceDefinition;
 use hex_lattice::{InvalidMatrix, StereoFrame, StereoMatrix};
+use hex_lattice_contract::{
+    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
+};
 use std::fmt;
 
 /// Maximum admitted linear Utility gain, equivalent to +35 dB.
 pub const MAX_UTILITY_GAIN: f32 = 56.234_13;
+pub const UTILITY_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.utility");
+
+pub mod parameter {
+    use hex_lattice_contract::ParameterId;
+    pub const GAIN: ParameterId = ParameterId::from_static(1);
+    pub const BALANCE: ParameterId = ParameterId::from_static(2);
+    pub const WIDTH: ParameterId = ParameterId::from_static(3);
+    pub const CHANNEL: ParameterId = ParameterId::from_static(4);
+    pub const INVERT_LEFT: ParameterId = ParameterId::from_static(5);
+    pub const INVERT_RIGHT: ParameterId = ParameterId::from_static(6);
+    pub const MONO: ParameterId = ParameterId::from_static(7);
+    pub const MUTE: ParameterId = ParameterId::from_static(8);
+    pub const MID_SIDE_ENABLED: ParameterId = ParameterId::from_static(9);
+    pub const MID_SIDE_BALANCE: ParameterId = ParameterId::from_static(10);
+}
 
 /// Channel selection applied after input polarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +166,299 @@ impl Default for UtilitySettings {
         }
     }
 }
+
+const CHANNEL_LABELS: &[&str] = &["stereo", "left", "right", "swap"];
+const DESCRIPTORS: &[ParameterDescriptor] = &[
+    ParameterDescriptor {
+        id: parameter::GAIN,
+        label: "gain",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: MAX_UTILITY_GAIN,
+            unit: Some("linear"),
+        },
+        default: ParameterValue::Float(1.0),
+    },
+    ParameterDescriptor {
+        id: parameter::BALANCE,
+        label: "balance",
+        kind: ParameterKind::Float {
+            min: -1.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+    },
+    ParameterDescriptor {
+        id: parameter::WIDTH,
+        label: "width",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 4.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+    },
+    ParameterDescriptor {
+        id: parameter::CHANNEL,
+        label: "channel",
+        kind: ParameterKind::Choice {
+            labels: CHANNEL_LABELS,
+        },
+        default: ParameterValue::Choice(0),
+    },
+    ParameterDescriptor {
+        id: parameter::INVERT_LEFT,
+        label: "invert left",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::INVERT_RIGHT,
+        label: "invert right",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::MONO,
+        label: "mono",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::MUTE,
+        label: "mute",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::MID_SIDE_ENABLED,
+        label: "mid-side",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::MID_SIDE_BALANCE,
+        label: "mid-side balance",
+        kind: ParameterKind::Float {
+            min: -1.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+    },
+];
+
+/// Built-in Utility metadata, portable state codec, and control-side factory.
+pub struct UtilityDefinition;
+
+fn decode_state_fields(
+    state: &NativeDeviceState,
+) -> Result<(UtilitySettings, bool, f32), DeviceContractError> {
+    if state.type_id() != UTILITY_TYPE_ID {
+        return Err(DeviceContractError::WrongDeviceType);
+    }
+    if state.state_version() != 1 {
+        return Err(DeviceContractError::UnsupportedStateVersion);
+    }
+    let bytes = state.payload();
+    if bytes.len() != 19 || bytes[12] > 3 || bytes[13] & !0x0f != 0 || bytes[14] > 1 {
+        return Err(DeviceContractError::MalformedState);
+    }
+    let read = |offset| {
+        f32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let channel_mode = match bytes[12] {
+        0 => ChannelMode::Stereo,
+        1 => ChannelMode::Left,
+        2 => ChannelMode::Right,
+        3 => ChannelMode::Swap,
+        _ => return Err(DeviceContractError::MalformedState),
+    };
+    let mid_side_enabled = bytes[14] == 1;
+    let mid_side_balance = read(15);
+    let settings = UtilitySettings::new(
+        read(0),
+        read(4),
+        read(8),
+        channel_mode,
+        bytes[13] & 1 != 0,
+        bytes[13] & 2 != 0,
+        bytes[13] & 4 != 0,
+        bytes[13] & 8 != 0,
+        Some(mid_side_balance),
+    )
+    .map_err(|_| DeviceContractError::MalformedState)?;
+    let settings = UtilitySettings {
+        mid_side_balance: mid_side_enabled.then_some(mid_side_balance),
+        ..settings
+    };
+    Ok((settings, mid_side_enabled, mid_side_balance))
+}
+
+fn decode_state(state: &NativeDeviceState) -> Result<UtilitySettings, DeviceContractError> {
+    decode_state_fields(state).map(|(settings, _, _)| settings)
+}
+
+fn encode_state(settings: UtilitySettings) -> Result<NativeDeviceState, DeviceContractError> {
+    let mid_side_balance = settings.mid_side_balance.unwrap_or(0.0);
+    encode_state_fields(
+        settings,
+        settings.mid_side_balance.is_some(),
+        mid_side_balance,
+    )
+}
+
+fn encode_state_fields(
+    settings: UtilitySettings,
+    mid_side_enabled: bool,
+    mid_side_balance: f32,
+) -> Result<NativeDeviceState, DeviceContractError> {
+    let mut bytes = Vec::with_capacity(19);
+    for value in [settings.gain, settings.balance, settings.width] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.push(match settings.channel_mode {
+        ChannelMode::Stereo => 0,
+        ChannelMode::Left => 1,
+        ChannelMode::Right => 2,
+        ChannelMode::Swap => 3,
+    });
+    bytes.push(
+        u8::from(settings.invert_left)
+            | (u8::from(settings.invert_right) << 1)
+            | (u8::from(settings.mono) << 2)
+            | (u8::from(settings.mute) << 3),
+    );
+    bytes.push(u8::from(mid_side_enabled));
+    bytes.extend_from_slice(&mid_side_balance.to_le_bytes());
+    NativeDeviceState::new(UTILITY_TYPE_ID, 1, bytes)
+}
+
+impl NativeDeviceMetadata for UtilityDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        UTILITY_TYPE_ID
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        DESCRIPTORS
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        encode_state(UtilitySettings::default())
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        decode_state_fields(state)?;
+        Ok(state.clone())
+    }
+    fn read_parameter(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        let (settings, mid_side_enabled, mid_side_balance) = decode_state_fields(state)?;
+        Ok(match id {
+            parameter::GAIN => ParameterValue::Float(settings.gain),
+            parameter::BALANCE => ParameterValue::Float(settings.balance),
+            parameter::WIDTH => ParameterValue::Float(settings.width),
+            parameter::CHANNEL => ParameterValue::Choice(match settings.channel_mode {
+                ChannelMode::Stereo => 0,
+                ChannelMode::Left => 1,
+                ChannelMode::Right => 2,
+                ChannelMode::Swap => 3,
+            }),
+            parameter::INVERT_LEFT => ParameterValue::Bool(settings.invert_left),
+            parameter::INVERT_RIGHT => ParameterValue::Bool(settings.invert_right),
+            parameter::MONO => ParameterValue::Bool(settings.mono),
+            parameter::MUTE => ParameterValue::Bool(settings.mute),
+            parameter::MID_SIDE_ENABLED => ParameterValue::Bool(mid_side_enabled),
+            parameter::MID_SIDE_BALANCE => ParameterValue::Float(mid_side_balance),
+            _ => return Err(DeviceContractError::UnknownParameter),
+        })
+    }
+    fn patch_parameter(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+        value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let settings = decode_state(state)?;
+        let descriptor = DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        descriptor.validate(value)?;
+        let (mut gain, mut balance, mut width, mut mode) = (
+            settings.gain,
+            settings.balance,
+            settings.width,
+            settings.channel_mode,
+        );
+        let (_, mut mid_side_enabled, mut mid_side_balance) = decode_state_fields(state)?;
+        let (mut left, mut right, mut mono, mut mute) = (
+            settings.invert_left,
+            settings.invert_right,
+            settings.mono,
+            settings.mute,
+        );
+        match (id, value) {
+            (parameter::GAIN, ParameterValue::Float(v)) => gain = v,
+            (parameter::BALANCE, ParameterValue::Float(v)) => balance = v,
+            (parameter::WIDTH, ParameterValue::Float(v)) => width = v,
+            (parameter::CHANNEL, ParameterValue::Choice(v)) => {
+                mode = match v {
+                    0 => ChannelMode::Stereo,
+                    1 => ChannelMode::Left,
+                    2 => ChannelMode::Right,
+                    3 => ChannelMode::Swap,
+                    _ => return Err(DeviceContractError::InvalidParameterValue),
+                }
+            }
+            (parameter::INVERT_LEFT, ParameterValue::Bool(v)) => left = v,
+            (parameter::INVERT_RIGHT, ParameterValue::Bool(v)) => right = v,
+            (parameter::MONO, ParameterValue::Bool(v)) => mono = v,
+            (parameter::MUTE, ParameterValue::Bool(v)) => mute = v,
+            (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(v)) => mid_side_enabled = v,
+            (parameter::MID_SIDE_BALANCE, ParameterValue::Float(v)) => mid_side_balance = v,
+            _ => return Err(DeviceContractError::InvalidParameterValue),
+        }
+        let settings = UtilitySettings::new(
+            gain,
+            balance,
+            width,
+            mode,
+            left,
+            right,
+            mono,
+            mute,
+            mid_side_enabled.then_some(mid_side_balance),
+        )
+        .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        encode_state_fields(settings, mid_side_enabled, mid_side_balance)
+    }
+}
+
+impl NativeDeviceDefinition for UtilityDefinition {
+    fn prepare_matrix(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        PreparedUtility::new(decode_state(state).map_err(|_| DeviceContractError::MalformedState)?)
+            .map(|prepared| prepared.matrix())
+            .map_err(|_| DeviceContractError::MalformedState)
+    }
+}
+
+pub static UTILITY_DEFINITION: UtilityDefinition = UtilityDefinition;
 
 /// Control-prepared Utility coefficients. Processing is allocation-free and has
 /// no runtime state, lookahead, filtering, or buffering.
@@ -536,5 +849,146 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn utility_definition_owns_validated_portable_state_and_generic_metadata() {
+        use hex_lattice::NativeDeviceRegistry;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let state = registry.default_state(UTILITY_TYPE_ID).unwrap();
+        assert_eq!(registry.migrate_state(&state).unwrap(), state);
+        assert_eq!(
+            registry
+                .definition(UTILITY_TYPE_ID)
+                .unwrap()
+                .descriptors()
+                .len(),
+            10
+        );
+        for descriptor in UTILITY_DEFINITION.descriptors() {
+            descriptor.validate_descriptor().unwrap();
+        }
+
+        let patched = registry
+            .patch_parameter(&state, parameter::GAIN, ParameterValue::Float(2.0))
+            .unwrap();
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&patched, parameter::GAIN)
+                .unwrap(),
+            ParameterValue::Float(2.0)
+        );
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&patched, parameter::WIDTH)
+                .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+        assert!(
+            registry
+                .patch_parameter(&patched, parameter::GAIN, ParameterValue::Float(f32::NAN))
+                .is_err()
+        );
+        assert!(
+            registry
+                .patch_parameter(
+                    &patched,
+                    parameter::CHANNEL,
+                    ParameterValue::Choice(u32::MAX)
+                )
+                .is_err()
+        );
+
+        let malformed = NativeDeviceState::new(UTILITY_TYPE_ID, 1, vec![0; 18]).unwrap();
+        assert!(registry.migrate_state(&malformed).is_err());
+        let future =
+            NativeDeviceState::new(UTILITY_TYPE_ID, 99, patched.payload().to_vec()).unwrap();
+        assert!(registry.migrate_state(&future).is_err());
+    }
+
+    #[test]
+    fn inactive_mid_side_balance_remains_validated_and_round_trips_independently() {
+        use hex_lattice::NativeDeviceRegistry;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let mut state = registry.default_state(UTILITY_TYPE_ID).unwrap();
+
+        state = registry
+            .patch_parameter(
+                &state,
+                parameter::MID_SIDE_BALANCE,
+                ParameterValue::Float(-0.75),
+            )
+            .unwrap();
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&state, parameter::MID_SIDE_ENABLED)
+                .unwrap(),
+            ParameterValue::Bool(false)
+        );
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&state, parameter::MID_SIDE_BALANCE)
+                .unwrap(),
+            ParameterValue::Float(-0.75)
+        );
+
+        state = registry
+            .patch_parameter(
+                &state,
+                parameter::MID_SIDE_ENABLED,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        state = registry
+            .patch_parameter(
+                &state,
+                parameter::MID_SIDE_BALANCE,
+                ParameterValue::Float(0.75),
+            )
+            .unwrap();
+        state = registry
+            .patch_parameter(
+                &state,
+                parameter::MID_SIDE_ENABLED,
+                ParameterValue::Bool(false),
+            )
+            .unwrap();
+        state = registry
+            .patch_parameter(&state, parameter::GAIN, ParameterValue::Float(2.0))
+            .unwrap();
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&state, parameter::MID_SIDE_BALANCE)
+                .unwrap(),
+            ParameterValue::Float(0.75)
+        );
+        state = registry
+            .patch_parameter(
+                &state,
+                parameter::MID_SIDE_ENABLED,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&state, parameter::MID_SIDE_BALANCE)
+                .unwrap(),
+            ParameterValue::Float(0.75)
+        );
+
+        let mut malformed_payload = registry
+            .default_state(UTILITY_TYPE_ID)
+            .unwrap()
+            .payload()
+            .to_vec();
+        malformed_payload[15..19].copy_from_slice(&f32::NAN.to_le_bytes());
+        let malformed = NativeDeviceState::new(UTILITY_TYPE_ID, 1, malformed_payload).unwrap();
+        assert!(registry.migrate_state(&malformed).is_err());
     }
 }

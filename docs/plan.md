@@ -6,13 +6,22 @@ Repository documents retain contracts, acceptance evidence and request order.
 ## active work unit — lattice native devices, 9 October 2026
 
 The user reprioritized the native DSP system, device panel and first devices
-before main/return-track layout. The system is named **lattice**. Start with
-Pulse ticket 42's real stereo DSP primitives and linear Utility implementation;
-then integrate canonical device IDs/order/settings/history/schema and shared
-engine processing (ticket 16), the compact panel (17), complete Utility (18) and
+before main/return-track layout. The system is named **lattice**.
+Pulse ticket 42's real stereo DSP primitives and linear Utility implementation
+passed all 14 local CI steps on clean `0a2d70b` ([PR #22](https://github.com/PORTALSURFER/hex/pull/22)).
+Now integrate canonical device IDs/order/settings/history/schema and shared
+engine processing (ticket 43, modular contract 70, parent 16), reusable device controls (44),
+bounded live parameter gestures with grouped undo (65), the
+compact panel (17), complete Utility (18) and
 Operator (19). Each deliverable has a focused PR. The finite contracts and
 stateful dependencies are in [lattice](lattice.md). Pending native acceptance
 for earlier UI PRs stays open; it does not block independent source work.
+
+The user's current implementation scope is every open ticket planned for Hex
+in Pulse, rather than only existing PRs. This priority order is a dependency
+sequence within that scope. Deliver separate focused PRs, retain unfinished
+acceptance gates, and assemble a combined test build after implementation;
+the lattice foundation alone does not complete the request.
 
 ## source-complete work unit — custom traffic lights, 9 October 2026
 

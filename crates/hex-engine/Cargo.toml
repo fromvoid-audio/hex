@@ -11,3 +11,5 @@ workspace = true
 [dependencies]
 hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
+hex-lattice = { path = "../hex-lattice" }
+hex-lattice-contract = { path = "../hex-lattice-contract" }

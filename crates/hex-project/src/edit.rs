@@ -1,13 +1,32 @@
 use crate::{
-    Asset, AssetId, Clip, ClipFade, ClipId, IDENTITY_CONVERSION, Invalid, LoopRegion, MAX_ASSETS,
-    MAX_CLIPS, MAX_NAME_BYTES, MAX_TRACKS, MeterPoint, NoteId, Project, TempoPoint, Track,
-    TrackContent, TrackId, TrimEdge, converted_frame_count, validate_conversion_metadata,
+    Asset, AssetId, Clip, ClipFade, ClipId, DeviceId, IDENTITY_CONVERSION, Invalid, LoopRegion,
+    MAX_ASSETS, MAX_CLIPS, MAX_NAME_BYTES, MAX_TRACKS, MeterPoint, NoteId, Project, TempoPoint,
+    Track, TrackContent, TrackId, TrimEdge, converted_frame_count, validate_conversion_metadata,
 };
 use std::{collections::HashMap, path::PathBuf};
 
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    InsertDevice {
+        track: TrackId,
+        before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    RemoveDevice(DeviceId),
+    MoveDevice {
+        device: DeviceId,
+        track: TrackId,
+        before: Option<DeviceId>,
+    },
+    ReplaceDeviceState {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    SetDeviceBypass {
+        device: DeviceId,
+        bypassed: bool,
+    },
     DeleteTimeRange {
         range: crate::TimeRange,
     },
@@ -473,6 +492,7 @@ pub struct MidiNoteInsert {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
     Track(TrackId),
+    Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
     Note(NoteId),
@@ -530,6 +550,7 @@ pub(crate) fn insert_track_before(
             balance: 0.0,
             muted: false,
             soloed: false,
+            devices: Vec::new(),
             content: TrackContent::default(),
         },
     );
@@ -919,6 +940,11 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            device_command @ (Command::InsertDevice { .. }
+            | Command::RemoveDevice(_)
+            | Command::MoveDevice { .. }
+            | Command::ReplaceDeviceState { .. }
+            | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
             Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),
             Command::PasteTimeRange {
                 clipboard,

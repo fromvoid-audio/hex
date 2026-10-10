@@ -217,7 +217,7 @@ impl SessionPlayback {
                 release_cursor += 1;
             }
             for release in &self.release_scratch[first_release..release_cursor] {
-                render_release(release, mix, table, performance_frame, output)?;
+                render_release(release, table, performance_frame, output)?;
             }
             match self.route_scratch[index].owner {
                 RouteOwner::Arrangement => {
@@ -349,7 +349,7 @@ impl SessionPlayback {
         // Removed tracks have no current route slot. Their active release tails
         // retain the old copied mix and are accumulated in stable transfer order.
         for release in &self.release_scratch[release_cursor..] {
-            render_release(release, release.mix, table, performance_frame, output)?;
+            render_release(release, table, performance_frame, output)?;
         }
         Ok(())
     }
@@ -357,7 +357,6 @@ impl SessionPlayback {
 
 fn render_release(
     release: &super::ReleaseEntry,
-    mix: crate::PreparedTrackMix,
     table: &hex_devices::SineTable,
     performance_frame: u64,
     output: &mut [Frame],
@@ -369,7 +368,7 @@ fn render_release(
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(sample) = release.voice.sample_at(table, absolute) {
-            mix.add_frame(frame, [sample; 2]);
+            release.mix.add_frame(frame, [sample; 2]);
         }
     }
     Ok(())
