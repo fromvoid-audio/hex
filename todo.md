@@ -648,3 +648,11 @@ retention for copied releases, reclaimed on control. This preserves the existing
 runtime, codec, UI or registration is implemented at this checkpoint. Parent2161
 and Operator19 remain open; the concrete lifecycle contract is under architecture
 review before execution.
+Pulse2113: the mixed Session profiler's independent oracle now handles canonical
+hybrid snapshots when expressing Arrangement transport wraps as source periods.
+The regression failed at frame72,001/120,001 before the repair and now matches
+full exact PCM through direct/partitioned/prepared-wrapper playback under both
+tempo fixtures. All six release profiler modes complete;100-track timings and
+immutable source/binary evidence are in [performance](docs/performance.md).
+Runtime DSP, scheduling and tolerance are unchanged. Full local checks and PR
+review follow; no new native app behavior or user interaction test is required.
