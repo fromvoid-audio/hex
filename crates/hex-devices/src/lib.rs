@@ -1,4 +1,5 @@
-//! Prepared stateless tone generation for the original Hex sine instrument.
+//! Original native DSP: registered sine/Utility and standalone FM4 preparation.
+pub mod fm4;
 pub mod utility;
 pub mod utility_filters;
 
@@ -236,11 +237,14 @@ impl SineTable {
             attack_at_gate * (1.0 - release_progress).max(0.0)
         };
         let phase = voice.phase_step.wrapping_mul(relative_frame);
+        self.sample_phase(phase) * amplitude * voice.amplitude
+    }
+
+    /// Interpolated periodic lookup; the caller supplies a wrapping turn phase.
+    pub(crate) fn sample_phase(&self, phase: u64) -> f32 {
         let index = ((phase >> (64 - TABLE_BITS)) & TABLE_MASK) as usize;
         let fraction = ((phase << TABLE_BITS) >> 40) as u32 as f32 / 16_777_216.0;
-        let value =
-            self.samples[index] + (self.samples[index + 1] - self.samples[index]) * fraction;
-        value * amplitude * voice.amplitude
+        self.samples[index] + (self.samples[index + 1] - self.samples[index]) * fraction
     }
 }
 impl Default for SineTable {
