@@ -1738,5 +1738,9 @@ native visual acceptance remain pending. See [Operator shell context contract]
   same-ID project reopen and backend reset; ordinary parameter revisions retain the
   rolling window. Queue races/exhaustion and original capture-time staleness have
   targeted regressions.
-- Native spectrum display/input/listening and physical device deadlines remain for
-  user validation; final-source local CI and callback overhead evidence are pending.
+- Actual publication generation/rate/revision fences cover reused IDs, deferred
+  admission and same-project updates; registered callback probes report zero total/net
+  allocations. Release capture overhead and its unpaced/backpressure/environment
+  limits are recorded in docs/performance.md.
+- Native spectrum display/input/listening, paced throughput and physical device
+  deadlines remain for user validation; final-source full local CI is the merge gate.

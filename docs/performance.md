@@ -2173,3 +2173,36 @@ checksums matched. This eight-enabled-band standalone fixture does not measure
 CPAL, graph lease dispatch, native interaction or physical deadline behavior.
 See [the kernel contract and evidence](eq-eight-audition.md#local-kernel-evidence-11-october)
 for exact source, timing window, raw evidence and limitations.
+
+
+## 11 October 2026 — selected EQ8 spectrum capture (Pulse2250)
+
+Actual prepared callback fixture at source `b0f0f8f0f0f2152240396bda58277f21f2903bab`,
+release executable SHA256 `2ef523eb82a0ca51bc5bedf98aaaf94f6533ea5040925214c738e15bfbbd05d0`.
+One sine-instrument track feeds one enabled EQ8 bell; 48 kHz, 128/256-frame blocks,
+200 warm-up and 4,000 measured blocks. Three interleaved process rounds compare
+no worker, worker with target off, and enabled post-node capture. The timer covers
+begin/render/submit; a separate exact PCM oracle and outcome checks run outside it.
+All modes/repetitions have identical PCM checksums. Matching generation1 capture
+actually queues batches; disabled modes submit none.
+
+| frames | no worker median range | worker off | capture enabled |
+| --- | --- | --- | --- |
+| 128 | 3.208–3.209 µs | 3.208–3.209 µs | 3.542–3.625 µs |
+| 256 | 5.458 µs | 5.458–5.459 µs | 6.083–6.125 µs |
+
+Raw p95/max, counters, source/tree and environment are retained under
+`artifacts/profiles/eq8-spectrum-2250/b0f0f8f/summary.json` and six JSONL files.
+The preserved preliminary pre-generation run is in the parent directory.
+Final runs were 22:36:35–22:36:36 UTC on Apple M5 Pro, macOS26.6.2, rustc1.98.1.
+No other Hex build/profile ran; a separate project's test runner remained present
+(about3.4% CPU before the run), and OS scheduling was uncontrolled. These numbers
+are limited headless overhead evidence, not a quiet-machine certificate.
+
+The unpaced fixture outruns the worker: only211–250/324–352 of4,200 batches queue
+at128/256frames; remaining batches hit bounded backpressure and consume sequence
+gaps. It verifies actual submission and unchanged audio, but does not establish
+continuous FFT throughput,30Hz native display, dense workloads or physical-device
+deadlines. Those require paced/native acceptance. Registered callback probes assert
+zero total and signed-net allocations/bytes for observation, rejected output and
+shutdown; construction, oracles and reclamation remain outside measured scopes.

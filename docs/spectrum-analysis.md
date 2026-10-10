@@ -111,6 +111,8 @@ floors, bounded staging offsets/overlaps, target queue races and exhaustion,
 lifecycle order, stale context and stale capture age. Run the headless callback
 comparison with `cargo run -p hex-audio --release --example
 profile_eq8_spectrum -- 128 4000`; it checks PCM equivalence separately from
-timing. Remaining evidence: exact-tree local CI, native UI interaction and
+timing and actual generation-matching capture outcomes. Release results and
+backpressure/environment limits are in `docs/performance.md`. Remaining evidence:
+exact-tree local CI, paced/native display throughput, native UI interaction and
 listening, and any physical-device deadline claim. The analyzer is original
 telemetry; no Live algorithm or visual parity is claimed.
