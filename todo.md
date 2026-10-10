@@ -26,6 +26,17 @@ Completed chronology and superseded work orders are preserved in the
 
 ## current priority — lattice devices
 
+- [ ] **Editable Operator envelope curves** — Pulse2247: use the shared native
+  response-graph widget to edit all six per-operator envelope values through
+  bounded scalar/paired gestures, with keyboard and Shift-fine input, stable
+  time mapping, numeric synchronization, one-step Undo and persistence. Current
+  implementation is integrated on `codex/operator-envelope-ui`; focused
+  widget checks (3) and rendered Operator checks (3) pass, including pointer
+  capture, cancel/page retirement and saved Undoable edits. Full exact-source
+  local CI is required before merge; its result/PR are recorded in Pulse2247.
+  Native visual acceptance remains open. The original fixed-hold/time-axis contract is in
+  [Operator envelope UI](docs/operator-envelope-ui.md).
+
 ### latest source checkpoint
 
 The latest user test app is `hex-lattice-return-review-20261010-1b67f5f.app`,

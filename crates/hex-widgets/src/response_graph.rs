@@ -87,6 +87,7 @@ pub struct ResponseGraph {
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
+    editable: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
 }
@@ -94,7 +95,8 @@ pub struct ResponseGraph {
 #[derive(Clone, Copy)]
 struct Drag {
     node_id: u32,
-    pickup_offset: [f32; 2],
+    pointer_origin: [f32; 2],
+    node_origin: [f32; 2],
     modifiers: Modifiers,
 }
 
@@ -103,7 +105,6 @@ struct Press {
     node_id: u32,
     pointer_origin: [f32; 2],
     node_origin: [f32; 2],
-    pickup_offset: [f32; 2],
     modifiers: Modifiers,
 }
 
@@ -121,6 +122,7 @@ impl ResponseGraph {
             bounds: None,
             drag: None,
             press: None,
+            editable: false,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
@@ -148,6 +150,15 @@ impl ResponseGraph {
 
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// Opt into focused keyboard node selection/editing and fine pointer drags.
+    /// The default preserves the graph's existing select-and-drag behavior.
+    pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
+        if self.editable != editable {
+            self.editable = editable;
+            cx.notify();
+        }
     }
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -216,12 +227,10 @@ impl ResponseGraph {
             .iter()
             .find(|node| node.id == node_id)
             .map_or(position, |node| node.position);
-        let pickup_offset = [position[0] - node_origin[0], position[1] - node_origin[1]];
         self.press = Some(Press {
             node_id,
             pointer_origin: position,
             node_origin,
-            pickup_offset,
             modifiers: event.modifiers,
         });
         self.focus.focus(window);
@@ -265,7 +274,8 @@ impl ResponseGraph {
             self.press = None;
             self.drag = Some(Drag {
                 node_id: press.node_id,
-                pickup_offset: press.pickup_offset,
+                pointer_origin: press.pointer_origin,
+                node_origin: press.node_origin,
                 modifiers: press.modifiers,
             });
             cx.emit(ResponseGraphEvent {
@@ -281,7 +291,7 @@ impl ResponseGraph {
         cx.emit(ResponseGraphEvent {
             phase: ResponseGraphPhase::Change,
             node_id: drag.node_id,
-            position: node_position_from_pointer(position, drag.pickup_offset),
+            position: drag_position(position, drag, self.editable),
             modifiers: drag.modifiers,
         });
         cx.notify();
@@ -299,7 +309,7 @@ impl ResponseGraph {
             cx.emit(ResponseGraphEvent {
                 phase: ResponseGraphPhase::Commit,
                 node_id: drag.node_id,
-                position: node_position_from_pointer(position, drag.pickup_offset),
+                position: drag_position(position, drag, self.editable),
                 modifiers: drag.modifiers,
             });
         } else {
@@ -318,7 +328,73 @@ impl ResponseGraph {
         if event.keystroke.key == "escape" && (self.drag.is_some() || self.press.is_some()) {
             cx.stop_propagation();
             self.cancel(cx);
+            return;
         }
+        let modifiers = event.keystroke.modifiers;
+        if !self.editable || modifiers.platform || modifiers.control || modifiers.alt {
+            return;
+        }
+        if event.keystroke.key == "tab" {
+            let selected = self.model.nodes.iter().position(|node| node.selected);
+            let Some(next) = cycle_node(
+                selected,
+                self.model.nodes.len(),
+                event.keystroke.modifiers.shift,
+            )
+            .and_then(|index| self.model.nodes.get(index))
+            .copied() else {
+                return;
+            };
+            cx.stop_propagation();
+            cx.emit(ResponseGraphEvent {
+                phase: ResponseGraphPhase::Select,
+                node_id: next.id,
+                position: next.position,
+                modifiers: event.keystroke.modifiers,
+            });
+            cx.notify();
+            return;
+        }
+        let delta = match event.keystroke.key.as_str() {
+            "left" => [-1.0, 0.0],
+            "right" => [1.0, 0.0],
+            "up" => [0.0, 1.0],
+            "down" => [0.0, -1.0],
+            _ => return,
+        };
+        let Some(node) = self.model.nodes.iter().find(|node| node.selected).copied() else {
+            return;
+        };
+        let step = if event.keystroke.modifiers.shift {
+            0.001
+        } else {
+            0.01
+        };
+        let position = [
+            (node.position[0] + delta[0] * step).clamp(0.0, 1.0),
+            (node.position[1] + delta[1] * step).clamp(0.0, 1.0),
+        ];
+        if position == node.position {
+            return;
+        }
+        cx.stop_propagation();
+        for phase in [
+            ResponseGraphPhase::Begin,
+            ResponseGraphPhase::Change,
+            ResponseGraphPhase::Commit,
+        ] {
+            cx.emit(ResponseGraphEvent {
+                phase,
+                node_id: node.id,
+                position: if phase == ResponseGraphPhase::Begin {
+                    node.position
+                } else {
+                    position
+                },
+                modifiers: event.keystroke.modifiers,
+            });
+        }
+        cx.notify();
     }
 }
 
@@ -326,11 +402,28 @@ fn drag_threshold_crossed(dx: f32, dy: f32) -> bool {
     dx.mul_add(dx, dy * dy) >= 9.0
 }
 
-fn node_position_from_pointer(pointer: [f32; 2], pickup_offset: [f32; 2]) -> [f32; 2] {
+fn drag_position(pointer: [f32; 2], drag: Drag, editable: bool) -> [f32; 2] {
+    let precision = if editable && drag.modifiers.shift {
+        0.1
+    } else {
+        1.0
+    };
     [
-        (pointer[0] - pickup_offset[0]).clamp(0.0, 1.0),
-        (pointer[1] - pickup_offset[1]).clamp(0.0, 1.0),
+        (drag.node_origin[0] + (pointer[0] - drag.pointer_origin[0]) * precision).clamp(0.0, 1.0),
+        (drag.node_origin[1] + (pointer[1] - drag.pointer_origin[1]) * precision).clamp(0.0, 1.0),
     ]
+}
+
+fn cycle_node(selected: Option<usize>, count: usize, reverse: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (selected, reverse) {
+        (Some(index), false) => (index + 1) % count,
+        (Some(0), true) | (None, true) => count - 1,
+        (Some(index), true) => index - 1,
+        (None, false) => 0,
+    })
 }
 
 impl EventEmitter<ResponseGraphEvent> for ResponseGraph {}
@@ -352,7 +445,7 @@ impl gpui::Render for ResponseGraph {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |graph, _, cx| graph.cancel(cx)));
         }
-        let mut root = div()
+        div()
             .id(self.id.clone())
             .debug_selector(|| self.id.to_string())
             .relative()
@@ -366,19 +459,21 @@ impl gpui::Render for ResponseGraph {
                 CursorStyle::PointingHand
             })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-            .child(canvas(
-                |_, _, _| (),
-                move |bounds, _, window, app| {
-                    bounds_entity.update(app, |graph, _| graph.bounds = Some(bounds));
-                    paint_graph(bounds, &primary, &secondary, &nodes, style, window);
-                },
-            ));
-        if self.drag.is_some() || self.press.is_some() {
-            root = root.child(ResponseGraphCaptureElement {
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, app| {
+                        bounds_entity.update(app, |graph, _| graph.bounds = Some(bounds));
+                        paint_graph(bounds, &primary, &secondary, &nodes, style, window);
+                    },
+                )
+                .absolute()
+                .inset_0()
+                .size_full(),
+            )
+            .child(ResponseGraphCaptureElement {
                 entity: cx.entity(),
-            });
-        }
-        root
+            })
     }
 }
 
@@ -595,15 +690,42 @@ mod tests {
     }
 
     #[test]
-    fn graph_drag_threshold_uses_pointer_origin_and_preserves_pickup_offset() {
+    fn graph_drag_threshold_uses_pointer_origin_and_fine_mode_preserves_origin() {
         assert!(!drag_threshold_crossed(2.0, 1.0));
         assert!(drag_threshold_crossed(3.0, 0.0));
-        let adjusted = node_position_from_pointer([0.7, 0.4], [0.1, -0.1]);
-        assert!((adjusted[0] - 0.6).abs() < 0.00001);
-        assert_eq!(adjusted[1], 0.5);
-        assert_eq!(
-            node_position_from_pointer([0.0, 1.0], [0.2, -0.2]),
-            [0.0, 1.0]
-        );
+        let drag = Drag {
+            node_id: 3,
+            pointer_origin: [0.5, 0.5],
+            node_origin: [0.45, 0.55],
+            modifiers: Modifiers::default(),
+        };
+        let normal = drag_position([0.7, 0.4], drag, true);
+        assert!((normal[0] - 0.65).abs() < 0.00001);
+        assert!((normal[1] - 0.45).abs() < 0.00001);
+        let fine = Drag {
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            ..drag
+        };
+        let fine_position = drag_position([0.7, 0.4], fine, true);
+        assert!((fine_position[0] - 0.47).abs() < 0.00001);
+        assert!((fine_position[1] - 0.54).abs() < 0.00001);
+        let unmodified = drag_position([0.7, 0.4], fine, false);
+        assert!((unmodified[0] - 0.65).abs() < 0.00001);
+        assert!((unmodified[1] - 0.45).abs() < 0.00001);
+        assert_eq!(drag_position([5.0, -2.0], drag, true), [1.0, 0.0]);
+    }
+
+    #[test]
+    fn keyboard_node_cycle_handles_coincident_nodes_and_empty_graphs() {
+        assert_eq!(cycle_node(None, 0, false), None);
+        assert_eq!(cycle_node(None, 4, false), Some(0));
+        assert_eq!(cycle_node(Some(1), 4, false), Some(2));
+        assert_eq!(cycle_node(Some(3), 4, false), Some(0));
+        assert_eq!(cycle_node(None, 4, true), Some(3));
+        assert_eq!(cycle_node(Some(0), 4, true), Some(3));
+        assert_eq!(cycle_node(Some(2), 4, true), Some(1));
     }
 }

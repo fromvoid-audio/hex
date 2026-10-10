@@ -125,6 +125,10 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    operator_envelope_graphs:
+        HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
+    operator_envelope_gestures:
+        HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -322,6 +326,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -367,6 +372,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -415,6 +421,7 @@ fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
             cancel_control(view, cx, key, &mut control);
         }
     }
+    operator_panel::envelope::cancel_all(view, cx);
     view.device_panel.views.clear();
     view.device_panel.pending_values.clear();
     retire_removed_eq8_graphs(view, cx, &HashSet::new());
@@ -544,6 +551,15 @@ fn render_track(
                 && identity.type_id.as_str().ok() == Some("hex.instrument.operator")
         })
     });
+    let alive_operator: HashSet<_> = identities
+        .iter()
+        .filter_map(|(device, identity)| {
+            (identity.class == NativeDeviceClass::Instrument
+                && identity.type_id.as_str().ok() == Some("hex.instrument.operator"))
+            .then_some(*device)
+        })
+        .collect();
+    operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     let alive_eq8: HashSet<_> = identities
         .iter()
         .filter_map(|(device, identity)| {
