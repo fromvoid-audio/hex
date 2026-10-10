@@ -109,6 +109,10 @@ impl BiquadHistory {
         self.y1 = quiet(output);
         self.y1
     }
+
+    fn is_silent(self) -> bool {
+        self.x1 == 0.0 && self.x2 == 0.0 && self.y1 == 0.0 && self.y2 == 0.0
+    }
 }
 
 fn quiet(value: f64) -> f64 {
@@ -212,6 +216,19 @@ impl UtilityFilterProcessor {
             *frame = self.process_frame(*frame);
         }
     }
+
+    /// Whether the active filter configuration has no stored output residual.
+    /// Checks every history used by the enabled stages, including both
+    /// Linkwitz–Riley paths because audition may select either path.
+    pub fn is_quiescent(&self) -> bool {
+        let dc_silent = !self.prepared.dc_enabled
+            || (self.dc_input.iter().all(|sample| *sample == 0.0)
+                && self.dc_output.iter().all(|sample| *sample == 0.0));
+        let bass_silent = !self.prepared.bass_enabled
+            || (self.side_high.iter().all(|history| history.is_silent())
+                && self.mid_low.iter().all(|history| history.is_silent()));
+        dc_silent && bass_silent
+    }
 }
 
 impl NativeProcessorRuntime for UtilityFilterProcessor {
@@ -221,6 +238,10 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
 
     fn reset(&mut self) {
         UtilityFilterProcessor::reset(self);
+    }
+
+    fn is_quiescent(&self) -> bool {
+        UtilityFilterProcessor::is_quiescent(self)
     }
 
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
