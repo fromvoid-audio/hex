@@ -469,6 +469,12 @@ pub(super) struct EditorView {
         hex_lattice_contract::DeviceTypeId,
     )>,
     #[cfg(test)]
+    last_enqueued_native_device_replace: Option<(
+        hex_project::DeviceId,
+        hex_engine::NativeDeviceClass,
+        hex_lattice_contract::DeviceTypeId,
+    )>,
+    #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
     #[cfg(test)]
     last_transport_command: Option<PlaybackCommand>,
@@ -708,6 +714,8 @@ impl EditorView {
             last_enqueued_edit: None,
             #[cfg(test)]
             last_enqueued_native_device_add: None,
+            #[cfg(test)]
+            last_enqueued_native_device_replace: None,
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]
