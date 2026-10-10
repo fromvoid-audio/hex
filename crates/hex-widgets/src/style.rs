@@ -1,3 +1,10 @@
+/// Shared native device outline radius, in logical pixels.
+/// Standard and compact frames both inherit this token.
+pub const DEVICE_CORNER_RADIUS: f32 = 4.0;
+
+/// Shared numeric readout corner radius, in logical pixels.
+pub const CONTROL_CORNER_RADIUS: f32 = 3.0;
+
 /// Caller-owned visual tokens. `hex-widgets` never selects product colors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlStyle {

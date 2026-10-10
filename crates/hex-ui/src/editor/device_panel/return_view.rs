@@ -306,12 +306,11 @@ fn render_return_effect(
                 body
             };
             if device_view.type_id.as_str() == Ok("hex.utility") {
-                compact_rounded_device_frame(
+                compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
                     actions,
                     body,
-                    2.0,
                 )
                 .into_any_element()
             } else {
@@ -344,8 +343,7 @@ fn render_return_effect(
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 .child(theme::text(format!("unsupported device state · {error}")));
             if device.state().type_id().as_str() == Ok("hex.utility") {
-                compact_rounded_device_frame(title, control_style(), actions, body, 2.0)
-                    .into_any_element()
+                compact_device_frame(title, control_style(), actions, body).into_any_element()
             } else {
                 device_frame(title, control_style(), actions, body).into_any_element()
             }

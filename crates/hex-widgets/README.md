@@ -26,7 +26,11 @@ draws a saturation/brightness field and hue strip, and emits synchronized RGB/HS
 values. The caller retains the RGB value as canonical state and may synchronize
 it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
-device-specific layout or parameter semantics.
+device-specific layout or parameter semantics. All device frames use the shared
+`DEVICE_CORNER_RADIUS` token; `compact_device_frame` changes header density only.
+Header backgrounds carry matching inner rounding because GPUI's content masks
+are rectangular. Numeric readouts use `CONTROL_CORNER_RADIUS`. Device modules
+must reuse these library frames rather than selecting device-specific corners.
 
 Numeric event phases are `begin`, `change`, `commit` and `cancel`. The widget
 keeps a responsive local draft but does not queue audio work, merge gestures,
