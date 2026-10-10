@@ -656,3 +656,10 @@ tempo fixtures. All six release profiler modes complete;100-track timings and
 immutable source/binary evidence are in [performance](docs/performance.md).
 Runtime DSP, scheduling and tolerance are unchanged. Full local checks and PR
 review follow; no new native app behavior or user interaction test is required.
+Pulse2170: distinct version1 Operator control codec and52 reusable parameter
+descriptors are implemented, with strict224-byte round trips, finite/domain and
+acyclic graph validation, immutable patches and original per-operator defaults.
+All54 device tests pass, including independent PCM field-binding/routing oracles.
+Native registration/UI waits for Pulse2169; existing FM4 state/output stays
+unchanged. Full local CI evidence is tracked in its PR and Pulse ticket.
+See [control contract](docs/operator-state.md).

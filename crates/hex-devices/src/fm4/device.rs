@@ -89,7 +89,9 @@ const fn float_parameter(
     }
 }
 
-static PARAMETERS: [ParameterDescriptor; EDITABLE_PARAMETER_COUNT] = [
+// The first 28 descriptors define the original shared oscillator/routing
+// domains. Operator's independent control codec reuses those exact domains.
+pub(crate) static PARAMETERS: [ParameterDescriptor; EDITABLE_PARAMETER_COUNT] = [
     float_parameter(1, "op1 ratio", 1.0 / 128.0, 128.0, Some("x"), 1.0),
     float_parameter(2, "op1 level", 0.0, 8.0, Some("linear"), 1.0),
     float_parameter(3, "op1 phase", 0.0, PHASE_MAX, Some("turns"), 0.0),

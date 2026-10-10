@@ -13,6 +13,9 @@ outside this crate's current runtime contract. The standalone original
 independent finite amplitude laws. A separate
 [standalone enveloped FM composition](../../docs/operator-fm.md) shares the
 oscillator core; neither changes the registered FM4 envelope or state.
+The [Operator control codec](../../docs/operator-state.md) owns a distinct
+versioned opaque state and reusable metadata for those four envelopes. It is
+not registered for native playback yet.
 
 ## Dependencies
 
