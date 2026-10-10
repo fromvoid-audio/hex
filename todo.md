@@ -1147,3 +1147,15 @@ peak/high-water stack measurement. Commands, raw logs, toolchain and executable
 hashes are in[the evidence](docs/playback-stack.md). Affected debug/release
 probes, strict feature-enabled engineClippy, formatting and architecture guards
 pass. No production storage/DSP/schema change.
+
+## 10 October2026 — Pulse2204 Return revision residuals
+
+Whole old Return chains now retain residual output across removal, device
+configuration/bypass/order changes, feeding the current Main under old bus
+controls and current master gain. A separate64-slot bank shares bounded
+track-tail accounting. Transfer validation precedes owner movement; exhausted
+budgets preserve old PCM for retry. Stop/Seek, rollback and unchanged-history
+semantics have focused coverage. Engine181pass/3ignored,12added tests, strict
+engineClippy, formatting, architecture and the actual Return callback allocation
+probe pass. Full exact-head local CI, PR publication and native listening remain
+pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).
