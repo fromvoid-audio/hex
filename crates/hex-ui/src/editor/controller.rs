@@ -803,6 +803,18 @@ impl EditorView {
             self.last_enqueued_native_device_replace = Some((*device, *class, **type_id));
         }
         #[cfg(test)]
+        if let Request::DropNativeDevice {
+            project_generation,
+            revision,
+            source,
+            track,
+            before,
+        } = &request
+        {
+            self.last_enqueued_native_device_drop =
+                Some((*project_generation, *revision, *source, *track, *before));
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));

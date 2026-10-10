@@ -18,6 +18,7 @@ impl EditorView {
             || self.context_menu.is_some()
             || self.active_clip_drag.is_some()
             || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
             || self.loop_rail_gesture.is_some()
             || self.arrangement_bounds.is_none()
             || !x.is_finite()

@@ -55,6 +55,36 @@ pub(super) struct BrowserAudioDrag {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NativeDeviceDropTarget {
+    pub(super) track: TrackId,
+    /// Canonical ordered-chain node before which the device should land.
+    /// `None` appends existing devices; new browser instruments default to front.
+    pub(super) before: Option<hex_project::DeviceId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeDeviceDragSource {
+    Browser {
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
+    Existing {
+        device: hex_project::DeviceId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
+}
+
+/// Metadata-only payload shared by catalog drops and ordered-chain moves.
+#[derive(Clone, Debug)]
+pub(super) struct NativeDeviceDrag {
+    pub(super) project_generation: u64,
+    pub(super) revision: u64,
+    pub(super) source: NativeDeviceDragSource,
+    pub(super) destination: Rc<Cell<Option<NativeDeviceDropTarget>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BrowserDropDestination {
     ExistingTrack {
         track: TrackId,
@@ -632,6 +662,7 @@ impl super::EditorView {
     }
 
     pub(super) fn begin_clip_drag(&mut self, drag: &ClipDrag) {
+        self.active_native_device_drag = None;
         self.active_clip_drag = Some(drag.clone());
         self.active_browser_audio_drag = None;
     }
@@ -699,7 +730,72 @@ impl super::EditorView {
 
     pub(super) fn begin_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
         self.active_clip_drag = None;
+        self.active_native_device_drag = None;
         self.active_browser_audio_drag = Some(drag.clone());
+    }
+
+    pub(super) fn begin_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
+        self.active_clip_drag = None;
+        self.active_browser_audio_drag = None;
+        self.active_native_device_drag = Some(drag.clone());
+    }
+
+    pub(super) fn native_device_drag_is_current(&self, drag: &NativeDeviceDrag) -> bool {
+        if self.opening_project || self.close_prompt_open {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        if self.project_generation != drag.project_generation || state.revision != drag.revision {
+            return false;
+        }
+        match drag.source {
+            NativeDeviceDragSource::Browser { .. } => true,
+            NativeDeviceDragSource::Existing {
+                device,
+                class,
+                type_id,
+            } => state.project.tracks().iter().any(|track| {
+                track.ordered_device_chain().any(|node| {
+                    let (candidate, candidate_class) = match node {
+                        hex_project::TrackDeviceRef::Instrument(device) => {
+                            (device, hex_engine::NativeDeviceClass::Instrument)
+                        }
+                        hex_project::TrackDeviceRef::Effect(device) => {
+                            (device, hex_engine::NativeDeviceClass::Effect)
+                        }
+                    };
+                    candidate.id() == device
+                        && candidate_class == class
+                        && candidate.state().type_id() == type_id
+                })
+            }),
+        }
+    }
+
+    pub(super) fn clear_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
+        if self
+            .active_native_device_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == drag.project_generation
+                    && active.revision == drag.revision
+                    && active.source == drag.source
+                    && Rc::ptr_eq(&active.destination, &drag.destination)
+            })
+        {
+            self.active_native_device_drag = None;
+        }
+        drag.destination.set(None);
+    }
+
+    pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
+        let Some(drag) = self.active_native_device_drag.take() else {
+            return false;
+        };
+        drag.destination.set(None);
+        true
     }
 
     pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
