@@ -280,3 +280,53 @@ fn standalone_preparation_rejects_invalid_note_inputs() {
         assert!(settings.prepare_note(rate, pitch, velocity).is_err());
     }
 }
+
+#[test]
+fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
+    let registry = crate::native_instrument_registry().expect("built-in registry");
+    let definition = registry
+        .definition(OPERATOR_TYPE_ID)
+        .expect("Operator is in the native instrument registry");
+    let state = definition.default_state().expect("Operator defaults");
+    assert_eq!(definition.descriptors().len(), 52);
+    let prepared = registry
+        .prepare_instrument(&state, 48_000)
+        .expect("prepared Operator configuration");
+    assert!(matches!(
+        prepared.prepare_note(69, 100),
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    ));
+    let context = prepared
+        .prepare_shared_analytic_context()
+        .expect("shared-context capability")
+        .expect("Operator uses the shared-context path");
+    assert!(context.declared_context_bytes() <= hex_lattice::MAX_SHARED_ANALYTIC_CONTEXT_BYTES);
+
+    let settings = OperatorSettings::from_state(&state).expect("validated settings");
+    let configuration = settings
+        .prepare_configuration(48_000)
+        .expect("standalone oracle configuration");
+    let note = context.prepare_note(69, 100).expect("compact note");
+    assert!(note.payload()[5..].iter().all(|word| *word == 0));
+    let table = crate::shared_sine_table();
+    for gate in [1, 24_000, 48_000] {
+        for age in [
+            0,
+            1,
+            239,
+            gate - 1,
+            gate,
+            gate + 1,
+            gate + note.release_frames(),
+        ] {
+            let expected = configuration.sample(
+                table,
+                &PreparedOperatorNote::from_shared_payload(note.payload())
+                    .expect("prepared compact fields"),
+                age,
+                gate,
+            );
+            assert_eq!(context.sample(&note, age, gate), [expected, expected]);
+        }
+    }
+}

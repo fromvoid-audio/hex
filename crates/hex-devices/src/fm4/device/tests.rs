@@ -280,5 +280,10 @@ fn definition_is_admitted_by_builtin_and_explicit_registries() {
     assert!(registry.definition(FM4_TYPE_ID).is_some());
     let builtins = crate::native_instrument_registry().unwrap();
     assert!(builtins.definition(FM4_TYPE_ID).is_some());
-    assert_eq!(builtins.definitions().len(), 2);
+    assert!(
+        builtins
+            .definition(crate::operator_state::OPERATOR_TYPE_ID)
+            .is_some()
+    );
+    assert_eq!(builtins.definitions().len(), 3);
 }

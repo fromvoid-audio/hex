@@ -659,8 +659,8 @@ Pulse2170: distinct version1 Operator control codec and52 reusable parameter
 descriptors are implemented, with strict224-byte round trips, finite/domain and
 acyclic graph validation, immutable patches and original per-operator defaults.
 All54 device tests pass, including independent PCM field-binding/routing oracles.
-Native registration/UI waits for Pulse2169; existing FM4 state/output stays
-unchanged. Full local CI evidence is tracked in its PR and Pulse ticket.
+Existing FM4 state/output stays unchanged. Full local CI evidence is tracked in
+its PR and Pulse ticket.
 See [control contract](docs/operator-state.md).
 
 Pulse2171: standalone original Operator now supports a584-byte immutable
@@ -668,9 +668,19 @@ configuration and40-byte notes, sharing one private oscillator loop with legacy
 FM4. All57 device tests/strict Clippy pass; independent oracles and exact compact
 PCM match across routing, release, rate and query boundaries. Short paired release
 measurements show similar speed and bounded note-memory reduction, not native
-deadline proof. Host admission/retirement and native Operator remain open under
-2169/19. Full CI evidence is recorded in the focused PR/Pulse ticket.
+deadline proof. Full CI evidence is recorded in the focused PR/Pulse ticket.
 See [compact kernel contract](docs/operator-context.md).
+
+Pulse2172 registers the original bounded acyclic Operator sine core through the
+shared analytic-context instrument API. The generic catalog, 52-parameter view,
+Arrangement/Session compiler, prepared export and callback all use the same
+definition; 40-byte notes borrow one immutable per-instrument context. Independent
+PCM oracles cover Arrangement, Session, seek, loop, changed-state handoff and
+PCM16 export; generic opaque persistence and project undo/redo preserve state.
+The callback allocation probe covers real Operator render, changed-state
+publication, and control retirement. Strict package checks and full local CI are
+pending review. This is not mutable feedback, full Operator, Live parity, or
+native listening acceptance. See [registered instrument contract](docs/operator-native.md).
 
 Pulse2173: current architecture orientation now documents one freely positioned
 instrument, actual prefix/instrument/suffix rendering and the canonical prepared

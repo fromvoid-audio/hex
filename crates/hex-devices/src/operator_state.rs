@@ -1,10 +1,18 @@
-//! Original Operator control state; not registered or exposed in the app yet.
+//! Original Operator control state and registered shared-context instrument.
 //!
 //! Generic opaque version-1 data holds 56 little-endian finite f32 fields.
 //! The old FM4 device keeps its separate type, state layout and global ADSR.
 use crate::{
-    fm4::{OPERATORS, Oscillator, PreparedOperatorConfiguration, PreparedOperatorFm4, Routing},
+    SineTable,
+    fm4::{
+        OPERATORS, Oscillator, PreparedOperatorConfiguration, PreparedOperatorFm4,
+        PreparedOperatorNote, Routing,
+    },
     operator_envelope::OperatorEnvelope,
+};
+use hex_lattice::{
+    NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -243,7 +251,7 @@ impl OperatorSettings {
     }
 }
 
-/// Metadata-only control contract. Registration awaits shared-context ownership.
+/// Generic Operator control metadata and shared analytic instrument definition.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OperatorMetadata;
 pub static OPERATOR_METADATA: OperatorMetadata = OperatorMetadata;
@@ -306,6 +314,88 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         *field = value;
         settings.to_state()
+    }
+}
+
+impl NativeInstrumentDefinition for OperatorMetadata {
+    fn prepare_instrument(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let settings = OperatorSettings::from_state(state)?;
+        let configuration = settings.prepare_configuration(sample_rate)?;
+        // The shared table is initialized on the control side before any
+        // callback can borrow it for note sampling.
+        let sine_table = crate::shared_sine_table();
+        Ok(Box::new(PreparedOperatorInstrument {
+            configuration,
+            sine_table,
+        }))
+    }
+}
+
+struct PreparedOperatorInstrument {
+    configuration: PreparedOperatorConfiguration,
+    sine_table: &'static SineTable,
+}
+
+impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
+        Ok(Some(Box::new(PreparedOperatorContext {
+            configuration: self.configuration.clone(),
+            sine_table: self.sine_table,
+        })))
+    }
+}
+
+struct PreparedOperatorContext {
+    configuration: PreparedOperatorConfiguration,
+    sine_table: &'static SineTable,
+}
+
+impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn declared_context_bytes(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn prepare_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<PreparedSharedAnalyticNote, DeviceContractError> {
+        let note = self
+            .configuration
+            .prepare_note(pitch, velocity)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        Ok(PreparedSharedAnalyticNote::new(
+            note.into_shared_payload(),
+            self.configuration.release_frames(),
+        ))
+    }
+
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age_frames: u64,
+        gate_frames: u64,
+    ) -> StereoFrame {
+        if note.release_frames() != self.configuration.release_frames() {
+            return [0.0; 2];
+        }
+        let Some(note) = PreparedOperatorNote::from_shared_payload(note.payload()) else {
+            return [0.0; 2];
+        };
+        let sample = self
+            .configuration
+            .sample(self.sine_table, &note, age_frames, gate_frames);
+        [sample, sample]
     }
 }
 

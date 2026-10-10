@@ -186,6 +186,60 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
 }
 
 #[test]
+fn registered_operator_nondefault_envelope_roundtrips_as_opaque_state() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "operator state".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+
+    // A valid version-1 Operator envelope expressed only through the existing
+    // opaque state contract; storage must preserve it without a device-codec edge.
+    let mut fields = [0.0_f32; 56];
+    fields[0] = 1.0;
+    fields[1] = 1.0;
+    fields[3] = 2.0;
+    fields[4] = 1.0;
+    fields[6] = 3.0;
+    fields[7] = 1.0;
+    fields[9] = 4.0;
+    fields[10] = 1.0;
+    fields[28] = 0.5;
+    for operator in 0..4 {
+        let offset = 32 + operator * 6;
+        fields[offset..offset + 6].copy_from_slice(&[0.0, 1.0, 0.7, 0.005, 0.1, 0.1]);
+    }
+    let payload = fields.into_iter().flat_map(f32::to_le_bytes).collect();
+    let state = NativeDeviceState::new(
+        DeviceTypeId::new("hex.instrument.operator").unwrap(),
+        1,
+        payload,
+    )
+    .unwrap();
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: instrument,
+            state: state.clone(),
+        })
+        .unwrap();
+
+    let encoded = encode(editor.project()).unwrap();
+    let reopened = decode(&encoded).unwrap();
+    assert_eq!(reopened.device(instrument).unwrap().state(), &state);
+}
+
+#[test]
 fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state() {
     let mut legacy: serde_json::Value =
         serde_json::from_slice(&encode(&project()).unwrap()).unwrap();

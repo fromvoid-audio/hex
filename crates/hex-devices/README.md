@@ -14,11 +14,13 @@ independent finite amplitude laws. A separate
 [standalone enveloped FM composition](../../docs/operator-fm.md) shares the
 oscillator core; neither changes the registered FM4 envelope or state.
 The [Operator control codec](../../docs/operator-state.md) owns a distinct
-versioned opaque state and reusable metadata for those four envelopes. It is
-not registered for native playback yet.
+versioned opaque state and reusable metadata for those four envelopes. The
+metadata registers the original acyclic sine-core Operator as a shared-context
+analytic instrument; this does not admit feedback or full Live Operator behavior.
 The [compact Operator kernel](../../docs/operator-context.md) prepares one
 immutable DSP configuration and40-byte notes without duplicating envelopes or
-the routing graph into each note; host admission/ownership remains separate.
+the routing graph into each note. Registered playback uses a bounded borrowed
+shared context and that compact note representation.
 
 ## Dependencies
 

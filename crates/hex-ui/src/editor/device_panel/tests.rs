@@ -232,7 +232,7 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     visual.run_until_parked();
 
     let source = visual
-        .debug_bounds("browser-device-effect-2")
+        .debug_bounds("browser-device-effect-hex.utility")
         .expect("registered utility in device browser");
     let down = point(
         source.origin.x + source.size.width / 2.0,
@@ -331,7 +331,7 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
         .expect("fixed device panel");
     assert_eq!(panel_before.size.height, px(188.0));
     let source = visual
-        .debug_bounds("browser-device-instrument-1")
+        .debug_bounds("browser-device-instrument-hex.instrument.fm4")
         .expect("registered FM4 browser entry after sine");
     let down = point(
         source.origin.x + source.size.width / 2.0,
@@ -721,7 +721,7 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
     );
 
     let source = visual
-        .debug_bounds("browser-device-effect-2")
+        .debug_bounds("browser-device-effect-hex.utility")
         .expect("registered utility row");
     let down = point(
         source.origin.x + source.size.width / 2.0,
@@ -843,7 +843,7 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     });
 
     let source = visual
-        .debug_bounds("browser-device-effect-2")
+        .debug_bounds("browser-device-effect-hex.utility")
         .expect("registered utility row");
     let card_selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
     let card = visual.debug_bounds(card_selector).expect("device card");

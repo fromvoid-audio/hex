@@ -232,9 +232,18 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let instrument = visual
-        .debug_bounds("browser-device-instrument-0")
+        .debug_bounds("browser-device-instrument-hex.instrument.sine")
         .expect("registered sine instrument row");
-    assert!(visual.debug_bounds("browser-device-effect-2").is_some());
+    assert!(
+        visual
+            .debug_bounds("browser-device-effect-hex.utility")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("browser-device-instrument-hex.instrument.operator")
+            .is_some()
+    );
 
     let down = point(
         instrument.origin.x + instrument.size.width / 2.0,
@@ -302,7 +311,7 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
     visual.run_until_parked();
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
     let instrument = visual
-        .debug_bounds("browser-device-instrument-0")
+        .debug_bounds("browser-device-instrument-hex.instrument.sine")
         .expect("registered sine instrument row");
     let down = point(instrument.center().x, instrument.center().y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
