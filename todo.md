@@ -1239,3 +1239,27 @@ delivered cd71021 app. See [the contract](docs/mutable-transport-loops.md).
 Pulse2220 tracks a pre-existing aggregate event-capacity gap for finite
 Arrangement and Session/source-loop admission. That reliability fix remains a
 separate PR from transport2215. No hosted CI or automatic merge is used.
+
+
+## 10 October 2026 — review61 transport-loop test build
+
+[PR100](https://github.com/PORTALSURFER/hex/pull/100) is ready for review at
+6c3f830; all16 source checks passed20261010T092023Z-84048646, stale=false.
+Full CI caught and repaired a transport clamp affecting linear export; the
+independent export PCM oracles remain unchanged and pass. Combined source
+762aacd passed all16 checks20261010T092025Z-030a9f1f, stale=false. Optimized
+release build took29.38seconds. Strictly verified local ad-hoc app:
+artifacts/hex-lattice-transport-loop-review-20261010-762aacd.app. Its adjacent
+manifest records63 integrated PR links (38–100), exact source and binarySHA256
+2126c6d51eccb34a691f627d6699040fc047510b403d50b27b998ac98021970d.
+Earlier apps remain intact; the app was not launched by the agent.
+
+The app includes the comparator evidence99 and bounded mutable transport
+wrapping100. Sustained MIDI loop playback, save/reopen and ordinary WAV export
+remain user acceptance. Active mutable Arrangement loop-gate tempo/bounds edits
+retain typed refusals; enabled-loop seek/preroll and mutable source-loop linear
+export remain unsupported. Physical deadlines and full Operator parity remain
+open. Pulse2215 is ready_for_review. Pulse2220 aggregate finite/source device
+capacity admission is active on its separate branch and is not included in this
+build. Verified PR links remain in Pulse after attachment registration reached
+100 identities. No hosted CI or automatic merge was used.
