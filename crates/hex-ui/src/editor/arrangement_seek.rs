@@ -5,7 +5,8 @@
 //! graph or touches the audio callback.
 
 use hex_audio::prepared::{
-    Control, FreshRuntimeFence, SESSION_ROUTE_CAPACITY, SessionRouteEntry, SessionRouteOwner,
+    Control, FreshRuntimeCancellationResult, FreshRuntimeFence, SESSION_ROUTE_CAPACITY,
+    SessionRouteEntry, SessionRouteOwner,
 };
 use hex_engine::{PreparedRevision, SessionCapabilityStatus};
 use hex_project::Project;
@@ -134,6 +135,17 @@ pub(super) fn audio_ready_for_seek(control: &Control) -> bool {
     !control.status.device_fault.load(Acquire)
         && !control.status.render_fault.load(Acquire)
         && !control.status.shutdown_complete.load(Acquire)
+}
+
+fn cancel_published_seek(
+    control: Option<&Control>,
+    pending: &mut PendingSeek,
+) -> Option<FreshRuntimeCancellationResult> {
+    let SeekStage::Published { audio_revision } = pending.stage else {
+        return None;
+    };
+    pending.cancelled = true;
+    control.map(|control| control.cancel_fresh_runtime_publication(audio_revision))
 }
 
 pub(super) fn routes_are_current(entries: &[SessionRouteEntry], project: &Project) -> bool {
@@ -519,7 +531,8 @@ impl EditorView {
                 }
             }
             super::arrangement_seek::SeekStage::Published { .. } => {
-                pending.cancelled = true;
+                let control = self.audio.as_ref().map(|audio| &audio.control);
+                super::arrangement_seek::cancel_published_seek(control, &mut pending);
                 self.prepared_seek = Some(pending);
             }
         }

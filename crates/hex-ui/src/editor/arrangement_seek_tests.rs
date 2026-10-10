@@ -1,11 +1,11 @@
 use super::{
-    PendingSeek, SeekIntent, SeekStage, ToggleAction, capture_arrangement_fence,
-    desired_playing_with_pending, latch_latest_intent, requires_preroll,
+    PendingSeek, SeekIntent, SeekStage, ToggleAction, cancel_published_seek,
+    capture_arrangement_fence, desired_playing_with_pending, latch_latest_intent, requires_preroll,
     resolve_prepared_seek_terminal, routes_are_current, toggle_action,
 };
 use hex_audio::prepared::{
-    self, PublicationPolicy, SessionPendingRoute, SessionRouteEntry, SessionRouteOwner,
-    SessionRouteTarget,
+    self, FreshRuntimeCancellationResult, PublicationPolicy, SessionPendingRoute,
+    SessionRouteEntry, SessionRouteOwner, SessionRouteTarget,
 };
 use hex_engine::{NativeDeviceClass, PreparedRevision, SineTable, playback::Playback};
 use hex_lattice_contract::ParameterValue;
@@ -312,5 +312,77 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         latched.take().map(|intent| intent.destination_frame),
         Some(768)
     );
+    control.reclaim();
+}
+
+#[test]
+fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal() {
+    let (mut control, mut callback, project, active_revision) = active_arrangement_control();
+    let prepared = Arc::new(
+        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+            .expect("prepared revision"),
+    );
+    let fence = capture_arrangement_fence(&control, &project, active_revision)
+        .expect("current Arrangement graph is seekable");
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+        .expect("fresh session playback");
+    let audio_revision = control
+        .publish_with_policy(
+            playback,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .expect("publish conditional seek candidate");
+    let intent = SeekIntent {
+        destination_frame: 256,
+        start_playing: true,
+        project_generation: 4,
+        project_revision: 7,
+        prepared_revision: prepared,
+    };
+    let mut pending = PendingSeek::from_intent(11, &intent, fence);
+    pending.stage = SeekStage::Published { audio_revision };
+
+    assert_eq!(
+        cancel_published_seek(Some(&control), &mut pending),
+        Some(FreshRuntimeCancellationResult::Cancelled)
+    );
+    assert!(pending.cancelled);
+    callback.begin_block();
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        active_revision,
+        "the stale seek graph never becomes active"
+    );
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            audio_revision,
+            hex_engine::playback::PlaybackHandoffRejection::FreshRuntimeCancelled
+        ))
+    );
+
+    let mut pending_slot = Some(pending);
+    let mut status = String::from("arrangement seek ready · waiting for audio");
+    let mut error = None;
+    assert!(resolve_prepared_seek_terminal(
+        &mut pending_slot,
+        &mut status,
+        &mut error,
+        active_revision,
+        control.status.rejected_revision(),
+    ));
+    assert!(pending_slot.is_none());
+    assert_eq!(status, "arrangement seek ready · waiting for audio");
+    assert_eq!(error, None, "intentional cancellation is not an error");
+    assert_eq!(
+        control.reclaim(),
+        1,
+        "candidate ownership returns to control"
+    );
+    control.request_shutdown();
+    callback.begin_block();
     control.reclaim();
 }
