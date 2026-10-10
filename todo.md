@@ -62,9 +62,9 @@ stateful runtime 16 admission remains active. Native panel/Utility acceptance st
 Native interaction/listening remains open. See
 [device controls](docs/device-controls.md).
 Pinned main 12 is source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30),
-all 14 clean CI steps passed on `3ee1edd` (270.703 s). Main-project selection 14
-is under focused verification; source checks include mixed-content 100-track
-splitting in one Undo. Empty-project and move-scope regression tests pass after storage recovery; all
+all 14 clean CI steps passed on `3ee1edd` (270.703 s). Main-project selection 14 is source-complete in
+[PR31](https://github.com/PORTALSURFER/hex/pull/31); all 14 clean CI checks passed
+on `373e8c2` (276.455 s), including mixed-content 100-track splitting in one Undo. Empty-project and move-scope regression tests pass after storage recovery; all
 four project split, seven main-row and eighteen edit-cursor tests pass. Native acceptance remains open; see [main track](docs/main-track.md).
 
 ## merged PR history and remaining acceptance
@@ -239,6 +239,8 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   updates. Measure input-to-feedback and completion separately on 1- and 100-track
   dense mixed audio/MIDI fixtures. Both must feel smooth; do not claim total work
   is independent of project size. Future automation joins the same time contract.
+  Source complete in [PR31](https://github.com/PORTALSURFER/hex/pull/31); all 14
+  clean local CI steps passed `373e8c2`. Native interaction and dense timing remain open.
 - [ ] **persistent four-color theme settings** — expose four primary color
   roles in a compact settings menu with simple color pickers and live previews.
   Proposed roles: background, text, primary accent and secondary accent; derive
@@ -308,3 +310,15 @@ remain separate from time editing and DSP.
 
 Publication license, release distribution and additional platforms remain separate
 future decisions. No release or broad compatibility claim is implied by this list.
+
+## storage recovery and retained CI evidence
+
+The user restored disk space after compilation was blocked below 1 GiB.
+[PR32](https://github.com/PORTALSURFER/hex/pull/32), Pulse 72, adds a read-only
+headroom floor and safe manual retention guidance; it deletes nothing. Ten runner
+tests, the real low-space refusal and all 14 normal checks on clean `5033c02`
+(294.905 s, unchanged digest, `stale=false`) pass. Reports are retained under
+`artifacts/local-ci/20261009T180255Z-a9a04b29/` and
+`artifacts/local-ci/20261009T183220Z-a37843f7/`. Native app acceptance and PR
+integration remain distinct from these checks. The full open Pulse backlog
+remains the implementation scope; current checkpoints are not the final build.

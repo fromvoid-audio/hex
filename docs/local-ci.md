@@ -106,5 +106,8 @@ retained `disk_headroom`/`disk_error` and all 14 `not_run` records, and removed
 no files. Report: `artifacts/local-ci/20261009T180255Z-a9a04b29/summary.json`
 (copied to the primary checkout with its identity intact). Ten mocked runner
 tests passed earlier; this refusal is additional failure-path evidence, not
-a successful full CI run. Full normal-path CI and combined bundling await
-restored storage headroom.
+a successful full CI run. After the user restored storage, all 14 normal-path
+checks passed on clean `5033c02` in 294.905 s, with unchanged source digest and
+`stale=false`: `artifacts/local-ci/20261009T183220Z-a37843f7/summary.json`.
+[PR32](https://github.com/PORTALSURFER/hex/pull/32) contains the focused guard.
+The combined application build follows the remaining implementation work.
