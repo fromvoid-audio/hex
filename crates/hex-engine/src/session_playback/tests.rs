@@ -8587,11 +8587,15 @@ fn arrangement_preroll_reconstructs_held_and_released_mutable_feedback() {
         let mut expected = [[0.0; 2]; 193];
         uninterrupted.render(&mut expected).unwrap();
 
-        let mut candidate = caller
+        let candidate = caller
             .prepare_arrangement_preroll(target, target, true, &AtomicBool::new(false))
             .unwrap();
-        assert!(Arc::ptr_eq(&candidate.revision, &prepared));
-        assert_eq!(candidate.arrangement_frame(), target);
+        let mut candidate = Playback::from_arrangement_preroll(candidate).unwrap();
+        assert!(Arc::ptr_eq(
+            candidate.prepared_revision().expect("prepared revision"),
+            &prepared
+        ));
+        assert_eq!(candidate.position(), target);
         assert_eq!(candidate.performance_frame(), target);
         assert!(candidate.playing());
         let mut actual = [[0.0; 2]; 193];

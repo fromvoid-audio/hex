@@ -109,6 +109,46 @@ leaves the app offline with a retry path.
 
 This is a source-implemented recovery path, not verified physical device recovery:
 native failure/reopen, rate-mismatch interaction and listening remain untested.
+
+## Arrangement seek candidate preparation — Pulse2188
+
+`hex-session::ArrangementSeekWorker` owns a dedicated control thread, independent
+of canonical edits and export. It admits one running request and one replaceable
+pending request, and retains at most one completed result. Admission is
+nonblocking with respect to preroll and result consumption. New admission cancels
+the running request, replaces pending work, and removes an unread result;
+explicit invalidation cancels and clears the same state. The candidate is
+prepared directly from the exact immutable `Arc<PreparedRevision>` through the
+bounded engine preroll API, avoiding a throwaway source runtime. Wrapping the
+result in `Playback` preserves that runtime, exact graph Arc, performance and
+Arrangement frames, and requested play state without calling `Seek` afterward.
+
+The result echoes request ID, caller generation/revision, exact prepared Arc,
+destination frame, work budget and desired play state for a later caller-side
+admission check. Engine limits remain 8,388,608 replay frames and 32 MiB accounted
+candidate runtime storage, with <=256-frame cancellation checks and a 2,048-byte
+render scratch allowance inside the preroll storage budget. Shared immutable
+prepared graph data is not duplicated or charged to the runtime budget. There
+are at most two request metadata/Arc-handle slots and one candidate runtime
+(running or ready); the second slot is pending work only. A completed but unread
+runtime moves into one worker-owned retirement slot on new admission or
+invalidation. If that slot is occupied, the stale ready value stays in its own
+fixed slot; both are drained before any pending candidate construction. The
+normal path retains one candidate runtime. Defensive double-stale state is
+bounded by two 32 MiB runtime slots, and performs no new preroll until drained.
+Teardown cancels, wakes, and detaches without joining; the worker drains its
+owned pending/retired/in-flight/result state before exit. Replaced pending
+request metadata and its prepared-revision `Arc` are dropped by the submitter
+after unlocking, while unread runtime `Playback` destruction stays on the
+worker. A latency-sensitive caller must retain its audible/current prepared
+revision owners across supersede or invalidation until worker ownership drains;
+this API does not guarantee that final immutable graph release avoids the
+caller thread. The candidate uses the
+linear Arrangement-only policy: Session route actions and interactive native
+promotion are unsupported. This remains candidate preparation only: no UI
+handoff, live route ownership, project supersede/Stop fence or audio publication
+is included. The caller must compare generation/revision and use the later
+native admission and promotion contract before installing any result.
 Canonical startup now opens output on the same bounded lifecycle worker. A
 font-validated loading window owns the pending handle; a weak polling task and
 non-owning window handle replace its root with the editor when output is ready.
