@@ -137,7 +137,10 @@ fn assert_matches_previous_full_evaluation(
     for velocity in [1, 91, 127] {
         let prepared =
             PreparedFm4::new(sample_rate, pitch, velocity, oscillators, routing, envelope).unwrap();
-        assert_eq!(prepared.levels.map(|level| level != 0.0), expected_audible);
+        assert_eq!(
+            prepared.core.levels.map(|level| level != 0.0),
+            expected_audible
+        );
         let packed = prepared.into_analytic_note();
         for gate in [0, 1, 37, 713, 2_147] {
             for age in [0, 1, 37, 96, 712, 713, 714, 1_000, 2_147, 3_347] {
