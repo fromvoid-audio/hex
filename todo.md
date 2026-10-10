@@ -1163,3 +1163,19 @@ peak/high-water stack measurement. Commands, raw logs, toolchain and executable
 hashes are in[the evidence](docs/playback-stack.md). Affected debug/release
 probes, strict feature-enabled engineClippy, formatting and architecture guards
 pass. No production storage/DSP/schema change.
+
+## 10 October2026 — review59 integration checkpoint
+
+Return residual ownership is[PR97](https://github.com/PORTALSURFER/hex/pull/97),
+sourceff7cbbc. An old immediate-cut Return integration assertion was replaced
+with an uninterrupted zero-fed filter oracle; all10 Return routing tests pass.
+Its full local pipeline is rerunning after that repair. Constructor stack
+evidence is[PR96](https://github.com/PORTALSURFER/hex/pull/96), source5707ae7;
+its affected debug/release probes and strict checks pass. Both are combined on
+`codex/lattice-review-59` for exact combined validation. The delivered e2b92a6
+app remains unchanged and does not include96/97. No new native acceptance or
+merge is claimed.
+
+Pulse2165 is split into mutable source loops2214 (active) and transport seam/
+loop-start chase2215 (todo, depends on2214). The existing transport-loop refusal
+remains until bounded gates, chase, identity/capacity and rollback are verified.
