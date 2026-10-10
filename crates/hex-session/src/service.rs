@@ -138,6 +138,11 @@ pub enum Request {
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
         before: Option<hex_project::DeviceId>,
     },
+    ReplaceNativeDevice {
+        device: hex_project::DeviceId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: Box<hex_lattice_contract::DeviceTypeId>,
+    },
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -812,57 +817,93 @@ fn run_worker(
                     class,
                     type_id,
                     before,
-                } => match hex_engine::default_native_device_state_for_class(class, *type_id) {
-                    Ok(state) => {
-                        let command = match class {
-                            hex_engine::NativeDeviceClass::Effect => Ok(Command::InsertDevice {
-                                track: track_id,
-                                before,
-                                state,
-                            }),
-                            hex_engine::NativeDeviceClass::Instrument if before.is_none() => {
-                                match session
-                                    .project()
-                                    .track(track_id)
-                                    .ok_or(SessionError::Invalid("track no longer exists"))
-                                {
-                                    Ok(track) => match track.instrument() {
-                                        Some(instrument) => Ok(Command::ReplaceDeviceState {
-                                            device: instrument.id(),
-                                            state,
-                                        }),
-                                        None => Ok(Command::InsertInstrument {
-                                            track: track_id,
-                                            state,
-                                        }),
-                                    },
-                                    Err(error) => Err(error),
+                } => {
+                    let command = match class {
+                        hex_engine::NativeDeviceClass::Effect => {
+                            hex_engine::default_native_device_state_for_class(class, *type_id).map(
+                                |state| Command::InsertDevice {
+                                    track: track_id,
+                                    before,
+                                    state,
+                                },
+                            )
+                        }
+                        hex_engine::NativeDeviceClass::Instrument if before.is_some() => {
+                            Err(hex_engine::Invalid(
+                                "instruments cannot be inserted at an effect anchor",
+                            ))
+                        }
+                        hex_engine::NativeDeviceClass::Instrument => session
+                            .project()
+                            .track(track_id)
+                            .ok_or(hex_engine::Invalid("track no longer exists"))
+                            .and_then(|track| {
+                                if track.instrument().is_some() {
+                                    return Err(hex_engine::Invalid(
+                                        "instrument slot is already occupied",
+                                    ));
                                 }
-                            }
-                            hex_engine::NativeDeviceClass::Instrument => {
-                                Err(SessionError::Invalid("instruments cannot be reordered"))
-                            }
-                        };
-                        let before_project = session.project().clone();
-                        let edit = command.and_then(|command| {
-                            session.command_prepared_revision(
+                                hex_engine::default_native_device_state_for_class(class, *type_id)
+                                    .map(|state| Command::InsertInstrument {
+                                        track: track_id,
+                                        state,
+                                    })
+                            }),
+                    };
+                    match command {
+                        Ok(command) => {
+                            let before_project = session.project().clone();
+                            match session.command_prepared_revision(
                                 command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            )
-                        });
-                        match edit {
-                            Ok((result, prepared)) if session.project() != &before_project => {
-                                unsaved = true;
-                                replacement_revision = Some(prepared);
-                                created = Some(result);
-                                status = Some("device added".into());
+                            ) {
+                                Ok((result, prepared)) if session.project() != &before_project => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    created = Some(result);
+                                    status = Some("device added".into());
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
                             }
-                            Ok(_) => status = Some("no change".into()),
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
                         }
+                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
                     }
-                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                },
+                }
+                Request::ReplaceNativeDevice {
+                    device,
+                    class,
+                    type_id,
+                } => {
+                    let replacement = session
+                        .native_device_class(device)
+                        .map_err(|reason| reason.to_string().to_lowercase())
+                        .and_then(|actual_class| {
+                            if actual_class != class {
+                                return Err("replacement class does not match device".to_owned());
+                            }
+                            hex_engine::default_native_device_state_for_class(class, *type_id)
+                                .map_err(|reason| reason.to_string().to_lowercase())
+                        });
+                    match replacement {
+                        Ok(state) => {
+                            let before_project = session.project().clone();
+                            match session.command_prepared_revision(
+                                Command::ReplaceDeviceState { device, state },
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before_project => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some("device replaced".into());
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::SetDeviceParameter {
                     device,
                     parameter,
@@ -2114,6 +2155,7 @@ mod service_tests {
             .and_then(|track| track.instrument())
             .expect("default instrument slot");
         let id = instrument.id();
+        let removed_id = id;
         let sine_type = instrument.state().type_id();
 
         service
@@ -2186,6 +2228,18 @@ mod service_tests {
             .expect("instrument inserted into empty slot")
             .id();
         assert_ne!(id, instrument.id(), "a removed device id is not reused");
+        assert_eq!(
+            inserted
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
+            id,
+            "an instrument added to an empty slot occupies the canonical instrument position"
+        );
         service
             .submit(Request::Undo)
             .expect("undo instrument insertion");
@@ -2223,6 +2277,7 @@ mod service_tests {
             .expect("bypass instrument");
         let bypassed = next_event(&service);
         assert!(bypassed.state.project.device(id).unwrap().bypassed());
+        let before_add = bypassed.state.clone();
         service
             .submit(Request::AddNativeDevice {
                 track,
@@ -2230,7 +2285,24 @@ mod service_tests {
                 type_id: Box::new(sine_type),
                 before: None,
             })
-            .expect("replace instrument through the class-aware add request");
+            .expect("add instrument request");
+        let rejected_add = next_event(&service);
+        assert_eq!(
+            rejected_add.error.as_deref(),
+            Some("instrument slot is already occupied")
+        );
+        assert_eq!(rejected_add.state.revision, before_add.revision);
+        assert_eq!(rejected_add.state.project, before_add.project);
+        assert_eq!(rejected_add.state.can_undo, before_add.can_undo);
+        assert!(rejected_add.playback.is_none());
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device: id,
+                class: NativeDeviceClass::Instrument,
+                type_id: Box::new(sine_type),
+            })
+            .expect("explicit instrument replacement request");
         let replacement = next_event(&service);
         assert!(replacement.error.is_none());
         let instrument = replacement
@@ -2248,6 +2320,11 @@ mod service_tests {
         assert!(
             instrument.bypassed(),
             "replacement keeps the current bypass flag"
+        );
+        assert_eq!(replacement.state.revision, rejected_add.state.revision);
+        assert!(
+            replacement.playback.is_none(),
+            "same-state replacement is a no-op"
         );
 
         let directory = TestDir::new();
@@ -2286,6 +2363,164 @@ mod service_tests {
             Some("native device default state is invalid")
         );
         assert_eq!(wrong_class.state.revision, replacement.state.revision);
+        assert!(wrong_class.playback.is_none());
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device: instrument.id(),
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(sine_type),
+            })
+            .expect("replacement with the wrong class");
+        let wrong_replacement_class = next_event(&service);
+        assert_eq!(
+            wrong_replacement_class.error.as_deref(),
+            Some("replacement class does not match device")
+        );
+        assert_eq!(
+            wrong_replacement_class.state.revision,
+            replacement.state.revision
+        );
+        assert!(wrong_replacement_class.playback.is_none());
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device: instrument.id(),
+                class: NativeDeviceClass::Instrument,
+                type_id: Box::new(
+                    hex_lattice_contract::DeviceTypeId::new("hex.instrument.unknown").unwrap(),
+                ),
+            })
+            .expect("replacement with an unregistered type");
+        let unsupported_replacement = next_event(&service);
+        assert_eq!(
+            unsupported_replacement.error.as_deref(),
+            Some("native instrument default state is invalid")
+        );
+        assert_eq!(
+            unsupported_replacement.state.revision,
+            replacement.state.revision
+        );
+        assert!(unsupported_replacement.playback.is_none());
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device: removed_id,
+                class: NativeDeviceClass::Instrument,
+                type_id: Box::new(sine_type),
+            })
+            .expect("replacement for a removed device");
+        let missing_replacement = next_event(&service);
+        assert_eq!(
+            missing_replacement.error.as_deref(),
+            Some("device no longer exists")
+        );
+        assert_eq!(
+            missing_replacement.state.revision,
+            replacement.state.revision
+        );
+        assert!(missing_replacement.playback.is_none());
+    }
+
+    #[test]
+    fn explicit_effect_replacement_preserves_identity_order_bypass_and_undo() {
+        use hex_engine::NativeDeviceClass;
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "effect replacement".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let utility = DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(utility),
+                before: None,
+            })
+            .expect("add utility");
+        let added = next_event(&service);
+        assert!(added.error.is_none());
+        let device = added.state.project.track(track).unwrap().devices()[0].id();
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: ParameterId::new(1).unwrap(),
+                value: ParameterValue::Float(2.0),
+            })
+            .expect("change utility gain");
+        let changed = next_event(&service);
+        assert!(changed.error.is_none());
+        service
+            .submit(Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }))
+            .expect("bypass utility");
+        let bypassed = next_event(&service);
+        let prior_track = bypassed.state.project.track(track).unwrap();
+        let prior_order: Vec<_> = prior_track
+            .devices()
+            .iter()
+            .map(|entry| entry.id())
+            .collect();
+        assert_eq!(prior_order, vec![device]);
+        assert!(prior_track.devices()[0].bypassed());
+
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(utility),
+            })
+            .expect("replace Utility explicitly");
+        let replaced = next_event(&service);
+        assert!(replaced.error.is_none());
+        assert!(replaced.playback.is_some());
+        let replacement_track = replaced.state.project.track(track).unwrap();
+        assert_eq!(
+            replacement_track
+                .devices()
+                .iter()
+                .map(|entry| entry.id())
+                .collect::<Vec<_>>(),
+            prior_order
+        );
+        let replacement = replaced.state.project.device(device).unwrap();
+        assert!(replacement.bypassed());
+        assert_eq!(
+            hex_engine::native_device_parameter(replacement.state(), ParameterId::new(1).unwrap())
+                .unwrap(),
+            ParameterValue::Float(1.0),
+            "replacement restores the selected type's default parameter state"
+        );
+
+        service.submit(Request::Undo).expect("undo replacement");
+        let undone = next_event(&service);
+        let restored = undone.state.project.device(device).unwrap();
+        assert!(restored.bypassed());
+        assert_eq!(
+            hex_engine::native_device_parameter(restored.state(), ParameterId::new(1).unwrap())
+                .unwrap(),
+            ParameterValue::Float(2.0)
+        );
+        assert_eq!(
+            undone
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .devices()
+                .iter()
+                .map(|entry| entry.id())
+                .collect::<Vec<_>>(),
+            prior_order
+        );
     }
 
     #[test]

@@ -557,7 +557,7 @@ fn render_track(
         root = root.child(render_add_menu(
             cx,
             track_id,
-            instrument.is_some(),
+            instrument.as_ref().map(|device| device.id()),
             effect_catalog,
             instrument_catalog,
         ));
@@ -731,7 +731,7 @@ fn instrument_actions(
 fn render_add_menu(
     cx: &mut Context<EditorView>,
     track: TrackId,
-    instrument_present: bool,
+    instrument: Option<DeviceId>,
     effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
     instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
@@ -763,7 +763,7 @@ fn render_add_menu(
                         NativeDeviceClass::Instrument => "instrument",
                     };
                     let action_id = format!("add-native-{class_label}-{type_label}");
-                    let label = if class == NativeDeviceClass::Instrument && instrument_present {
+                    let label = if class == NativeDeviceClass::Instrument && instrument.is_some() {
                         format!("replace · {}", entry.name)
                     } else {
                         format!("{class_label} · {}", entry.name)
@@ -782,13 +782,23 @@ fn render_add_menu(
                             .cursor(gpui::CursorStyle::PointingHand)
                             .child(theme::text(label))
                             .on_click(cx.listener(move |view, _, _, cx| {
-                                if finalize_controls(view, cx)
-                                    && view.enqueue_device_barrier(Request::AddNativeDevice {
+                                let request = match (class, instrument) {
+                                    (NativeDeviceClass::Instrument, Some(device)) => {
+                                        Request::ReplaceNativeDevice {
+                                            device,
+                                            class,
+                                            type_id: Box::new(type_id),
+                                        }
+                                    }
+                                    _ => Request::AddNativeDevice {
                                         track,
                                         class,
                                         type_id: Box::new(type_id),
                                         before: None,
-                                    })
+                                    },
+                                };
+                                if finalize_controls(view, cx)
+                                    && view.enqueue_device_barrier(request)
                                 {
                                     view.device_panel.add_menu_open = false;
                                     view.device_panel.message = None;
