@@ -277,7 +277,16 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             if entry.bypassed {
                 if let Some(runtime) = entry.scratch.as_mut() {
-                    runtime.process_bypassed_block(frames);
+                    if entry.matrix.is_identity() {
+                        runtime.process_bypassed_block(frames);
+                    } else {
+                        for frame in frames.iter_mut() {
+                            let audible = *frame;
+                            let mut internal = entry.matrix.apply(audible);
+                            runtime.process_bypassed_block(std::slice::from_mut(&mut internal));
+                            *frame = audible;
+                        }
+                    }
                 }
             } else {
                 entry.matrix.apply_block(frames);
@@ -786,5 +795,73 @@ mod tests {
         let mut reset_history = [[1.0, 1.0]];
         incompatible_rate.process_block(&mut reset_history);
         assert_eq!(reset_history, [[1.0, 1.0]]);
+    }
+
+    #[test]
+    fn bypass_advances_history_after_matrix_without_changing_dry_pcm() {
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&IndependentDefinition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepared = registry
+            .prepare_processor(
+                &registry
+                    .default_state(DeviceTypeId::from_static("test.independent"))
+                    .unwrap(),
+                48_000,
+            )
+            .unwrap()
+            .unwrap();
+        let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
+        let matrix = StereoMatrix::new([[2.0, 0.0], [0.0, 2.0]]).unwrap();
+        let make_chain = |bypassed| {
+            NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                track_id: 3,
+                device_id: 9,
+                device_type: DeviceTypeId::from_static("test.independent"),
+                matrix,
+                bypassed,
+                sample_rate: 48_000,
+                definition: Some(std::sync::Arc::clone(&prepared)),
+            }])
+            .unwrap()
+        };
+        let mut bypassed = make_chain(true);
+        let mut active_reference = make_chain(false);
+        let warmup = [[0.25, -0.125], [0.5, 0.75], [-0.25, 0.375]];
+        let mut dry = warmup;
+
+        bypassed.begin_block();
+        // Different chunking must not change the state advanced while bypassed.
+        bypassed.process_block(&mut dry[..1]);
+        bypassed.process_block(&mut dry[1..]);
+        bypassed.commit_block();
+
+        active_reference.begin_block();
+        let mut audible_reference = warmup;
+        active_reference.process_block(&mut audible_reference);
+        active_reference.commit_block();
+
+        for (actual, original) in dry.iter().zip(warmup) {
+            assert_eq!(
+                [actual[0].to_bits(), actual[1].to_bits()],
+                [original[0].to_bits(), original[1].to_bits()],
+                "bypass must preserve the original samples exactly"
+            );
+        }
+
+        // Re-enable both processors and compare their output. Their hidden
+        // histories must match the active reference despite bypass chunking.
+        bypassed.entries[0].bypassed = false;
+        let resumed = [[0.125, -0.125], [0.0, 0.25]];
+        let mut resumed_bypassed = resumed;
+        let mut resumed_reference = resumed;
+        bypassed.begin_block();
+        bypassed.process_block(&mut resumed_bypassed[..1]);
+        bypassed.process_block(&mut resumed_bypassed[1..]);
+        bypassed.commit_block();
+        active_reference.begin_block();
+        active_reference.process_block(&mut resumed_reference);
+        active_reference.commit_block();
+
+        assert_eq!(resumed_bypassed, resumed_reference);
     }
 }
