@@ -180,6 +180,17 @@ pub(super) fn control_style() -> ControlStyle {
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
 /// A bad typed value stays in its field and blocks the caller.
 pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> bool {
+    finalize_controls_except(view, cx, &[])
+}
+
+/// Finish every device edit except controls whose pointer-down must continue
+/// into a new gesture in the same update (for example an Operator shell row
+/// that is changing which oscillator is shown in the center panel).
+pub(super) fn finalize_controls_except(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    excluded: &[ParameterKey],
+) -> bool {
     retire_removed_send_controls(view, cx);
     let mut first_error = None;
     let active = view
@@ -188,6 +199,9 @@ pub(super) fn finalize_controls(view: &mut EditorView, cx: &mut Context<EditorVi
         .map(|snapshot| snapshot.target);
     let mut controls = Vec::new();
     for (key, control) in &view.device_panel.controls {
+        if excluded.contains(key) {
+            continue;
+        }
         if let ParameterControl::Float { entity, .. } = control {
             controls.push((
                 GestureTarget::DeviceParameter {
@@ -2259,6 +2273,28 @@ fn create_parameter_control(
             };
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+                    if event.phase == NumericEventPhase::Begin
+                        && identity.class == NativeDeviceClass::Instrument
+                        && identity.type_id.as_str() == Ok("hex.instrument.operator")
+                        && let Some(operator) =
+                            operator_panel::shell_operator_for_numeric_parameter(key.parameter)
+                    {
+                        let context = operator_panel::OperatorPanelState {
+                            selected_operator: operator,
+                            page: operator_panel::OperatorPage::Oscillator,
+                        };
+                        if view
+                            .device_panel
+                            .operator_pages
+                            .get(&key.device)
+                            .copied()
+                            .unwrap_or_default()
+                            != context
+                            && finalize_controls_except(view, cx, &[key])
+                        {
+                            view.device_panel.operator_pages.insert(key.device, context);
+                        }
+                    }
                     let value = ParameterValue::Float(event.value as f32);
                     if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
                         && event.phase != NumericEventPhase::Cancel

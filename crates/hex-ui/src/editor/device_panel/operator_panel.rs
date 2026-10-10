@@ -1,7 +1,8 @@
 //! Compact Operator composition backed by the shared device control entities.
 use super::{
     ControlPresentation, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, finalize_controls, parameter_control_with_presentation,
+    effective_parameter_value, finalize_controls, finalize_controls_except,
+    parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
@@ -30,6 +31,15 @@ pub(super) enum OperatorPage {
 
 const fn id(value: u32) -> ParameterId {
     ParameterId::from_static(value)
+}
+
+pub(super) fn shell_operator_for_numeric_parameter(parameter: ParameterId) -> Option<usize> {
+    let value = parameter.value();
+    match value {
+        1..=12 if value % 3 != 0 => Some(((value - 1) / 3) as usize),
+        63..=73 if (value - 63) % 3 != 2 => Some(((value - 63) / 3) as usize),
+        _ => None,
+    }
 }
 
 pub(super) fn render_body(
@@ -160,22 +170,24 @@ fn operator_row(
     let fixed = matches!(fixed_value, Some(ParameterValue::Bool(true)));
     let primary_id = if fixed { fixed_id + 1 } else { base };
     let multiplier_id = fixed_id + 2;
-    let level = compact_control(
+    let level = shell_control(
         view,
         cx,
         device,
         identity,
         parameters,
+        operator,
         id(base + 1),
         ControlPresentation::MiniDial,
         Some("level"),
     );
-    let primary = compact_control(
+    let primary = shell_control(
         view,
         cx,
         device,
         identity,
         parameters,
+        operator,
         id(primary_id),
         ControlPresentation::MiniDial,
         Some(if fixed { "freq" } else { "ratio" }),
@@ -201,24 +213,26 @@ fn operator_row(
         .child(level)
         .child(primary);
     if fixed {
-        let multiplier = compact_control(
+        let multiplier = shell_control(
             view,
             cx,
             device,
             identity,
             parameters,
+            operator,
             id(multiplier_id),
             ControlPresentation::MiniDial,
             Some("multi"),
         );
         row = row.child(multiplier);
     }
-    let fixed_control = compact_control(
+    let fixed_control = shell_control(
         view,
         cx,
         device,
         identity,
         parameters,
+        operator,
         id(fixed_id),
         ControlPresentation::CompactButton,
         Some("fix"),
@@ -651,6 +665,57 @@ fn compact_control(
         presentation,
         label,
         None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Keeps row context and the shared control binding explicit.
+fn shell_control(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+    operator: usize,
+    parameter_id: ParameterId,
+    presentation: ControlPresentation,
+    label: Option<&'static str>,
+) -> Div {
+    let control = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        parameter_id,
+        presentation,
+        label,
+    );
+    let key = ParameterKey {
+        device,
+        parameter: parameter_id,
+    };
+    let target = OperatorPanelState {
+        selected_operator: operator,
+        page: OperatorPage::Oscillator,
+    };
+    control.on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |view, _, _, cx| {
+            if view
+                .device_panel
+                .operator_pages
+                .get(&device)
+                .copied()
+                .unwrap_or_default()
+                == target
+            {
+                return;
+            }
+            if finalize_controls_except(view, cx, &[key]) {
+                view.device_panel.operator_pages.insert(device, target);
+                cx.notify();
+            }
+        }),
     )
 }
 

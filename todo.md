@@ -1582,3 +1582,17 @@ values and Operator page state before rendering the replacement. Targeted
 Session and GPUI replacement tests pass, including wrong/stale targets, the
 right edge of the wide Operator card, UI cache retirement and Undo. Full local
 CI and native pointer acceptance remain pending.
+
+### 2026-10-10 — Operator shell controls follow oscillator focus
+
+Pulse2248: pressing an Operator shell level, ratio/frequency or fixed-multiplier
+control selects its oscillator in the center detail and returns to the oscillator
+page. The stable device/parameter control remains active for the same drag; a
+focused shell numeric adjustment also follows its oscillator before dispatch.
+Only the initiating control is excluded while other drafts are validated, so an
+invalid draft continues to block hiding its detail and other devices remain
+unchanged. The rendered GPUI regression covers all four rows, popup dismissal,
+invalid drafts, one-step drag/Undo, focused Up-key editing, stationary typing and
+neighboring Utility state. Focused test passes; full local CI, PR review and
+native visual acceptance remain pending. See [Operator shell context contract]
+(docs/operator-context.md#shell-to-detail-selection-contract).
