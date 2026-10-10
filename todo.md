@@ -1544,3 +1544,33 @@ choice selection, outside/Escape dismissal and placement. No agent app launch
 or automatic merge. Native visual/input acceptance remains open; earlier apps
 remain intact. Attachment cap100 prevents attaching PR106/107 in Codex; verified
 links are preserved in Pulse and here. Operator composition2233 remains separate.
+
+
+### 2026-10-10 — dedicated Operator UI on the shared Utility baseline
+
+[PR108](https://github.com/PORTALSURFER/hex/pull/108) adds a580px compact
+Operator composition on frozen review68, including Utility105/commonframes106/
+foregroundselectors107. Four D/C/B/A oscillator rows stay visible; full-width
+ideal cycle, authored envelope and labelled source/target/output FM views expose
+all77 registered controls. Shared MiniDial density, bounded curve renderer and
+common numeric codecs preserve the Lattice library boundary. Canonical edits,
+invalid-draft hiding prevention, selector dismissal and project/device page-state
+retirement are source-tested. No DSP/schema or active-retarget behavior changes.
+
+Focused codedca30f8 and combined7a7c7d9 pass all16 localCI checks, clean/stale=false:
+20261010T133700Z-9c78f548 and20261010T133701Z-11001199. Targeted35 device-panel
+tests and31 widget tests pass; final source review resolves fixed-mode sizing
+and routing headers. Fresh optimized release17.78s, strict ad-hoc signature and
+independent executableSHA25678ef924db386b0d724a1aacee8e8ff283cecb17acaf74536f92c8df035a0a396
+verify. App: artifacts/hex-operator-ui-review-20261010-7a7c7d9.app; siblingmanifest
+records source7a7c7d9ef18222cbe092e9232c1ed83396bc8714 and71 integratedPRlinks.
+Later documentation-only delivery commits do not alter that artifact's source
+identity. Earlier apps remain intact. Native visual/input/listening acceptance
+is pending user testing; no app launch or automatic merge.
+
+Pulse2233 owns review. Real draggable envelope breakpoints2247 and automatic
+shell-to-display context2248 remain separate todo PRs; current curves are
+read-only previews, and full Live DSP/UI parity is not established. Test Utility/
+Operator shared styling, oscillator/fixed tuning and dropdowns, envelope/routing
+values with drag/type/Undo, device reorder/remove and save/reopen. Codexattachment
+cap100 prevents attaching108; verified link is retained in Pulse and here.
