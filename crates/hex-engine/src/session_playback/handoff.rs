@@ -1,6 +1,41 @@
 use super::*;
 use crate::MidiTiming;
 
+fn validate_tail_suffix(
+    chain: &hex_lattice::NativeRuntimeChain,
+    suffix_start: usize,
+    sample_rate: u32,
+) -> Result<usize, SessionPlaybackError> {
+    let suffix_range = suffix_start..chain.len();
+    let tail = chain
+        .output_tail_for_range(suffix_range.clone())
+        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    if let hex_lattice::OutputTail::Finite { max_tail_frames } = tail {
+        let horizon = u64::from(sample_rate)
+            .checked_mul(MAX_FINITE_EFFECT_TAIL_SECONDS)
+            .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        if max_tail_frames > horizon {
+            return Err(SessionPlaybackError::ReleaseBankFull);
+        }
+    }
+    Ok(suffix_range.len())
+}
+
+fn tail_runtime_suffix_start(
+    chain: &hex_lattice::NativeRuntimeChain,
+    instrument_position: usize,
+) -> Result<usize, SessionPlaybackError> {
+    if chain.is_empty() {
+        // Fully memoryless chains are fused into the track's captured prefix
+        // and suffix matrices, so they have no runtime entries to skip.
+        Ok(0)
+    } else if instrument_position <= chain.len() {
+        Ok(instrument_position)
+    } else {
+        Err(SessionPlaybackError::DeviceRuntime)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct MutableCandidateSpan {
     signature: crate::mutable_instrument::MutableOccurrenceSignature,
@@ -172,50 +207,6 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
         }
-        for (new_index, new_route) in self.routes.iter().enumerate() {
-            if let Some(old_index) = previous
-                .routes
-                .iter()
-                .position(|old_route| old_route.id == new_route.id)
-            {
-                let candidate = self
-                    .device_chains
-                    .get(new_index)
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                let old = previous
-                    .device_chains
-                    .get(old_index)
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                let excluded_old_range = if previous
-                    .mutable_instruments
-                    .get(old_index)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|runtime| !runtime.committed_is_quiescent())
-                {
-                    let track = previous
-                        .revision
-                        .arrangement()
-                        .tracks()
-                        .get(old_index)
-                        .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    let suffix_start = track.instrument_position();
-                    if suffix_start > old.len() {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
-                    Some(suffix_start..old.len())
-                } else {
-                    None
-                };
-                let can_inherit = excluded_old_range.map_or_else(
-                    || candidate.can_inherit_from(old),
-                    |range| candidate.can_inherit_from_excluding_old_range(old, range),
-                );
-                if !can_inherit {
-                    return Err(SessionPlaybackError::DeviceRuntime);
-                }
-            }
-        }
-
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
@@ -1381,6 +1372,18 @@ impl SessionPlayback {
                 .checked_add(tail.runtime.max_active_occurrences())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
         }
+        for (slot, output_active) in previous.tail_output_active.iter().copied().enumerate() {
+            if !output_active {
+                continue;
+            }
+            let Some(active) = active_tail_groups.get_mut(slot) else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            if previous.tail_groups.get(slot).is_none_or(Option::is_none) {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            *active = true;
+        }
         if active_tail_groups.iter().enumerate().any(|(slot, active)| {
             *active
                 && (self.tail_groups.get(slot).is_none_or(Option::is_some)
@@ -1400,8 +1403,11 @@ impl SessionPlayback {
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
+        let mut old_track_tail_output_active = [false; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
         let mut tail_runtime_bytes = 0_usize;
+        let mut suffix_entry_count = 0_usize;
+        let sample_rate = self.revision.arrangement().sample_rate();
         for (slot, active) in active_tail_groups.iter().copied().enumerate() {
             if !active {
                 continue;
@@ -1411,6 +1417,18 @@ impl SessionPlayback {
                 .get(slot)
                 .and_then(Option::as_ref)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let suffix_start = previous
+                .tail_suffix_starts
+                .get(slot)
+                .copied()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let suffix_entries = validate_tail_suffix(chain, suffix_start, sample_rate)?;
+            suffix_entry_count = suffix_entry_count
+                .checked_add(suffix_entries)
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
             tail_processor_count = tail_processor_count
                 .checked_add(chain.stateful_count())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
@@ -1459,6 +1477,8 @@ impl SessionPlayback {
                 .tracks()
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let suffix_start =
+                tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
             if !old_track.instrument_suffix_needs_tail() {
                 continue;
             }
@@ -1487,14 +1507,20 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             if let Some(metadata) = old_track_tail_metadata.get_mut(old_index) {
-                *metadata = Some((
-                    old_track.instrument_position(),
-                    old_track.instrument_suffix_matrix(),
-                ));
+                *metadata = Some((suffix_start, old_track.instrument_suffix_matrix()));
             } else {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
+            if let Some(active) = old_track_tail_output_active.get_mut(old_index) {
+                *active = !old_chain.committed_range_is_quiescent(suffix_start..old_chain.len());
+            } else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
             if !already_assigned {
+                let suffix_entries = validate_tail_suffix(old_chain, suffix_start, sample_rate)?;
+                suffix_entry_count = suffix_entry_count
+                    .checked_add(suffix_entries)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_processor_count = tail_processor_count
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
@@ -1506,6 +1532,7 @@ impl SessionPlayback {
                     || tail_runtime_bytes
                         > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
                             * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                    || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
                 }
@@ -1515,6 +1542,105 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             release.track_index = usize::MAX;
+        }
+
+        // A source can be silent while its committed effect suffix still has
+        // delayed or recursive output. Retain that old suffix even when no
+        // MIDI release owner is available to carry it.
+        for old_index in 0..previous.routes.len() {
+            let old_route = previous
+                .routes
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if old_track_tail_slots
+                .get(old_index)
+                .copied()
+                .flatten()
+                .is_some()
+            {
+                continue;
+            }
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let old_chain = previous
+                .device_chains
+                .get(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let suffix_start =
+                tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
+            *old_track_tail_output_active
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? =
+                !old_chain.committed_range_is_quiescent(suffix_start..old_chain.len());
+            let candidate_index = self
+                .routes
+                .iter()
+                .position(|route| route.id == old_route.id);
+            let detached = candidate_index.is_none_or(|candidate_index| {
+                let Some(candidate_track) =
+                    self.revision.arrangement().tracks().get(candidate_index)
+                else {
+                    return true;
+                };
+                let Some(candidate_chain) = self.device_chains.get(candidate_index) else {
+                    return true;
+                };
+                let candidate_suffix_start = candidate_track.instrument_position();
+                old_track.instrument_position() != candidate_suffix_start
+                    || old_track.mix() != candidate_track.mix()
+                    || old_track.instrument_suffix_matrix()
+                        != candidate_track.instrument_suffix_matrix()
+                    || old_chain.len() != candidate_chain.len()
+                    || !old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len())
+            });
+            if !detached || old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
+                continue;
+            }
+            let Some(slot) = (0..self.tail_groups.len()).find(|slot| {
+                self.tail_groups.get(*slot).is_some_and(Option::is_none)
+                    && self
+                        .tail_mutable_instruments
+                        .get(*slot)
+                        .is_some_and(Option::is_none)
+                    && !active_tail_groups.get(*slot).copied().unwrap_or(true)
+                    && !old_track_tail_slots.contains(&Some(*slot))
+                    && !old_track_mutable_tail_slots.contains(&Some(*slot))
+            }) else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            };
+            let suffix_entries = validate_tail_suffix(old_chain, suffix_start, sample_rate)?;
+            suffix_entry_count = suffix_entry_count
+                .checked_add(suffix_entries)
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            tail_processor_count = tail_processor_count
+                .checked_add(old_chain.stateful_count())
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            tail_runtime_bytes = tail_runtime_bytes
+                .checked_add(old_chain.declared_runtime_bytes())
+                .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+                || tail_runtime_bytes
+                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
+                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            *old_track_tail_slots
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? = Some(slot);
+            *old_track_tail_metadata
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? =
+                Some((suffix_start, old_track.instrument_suffix_matrix()));
+            *old_track_tail_output_active
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
         }
 
         // Mutable occurrences keep their original absolute performance-frame
@@ -1560,6 +1686,12 @@ impl SessionPlayback {
                 .device_chains
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let suffix_start =
+                tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
+            *old_track_tail_output_active
+                .get_mut(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? =
+                !old_chain.committed_range_is_quiescent(suffix_start..old_chain.len());
             let existing_slot = old_track_tail_slots.get(old_index).copied().flatten();
             let slot = existing_slot.or_else(|| {
                 (0..self.tail_groups.len()).find(|slot| {
@@ -1586,10 +1718,12 @@ impl SessionPlayback {
             }
             if old_track_tail_slots[old_index].is_none() {
                 old_track_tail_slots[old_index] = Some(slot);
-                old_track_tail_metadata[old_index] = Some((
-                    old_track.instrument_position(),
-                    old_track.instrument_suffix_matrix(),
-                ));
+                old_track_tail_metadata[old_index] =
+                    Some((suffix_start, old_track.instrument_suffix_matrix()));
+                let suffix_entries = validate_tail_suffix(old_chain, suffix_start, sample_rate)?;
+                suffix_entry_count = suffix_entry_count
+                    .checked_add(suffix_entries)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_processor_count = tail_processor_count
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
@@ -1611,6 +1745,7 @@ impl SessionPlayback {
                 || tail_runtime_bytes
                     > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
                         * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 || reserved_tail_voices > self.release_capacity
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1619,6 +1754,53 @@ impl SessionPlayback {
         }
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
+
+        // Check every candidate history copy against the final tail-retention
+        // plan before any runtime owner is moved or mutated.
+        for (old_index, old_route) in previous.routes.iter().enumerate() {
+            let Some(new_index) = self
+                .routes
+                .iter()
+                .position(|route| route.id == old_route.id)
+            else {
+                continue;
+            };
+            let candidate = self
+                .device_chains
+                .get(new_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let old = previous
+                .device_chains
+                .get(old_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let excluded_old_range = if old_track_tail_slots
+                .get(old_index)
+                .copied()
+                .flatten()
+                .is_some()
+            {
+                let track = previous
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(old_index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let suffix_start = track.instrument_position();
+                if suffix_start > old.len() {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                Some(suffix_start..old.len())
+            } else {
+                None
+            };
+            let can_inherit = excluded_old_range.map_or_else(
+                || candidate.can_inherit_from(old),
+                |range| candidate.can_inherit_from_excluding_old_range(old, range),
+            );
+            if !can_inherit {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+        }
 
         self.preflight_shared_context_leases(previous)?;
 
@@ -1662,7 +1844,7 @@ impl SessionPlayback {
                     self.device_chains.get_mut(new_index),
                     previous.device_chains.get(old_index),
                 ) {
-                    let excluded_old_range = if old_track_mutable_tail_slots
+                    let excluded_old_range = if old_track_tail_slots
                         .get(old_index)
                         .copied()
                         .flatten()
@@ -1674,10 +1856,8 @@ impl SessionPlayback {
                             .tracks()
                             .get(old_index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
-                        let suffix_start = old_track.instrument_position();
-                        if suffix_start > old.len() {
-                            return Err(SessionPlaybackError::DeviceRuntime);
-                        }
+                        let suffix_start =
+                            tail_runtime_suffix_start(old, old_track.instrument_position())?;
                         Some(suffix_start..old.len())
                     } else {
                         None
@@ -1705,6 +1885,18 @@ impl SessionPlayback {
                 )
             {
                 std::mem::swap(candidate, previous_group);
+                if let (Some(candidate_active), Some(previous_active)) = (
+                    self.tail_output_active.get_mut(slot),
+                    previous.tail_output_active.get(slot).copied(),
+                ) {
+                    *candidate_active = previous_active;
+                }
+                if let (Some(candidate_scratch), Some(previous_scratch)) = (
+                    self.tail_output_scratch.get_mut(slot),
+                    previous.tail_output_active.get(slot).copied(),
+                ) {
+                    *candidate_scratch = previous_scratch;
+                }
                 if let (Some(candidate_mix), Some(previous_mix)) = (
                     self.tail_mixes.get_mut(slot),
                     previous.tail_mixes.get(slot).copied(),
@@ -1749,6 +1941,15 @@ impl SessionPlayback {
                     old_chain,
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
+                if let (Some(active), Some(prepared_active)) = (
+                    self.tail_output_active.get_mut(slot),
+                    old_track_tail_output_active.get(old_index).copied(),
+                ) {
+                    *active = prepared_active;
+                    if let Some(scratch) = self.tail_output_scratch.get_mut(slot) {
+                        *scratch = prepared_active;
+                    }
+                }
                 if let (Some(tail_mix), Some(old_track)) = (
                     self.tail_mixes.get_mut(slot),
                     previous.revision.arrangement().tracks().get(old_index),

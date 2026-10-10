@@ -155,6 +155,12 @@ pub struct PreparedProcessorInstance {
     pub matrix: StereoMatrix,
     pub bypassed: bool,
     pub sample_rate: u32,
+    /// Exact migrated configuration used to prepare this processor. Production
+    /// compilation supplies this shared immutable state so revision
+    /// handoff can distinguish unchanged settings from compatible history
+    /// edits. Synthetic instances may omit it; callers must then conservatively
+    /// treat configuration identity as unknown.
+    pub configuration: Option<std::sync::Arc<NativeDeviceState>>,
     pub definition: Option<std::sync::Arc<dyn PreparedNativeProcessor>>,
 }
 
@@ -172,6 +178,7 @@ impl fmt::Debug for PreparedProcessorInstance {
             .field("matrix", &self.matrix)
             .field("bypassed", &self.bypassed)
             .field("sample_rate", &self.sample_rate)
+            .field("has_configuration_identity", &self.configuration.is_some())
             .field("stateful", &self.definition.is_some())
             .finish()
     }
@@ -185,6 +192,8 @@ struct RuntimeEntry {
     bypassed: bool,
     runtime_version: u32,
     sample_rate: u32,
+    configuration: Option<std::sync::Arc<NativeDeviceState>>,
+    output_tail: OutputTail,
     primary: Option<Box<dyn NativeProcessorRuntime>>,
     scratch: Option<Box<dyn NativeProcessorRuntime>>,
 }
@@ -220,31 +229,32 @@ impl NativeRuntimeChain {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             instance.device_type.validate()?;
-            let (runtime_version, primary, scratch) = if let Some(definition) = &instance.definition
-            {
-                let bytes = definition.declared_runtime_bytes();
-                if definition.runtime_version() == 0 || bytes > MAX_PROCESSOR_RUNTIME_BYTES {
-                    return Err(DeviceContractError::RuntimeBudgetExceeded);
-                }
-                stateful_count = stateful_count
-                    .checked_add(1)
-                    .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                declared_bytes = declared_bytes
-                    .checked_add(bytes)
-                    .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                if stateful_count > MAX_STATEFUL_PROCESSORS
-                    || declared_bytes > MAX_STATEFUL_PROCESSORS * MAX_PROCESSOR_RUNTIME_BYTES
-                {
-                    return Err(DeviceContractError::RuntimeBudgetExceeded);
-                }
-                (
-                    definition.runtime_version(),
-                    Some(definition.create_runtime()),
-                    Some(definition.create_runtime()),
-                )
-            } else {
-                (0, None, None)
-            };
+            let (runtime_version, output_tail, primary, scratch) =
+                if let Some(definition) = &instance.definition {
+                    let bytes = definition.declared_runtime_bytes();
+                    if definition.runtime_version() == 0 || bytes > MAX_PROCESSOR_RUNTIME_BYTES {
+                        return Err(DeviceContractError::RuntimeBudgetExceeded);
+                    }
+                    stateful_count = stateful_count
+                        .checked_add(1)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    declared_bytes = declared_bytes
+                        .checked_add(bytes)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    if stateful_count > MAX_STATEFUL_PROCESSORS
+                        || declared_bytes > MAX_STATEFUL_PROCESSORS * MAX_PROCESSOR_RUNTIME_BYTES
+                    {
+                        return Err(DeviceContractError::RuntimeBudgetExceeded);
+                    }
+                    (
+                        definition.runtime_version(),
+                        definition.output_tail(),
+                        Some(definition.create_runtime()),
+                        Some(definition.create_runtime()),
+                    )
+                } else {
+                    (0, OutputTail::Finite { max_tail_frames: 0 }, None, None)
+                };
             entries.push(RuntimeEntry {
                 owner: instance.owner,
                 device_id: instance.device_id,
@@ -253,6 +263,8 @@ impl NativeRuntimeChain {
                 bypassed: instance.bypassed,
                 runtime_version,
                 sample_rate: instance.sample_rate,
+                configuration: instance.configuration,
+                output_tail,
                 primary,
                 scratch,
             });
@@ -269,8 +281,11 @@ impl NativeRuntimeChain {
     }
 
     /// Account the chain's owned control/audio runtime storage, excluding
-    /// allocator bookkeeping and the shared prepared device definitions.
-    /// Stateful payload bytes use each processor's declared fixed storage.
+    /// allocator bookkeeping and shared prepared metadata (processor
+    /// definitions and immutable `NativeDeviceState` payloads). Stateful DSP
+    /// payload bytes use each processor's declared fixed storage. The
+    /// configuration Arc handle stored in each runtime entry is included in
+    /// the entry's `size_of` charge; its separately shared allocation is not.
     pub fn accounted_storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>()
             .checked_add(
@@ -318,6 +333,91 @@ impl NativeRuntimeChain {
 
     pub const fn declared_runtime_bytes(&self) -> usize {
         self.declared_runtime_bytes
+    }
+
+    /// Whether a same-position range has exact immutable processor
+    /// configuration identity, in addition to its prepared processing
+    /// semantics. Missing synthetic identities compare conservatively false.
+    /// Revision handoff can call this on the audio callback; it can inspect up to
+    /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
+    /// worst case; the shared payload allocations themselves are not copied.
+    pub fn configuration_matches_range(&self, other: &Self, range: std::ops::Range<usize>) -> bool {
+        if range.start > range.end
+            || range.end > self.entries.len()
+            || range.end > other.entries.len()
+        {
+            return false;
+        }
+        self.entries[range.clone()]
+            .iter()
+            .zip(&other.entries[range])
+            .all(|(left, right)| {
+                left.owner == right.owner
+                    && left.device_id == right.device_id
+                    && left.device_type == right.device_type
+                    && left.runtime_version == right.runtime_version
+                    && left.sample_rate == right.sample_rate
+                    && left.bypassed == right.bypassed
+                    && left.matrix == right.matrix
+                    && match (&left.configuration, &right.configuration) {
+                        (Some(left), Some(right)) => {
+                            std::sync::Arc::ptr_eq(left, right) || left == right
+                        }
+                        _ => false,
+                    }
+            })
+    }
+
+    /// Combine prepared output-tail declarations for a serial range. A range
+    /// with any unbounded processor is unbounded; finite declarations add with
+    /// checked arithmetic. Invalid ranges return `None`.
+    pub fn output_tail_for_range(&self, range: std::ops::Range<usize>) -> Option<OutputTail> {
+        if range.start > range.end || range.end > self.entries.len() {
+            return None;
+        }
+        let entries = &self.entries[range];
+        if entries
+            .iter()
+            .any(|entry| entry.output_tail == OutputTail::Unbounded)
+        {
+            return Some(OutputTail::Unbounded);
+        }
+        let finite_frames = entries.iter().try_fold(0_u64, |total, entry| {
+            let OutputTail::Finite { max_tail_frames } = entry.output_tail else {
+                return None;
+            };
+            total.checked_add(max_tail_frames)
+        })?;
+        Some(OutputTail::Finite {
+            max_tail_frames: finite_frames,
+        })
+    }
+
+    /// True only when every committed processor in a valid range has no
+    /// future output under zero input. Invalid ranges conservatively return
+    /// false. Stateless matrix entries are immediately quiescent.
+    pub fn committed_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
+        range.start <= range.end
+            && range.end <= self.entries.len()
+            && self.entries[range].iter().all(|entry| {
+                entry
+                    .primary
+                    .as_deref()
+                    .is_none_or(|runtime| runtime.is_quiescent())
+            })
+    }
+
+    /// Speculative counterpart used only after processing scratch state in the
+    /// current uncommitted render block.
+    pub fn speculative_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
+        range.start <= range.end
+            && range.end <= self.entries.len()
+            && self.entries[range].iter().all(|entry| {
+                entry
+                    .scratch
+                    .as_deref()
+                    .is_none_or(|runtime| runtime.is_quiescent())
+            })
     }
 
     /// Preflight every twin before copying any state. Matching identities whose
@@ -962,6 +1062,114 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chain_combines_tail_ranges_and_queries_committed_and_speculative_quiescence() {
+        let finite: std::sync::Arc<dyn PreparedNativeProcessor> =
+            std::sync::Arc::new(DelayedTailPrepared);
+        let unbounded: std::sync::Arc<dyn PreparedNativeProcessor> =
+            std::sync::Arc::new(IndependentPrepared(1));
+        let instance = |device_id, definition| PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Track(3),
+            device_id,
+            device_type: DeviceTypeId::from_static("test.tail"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: Some(definition),
+        };
+        let matrix_only = PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Track(3),
+            device_id: 1,
+            device_type: DeviceTypeId::from_static("test.matrix"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: None,
+        };
+        let mut chain = NativeRuntimeChain::new(vec![
+            matrix_only,
+            instance(2, std::sync::Arc::clone(&finite)),
+            instance(3, std::sync::Arc::clone(&finite)),
+        ])
+        .unwrap();
+        assert_eq!(
+            chain.output_tail_for_range(0..3),
+            Some(OutputTail::Finite { max_tail_frames: 6 })
+        );
+        assert_eq!(
+            chain.output_tail_for_range(1..2),
+            Some(OutputTail::Finite { max_tail_frames: 3 })
+        );
+        assert_eq!(
+            chain.output_tail_for_range(3..3),
+            Some(OutputTail::Finite { max_tail_frames: 0 })
+        );
+        assert_eq!(chain.output_tail_for_range(0..4), None);
+        assert_eq!(
+            chain.output_tail_for_range(std::ops::Range { start: 2, end: 1 }),
+            None
+        );
+        assert!(chain.committed_range_is_quiescent(1..3));
+        chain.begin_block();
+        let mut impulse = [[1.0, -1.0]];
+        chain.process_range(1..3, &mut impulse).unwrap();
+        assert!(!chain.speculative_range_is_quiescent(1..3));
+        assert!(chain.committed_range_is_quiescent(1..3));
+        chain.commit_block();
+        assert!(!chain.committed_range_is_quiescent(1..3));
+
+        let unbounded_chain = NativeRuntimeChain::new(vec![instance(4, unbounded)]).unwrap();
+        assert_eq!(
+            unbounded_chain.output_tail_for_range(0..1),
+            Some(OutputTail::Unbounded)
+        );
+        assert_eq!(
+            unbounded_chain.output_tail_for_range(0..0),
+            Some(OutputTail::Finite { max_tail_frames: 0 })
+        );
+    }
+
+    #[test]
+    fn configuration_range_requires_exact_shared_state_and_prepared_semantics() {
+        let device_type = DeviceTypeId::from_static("test.config");
+        let configuration =
+            || std::sync::Arc::new(NativeDeviceState::new(device_type, 1, vec![1, 2, 3]).unwrap());
+        let instance = |configuration, bypassed| PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Track(3),
+            device_id: 9,
+            device_type,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration,
+            definition: None,
+        };
+        let old = NativeRuntimeChain::new(vec![instance(Some(configuration()), false)]).unwrap();
+        let same_content =
+            NativeRuntimeChain::new(vec![instance(Some(configuration()), false)]).unwrap();
+        let changed = NativeRuntimeChain::new(vec![instance(
+            Some(std::sync::Arc::new(
+                NativeDeviceState::new(device_type, 1, vec![1, 2, 4]).unwrap(),
+            )),
+            false,
+        )])
+        .unwrap();
+        let missing = NativeRuntimeChain::new(vec![instance(None, false)]).unwrap();
+        let bypassed =
+            NativeRuntimeChain::new(vec![instance(Some(configuration()), true)]).unwrap();
+
+        assert!(old.configuration_matches_range(&same_content, 0..1));
+        assert!(!old.configuration_matches_range(&changed, 0..1));
+        assert!(!old.configuration_matches_range(&missing, 0..1));
+        assert!(!old.configuration_matches_range(&bypassed, 0..1));
+        assert!(!old.configuration_matches_range(&same_content, 0..2));
+        assert!(
+            !old.configuration_matches_range(&same_content, std::ops::Range { start: 1, end: 0 })
+        );
+    }
+
     impl NativeProcessorRuntime for IncompatibleRuntime {
         fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
         fn reset(&mut self) {}
@@ -1011,6 +1219,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
+            configuration: None,
             definition: Some(std::sync::Arc::from(prepared)),
         }])
         .unwrap();
@@ -1045,6 +1254,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
+            configuration: None,
             definition: Some(std::sync::Arc::from(prepared)),
         }])
         .unwrap();
@@ -1071,6 +1281,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 44_100,
+            configuration: None,
             definition: Some(std::sync::Arc::from(prepared)),
         }])
         .unwrap();
@@ -1103,6 +1314,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
+            configuration: None,
             definition: Some(std::sync::Arc::clone(&prepared)),
         };
         let mut previous = NativeRuntimeChain::new(vec![instance(9), instance(10)]).unwrap();
@@ -1149,6 +1361,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
+            configuration: None,
             definition: Some(std::sync::Arc::clone(&prepared)),
         };
         let previous = NativeRuntimeChain::new(vec![instance()]).unwrap();
@@ -1185,6 +1398,7 @@ mod tests {
             matrix: StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
+            configuration: None,
             definition: Some(std::sync::Arc::clone(&prepared)),
         };
         let mut chain = NativeRuntimeChain::new(vec![make_instance(9), make_instance(10)]).unwrap();

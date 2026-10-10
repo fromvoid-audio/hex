@@ -438,6 +438,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
             matrix: TestDevice.prepare_matrix(&state).unwrap(),
             bypassed: false,
             sample_rate,
+            configuration: Some(Arc::new(state)),
             definition: Some(Arc::from(processor)),
         }
     };

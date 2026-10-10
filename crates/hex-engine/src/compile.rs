@@ -539,6 +539,7 @@ fn compile_effect_devices(
             matrix: prepared,
             bypassed: device.bypassed(),
             sample_rate,
+            configuration: Some(std::sync::Arc::new(migrated)),
             definition: processor,
         });
     }
