@@ -388,18 +388,32 @@ Existing source-start semantics are preserved: a note onset before the initial
 `source_start` is not chased, and notes beginning before `loop_start` occur only
 in the intro even when their gates extend into the loop interval.
 
-The admission change does not enable Arrangement transport-loop wrapping for a
-mutable instrument. Its separate refusal remains in place because one mutable
-voice may need history across a discontinuous transport wrap. Linear
-Arrangement export keeps its monotonic source timeline and continues to refuse
-mutable Arrangement source loops. In interactive playback, looped Arrangement
-source occurrences remain finite at the clip's Arrangement end. Source-template period, density,
-beat-domain, span and event limits continue to refuse invalid or excessive
-work before a prepared revision is published.
+Mutable Arrangement instruments now support bounded interactive transport-loop
+wrapping. The initial pass preserves already-sounding notes across the first
+natural arrival at `loop_start`, without an extra attack. On actual wraps, active
+notes authored before `loop_start` receive fresh attacks whose gates end at the
+authored gate end or exclusive `loop_end`, whichever comes first. Notes authored
+inside the loop keep their phase. The checked transport pass joins source
+iteration in the occurrence identity. Before runtime construction, admission
+proves the 256-frame onset ceiling, periodic voice/release overlap, ordered
+NoteOn/NoteOff edge capacity and intro-tail first-wrap seam for each mutable
+track. Event and voice limits respect the smaller of each device's declared
+capacity and the engine capacity. Spans are bounded and collected fallibly; dense
+or unsupported loop configurations are refused. Tempo-map edits are refused
+while a mutable Arrangement loop gate is active, preserving the old playback
+until gate-deadline reconciliation is supported. Finite source
+loop occurrences still stop at the Arrangement clip end. Linear Arrangement
+export retains its monotonic source timeline and continues to refuse mutable
+Arrangement source loops. Seek/preroll note chase remains unsupported.
 
 Source tests compare trimmed Session intro/repeat events with an authored-frame
 oracle, check loop-end gate clipping and unique iteration IDs, compare render
-partitions of 1/17/127/256 frames, and enumerate finite Arrangement spans.
+partitions of 1/17/127/256 frames, enumerate finite Arrangement spans, and
+compare interactive transport-loop PCM with an independently expanded
+Arrangement oracle across multiple wraps. They also cover dense short-loop
+rejection, first-wrap release density, device-declared capacities, aggregate
+ordered-event density, release-only handoff filtering, tempo-edit refusal with
+old-PCM continuity, linear-export refusal and transport-pass overflow rollback.
 An allocation-probe test covers repeated Session source events through the
 prepared audio callback and requires zero total and signed-net allocations.
 These are headless source checks; native device, audible deadline and broader

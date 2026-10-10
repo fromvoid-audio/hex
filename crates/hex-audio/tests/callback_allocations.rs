@@ -2809,3 +2809,81 @@ fn mutable_session_source_loop_callback_is_allocation_and_deallocation_free()
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "transport loop".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(3, 2)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: (RATE / 2) as u64,
+        end: RATE as u64,
+        enabled: true,
+    })?;
+
+    let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial transport-loop publication failed")?;
+    control
+        .session_command_with_ticket(SessionPlaybackCommand::Play)
+        .map_err(|_| "transport-loop Play admission failed")?;
+
+    let mut output = [[0.0; 2]; 128];
+    let mut heard_note = false;
+    // Cross the loop start, then the first actual wrap and repeated chase.
+    for _ in 0..800 {
+        measured_block(&mut callback, &mut output);
+        heard_note |= output.iter().any(|frame| frame[0] != 0.0);
+    }
+    assert!(
+        heard_note,
+        "Arrangement loop fixture rendered no instrument audio"
+    );
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}

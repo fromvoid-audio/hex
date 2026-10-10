@@ -18,6 +18,7 @@ use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
 mod mutable_checkpoint;
+mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
@@ -110,7 +111,9 @@ pub enum SessionPlaybackError {
     MutableInstrumentRuntime,
     MutableInstrumentEvents,
     MutableInstrumentLoopUnsupported,
+    MutableInstrumentLoopDensity,
     MutableInstrumentActive,
+    MutableInstrumentLoopBoundsActive,
     MutableInstrumentRouteBoundary,
     MutableInstrumentChase,
     SharedAnalyticContext,
@@ -148,8 +151,14 @@ impl fmt::Display for SessionPlaybackError {
                 Self::MutableInstrumentLoopUnsupported => {
                     "mutable instrument source loops are unsupported by this playback mode"
                 }
+                Self::MutableInstrumentLoopDensity => {
+                    "mutable instrument transport loop exceeds bounded event or voice density"
+                }
                 Self::MutableInstrumentActive => {
                     "mutable instrument must become quiescent before this route change"
+                }
+                Self::MutableInstrumentLoopBoundsActive => {
+                    "transport loop bounds cannot change while a mutable Arrangement gate is active"
                 }
                 Self::MutableInstrumentRouteBoundary => {
                     "quantized route changes are not admitted for mutable instruments"
@@ -381,15 +390,34 @@ impl SessionPlayback {
             && arrangement_tracks
                 .iter()
                 .any(|track| track.has_mutable_looping_source());
-        let mutable_transport_loop = !linear_arrangement_export
-            && revision
+        if mutable_arrangement_source_loop {
+            return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
+        }
+        if !linear_arrangement_export
+            && let Some(region) = revision
                 .arrangement()
                 .loop_region()
-                .is_some_and(|region| region.enabled());
-        if revision.session().has_mutable_instruments()
-            && (mutable_arrangement_source_loop || mutable_transport_loop)
+                .filter(|region| region.enabled())
         {
-            return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
+            for track in arrangement_tracks {
+                if !track.has_mutable_instrument() {
+                    continue;
+                }
+                let id = track
+                    .canonical_track_id()
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                let factory = revision
+                    .session()
+                    .mutable_instrument_factory(id)
+                    .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+                transport_loop_admission::admit_track(
+                    track,
+                    region,
+                    factory.max_release_tail_frames(),
+                    factory.max_events_per_block(),
+                    factory.max_active_occurrences(),
+                )?;
+            }
         }
 
         let release_capacity = SESSION_RELEASE_CAPACITY;

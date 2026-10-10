@@ -2,9 +2,66 @@
 use super::super::MidiTemplateError;
 use super::VoiceSpan;
 
+#[derive(Clone, Copy)]
+pub(crate) struct DensitySpan {
+    pub(crate) start: u64,
+    pub(crate) gate_end: u64,
+    pub(crate) raw_end: u128,
+}
+
+trait DensityView {
+    fn start(&self) -> u64;
+    fn gate_end(&self) -> u64;
+    fn raw_end(&self) -> u128;
+}
+
+impl DensityView for VoiceSpan {
+    fn start(&self) -> u64 {
+        self.start
+    }
+    fn gate_end(&self) -> u64 {
+        self.gate_end
+    }
+    fn raw_end(&self) -> u128 {
+        self.raw_end
+    }
+}
+
+impl DensityView for DensitySpan {
+    fn start(&self) -> u64 {
+        self.start
+    }
+    fn gate_end(&self) -> u64 {
+        self.gate_end
+    }
+    fn raw_end(&self) -> u128 {
+        self.raw_end
+    }
+}
+
 pub(super) fn admit_voice_density(
     intro: &[VoiceSpan],
     repeats: &[VoiceSpan],
+    first_pass: u64,
+    period: Option<u64>,
+    release_raw: u64,
+) -> Result<usize, MidiTemplateError> {
+    admit_density(intro, repeats, first_pass, period, release_raw)
+}
+
+pub(super) fn admit_transport_loop_density(
+    intro: &[DensitySpan],
+    repeats: &[DensitySpan],
+    first_pass: u64,
+    period: u64,
+    release_raw: u64,
+) -> Result<usize, MidiTemplateError> {
+    admit_density(intro, repeats, first_pass, Some(period), release_raw)
+}
+
+fn admit_density<S: DensityView>(
+    intro: &[S],
+    repeats: &[S],
     first_pass: u64,
     period: Option<u64>,
     release_raw: u64,
@@ -37,9 +94,9 @@ struct TailEvent {
 
 /// Measures the finite, one-sided repeat tail while intro releases remain
 /// active. Repeat occurrences before the first pass are intentionally absent.
-fn maximum_first_tail_overlap(
-    intro: &[VoiceSpan],
-    repeats: &[VoiceSpan],
+fn maximum_first_tail_overlap<S: DensityView>(
+    intro: &[S],
+    repeats: &[S],
     first_pass: u64,
     period: u64,
     release_raw: u64,
@@ -48,14 +105,14 @@ fn maximum_first_tail_overlap(
     let release_raw = u128::from(release_raw);
     if intro
         .iter()
-        .any(|span| span.start < first_pass as u64 && u128::from(span.gate_end) > first_pass)
+        .any(|span| span.start() < first_pass as u64 && u128::from(span.gate_end()) > first_pass)
     {
         return Err(MidiTemplateError::SpanAdmissionWorkBoundExceeded);
     }
     let horizon = intro
         .iter()
-        .filter(|span| span.start < first_pass as u64)
-        .filter_map(|span| span.raw_end.checked_sub(first_pass))
+        .filter(|span| span.start() < first_pass as u64)
+        .filter_map(|span| span.raw_end().checked_sub(first_pass))
         .filter(|tail| *tail > 0)
         .max()
         .unwrap_or(0);
@@ -68,7 +125,7 @@ fn maximum_first_tail_overlap(
     if repeats.is_empty() {
         return Ok(intro
             .iter()
-            .filter(|span| span.start < first_pass as u64 && span.raw_end > first_pass)
+            .filter(|span| span.start() < first_pass as u64 && span.raw_end() > first_pass)
             .count());
     }
 
@@ -108,9 +165,9 @@ fn maximum_first_tail_overlap(
         .map_err(|_| MidiTemplateError::Allocation)?;
 
     for span in intro {
-        if span.start < first_pass as u64 && span.raw_end > first_pass {
+        if span.start() < first_pass as u64 && span.raw_end() > first_pass {
             intro_active += 1;
-            let end = span.raw_end - first_pass;
+            let end = span.raw_end() - first_pass;
             if end < horizon {
                 events.push(TailEvent {
                     position: end,
@@ -121,7 +178,7 @@ fn maximum_first_tail_overlap(
     }
     let mut occurrence_count = 0_usize;
     for span in repeats {
-        let phase = u128::from(span.start);
+        let phase = u128::from(span.start());
         if phase >= period {
             return Err(MidiTemplateError::SpanAdmissionWorkBoundExceeded);
         }
@@ -129,8 +186,8 @@ fn maximum_first_tail_overlap(
             continue;
         }
         let duration = span
-            .raw_end
-            .checked_sub(u128::from(span.start))
+            .raw_end()
+            .checked_sub(u128::from(span.start()))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         if duration < release_raw {
             return Err(MidiTemplateError::SpanAdmissionWorkBoundExceeded);
@@ -188,7 +245,7 @@ fn maximum_first_tail_overlap(
     Ok(maximum)
 }
 
-fn maximum_linear_overlap(spans: &[VoiceSpan]) -> Result<usize, MidiTemplateError> {
+fn maximum_linear_overlap<S: DensityView>(spans: &[S]) -> Result<usize, MidiTemplateError> {
     let capacity = spans
         .len()
         .checked_mul(2)
@@ -198,8 +255,8 @@ fn maximum_linear_overlap(spans: &[VoiceSpan]) -> Result<usize, MidiTemplateErro
         .try_reserve_exact(capacity)
         .map_err(|_| MidiTemplateError::Allocation)?;
     for span in spans {
-        points.push((u128::from(span.start), true));
-        points.push((span.raw_end, false));
+        points.push((u128::from(span.start()), true));
+        points.push((span.raw_end(), false));
     }
     points.sort_unstable_by_key(|(position, is_start)| (*position, *is_start));
     let mut active = 0_usize;
@@ -215,22 +272,25 @@ fn maximum_linear_overlap(spans: &[VoiceSpan]) -> Result<usize, MidiTemplateErro
     Ok(maximum)
 }
 
-fn maximum_periodic_overlap(spans: &[VoiceSpan], period: u64) -> Result<usize, MidiTemplateError> {
+fn maximum_periodic_overlap<S: DensityView>(
+    spans: &[S],
+    period: u64,
+) -> Result<usize, MidiTemplateError> {
     let p = u128::from(period);
     let mut baseline = 0_u128;
     let mut arcs = Vec::new();
     arcs.try_reserve_exact(spans.len())
         .map_err(|_| MidiTemplateError::Allocation)?;
     for span in spans {
-        let length = u128::from(span.gate_end - span.start)
-            .checked_add(span.raw_end - u128::from(span.gate_end))
+        let length = u128::from(span.gate_end() - span.start())
+            .checked_add(span.raw_end() - u128::from(span.gate_end()))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         baseline = baseline
             .checked_add(length / p)
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         let residual = length % p;
         if residual > 0 {
-            arcs.push((u128::from(span.start), residual));
+            arcs.push((u128::from(span.start()), residual));
         }
     }
     let residual_max = maximum_cyclic_arc_overlap(&arcs, p)?;
@@ -285,7 +345,10 @@ fn maximum_cyclic_arc_overlap(
 
 #[cfg(test)]
 mod tests {
-    use super::{maximum_cyclic_arc_overlap, maximum_first_tail_overlap};
+    use super::{
+        DensitySpan, admit_transport_loop_density, maximum_cyclic_arc_overlap,
+        maximum_first_tail_overlap,
+    };
     use crate::midi_template::spans::VoiceSpan;
     use hex_lattice::PreparedAnalyticNote;
     use hex_project::{BeatTime, Command, Created, Editor, NoteId, Project};
@@ -460,6 +523,24 @@ mod tests {
         assert_eq!(
             maximum_first_tail_overlap(&intro, &repeats, 1, 1, 100),
             Err(crate::midi_template::MidiTemplateError::SpanAdmissionWorkBoundExceeded)
+        );
+    }
+
+    #[test]
+    fn transport_loop_first_seam_includes_intro_release_voices() {
+        let intro = [DensitySpan {
+            start: 0,
+            gate_end: 20,
+            raw_end: 25,
+        }];
+        let repeats = [DensitySpan {
+            start: 0,
+            gate_end: 10,
+            raw_end: 20,
+        }];
+        assert_eq!(
+            admit_transport_loop_density(&intro, &repeats, 20, 100, 10).unwrap(),
+            2
         );
     }
 }
