@@ -54,3 +54,11 @@ Caller-owned styles can update existing numeric/toggle/selector/color-picker con
 replacing active entities or numeric drafts. Numeric text selections derive their
 tint from the injected accent and surface. Application theme persistence remains
 outside this crate.
+
+Selectors render choices in a deferred anchored foreground popup. Menus escape
+ancestor clipping, retain the field width, flip at window boundaries and scroll
+long lists within the viewport. Popup hitboxes occlude underlying controls;
+option clicks select once and stop propagation. Escape, outside click, blur and
+disabling close the popup. Opening it does not change the field footprint.
+A cached content-box measurement refreshes only when bounds change. These are
+shared Lattice widget behaviors, with Utility as the current testbed.

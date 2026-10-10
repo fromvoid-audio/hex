@@ -86,6 +86,58 @@ struct DiscreteTestRoot {
     key_events: Rc<Cell<usize>>,
 }
 
+struct ClippedSelectorRoot {
+    selector: Entity<Selector>,
+    underlying_clicks: Rc<Cell<usize>>,
+    outside_focus: FocusHandle,
+    top_offset: f32,
+}
+
+impl Render for ClippedSelectorRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let underlying_clicks = self.underlying_clicks.clone();
+        let outside_focus = self.outside_focus.clone();
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .child(
+                div()
+                    .id("selector-clipped-parent")
+                    .debug_selector(|| "selector-clipped-parent".to_owned())
+                    .relative()
+                    .mt(px(self.top_offset))
+                    .w(px(140.0))
+                    .h(px(18.0))
+                    .overflow_hidden()
+                    .child(self.selector.clone())
+                    .child(
+                        div()
+                            .id("selector-underlying-control")
+                            .absolute()
+                            .top(px(18.0))
+                            .left(px(0.0))
+                            .w(px(140.0))
+                            .h(px(20.0))
+                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                underlying_clicks.set(underlying_clicks.get() + 1);
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("selector-outside-focus")
+                    .debug_selector(|| "selector-outside-focus".to_owned())
+                    .w(px(50.0))
+                    .h(px(24.0))
+                    .track_focus(&self.outside_focus)
+                    .on_mouse_down(MouseButton::Left, move |_, window, _| {
+                        outside_focus.focus(window);
+                    }),
+            )
+    }
+}
+
 impl Render for DiscreteTestRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -197,6 +249,37 @@ fn open_discrete_controls(
         })
         .expect("discrete test window");
     (handle, toggle, selector, key_events)
+}
+
+fn open_clipped_selector(
+    cx: &mut TestAppContext,
+    top_offset: f32,
+    choice_count: usize,
+) -> (gpui::AnyWindowHandle, Entity<Selector>, Rc<Cell<usize>>) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let (selector, underlying_clicks) = cx
+        .update_window(handle, |_, window, cx| {
+            let selector = cx.new(|cx| {
+                let choices = (0..choice_count)
+                    .map(|index| format!("choice {index}"))
+                    .collect::<Vec<_>>();
+                Selector::new(cx, "clipped-selector", choices, 0, STYLE).expect("selector")
+            });
+            let underlying_clicks = Rc::new(Cell::new(0));
+            let outside_focus = cx.focus_handle();
+            let root_selector = selector.clone();
+            let root_clicks = underlying_clicks.clone();
+            window.replace_root(cx, |_, _| ClippedSelectorRoot {
+                selector: root_selector,
+                underlying_clicks: root_clicks,
+                outside_focus,
+                top_offset,
+            });
+            (selector, underlying_clicks)
+        })
+        .expect("selector overlay test window");
+    (handle, selector, underlying_clicks)
 }
 
 #[gpui::test]
@@ -787,4 +870,172 @@ fn rendered_toggle_and_selector_emit_updated_states(cx: &mut TestAppContext) {
         Modifiers::default(),
     );
     selector.read_with(cx, |selector, _| assert!(!selector.is_open()));
+}
+
+#[gpui::test]
+fn selector_popup_is_foreground_and_hit_testable_beyond_clipped_parent(cx: &mut TestAppContext) {
+    let (handle, selector, underlying_clicks) = open_clipped_selector(cx, 0.0, 2);
+    let changed = Rc::new(RefCell::new(Vec::new()));
+    let changed_output = changed.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&selector, move |_, event, _| {
+            changed_output.borrow_mut().push(event.index);
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.0), px(120.0)));
+    visual.run_until_parked();
+    let field_before = visual
+        .debug_bounds("clipped-selector")
+        .expect("selector field bounds");
+    assert_eq!(field_before.size.height, px(22.0));
+
+    let field_point = point(
+        field_before.origin.x + field_before.size.width / 2.0,
+        field_before.origin.y + field_before.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    let parent = visual
+        .debug_bounds("selector-clipped-parent")
+        .expect("clipped selector parent");
+    let popup = visual
+        .debug_bounds("clipped-selector-popup")
+        .expect("foreground selector popup");
+    assert_eq!(
+        visual
+            .debug_bounds("clipped-selector")
+            .expect("selector field remains mounted")
+            .size,
+        field_before.size,
+        "opening the popup must not change the field footprint"
+    );
+    assert_eq!(popup.size.width, field_before.size.width);
+    assert!(
+        popup.bottom() > parent.bottom(),
+        "popup should escape parent clip"
+    );
+    let option = visual
+        .debug_bounds("clipped-selector-option-1")
+        .expect("second option is laid out outside the clipping parent");
+    let option_point = point(
+        option.origin.x + option.size.width / 2.0,
+        option.origin.y + option.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(option_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(option_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    selector.read_with(cx, |selector, _| assert_eq!(selector.selected(), 1));
+    assert_eq!(changed.borrow().as_slice(), [1]);
+    assert_eq!(
+        underlying_clicks.get(),
+        0,
+        "popup clicks must not leak underneath"
+    );
+
+    selector.update(cx, |selector, cx| {
+        selector.set_selected(0, cx).expect("valid selection")
+    });
+    let field = visual
+        .debug_bounds("clipped-selector")
+        .expect("selector field after selection");
+    let field_point = point(
+        field.origin.x + field.size.width / 2.0,
+        field.origin.y + field.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    selector.read_with(cx, |selector, _| assert!(!selector.is_open()));
+
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let outside = visual
+        .debug_bounds("selector-outside-focus")
+        .expect("outside focus target");
+    let outside_point = point(
+        outside.origin.x + outside.size.width / 2.0,
+        outside.origin.y + outside.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(outside_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(outside_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    selector.read_with(cx, |selector, _| assert!(!selector.is_open()));
+
+    selector.update(cx, |selector, cx| {
+        selector.set_enabled(true, cx);
+        selector.set_selected(0, cx).expect("valid selection");
+    });
+    let field = visual
+        .debug_bounds("clipped-selector")
+        .expect("selector field for disabled close");
+    let field_point = point(
+        field.origin.x + field.size.width / 2.0,
+        field.origin.y + field.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
+    visual.run_until_parked();
+    selector.read_with(cx, |selector, _| assert!(!selector.is_open()));
+}
+
+#[gpui::test]
+fn selector_popup_flips_above_near_window_bottom(cx: &mut TestAppContext) {
+    let (handle, _, _) = open_clipped_selector(cx, 75.0, 2);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.0), px(100.0)));
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds("clipped-selector")
+        .expect("selector field bounds");
+    let field_point = point(
+        field.origin.x + field.size.width / 2.0,
+        field.origin.y + field.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let popup = visual
+        .debug_bounds("clipped-selector-popup")
+        .expect("selector popup bounds");
+    assert!(
+        popup.origin.y < field.origin.y,
+        "popup should flip above the field"
+    );
+    assert!(
+        popup.bottom() <= px(100.0),
+        "popup should remain inside the window"
+    );
+}
+
+#[gpui::test]
+fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
+    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 128);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.0), px(80.0)));
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds("clipped-selector")
+        .expect("selector field bounds");
+    let field_point = point(
+        field.origin.x + field.size.width / 2.0,
+        field.origin.y + field.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(field_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field_point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let popup = visual
+        .debug_bounds("clipped-selector-popup")
+        .expect("selector popup bounds");
+    assert!(
+        popup.size.height <= px(72.0),
+        "popup should remain scrollable within the window"
+    );
+    selector.read_with(cx, |selector, _| assert!(selector.is_open()));
 }
