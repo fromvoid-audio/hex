@@ -3,7 +3,18 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
-## active work unit — custom traffic lights, 9 October 2026
+## active work unit — lattice native devices, 9 October 2026
+
+The user reprioritized the native DSP system, device panel and first devices
+before main/return-track layout. The system is named **lattice**. Start with
+Pulse ticket 42's real stereo DSP primitives and linear Utility implementation;
+then integrate canonical device IDs/order/settings/history/schema and shared
+engine processing (ticket 16), the compact panel (17), complete Utility (18) and
+Operator (19). Each deliverable has a focused PR. The finite contracts and
+stateful dependencies are in [lattice](lattice.md). Pending native acceptance
+for earlier UI PRs stays open; it does not block independent source work.
+
+## source-complete work unit — custom traffic lights, 9 October 2026
 
 Pulse ticket 11: replace canonical macOS native window buttons with compact
 app circles in the existing title reservation. Keep the native titled window,

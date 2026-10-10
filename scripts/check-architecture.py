@@ -8,7 +8,8 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
     'hex-project': set(),
-    'hex-devices': set(),
+    'hex-lattice': set(),
+    'hex-devices': {'hex-lattice'},
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project'},
     'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export'},

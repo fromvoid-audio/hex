@@ -24,6 +24,16 @@ Completed chronology and superseded work orders are preserved in the
 - Preserve unrelated work. Native UI and listening checks belong to the user;
   automated source checks belong to the implementing agent.
 
+## current priority — lattice devices
+
+The user prioritized **lattice**, the device panel and first devices on
+9 October 2026, before the main/return-track layout below. Pulse ticket 42 is
+the first bounded prerequisite: real stereo DSP primitives in `hex-lattice`
+and original linear Utility DSP in `hex-devices`. Canonical integration (16),
+the real panel (17), complete Utility (18) and Operator (19) follow as focused
+PRs. See [the lattice contract](docs/lattice.md); stateful filters and instrument
+lifecycle remain explicit dependencies, not completed support.
+
 ## merged PR history and remaining acceptance
 
 PRs #1–#17 were verified closed as merged on 9 October 2026. Merging records

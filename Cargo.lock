@@ -2567,6 +2567,9 @@ dependencies = [
 [[package]]
 name = "hex-devices"
 version = "0.1.0"
+dependencies = [
+ "hex-lattice",
+]
 
 [[package]]
 name = "hex-engine"
@@ -2582,6 +2585,10 @@ version = "0.1.0"
 dependencies = [
  "hex-engine",
 ]
+
+[[package]]
+name = "hex-lattice"
+version = "0.1.0"
 
 [[package]]
 name = "hex-library"

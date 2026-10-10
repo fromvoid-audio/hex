@@ -75,6 +75,7 @@ claim hosted CI or automatic enforcement is configured.
 Cargo.toml                   workspace configuration and safety/style lints
 Cargo.lock                   pinned resolved dependencies
 crates/
+  hex-lattice/               validated memoryless stereo DSP primitives
   hex-devices/               independently testable original instrument DSP
   hex-project/               canonical control-side IDs, edits, history and snapshots
   hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
@@ -117,7 +118,11 @@ models, codecs, DSP, device I/O, UI, and startup in one giant crate. Conversely,
 do not create a crate for every helper or empty speculative subsystem: split when
 there is a real responsibility or independently testable boundary.
 
-Current direction: `hex-project` has no workspace dependency; `hex-engine` depends
+Current direction: `hex-project` and `hex-lattice` have no workspace dependency;
+`hex-devices` owns original device algorithms and depends on `hex-lattice` for
+stereo processing primitives. The native DSP system is named **lattice**; read
+`docs/lattice.md` for staged device integration and stateful lifecycle gates.
+`hex-engine` depends
 on hex-project/hex-devices and has no UI/device-I/O dependency;
 `hex-audio` depends on engine and owns CPAL/rtrb; `hex-export` depends on engine
 and owns shared offline WAV rendering/publication; `hex-ui` depends on
