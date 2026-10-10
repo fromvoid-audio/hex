@@ -9,6 +9,30 @@ pub struct ToggleChanged {
     pub checked: bool,
 }
 
+/// Validated toggle construction data for an infallible GPUI entity factory.
+pub struct ToggleConfig {
+    id: SharedString,
+    label: SharedString,
+    checked: bool,
+    style: ControlStyle,
+}
+
+impl ToggleConfig {
+    pub fn new(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        checked: bool,
+        style: ControlStyle,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            id: id.into(),
+            label: label.into(),
+            checked,
+            style: style.validate()?,
+        })
+    }
+}
+
 /// Compact boolean control with caller-owned text and styling.
 pub struct Toggle {
     id: SharedString,
@@ -27,14 +51,21 @@ impl Toggle {
         checked: bool,
         style: ControlStyle,
     ) -> Result<Self, &'static str> {
-        Ok(Self {
-            id: id.into(),
-            label: label.into(),
-            checked,
+        Ok(Self::from_config(
+            cx,
+            ToggleConfig::new(id, label, checked, style)?,
+        ))
+    }
+
+    pub fn from_config(cx: &mut Context<Self>, config: ToggleConfig) -> Self {
+        Self {
+            id: config.id,
+            label: config.label,
+            checked: config.checked,
             enabled: true,
-            style: style.validate()?,
+            style: config.style,
             focus: cx.focus_handle(),
-        })
+        }
     }
 
     pub fn checked(&self) -> bool {
@@ -153,6 +184,37 @@ pub struct SelectorChanged {
     pub label: SharedString,
 }
 
+/// Validated choice construction data for an infallible GPUI entity factory.
+pub struct SelectorConfig {
+    id: SharedString,
+    choices: Vec<SharedString>,
+    selected: usize,
+    style: ControlStyle,
+}
+
+impl SelectorConfig {
+    pub fn new(
+        id: impl Into<SharedString>,
+        choices: impl IntoIterator<Item = impl Into<SharedString>>,
+        selected: usize,
+        style: ControlStyle,
+    ) -> Result<Self, &'static str> {
+        let choices: Vec<_> = choices.into_iter().map(Into::into).collect();
+        if choices.is_empty() || selected >= choices.len() {
+            return Err("selector requires a valid selected option");
+        }
+        if choices.len() > 128 {
+            return Err("selector exceeds 128 options");
+        }
+        Ok(Self {
+            id: id.into(),
+            choices,
+            selected,
+            style: style.validate()?,
+        })
+    }
+}
+
 /// Compact choice field with a bounded inline popup.
 pub struct Selector {
     id: SharedString,
@@ -173,23 +235,23 @@ impl Selector {
         selected: usize,
         style: ControlStyle,
     ) -> Result<Self, &'static str> {
-        let choices: Vec<_> = choices.into_iter().map(Into::into).collect();
-        if choices.is_empty() || selected >= choices.len() {
-            return Err("selector requires a valid selected option");
-        }
-        if choices.len() > 128 {
-            return Err("selector exceeds 128 options");
-        }
-        Ok(Self {
-            id: id.into(),
-            choices,
-            selected,
+        Ok(Self::from_config(
+            cx,
+            SelectorConfig::new(id, choices, selected, style)?,
+        ))
+    }
+
+    pub fn from_config(cx: &mut Context<Self>, config: SelectorConfig) -> Self {
+        Self {
+            id: config.id,
+            choices: config.choices,
+            selected: config.selected,
             open: false,
             enabled: true,
-            style: style.validate()?,
+            style: config.style,
             focus: cx.focus_handle(),
             focus_blur: None,
-        })
+        }
     }
 
     pub fn selected(&self) -> usize {

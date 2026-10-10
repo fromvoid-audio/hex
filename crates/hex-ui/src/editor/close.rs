@@ -28,8 +28,9 @@ impl EditorView {
         if self.close_prompt_open {
             return false;
         }
+        let _ = super::device_panel::finalize_controls(self, cx);
         self.finalize_device_gesture_for_close();
-        if self.requires_close_confirmation() {
+        if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, false);
             false
         } else {
@@ -42,8 +43,9 @@ impl EditorView {
         if self.close_prompt_open {
             return;
         }
+        let _ = super::device_panel::finalize_controls(self, cx);
         self.finalize_device_gesture_for_close();
-        if self.requires_close_confirmation() {
+        if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, true);
         } else {
             self.stop();
@@ -51,7 +53,7 @@ impl EditorView {
         }
     }
 
-    fn requires_close_confirmation(&self) -> bool {
+    fn requires_close_confirmation(&self, cx: &Context<Self>) -> bool {
         requires_close_confirmation(
             self.state.as_ref().is_some_and(|state| state.unsaved),
             self.worker_requests_pending,
@@ -59,7 +61,7 @@ impl EditorView {
             self.duplicate_intent.is_pending(),
             self.opening_project,
             self.export_pending,
-            self.device_gesture_pending(),
+            self.device_gesture_pending() || self.device_panel.has_pending_draft(cx),
         )
     }
 

@@ -43,13 +43,16 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
 
 impl EditorView {
     pub(super) fn save_project(&mut self, cx: &mut Context<Self>) {
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
         if self.state.is_none() {
             self.error = Some("project is still loading".into());
             return;
         }
         match self.save_admission() {
             SaveAdmission::Current => {
-                if self.enqueue(Request::SaveCurrent) {
+                if self.enqueue_device_barrier(Request::SaveCurrent) {
                     self.saving_project = true;
                     self.status = "saving project".into();
                     self.error = None;
@@ -61,6 +64,9 @@ impl EditorView {
     }
 
     pub(super) fn save_as_dialog(&mut self, cx: &mut Context<Self>) {
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
         if self.state.is_none() {
             self.error = Some("project is still loading".into());
             return;
@@ -87,7 +93,11 @@ impl EditorView {
             let _ = this.update(cx, |view, cx| {
                 view.save_dialog_open = false;
                 match picked {
-                    Ok(Ok(Some(path))) => view.begin_save_new(path),
+                    Ok(Ok(Some(path))) => {
+                        if super::device_panel::finalize_controls(view, cx) {
+                            view.begin_save_new(path);
+                        }
+                    }
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
                     _ => {}
                 }
@@ -117,7 +127,7 @@ impl EditorView {
                 return;
             }
         };
-        if self.enqueue(Request::SaveNew(path)) {
+        if self.enqueue_device_barrier(Request::SaveNew(path)) {
             self.saving_project = true;
             self.status = "saving project as".into();
             self.error = None;

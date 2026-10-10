@@ -4,7 +4,10 @@ Pulse ticket 44 owns the reusable GPUI toolkit, ticket 65 owns bounded live
 parameter gestures and grouped undo, and ticket 17 owns the real device panel.
 The first toolkit implementation is source-complete: 14 targeted widget tests,
 strict crate Clippy, architecture/style guards, formatting and desktop build
-pass. Clean-commit full local CI and native acceptance remain separate gates.
+pass. All 14 full local CI steps passed on clean `7f0bdea` in 163.297 s
+with unchanged source digest and `stale=false`
+([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Native acceptance
+remains open.
 
 ## Boundary
 
@@ -20,6 +23,13 @@ Control entities retain local draft values and focus across renders. They emit
 begin/change/commit/cancel events; they neither write files nor create history.
 Device descriptors drive general controls; adding a device does not add storage
 branches or require a competing UI editing model.
+
+The device panel resolves a bounded registered-type catalog for its add menu
+and a complete descriptor/value snapshot per changed device state. These
+control-side engine APIs resolve and migrate once per snapshot, rather than
+looking up every knob separately. Optional device-owned display names are
+presentation metadata; stable type IDs and opaque persisted state are unchanged.
+Unknown or unsupported states report errors instead of displaying defaults.
 
 ## Interaction contract
 
@@ -53,7 +63,9 @@ retained. Preview source identity must distinguish project generation, gesture
 token and sequence from canonical revision. Coalescing cannot discard terminal
 commit/cancel or weaken bounded queue ordering. Save/export finalize before
 capture; Undo finalizes and then undoes. Target deletion/project replacement
-cancel the overlay. This is ticket 65's contract, not completed toolkit support.
+cancel the overlay. Ticket 65's controller is source-complete in
+[PR #25](https://github.com/PORTALSURFER/hex/pull/25), with all 14 clean-commit
+CI steps passing on `d48ad24`; panel binding and native acceptance remain open.
 Close and Quit must also protect a changed local draft whose canonical project
 is still clean, including a retained terminal request. Existing Cancel and
 Discard decisions remain authoritative.
@@ -71,3 +83,62 @@ The targeted suite also covers fine-adjust modifier transitions, exact logarithm
 endpoints, reset event ordering, disabling an active drag, focused shortcut
 consumption, 256-byte text/IME limits and UTF-16 marked-range conversion. These
 headless rendered checks do not replace the native checklist above.
+
+
+## panel integration in progress
+
+One compact bottom detail slot switches between closed, clip and devices while
+retaining selection. The focused track supplies the ordered registered chain.
+Controls are cached by stable device/parameter identity with subscriptions held
+once; complete validated parameter snapshots are cached by immutable device state.
+Only implemented registered devices appear in the add menu. Unknown/malformed
+state reports an error instead of default-resetting it. Generic float controls
+are the first panel; Utility-specific dB law/layout and stateful controls follow
+in ticket 18.
+
+Validate widget construction specifications before GPUI's entity factory, then
+consume a private validated configuration infallibly. Invalid data must be reported
+before construction, not converted into a disabled/default control. Explicitly
+finalize valid typed numeric drafts before save/export/history barriers or panel
+transitions; refuse invalid text and retain the field. Close/Quit protects local
+text drafts even before actor admission. Cancel keeps them; explicit Discard
+remains possible. External target deletion/project replacement cancels obsolete
+controls instead of committing to an absent target. Preserve a terminal's local
+value until the gesture and queued worker/barrier requests are idle, so an intermediate
+acknowledgement cannot retire a newer optimistic value. A pointer drag that returns
+to its origin still sends its terminal without creating history; bipolar midpoint
+values use canonical positive zero. Owner finalization prepares and admits a typed
+value synchronously before clearing its draft, retaining it on queue refusal.
+
+Source verification passes: 300 rendered UI tests (two existing ignores), nine
+panel tests and 18 widget tests, plus strict UI/widget Clippy, architecture/style
+guards and formatting. These include typed-value save/reopen/undo, clean-base
+close protection, refused admission retry, deleted targets and optimistic
+acknowledgement ordering. Full clean-commit local CI and native review remain
+separate acceptance gates.
+
+
+## panel native review checklist
+
+Use a fresh identified review build; source tests do not establish these native
+results. Select a regular track and open the devices tab, then add Utility from
+the registered add menu. Check real gain/balance/width/channel/polarity/mono/mute
+changes while playing an original asymmetric stereo source.
+
+- Drag a value, including release outside the control/window; check immediate
+  display, audible application and one Undo back to its prior value. Return a
+  drag to its starting value and switch tabs; no gesture should remain active.
+- Click a value to type, use Shift fine adjustment and keyboard focus, and save
+  without first pressing Enter. Reopen and check the final value. Invalid text
+  should refuse save/hide and stay editable. Cancel and Discard close choices
+  should retain their defined behavior, including a clean-base local draft.
+- Add a second instance; reorder, bypass, remove and Undo. Check that controls
+  follow stable instances, and parameter Undo updates toggles/selectors visibly.
+- Switch focused tracks, Arrangement/Session and clip/device tabs. Preserve clip
+  selection and MIDI focus behavior; obsolete targets must not retain drafts.
+- Check the 880×540 minimum window, browser resizing and horizontal device-chain
+  scrolling. Keep the track region useful and fields readable.
+
+Full Utility dB controls, DC/bass mono and Operator remain separate source and
+reference acceptance gates. Record each actual result in Pulse instead of
+inferring native correctness from source test counts.

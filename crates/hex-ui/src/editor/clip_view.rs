@@ -20,7 +20,9 @@ impl EditorView {
                 })
             });
         let detail = if open {
-            if has_session_audio {
+            if self.device_panel_active {
+                Some(super::device_panel::view(self, cx).map(|element| div().child(element)))
+            } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
                 self.midi_editor(cx).map(|element| div().child(element))
@@ -32,7 +34,9 @@ impl EditorView {
         } else {
             None
         };
-        let label = if !open {
+        let label = if self.device_panel_active {
+            "devices"
+        } else if !open {
             "clip view"
         } else if has_session_audio {
             "session audio"
@@ -80,6 +84,10 @@ impl EditorView {
                 })
                 .child(theme::text(if open { "⌄" } else { "⌃" }))
                 .on_click(cx.listener(|view, _, window, cx| {
+                    if view.clip_view_open && !super::device_panel::finalize_controls(view, cx) {
+                        cx.notify();
+                        return;
+                    }
                     view.clip_view_open = !view.clip_view_open;
                     if !view.clip_view_open {
                         view.cancel_midi_note_gesture();
@@ -94,6 +102,61 @@ impl EditorView {
             div()
                 .text_color(rgb(Palette::MUTED))
                 .child(theme::text(label)),
+        );
+        row = row.child(
+            div()
+                .id("clip-detail-tab")
+                .debug_selector(|| "clip-detail-tab".into())
+                .h(px(18.0))
+                .px(px(5.0))
+                .flex()
+                .items_center()
+                .text_color(rgb(if self.device_panel_active {
+                    Palette::MUTED
+                } else {
+                    Palette::CYAN
+                }))
+                .hover(|style| style.bg(rgb(Palette::RAISED)))
+                .cursor(gpui::CursorStyle::PointingHand)
+                .child(theme::text("clip"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if super::device_panel::finalize_controls(view, cx) {
+                        view.device_panel_active = false;
+                        view.clip_view_open = true;
+                        if view.midi_focus.is_focused(window) {
+                            view.focus.focus(window);
+                        }
+                    }
+                    cx.notify();
+                })),
+        );
+        row = row.child(
+            div()
+                .id("device-detail-tab")
+                .debug_selector(|| "device-detail-tab".into())
+                .h(px(18.0))
+                .px(px(5.0))
+                .flex()
+                .items_center()
+                .text_color(rgb(if self.device_panel_active {
+                    Palette::CYAN
+                } else {
+                    Palette::MUTED
+                }))
+                .hover(|style| style.bg(rgb(Palette::RAISED)))
+                .cursor(gpui::CursorStyle::PointingHand)
+                .child(theme::text("devices"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if super::device_panel::finalize_controls(view, cx) {
+                        view.cancel_midi_note_gesture();
+                        view.device_panel_active = true;
+                        view.clip_view_open = true;
+                        if view.midi_focus.is_focused(window) {
+                            view.focus.focus(window);
+                        }
+                    }
+                    cx.notify();
+                })),
         );
         let mut panel = div()
             .w_full()

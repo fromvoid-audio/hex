@@ -19,6 +19,11 @@ Operator (19). Each deliverable has a focused PR. The finite contracts and
 stateful dependencies are in [lattice](lattice.md). Pending native acceptance
 for earlier UI PRs stays open; it does not block independent source work.
 Widget/controller contracts are in [device controls](device-controls.md).
+Toolkit 44 passed all 14 local CI steps on clean `7f0bdea`
+([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Gesture 65 passed all 14 local CI steps on clean `d48ad24` in 172.917 s
+([PR #25](https://github.com/PORTALSURFER/hex/pull/25)). Panel 17 is being
+implemented with registered catalog and batched parameter views, stable control
+entities and explicit typed-draft finalization. Native acceptance remains open.
 
 The user's current implementation scope is every open ticket planned for Hex
 in Pulse, rather than only existing PRs. This priority order is a dependency

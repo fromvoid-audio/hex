@@ -417,7 +417,9 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
             .on_action(cx.listener(|view, action: &OpenRecentProject, _, cx| {
-                view.open_recent_project(action);
+                if super::device_panel::finalize_controls(view, cx) {
+                    view.open_recent_project(action);
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SaveProject, _, cx| {
@@ -429,13 +431,17 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                view.cancel_duplicate_chain();
-                view.enqueue(SessionRequest::Undo);
+                if super::device_panel::finalize_controls(view, cx) {
+                    view.cancel_duplicate_chain();
+                    view.enqueue_device_barrier(SessionRequest::Undo);
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Redo, _, cx| {
-                view.cancel_duplicate_chain();
-                view.enqueue(SessionRequest::Redo);
+                if super::device_panel::finalize_controls(view, cx) {
+                    view.cancel_duplicate_chain();
+                    view.enqueue_device_barrier(SessionRequest::Redo);
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &MoveLeft, window, cx| {
@@ -768,7 +774,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &RemoveTrack, _, cx| {
-                view.remove_track();
+                view.remove_track(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Quit, window, cx| {

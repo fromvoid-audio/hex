@@ -21,7 +21,7 @@ ALLOWED = {
     'hex-preferences': set(),
     'hex-widgets': set(),
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences'},
+    'hex-ui': {'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     'hex-desktop': {'hex-ui', 'hex-audio'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }

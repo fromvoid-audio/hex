@@ -28,6 +28,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         }
         for (index, definition) in definitions.iter().enumerate() {
             definition.type_id().validate()?;
+            if definition.display_name().is_some_and(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || name.trim() != name
+                    || name
+                        .chars()
+                        .any(|character| character.is_control() || character.is_uppercase())
+            }) {
+                return Err(DeviceContractError::InvalidDescriptor);
+            }
             if definition.state_version() == 0 {
                 return Err(DeviceContractError::InvalidStateVersion);
             }

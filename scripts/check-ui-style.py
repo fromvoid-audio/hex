@@ -26,6 +26,8 @@ widgets = (
     'status_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
+    'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
+    'menu_message(', 'action_button(', 'entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'header::title_bar(', 'header::loading_toolbar(',
     'lights)',

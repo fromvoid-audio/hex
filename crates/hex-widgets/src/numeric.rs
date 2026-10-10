@@ -149,6 +149,7 @@ impl NumericSpec {
             NumericScale::Logarithmic => {
                 (self.min.ln() + position * (self.max.ln() - self.min.ln())).exp()
             }
+            NumericScale::Bipolar if position == 0.5 => 0.0,
             NumericScale::Bipolar if position <= 0.5 => self.min * (1.0 - position * 2.0),
             NumericScale::Bipolar => self.max * ((position - 0.5) * 2.0),
         };
@@ -246,6 +247,7 @@ mod tests {
             NumericSpec::new(-2.0, 8.0, 0.0, NumericScale::Bipolar, 2, None::<Arc<str>>).unwrap();
         assert_eq!(bipolar.to_normalized(0.0).unwrap(), 0.5);
         assert_eq!(bipolar.from_normalized(0.5).unwrap(), 0.0);
+        assert!(!bipolar.from_normalized(0.5).unwrap().is_sign_negative());
         assert_eq!(bipolar.from_normalized(0.25).unwrap(), -1.0);
         assert_eq!(bipolar.from_normalized(0.75).unwrap(), 4.0);
     }

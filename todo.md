@@ -50,7 +50,13 @@ adds generic registered state and canonical prepared chains. Full local CI passe
 all 14 checks on clean `9efed7e` for PR #23 (105.880 s, unchanged digest,
 `stale=false`). Source-frozen benchmarks and their limits are in
 [performance](docs/performance.md). Both PRs remain unmerged; controls/panel,
-stateful Utility and Operator remain open. Toolkit 44 is now active; see
+stateful Utility and Operator remain open. Toolkit 44 is source-complete in
+[PR #24](https://github.com/PORTALSURFER/hex/pull/24), with all 14 clean-commit
+CI steps passing on `7f0bdea` (163.297 s, unchanged digest, `stale=false`).
+Gesture 65 is source-complete in [PR #25](https://github.com/PORTALSURFER/hex/pull/25),
+all 14 clean-commit CI steps passing on `d48ad24` (172.917 s, unchanged digest,
+`stale=false`). Panel 17 is being implemented in the shared bottom detail slot.
+Native interaction/listening remains open. See
 [device controls](docs/device-controls.md).
 
 ## merged PR history and remaining acceptance

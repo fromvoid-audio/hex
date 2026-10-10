@@ -341,6 +341,9 @@ fn encode_state_fields(
 }
 
 impl NativeDeviceMetadata for UtilityDefinition {
+    fn display_name(&self) -> Option<&'static str> {
+        Some("utility")
+    }
     fn type_id(&self) -> DeviceTypeId {
         UTILITY_TYPE_ID
     }

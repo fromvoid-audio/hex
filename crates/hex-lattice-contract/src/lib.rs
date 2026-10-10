@@ -250,6 +250,11 @@ impl std::error::Error for DeviceContractError {}
 /// Device metadata/state operations; implementations own their codec.
 pub trait NativeDeviceMetadata: Sync {
     fn type_id(&self) -> DeviceTypeId;
+    /// Optional lowercase presentation name. The type identifier remains the
+    /// stable storage/registry identity; unnamed definitions display that ID.
+    fn display_name(&self) -> Option<&'static str> {
+        None
+    }
     fn state_version(&self) -> u32;
     fn descriptors(&self) -> &'static [ParameterDescriptor];
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError>;

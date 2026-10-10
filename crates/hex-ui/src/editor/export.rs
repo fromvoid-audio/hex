@@ -6,6 +6,9 @@ use std::{path::Path, sync::mpsc::TryRecvError};
 
 impl EditorView {
     pub(super) fn export_dialog(&mut self, cx: &mut Context<Self>) {
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
         if self.export_pending || self.export_dialog_open {
             self.error = Some("an export is already pending".into());
             return;
@@ -27,7 +30,10 @@ impl EditorView {
                         }
                         if path.as_os_str().len() > 4_096 {
                             view.error = Some("export path exceeds the 4096-byte limit".into());
-                        } else if view.enqueue(Request::Export(path)) {
+                        } else if !super::device_panel::finalize_controls(view, cx) {
+                            // Keep the export unapplied if a field became invalid while
+                            // the native path dialog was open.
+                        } else if view.enqueue_device_barrier(Request::Export(path)) {
                             view.export_pending = true;
                             view.status = "export requested".into();
                             view.error = None;

@@ -3,6 +3,12 @@
 pub use hex_devices::SineTable;
 use std::{fmt, sync::Arc};
 
+mod native_device_view;
+pub use native_device_view::{
+    NativeDeviceCatalogEntry, NativeDeviceParameterView, NativeDeviceView, native_device_catalog,
+    native_device_view,
+};
+
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
