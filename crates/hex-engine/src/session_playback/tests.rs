@@ -6476,7 +6476,21 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         )
         .unwrap(),
     );
-    let mut old = SessionPlayback::new(old_revision).unwrap();
+    let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut provider_refused = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    provider_refused
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut refused_output = [[0.0; 2]; 1];
+    assert_eq!(
+        provider_refused.render(&mut refused_output),
+        Err(SessionPlaybackError::MediaPagesUnavailable)
+    );
+    let mut unused_predecessor = SessionPlayback::new(old_revision).unwrap();
+    assert_eq!(
+        provider_refused.try_inherit_state_from(&mut unused_predecessor),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
     let midi_clip = old
         .revision
         .session()
@@ -7532,4 +7546,167 @@ fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reus
         )
         .is_err()
     );
+}
+
+#[test]
+fn used_or_accepted_session_runtime_cannot_be_admitted_as_a_fresh_candidate() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let project = project(0.5, 0, 8 << 32);
+    let prepared = revision(&project, Arc::clone(&table));
+    let mut predecessor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+
+    let mut applied = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    applied.apply(SessionPlaybackCommand::Pause).unwrap();
+    assert_eq!(
+        applied.try_inherit_state_from(&mut predecessor),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
+
+    let mut rendered = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    rendered.render(&mut []).unwrap();
+    assert_eq!(
+        rendered.try_inherit_state_from(&mut predecessor),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
+
+    let mut page_rendered = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    page_rendered
+        .render_with_pages(&mut [], &mut ContinuityMissingPages)
+        .unwrap();
+    assert_eq!(
+        page_rendered.try_inherit_state_from(&mut predecessor),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
+
+    let mut seeded = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    seeded.seed_legacy_transport(0, 0, false).unwrap();
+    assert_eq!(
+        seeded.try_inherit_state_from(&mut predecessor),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
+}
+
+#[test]
+fn accepted_session_candidate_refuses_second_handoff_before_either_runtime_changes() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let project = project(0.5, 0, 8 << 32);
+    let prepared = revision(&project, Arc::clone(&table));
+    let clip = prepared.session().midi_clips()[0].id;
+
+    let mut first_predecessor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    first_predecessor
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    first_predecessor
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut prefix = [[0.0; 2]; 64];
+    first_predecessor.render(&mut prefix).unwrap();
+    let mut accepted = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    accepted
+        .try_inherit_state_from(&mut first_predecessor)
+        .unwrap();
+
+    let mut previous = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut previous_twin = SessionPlayback::new(prepared).unwrap();
+    for playback in [&mut previous, &mut previous_twin] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut prefix).unwrap();
+    }
+
+    let accepted_frame = accepted.performance_frame;
+    let accepted_routes = accepted.routes.clone();
+    let accepted_release_signature: Vec<_> = accepted
+        .releases
+        .iter()
+        .map(|entry| (entry.track_id, entry.order, entry.voice.end_frame()))
+        .collect();
+    let accepted_generation = accepted.route_state_generation;
+    let previous_frame = previous.performance_frame;
+    let previous_arrangement_frame = previous.arrangement_frame;
+    let previous_routes = previous.routes.clone();
+    let previous_release_signature: Vec<_> = previous
+        .releases
+        .iter()
+        .map(|entry| (entry.track_id, entry.order, entry.voice.end_frame()))
+        .collect();
+    let previous_generation = previous.route_state_generation;
+    assert_eq!(
+        accepted.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::CandidateAlreadyUsed)
+    );
+    assert_eq!(accepted.performance_frame, accepted_frame);
+    assert_eq!(accepted.routes, accepted_routes);
+    assert_eq!(
+        accepted
+            .releases
+            .iter()
+            .map(|entry| (entry.track_id, entry.order, entry.voice.end_frame()))
+            .collect::<Vec<_>>(),
+        accepted_release_signature
+    );
+    assert_eq!(accepted.route_state_generation, accepted_generation);
+    assert_eq!(previous.performance_frame, previous_frame);
+    assert_eq!(previous.arrangement_frame, previous_arrangement_frame);
+    assert_eq!(previous.routes, previous_routes);
+    assert_eq!(
+        previous
+            .releases
+            .iter()
+            .map(|entry| (entry.track_id, entry.order, entry.voice.end_frame()))
+            .collect::<Vec<_>>(),
+        previous_release_signature
+    );
+    assert_eq!(previous.route_state_generation, previous_generation);
+
+    let mut previous_output = [[0.0; 2]; 128];
+    let mut twin_output = [[0.0; 2]; 128];
+    previous.render(&mut previous_output).unwrap();
+    previous_twin.render(&mut twin_output).unwrap();
+    assert_eq!(previous_output, twin_output);
+}
+
+#[test]
+fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let original = project(0.5, 0, 8 << 32);
+    let original_revision = revision(&original, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(original_revision).unwrap();
+    let track = previous.routes[0].id;
+    let clip = previous.revision.session().midi_clips()[0].id;
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 64];
+    previous.render(&mut prefix).unwrap();
+
+    let removed_clip_revision = revision(&without_session_cells(&original), table);
+    let mut candidate = SessionPlayback::new(removed_clip_revision).unwrap();
+    candidate.release_capacity = 0;
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::ReleaseBankFull)
+    );
+    assert!(candidate.candidate_admission_open);
+
+    let mut drain = vec![[0.0; 2]; 200_000];
+    previous.render(&mut drain).unwrap();
+    assert_eq!(previous.release_voice_count(), 0);
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    assert!(!candidate.candidate_admission_open);
+    assert_eq!(candidate.performance_frame(), previous.performance_frame());
+    assert_eq!(candidate.owner(track), Some(SessionPlaybackOwner::Silence));
 }

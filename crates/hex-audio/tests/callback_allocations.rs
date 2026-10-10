@@ -439,6 +439,59 @@ fn measured_shutdown(callback: &mut prepared::Callback, output: &mut [Frame]) ->
     measured_block(callback, output)
 }
 
+#[test]
+fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
+-> Result<(), Box<dyn Error>> {
+    let project = Project::new(RATE)?;
+    let revision = Arc::new(PreparedRevision::prepare(
+        &project,
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    let active_revision = control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &revision,
+        ))?)
+        .map_err(|_| "active publication failed")?;
+    let mut output = [[0.0; 2]; BLOCK];
+    measured_block(&mut callback, &mut output);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        active_revision
+    );
+
+    let mut used_candidate = Playback::try_from_prepared_with_session(revision)?;
+    used_candidate.apply(PlaybackCommand::Play);
+    let rejected_revision = control
+        .publish(used_candidate)
+        .map_err(|_| "used candidate publication failed")?;
+    measured_block(&mut callback, &mut output);
+
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            rejected_revision,
+            hex_engine::PlaybackHandoffRejection::SessionRuntime
+        ))
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        active_revision,
+        "the previously accepted graph remains active"
+    );
+    assert_eq!(
+        control.reclaim(),
+        1,
+        "the rejected candidate returns to control"
+    );
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
 fn compare_output(actual: &[Frame], expected: &[Frame]) {
     assert_eq!(actual, expected);
 }

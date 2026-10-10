@@ -3,6 +3,7 @@ use crate::MidiTiming;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
         if self.linear_arrangement_export
             && matches!(
                 command,

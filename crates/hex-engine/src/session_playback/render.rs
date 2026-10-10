@@ -8,6 +8,7 @@ impl SessionPlayback {
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
         let contains_streamed_sources = if self.linear_arrangement_export {
             self.revision.arrangement().contains_streamed_sources()
         } else {
@@ -26,6 +27,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: &mut P,
     ) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
         self.render_internal(output, Some(pages))
     }
 
