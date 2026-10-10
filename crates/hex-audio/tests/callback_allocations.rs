@@ -2163,6 +2163,16 @@ fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free(
 #[test]
 fn builtin_operator_render_state_handoff_and_retirement_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
+    check_operator_callback_lifecycle(false)
+}
+
+#[test]
+fn mixed_wave_operator_handoff_and_retirement_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    check_operator_callback_lifecycle(true)
+}
+
+fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let track = match editor.execute(Command::AddMidiTrack {
         name: "operator arrangement".into(),
@@ -2195,6 +2205,16 @@ fn builtin_operator_render_state_handoff_and_retirement_are_callback_allocation_
             ParameterId::from_static(parameter),
             ParameterValue::Float(value),
         )?;
+    }
+    if mixed_waveforms {
+        for (parameter, choice) in [(57, 1), (58, 2), (59, 3)] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(parameter),
+                ParameterValue::Choice(choice),
+            )?;
+        }
     }
     editor.execute(Command::ReplaceDeviceState {
         device: instrument,
@@ -2240,7 +2260,7 @@ fn builtin_operator_render_state_handoff_and_retirement_are_callback_allocation_
     compare_output(&actual, &expected);
     assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
 
-    let changed_state = hex_engine::patch_native_device_parameter_for_class(
+    let mut changed_state = hex_engine::patch_native_device_parameter_for_class(
         hex_engine::NativeDeviceClass::Instrument,
         editor
             .project()
@@ -2250,6 +2270,14 @@ fn builtin_operator_render_state_handoff_and_retirement_are_callback_allocation_
         ParameterId::from_static(29),
         ParameterValue::Float(0.5),
     )?;
+    if mixed_waveforms {
+        changed_state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            &changed_state,
+            ParameterId::from_static(57),
+            ParameterValue::Choice(2),
+        )?;
+    }
     editor.execute(Command::ReplaceDeviceState {
         device: instrument,
         state: changed_state,

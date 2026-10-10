@@ -11,8 +11,8 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), 224);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 52);
+    assert_eq!(original.payload().len(), 240);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 56);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -26,48 +26,256 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
         descriptor
             .validate(descriptor.default)
             .expect("valid default");
-        let ParameterKind::Float { min, max, .. } = descriptor.kind else {
-            panic!("float parameter")
-        };
-        let value = min + (max - min) * 0.375;
-        let changed = patch(&original, descriptor.id, value);
-        assert_eq!(
-            OPERATOR_METADATA
-                .read_parameter(&changed, descriptor.id)
-                .expect("read"),
-            ParameterValue::Float(value)
-        );
-        assert_eq!(
-            OperatorSettings::from_state(&changed)
-                .expect("decode")
-                .to_state()
-                .expect("encode"),
-            changed
-        );
-        for invalid in [
-            f32::NAN,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            min - 1.0,
-            max + 1.0,
-        ] {
-            assert!(
-                OPERATOR_METADATA
-                    .patch_parameter(&original, descriptor.id, ParameterValue::Float(invalid))
-                    .is_err()
-            );
-        }
-        for invalid in [ParameterValue::Bool(true), ParameterValue::Choice(1)] {
-            assert!(
-                OPERATOR_METADATA
-                    .patch_parameter(&original, descriptor.id, invalid)
-                    .is_err()
-            );
+        match descriptor.kind {
+            ParameterKind::Float { min, max, .. } => {
+                let value = min + (max - min) * 0.375;
+                let changed = patch(&original, descriptor.id, value);
+                assert_eq!(
+                    OPERATOR_METADATA
+                        .read_parameter(&changed, descriptor.id)
+                        .expect("read"),
+                    ParameterValue::Float(value)
+                );
+                assert_eq!(
+                    OperatorSettings::from_state(&changed)
+                        .expect("decode")
+                        .to_state()
+                        .expect("encode"),
+                    changed
+                );
+                for invalid in [
+                    f32::NAN,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    min - 1.0,
+                    max + 1.0,
+                ] {
+                    assert!(
+                        OPERATOR_METADATA
+                            .patch_parameter(
+                                &original,
+                                descriptor.id,
+                                ParameterValue::Float(invalid)
+                            )
+                            .is_err()
+                    );
+                }
+                for invalid in [ParameterValue::Bool(true), ParameterValue::Choice(1)] {
+                    assert!(
+                        OPERATOR_METADATA
+                            .patch_parameter(&original, descriptor.id, invalid)
+                            .is_err()
+                    );
+                }
+            }
+            ParameterKind::Choice { labels } => {
+                assert_eq!(labels, OperatorWaveform::labels());
+                for choice in 0..labels.len() as u32 {
+                    let changed = OPERATOR_METADATA
+                        .patch_parameter(&original, descriptor.id, ParameterValue::Choice(choice))
+                        .expect("valid waveform choice");
+                    assert_eq!(
+                        OPERATOR_METADATA
+                            .read_parameter(&changed, descriptor.id)
+                            .expect("read choice"),
+                        ParameterValue::Choice(choice)
+                    );
+                    assert_eq!(
+                        OperatorSettings::from_state(&changed)
+                            .expect("decode")
+                            .to_state()
+                            .expect("encode"),
+                        changed
+                    );
+                }
+                for invalid in [
+                    ParameterValue::Choice(u32::MAX),
+                    ParameterValue::Float(f32::NAN),
+                    ParameterValue::Bool(true),
+                ] {
+                    assert!(
+                        OPERATOR_METADATA
+                            .patch_parameter(&original, descriptor.id, invalid)
+                            .is_err()
+                    );
+                }
+            }
+            ParameterKind::Bool => panic!("unexpected bool parameter"),
         }
     }
     assert_eq!(
         OperatorSettings::defaults().to_state().expect("defaults"),
         original
+    );
+}
+
+#[test]
+fn version_one_migration_preserves_all_original_bytes_and_defaults_to_sine() {
+    let current = OPERATOR_METADATA.default_state().expect("current defaults");
+    let mut legacy_payload = current.payload()[..LEGACY_PAYLOAD_BYTES].to_vec();
+    legacy_payload[CORE_FIELDS * size_of::<f32>()..CORE_FIELDS * size_of::<f32>() + 4]
+        .copy_from_slice(&(-0.0_f32).to_le_bytes());
+    let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, LEGACY_STATE_VERSION, legacy_payload)
+        .expect("legacy state");
+    let migrated = OPERATOR_METADATA
+        .migrate_state(&legacy)
+        .expect("v1 migration");
+    assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
+    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(
+        &migrated.payload()[..LEGACY_PAYLOAD_BYTES],
+        legacy.payload()
+    );
+    assert_eq!(
+        &migrated.payload()[CORE_FIELDS * size_of::<f32>()..CORE_FIELDS * size_of::<f32>() + 4],
+        &(-0.0_f32).to_le_bytes()
+    );
+    for operator in 1..=4 {
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&migrated, parameter::waveform(operator))
+                .expect("migrated waveform"),
+            ParameterValue::Choice(OperatorWaveform::Sine.choice())
+        );
+    }
+}
+
+#[test]
+fn mixed_waveforms_render_through_the_registered_shared_context() {
+    let registry = crate::native_instrument_registry().expect("registry");
+    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let waveforms = [
+        OperatorWaveform::Saw,
+        OperatorWaveform::Square,
+        OperatorWaveform::Triangle,
+        OperatorWaveform::Sine,
+    ];
+    for (index, waveform) in waveforms.into_iter().enumerate() {
+        state = OPERATOR_METADATA
+            .patch_parameter(
+                &state,
+                parameter::waveform(index as u32 + 1),
+                ParameterValue::Choice(waveform.choice()),
+            )
+            .expect("waveform patch");
+        state = patch(
+            &state,
+            parameter::oscillator_ratio(index as u32 + 1),
+            [1.0, 2.0, 3.0, 0.5][index],
+        );
+        state = patch(&state, parameter::oscillator_level(index as u32 + 1), 0.6);
+        state = patch(&state, parameter::carrier(index as u32 + 1), 0.25);
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Initial),
+            1.0,
+        );
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Peak),
+            1.0,
+        );
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Sustain),
+            1.0,
+        );
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Attack),
+            0.0,
+        );
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Decay),
+            0.0,
+        );
+        state = patch(
+            &state,
+            parameter::envelope(index as u32 + 1, EnvelopeField::Release),
+            0.0,
+        );
+    }
+    let prepared = registry
+        .prepare_instrument(&state, 48_000)
+        .expect("mixed Operator configuration");
+    let context = prepared
+        .prepare_shared_analytic_context()
+        .expect("context capability")
+        .expect("shared context");
+    assert!(context.declared_context_bytes() <= 4096);
+    let note = context.prepare_note(69, 127).expect("prepared mixed note");
+    assert!(note.payload()[6..].iter().all(|word| *word == 0));
+    assert_eq!(note.payload()[5] >> 32, 0);
+    println!(
+        "mixed registered context={}B",
+        context.declared_context_bytes()
+    );
+    let settings = OperatorSettings::from_state(&state).expect("settings");
+    let standalone = settings
+        .prepare_note(48_000, 69, 127)
+        .expect("standalone note");
+    let configuration = settings
+        .prepare_configuration(48_000)
+        .expect("standalone context");
+    let compact = configuration.prepare_note(69, 127).expect("compact note");
+    let table = crate::shared_sine_table();
+    let ages = (0..2048_u64).chain([u64::MAX - 1]);
+    for age in ages {
+        let expected = standalone.sample(table, age, 4096);
+        assert_eq!(
+            configuration.sample(table, &compact, age, 4096).to_bits(),
+            expected.to_bits(),
+            "standalone/compact mismatch at {age}"
+        );
+        assert_eq!(context.sample(&note, age, 4096), [expected, expected]);
+        assert!(expected.is_finite());
+    }
+    let mut malformed = *note.payload();
+    malformed[5] = (malformed[5] & !0xff) | 10;
+    let malformed = PreparedSharedAnalyticNote::new(malformed, note.release_frames());
+    assert_eq!(context.sample(&malformed, 0, 4096), [0.0; 2]);
+    let mut noncanonical = *note.payload();
+    let selected = (noncanonical[5] & 0xff) as u8;
+    assert!(selected > 0);
+    noncanonical[5] = (noncanonical[5] & !0xff) | u64::from(selected - 1);
+    let noncanonical = PreparedSharedAnalyticNote::new(noncanonical, note.release_frames());
+    assert_eq!(context.sample(&noncanonical, 0, 4096), [0.0; 2]);
+}
+
+#[test]
+fn one_hundred_distinct_operator_contexts_fit_declared_lattice_budgets() {
+    let registry = crate::native_instrument_registry().expect("registry");
+    let mut contexts = Vec::with_capacity(100);
+    for index in 0..100_u32 {
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &OPERATOR_METADATA.default_state().expect("defaults"),
+                parameter::oscillator_ratio(1),
+                ParameterValue::Float(0.5 + index as f32 / 100.0),
+            )
+            .expect("distinct valid ratio");
+        let instrument = registry
+            .prepare_instrument(&state, 48_000)
+            .expect("prepared instrument");
+        contexts.push(
+            instrument
+                .prepare_shared_analytic_context()
+                .expect("context capability")
+                .expect("shared Operator context"),
+        );
+    }
+    assert_eq!(contexts.len(), 100);
+    let bytes: usize = contexts
+        .iter()
+        .map(|context| context.declared_context_bytes())
+        .sum();
+    assert!(contexts.iter().all(|context| {
+        context.declared_context_bytes() <= hex_lattice::MAX_SHARED_ANALYTIC_CONTEXT_BYTES
+    }));
+    assert_eq!(bytes, contexts[0].declared_context_bytes() * contexts.len());
+    println!(
+        "100 distinct Operator contexts individually fit the lattice limit; declared sum={bytes}B"
     );
 }
 
@@ -80,9 +288,9 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
             1,
             original.payload().to_vec(),
         ),
-        (OPERATOR_TYPE_ID, 2, original.payload().to_vec()),
+        (OPERATOR_TYPE_ID, 3, original.payload().to_vec()),
         (OPERATOR_TYPE_ID, 1, original.payload()[..220].to_vec()),
-        (OPERATOR_TYPE_ID, 1, vec![0; 228]),
+        (OPERATOR_TYPE_ID, 2, vec![0; 228]),
     ] {
         let state = NativeDeviceState::new(type_id, version, payload).expect("opaque state");
         assert!(OperatorSettings::from_state(&state).is_err());
@@ -120,7 +328,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(57),
+        ParameterId::from_static(61),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -288,7 +496,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 52);
+    assert_eq!(definition.descriptors().len(), 56);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");
