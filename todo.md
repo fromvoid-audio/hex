@@ -1194,3 +1194,20 @@ Six focused tests and the actual callback allocation probe pass; exact-head loca
 CI and combined native review are next. Arrangement transport wrapping (2215) and
 mutable Arrangement source-loop linear export remain refused.
 See [the contract](docs/mutable-source-loops.md).
+
+## 10 October 2026 — review60 source-loop test build
+
+[PR98](https://github.com/PORTALSURFER/hex/pull/98) is ready for review at
+1daa652; all16 exact source checks passed20261010T084224Z-35cfd2e9.
+Combined sourcecd71021 passed all16 checks20261010T084321Z-a06c7557,
+stale=false. Optimized release build took19.36seconds. Strictly verified local
+ad-hoc app: artifacts/hex-lattice-source-loop-review-20261010-cd71021.app.
+Its adjacent manifest records61 integrated PR links (38–98), exact source and
+binarySHA256 eb35615920835b80792cb786bde0948f53dad47dc84bc66fff4b9dd3485a04fb.
+Earlier review apps remain intact. Source-loop PCM, partitions, capacity/error
+rollback and callback allocation probes pass; native repeated MIDI playback,
+Utility/Operator behavior and save/reopen remain user acceptance. Transport wraps
+2215 are active on their own branch, not included in this build; mutable
+Arrangement source-loop linear export remains refused. No PR is auto-merged.
+Codex attachment registration reached100 identities; verified PR links remain
+in Pulse and this ledger. Performance comparison measurement is separate2218.
