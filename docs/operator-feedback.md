@@ -260,8 +260,9 @@ caps, source/participant identity, feedback at the current and next ramp
 boundaries, elapsed offset and checked voice-age advancement without evaluating
 an oscillator sample or mutating voice history. Rendering consumes the validated
 fixed frame data and then advances DSP state. This removes DSP work from the
-compatibility probe by construction; no timing improvement is claimed without a
-separate controlled release measurement.
+compatibility probe by construction. Three interleaved before/after release
+rounds retain identical PCM and lower single-track/16-note handoff medians;
+dense timings overlap. See `docs/performance.md` for measured scope and limits.
 
 An active same-device transition between analytic and mutable classes is
 conservatively refused on Arrangement and retained Session MIDI routes. The
