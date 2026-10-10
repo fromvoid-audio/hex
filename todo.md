@@ -619,3 +619,26 @@ covers rejection. A Session source-edit regression confirms the existing global
 historical floor still carries an unrelated unchanged mutable route. The
 PreparedRevision test seam does not inject effect registries, so the specific
 incompatible-suffix case is not represented as a full compiled handoff fixture.
+
+Pulse2169 adds the generic shared immutable analytic-context seam. One bounded
+context table is prepared per revision and shared by Arrangement and Session;
+compact note payloads borrow the context for sampling, and copied releases
+retain/remap old context owners across graph handoff. Compatible exact
+device/state/type/rate contexts reuse their control-created owner. The measured
+64-bit shared-context lease/remap component is 16,598,024 bytes per maximal
+SessionPlayback, below the 18 MiB scoped cap; active/candidate pair is
+33,196,048 bytes below 36 MiB. Context payload caps are 4 KiB each and 2 MiB
+per revision or retained playback. Audio allocation-probe coverage checks old
+PCM through a changed-state handoff, zero total/net callback allocations and
+control-thread final context destruction. Sine/FM4 inline sampler layout and
+PCM are unchanged. Shared contexts do not admit Operator; root owns final CI,
+review and publication, while measured standalone Operator context/note work
+remains a separate prerequisite.
+
+- 10 October, Pulse2169 acceptance: exact TrackId joins shared-context reuse
+  identity; bounded planning refuses short/capacity-exhausted storage. The last
+  fallible phase stages one owner clone per unique context while previous roots
+  remain intact, followed by no-fail runtime ownership moves. Borrowed sampling
+  repairs a measured draft regression. Three 100-track baseline/candidate runs
+  preserve PCM and differ ~0.5–0.6%; injected1,600-note shared lookup measurements
+  are documented in docs/performance.md, without a native-deadline claim.

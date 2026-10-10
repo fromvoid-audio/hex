@@ -136,6 +136,169 @@ impl hex_lattice::PreparedNativeInstrument for ContinuityInstrument {
             continuity_sample,
         ))
     }
+
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<
+        Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        Ok(Some(Box::new(ContinuitySharedContext {
+            level: self.level,
+            release_frames: self.release_frames,
+        })))
+    }
+}
+
+struct ContinuitySharedContext {
+    level: f32,
+    release_frames: u64,
+}
+
+struct OversizedSharedContextDefinition;
+
+struct OversizedSharedContext;
+
+impl hex_lattice_contract::NativeDeviceMetadata for OversizedSharedContextDefinition {
+    fn type_id(&self) -> hex_lattice_contract::DeviceTypeId {
+        hex_lattice_contract::DeviceTypeId::from_static("test.instrument.oversized-context")
+    }
+
+    fn display_name(&self) -> Option<&'static str> {
+        Some("oversized shared context test")
+    }
+
+    fn state_version(&self) -> u32 {
+        1
+    }
+
+    fn descriptors(&self) -> &'static [hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+
+    fn default_state(
+        &self,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        hex_lattice_contract::NativeDeviceState::new(self.type_id(), 1, vec![0])
+    }
+
+    fn migrate_state(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        if state.type_id() == self.type_id() && state.state_version() == 1 {
+            Ok(state.clone())
+        } else {
+            Err(hex_lattice_contract::DeviceContractError::MalformedState)
+        }
+    }
+
+    fn read_parameter(
+        &self,
+        _: &hex_lattice_contract::NativeDeviceState,
+        _: hex_lattice_contract::ParameterId,
+    ) -> Result<hex_lattice_contract::ParameterValue, hex_lattice_contract::DeviceContractError>
+    {
+        Err(hex_lattice_contract::DeviceContractError::UnknownParameter)
+    }
+
+    fn patch_parameter(
+        &self,
+        _: &hex_lattice_contract::NativeDeviceState,
+        _: hex_lattice_contract::ParameterId,
+        _: hex_lattice_contract::ParameterValue,
+    ) -> Result<hex_lattice_contract::NativeDeviceState, hex_lattice_contract::DeviceContractError>
+    {
+        Err(hex_lattice_contract::DeviceContractError::UnknownParameter)
+    }
+}
+
+impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinition {
+    fn prepare_instrument(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+        _: u32,
+    ) -> Result<
+        Box<dyn hex_lattice::PreparedNativeInstrument>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        hex_lattice_contract::NativeDeviceMetadata::migrate_state(self, state)?;
+        Ok(Box::new(OversizedSharedContext))
+    }
+}
+
+impl hex_lattice::PreparedNativeInstrument for OversizedSharedContext {
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+        Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)
+    }
+
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<
+        Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>,
+        hex_lattice_contract::DeviceContractError,
+    > {
+        Ok(Some(Box::new(OversizedSharedContext)))
+    }
+}
+
+impl hex_lattice::PreparedSharedAnalyticContext for OversizedSharedContext {
+    fn declared_context_bytes(&self) -> usize {
+        hex_lattice::MAX_SHARED_ANALYTIC_CONTEXT_BYTES + 1
+    }
+
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, hex_lattice_contract::DeviceContractError>
+    {
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 0))
+    }
+
+    fn sample(&self, _: &hex_lattice::PreparedSharedAnalyticNote, _: u64, _: u64) -> [f32; 2] {
+        [0.0; 2]
+    }
+}
+
+impl hex_lattice::PreparedSharedAnalyticContext for ContinuitySharedContext {
+    fn declared_context_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, hex_lattice_contract::DeviceContractError>
+    {
+        let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0] = u64::from(self.level.to_bits());
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new(
+            payload,
+            self.release_frames,
+        ))
+    }
+
+    fn sample(
+        &self,
+        note: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+    ) -> [f32; 2] {
+        if age < gate.saturating_add(note.release_frames()) {
+            let level = f32::from_bits(note.payload()[0] as u32);
+            [level; 2]
+        } else {
+            [0.0; 2]
+        }
+    }
 }
 
 fn continuity_sample(
@@ -488,11 +651,36 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let current_bytes = release_entries_bytes
         .checked_add(span_buffer_bytes)
         .expect("fixed MIDI storage byte count is bounded");
+    let shared_owner_slots = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
+        .checked_mul(std::mem::size_of::<
+            Option<Arc<crate::shared_analytic::SharedContextOwner>>,
+        >())
+        .expect("shared context slot table is bounded");
+    let lease_plan_bytes = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
+        .checked_mul(std::mem::size_of::<crate::shared_analytic::ContextLeasePlan>())
+        .expect("shared context remap plan is bounded");
+    let scoped_bytes = current_bytes
+        .checked_add(shared_owner_slots)
+        .and_then(|bytes| bytes.checked_add(lease_plan_bytes))
+        .expect("shared-context playback scratch is bounded");
+    assert!(scoped_bytes <= 18 * 1024 * 1024);
+    assert!(scoped_bytes.checked_mul(2).unwrap() <= 36 * 1024 * 1024);
+    assert_eq!(
+        crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXT_BYTES,
+        2 * 1024 * 1024
+    );
+    assert_eq!(
+        crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
+        SESSION_RELEASE_CAPACITY
+    );
     #[cfg(target_pointer_width = "64")]
     {
         assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
         assert_eq!(span_buffer_bytes, 82_952);
         assert_eq!(current_bytes, 16_073_736);
+        assert_eq!(shared_owner_slots, 131_072);
+        assert_eq!(lease_plan_bytes, 393_216);
+        assert_eq!(scoped_bytes, 16_598_024);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -1771,6 +1959,169 @@ fn revision_with_instrument_registry(
         )
         .unwrap(),
     )
+}
+
+#[test]
+fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_configuration() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.shared.context");
+    let definition = ContinuityInstrumentDefinition {
+        id,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let original = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let arrangement_contexts = original.arrangement().shared_contexts();
+    let session_contexts = original.session().shared_contexts();
+    assert!(Arc::ptr_eq(arrangement_contexts, session_contexts));
+    assert!(arrangement_contexts.storage_bytes().unwrap() > 0);
+    assert_eq!(arrangement_contexts.payload_bytes(), 16);
+    let device = base.tracks()[0].instrument().unwrap().id();
+    let index = arrangement_contexts.index_for_device(device).unwrap();
+    let original_id = arrangement_contexts.owner(index).unwrap().id();
+    assert_eq!(arrangement_contexts.index_for_id(original_id), Some(index));
+
+    let compatible = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &base,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(original.session()),
+            &registry,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        compatible
+            .arrangement()
+            .shared_contexts()
+            .owner_for_device(device)
+            .unwrap()
+            .id(),
+        original_id
+    );
+    assert!(Arc::ptr_eq(
+        compatible.arrangement().shared_contexts(),
+        compatible.session().shared_contexts()
+    ));
+
+    // Device IDs are global, but moving an immutable device state to a new
+    // track must not reuse the old track's context identity.
+    let mut moved_snapshot = base.snapshot();
+    moved_snapshot.tracks[0].id = moved_snapshot.next_id;
+    moved_snapshot.next_id += 1;
+    moved_snapshot.session = Default::default();
+    let moved = Project::from_snapshot(moved_snapshot).unwrap();
+    let moved = PreparedRevision::prepare_with_instrument_registry(
+        &moved,
+        &BTreeMap::new(),
+        Arc::clone(&table),
+        Some(original.session()),
+        &registry,
+    )
+    .unwrap();
+    assert_ne!(
+        moved
+            .arrangement()
+            .shared_contexts()
+            .owner_for_device(device)
+            .unwrap()
+            .id(),
+        original_id
+    );
+
+    let changed = with_test_instrument(&base, id, 1);
+    let changed = PreparedRevision::prepare_with_instrument_registry(
+        &changed,
+        &BTreeMap::new(),
+        table,
+        Some(original.session()),
+        &registry,
+    )
+    .unwrap();
+    assert_ne!(
+        changed
+            .arrangement()
+            .shared_contexts()
+            .owner_for_device(device)
+            .unwrap()
+            .id(),
+        original_id
+    );
+}
+
+#[test]
+fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.shared.context");
+    let definition = ContinuityInstrumentDefinition {
+        id,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
+    for index in 0..hex_project::MAX_TRACKS {
+        let track = match editor
+            .execute(Command::AddMidiTrack {
+                name: format!("context {index}"),
+            })
+            .unwrap()
+        {
+            Created::Track(track) => track,
+            _ => panic!("MIDI track command returned an unexpected value"),
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .and_then(|track| track.instrument())
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: hex_lattice_contract::NativeDeviceState::new(id, 1, vec![0]).unwrap(),
+            })
+            .unwrap();
+    }
+    let prepared = revision_with_instrument_registry(editor.project(), table, &registry);
+    let contexts = prepared.arrangement().shared_contexts();
+    assert_eq!(contexts.context_count(), hex_project::MAX_TRACKS);
+    assert_eq!(contexts.payload_bytes(), 16 * hex_project::MAX_TRACKS);
+    assert_eq!(
+        contexts.storage_bytes().unwrap(),
+        std::mem::size_of_val(contexts.as_ref())
+            + contexts.context_count()
+                * (std::mem::size_of::<Arc<crate::shared_analytic::SharedContextOwner>>()
+                    + std::mem::size_of::<(crate::shared_analytic::SharedContextId, u16,)>())
+    );
+}
+
+#[test]
+fn shared_context_preparation_refuses_payload_above_per_context_limit() {
+    let definition = OversizedSharedContextDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let source = with_test_instrument(
+        &project(0.5, 0, 8 << 32),
+        hex_lattice_contract::DeviceTypeId::from_static("test.instrument.oversized-context"),
+        0,
+    );
+    let result = PreparedRevision::prepare_with_instrument_registry(
+        &source,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+    );
+    assert_eq!(
+        result.unwrap_err().0,
+        "shared analytic context exceeds its byte limit"
+    );
 }
 
 #[test]
@@ -6344,7 +6695,11 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     }
     for (offset, frame) in expected.iter_mut().enumerate() {
         let absolute = candidate.performance_frame - 64 + offset as u64;
-        if let Some(sample) = deleted_tail.voice.sample_at(absolute) {
+        if let Some(sample) = deleted_tail.voice.sample_at(
+            absolute,
+            candidate_revision.arrangement().shared_contexts(),
+            &candidate.retained_contexts,
+        ) {
             deleted_tail.mix.add_frame(frame, sample);
         }
     }

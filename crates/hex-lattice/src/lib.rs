@@ -38,8 +38,9 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 mod instrument;
 mod instrument_runtime;
 pub use instrument::{
-    ANALYTIC_NOTE_PAYLOAD_WORDS, NativeInstrumentDefinition, NativeInstrumentRegistry,
-    PreparedAnalyticNote, PreparedNativeInstrument,
+    ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
+    NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_runtime::{
     MutableInstrumentRuntime, NativeInstrumentEvent, NativeInstrumentRuntimeError,

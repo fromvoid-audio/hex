@@ -12,19 +12,165 @@ use hex_engine::{
     SineTable,
     playback::{Playback, PlaybackCommand},
 };
-use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, ParameterId, ParameterValue};
+use hex_lattice_contract::{
+    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterId,
+    ParameterValue,
+};
 use hex_project::{
     AssetId, BeatTime, Command, Created, Editor, Project, SceneId, Tempo, TrackContentSnapshot,
     TrackId,
 };
 use session_audio_fixture as fixture;
-use std::{collections::BTreeMap, error::Error, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::ThreadId,
+};
 
 const RATE: u32 = fixture::RATE;
 const BLOCK: usize = 1_024;
 type Candidate = (Arc<PreparedRevision>, Project);
 
 const MUTABLE_FIXTURE_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.audio.mutable");
+const SHARED_CONTEXT_FIXTURE_TYPE: DeviceTypeId =
+    DeviceTypeId::from_static("test.audio.shared-context");
+
+struct SharedContextDropProbe {
+    control_thread: ThreadId,
+    old_context_drops: AtomicUsize,
+    wrong_thread_drop: AtomicBool,
+}
+
+struct SharedContextFixtureDefinition(Arc<SharedContextDropProbe>);
+struct SharedContextFixturePrepared {
+    level: f32,
+    probe: Arc<SharedContextDropProbe>,
+}
+struct SharedContextFixture {
+    level: f32,
+    probe: Arc<SharedContextDropProbe>,
+}
+
+impl Drop for SharedContextFixture {
+    fn drop(&mut self) {
+        if std::thread::current().id() != self.probe.control_thread {
+            self.probe.wrong_thread_drop.store(true, Ordering::Relaxed);
+        }
+        if self.level == 0.25 {
+            self.probe.old_context_drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl NativeDeviceMetadata for SharedContextFixtureDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        SHARED_CONTEXT_FIXTURE_TYPE
+    }
+    fn display_name(&self) -> Option<&'static str> {
+        Some("shared context callback fixture")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [hex_lattice_contract::ParameterDescriptor] {
+        &[]
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(SHARED_CONTEXT_FIXTURE_TYPE, 1, vec![1])
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() == SHARED_CONTEXT_FIXTURE_TYPE
+            && state.state_version() == 1
+            && matches!(state.payload(), [1..=4])
+        {
+            Ok(state.clone())
+        } else {
+            Err(DeviceContractError::MalformedState)
+        }
+    }
+    fn read_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+    fn patch_parameter(
+        &self,
+        _: &NativeDeviceState,
+        _: ParameterId,
+        _: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+}
+
+impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition {
+    fn prepare_instrument(
+        &self,
+        state: &NativeDeviceState,
+        _: u32,
+    ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
+        let state = self.migrate_state(state)?;
+        Ok(Box::new(SharedContextFixturePrepared {
+            level: match state.payload()[0] {
+                1 => 0.25,
+                2 => 0.5,
+                3 => 0.75,
+                _ => 1.0,
+            },
+            probe: Arc::clone(&self.0),
+        }))
+    }
+}
+
+impl hex_lattice::PreparedNativeInstrument for SharedContextFixturePrepared {
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedAnalyticNote, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(SharedContextFixture {
+            level: self.level,
+            probe: Arc::clone(&self.probe),
+        })))
+    }
+}
+
+impl hex_lattice::PreparedSharedAnalyticContext for SharedContextFixture {
+    fn declared_context_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + std::mem::size_of::<SharedContextDropProbe>()
+    }
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, DeviceContractError> {
+        let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
+        payload[0] = u64::from(self.level.to_bits());
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new(payload, 8))
+    }
+    fn sample(&self, note: &hex_lattice::PreparedSharedAnalyticNote, age: u64, gate: u64) -> Frame {
+        if age < gate.saturating_add(note.release_frames()) {
+            [f32::from_bits(note.payload()[0] as u32); 2]
+        } else {
+            [0.0; 2]
+        }
+    }
+}
 
 struct MutableFixtureDefinition;
 struct MutableFixturePrepared {
@@ -477,6 +623,214 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
+-> Result<(), Box<dyn Error>> {
+    let probe = Arc::new(SharedContextDropProbe {
+        control_thread: std::thread::current().id(),
+        old_context_drops: AtomicUsize::new(0),
+        wrong_thread_drop: AtomicBool::new(false),
+    });
+    let definition = SharedContextFixtureDefinition(Arc::clone(&probe));
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "shared context".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(SHARED_CONTEXT_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    let _note = match editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(1)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })? {
+        Created::Note(note) => note,
+        _ => return Err("expected Arrangement note".into()),
+    };
+
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let mut first = Some(Arc::new(
+        PreparedRevision::prepare_with_test_instrument_registry(
+            editor.project(),
+            &media,
+            Arc::clone(&table),
+            None,
+            &registry,
+        )?,
+    ));
+    let oracle_probe = Arc::new(SharedContextDropProbe {
+        control_thread: std::thread::current().id(),
+        old_context_drops: AtomicUsize::new(0),
+        wrong_thread_drop: AtomicBool::new(false),
+    });
+    let oracle_definition = SharedContextFixtureDefinition(Arc::clone(&oracle_probe));
+    let oracle_definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] =
+        [&oracle_definition];
+    let oracle_registry = hex_lattice::NativeInstrumentRegistry::new(&oracle_definitions)?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::new(
+        PreparedRevision::prepare_with_test_instrument_registry(
+            editor.project(),
+            &media,
+            Arc::clone(&table),
+            None,
+            &oracle_registry,
+        )?,
+    ))?;
+    oracle.apply(PlaybackCommand::Play);
+
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(
+        first
+            .as_ref()
+            .ok_or("initial shared-context revision disappeared")?,
+    ))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial shared-context publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 128];
+    let mut expected = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample == 0.25));
+    render_partitioned_shared_oracle(&mut oracle, &mut expected)?;
+    compare_output(&output, &expected);
+
+    let mut previous = Arc::clone(
+        first
+            .as_ref()
+            .ok_or("initial shared-context revision disappeared")?,
+    );
+    for state in [2, 3, 4] {
+        editor.execute(Command::ReplaceDeviceState {
+            device: instrument,
+            state: NativeDeviceState::new(SHARED_CONTEXT_FIXTURE_TYPE, 1, vec![state])?,
+        })?;
+        let candidate = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+            editor.project(),
+            &media,
+            Arc::clone(&table),
+            Some(previous.session()),
+            &registry,
+        )?);
+        let replacement = Playback::try_from_prepared_with_session(Arc::clone(&candidate))?;
+        control
+            .publish(replacement)
+            .map_err(|_| "shared-context handoff publication failed")?;
+        measured_block(&mut callback, &mut output);
+        render_partitioned_shared_oracle(&mut oracle, &mut expected)?;
+        compare_output(&output, &expected);
+        assert!(output.iter().flatten().any(|sample| *sample == 0.25));
+        drop(previous);
+        previous = candidate;
+        control.reclaim();
+        if state == 2 {
+            drop(first.take());
+            control.reclaim();
+        }
+        assert_eq!(
+            probe.old_context_drops.load(Ordering::Relaxed),
+            0,
+            "the carried release lease keeps the original context alive"
+        );
+    }
+
+    // The active candidate now has no current shared context. Its copied old
+    // release must still resolve through retained-context provenance.
+    editor.execute(Command::RemoveInstrument { track })?;
+    let silent_slot = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        Some(previous.session()),
+        &registry,
+    )?);
+    assert!(
+        editor
+            .project()
+            .track(track)
+            .is_some_and(|track| track.instrument().is_none())
+    );
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&silent_slot))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "shared-context removal handoff failed")?;
+    measured_block(&mut callback, &mut output);
+    render_partitioned_shared_oracle(&mut oracle, &mut expected)?;
+    compare_output(&output, &expected);
+    assert!(output.iter().flatten().any(|sample| *sample == 0.25));
+    drop(previous);
+    control.reclaim();
+    assert_eq!(probe.old_context_drops.load(Ordering::Relaxed), 0);
+
+    // Finish the original one-quarter note and its eight-frame release. Its
+    // old law remains exact across the callback's fixed blocks and the oracle's
+    // irregular partitions.
+    for _ in 0..190 {
+        measured_block(&mut callback, &mut output);
+        render_partitioned_shared_oracle(&mut oracle, &mut expected)?;
+        compare_output(&output, &expected);
+    }
+    assert!(output.iter().flatten().all(|sample| *sample == 0.0));
+    assert_eq!(probe.old_context_drops.load(Ordering::Relaxed), 0);
+
+    let final_playback = Playback::try_from_prepared_with_session(Arc::clone(&silent_slot))?;
+    control
+        .publish(final_playback)
+        .map_err(|_| "shared-context lease retirement publication failed")?;
+    measured_block(&mut callback, &mut output);
+    drop(silent_slot);
+    drop(oracle);
+    control.reclaim();
+    assert_eq!(
+        probe.old_context_drops.load(Ordering::Relaxed),
+        1,
+        "the final old-context owner is reclaimed on the control thread"
+    );
+    assert!(!probe.wrong_thread_drop.load(Ordering::Relaxed));
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+fn render_partitioned_shared_oracle(
+    playback: &mut Playback,
+    output: &mut [Frame; 128],
+) -> Result<(), Box<dyn Error>> {
+    let mut offset = 0;
+    for count in [17, 31, 80] {
+        let end = offset + count;
+        playback.render(&mut output[offset..end])?;
+        offset = end;
+    }
     Ok(())
 }
 

@@ -1827,3 +1827,32 @@ The [stateful runtime report](stateful-lattice.md) records a local 100-track,
 maximum exceeds the 2667-microsecond deadline. Initial stateful admission caps
 refuse 100 tracks with 16 filters each. Pulse 2108 owns reproducible sustained
 profiling and scalability; no physical deadline or large-chain claim is made.
+
+
+## Shared analytic ownership profile — 10 October 2026 (Pulse2169)
+
+A frozen PR67 baseline (`8b9b9428`) and the shared-context candidate were built
+with `cargo build --release -p hex-engine --example profile_instrument --locked`
+on Apple M5 Pro/macOS26.6.2, with incremental compilation disabled. Three
+interleaved runs used 100 tracks, one held four-stage original FM4 voice per
+track, two Utility effects, 48kHz, explicit SessionPlayback wrapper, 100 warmup
+blocks and 2,000 measured blocks. At 128 frames median summed render time was
+0.442s before and 0.444s after; at 512 frames it was 1.733s and 1.744s. Full-run
+PCM digests were identical in every comparison. Other OS load was uncontrolled;
+these roughly0.5–0.6% differences do not establish a speed change. A rejected
+by-value candidate nearly doubled render time; borrowing the sampler removed
+that regression before publication. Logs/binary hashes/source snapshots live
+in ignored `artifacts/profiles/shared-analytic-20261010/manifest.json`.
+
+`profile_shared_context` (requires `instrument-test-support`) additionally
+compares equivalent injected inline/shared providers: 100 real prepared tracks,
+16 simultaneously held notes each, 48kHz/128frames, 100warmups/2,000blocks. Its
+first4,096frames match a scalar accumulation oracle, and the full256,000-frame
+inline/shared outputs are compared exactly outside timing. Across three runs,
+median block p50 was307.000µs inline and376.625µs shared; the intentionally cheap
+fixture exposes the borrowed lookup's overhead rather than demonstrating a DSP
+speedup. The maximum shared block observed was574.167µs. This is headless
+sampling evidence, excluding control preparation, construction, checksums and
+retirement; it is not native device timing, UI responsiveness, plugin capacity,
+maximal16,384-release timing or a sustained deadline guarantee. Existing exact
+cap/refusal tests and callback allocation/destructor probes are separate evidence.

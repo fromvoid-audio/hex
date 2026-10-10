@@ -4,7 +4,7 @@ use super::{
     require_positive_frame_advance,
 };
 mod density;
-use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix};
+use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
 use density::admit_voice_density;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
@@ -66,6 +66,7 @@ pub struct PreparedMidiInstrumentTemplate {
     max_query_visits: usize,
     max_period_windows: usize,
     bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+    shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     release_frames: u64,
     event_source: bool,
 }
@@ -110,7 +111,7 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: Option<PreparedAnalyticNote>,
+    voice: Option<crate::midi_note_bank::PreparedMidiNote>,
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
@@ -130,7 +131,7 @@ pub struct MidiReleaseVoice {
     start_frame: u64,
     gate_end_frame: u64,
     end_frame: u64,
-    voice: PreparedAnalyticNote,
+    voice: crate::midi_note_bank::PreparedMidiNote,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +200,14 @@ impl MidiRenderSpan {
 }
 
 impl MidiReleaseVoice {
+    pub(crate) fn context_ref(&self) -> Option<crate::midi_note_bank::SharedContextRef> {
+        self.voice.context_ref()
+    }
+
+    pub(crate) fn set_context_ref(&mut self, context: crate::midi_note_bank::SharedContextRef) {
+        self.voice = self.voice.with_context_ref(context);
+    }
+
     pub(crate) fn end_frame(&self) -> u64 {
         self.end_frame
     }
@@ -243,7 +252,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedAnalyticNote,
+        voice: PreparedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -274,7 +283,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedAnalyticNote,
+        voice: PreparedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -327,14 +336,21 @@ impl MidiReleaseVoice {
         })
     }
 
-    pub(crate) fn sample_at(&self, frame: u64) -> Option<[f32; 2]> {
+    pub(crate) fn sample_at(
+        &self,
+        frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+    ) -> Option<[f32; 2]> {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
         }
-        Some(self.voice.sample(
+        self.voice.sample(
+            contexts,
+            retained,
             frame - self.start_frame,
             self.gate_end_frame - self.start_frame,
-        ))
+        )
     }
 }
 
@@ -471,7 +487,7 @@ impl PreparedMidiInstrumentTemplate {
             .map_err(|_| MidiTemplateError::InvalidSource("invalid midi note bank key"))?;
         }
         let bank =
-            crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None)
+            crate::midi_note_bank::PreparedMidiNoteBank::prepare(&mut keys, instrument, None, None)
                 .map_err(|error| {
                     if error.0.contains("reserve") {
                         MidiTemplateError::Allocation
@@ -488,7 +504,19 @@ impl PreparedMidiInstrumentTemplate {
         source: &PreparedMidiSourceTemplate,
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
     ) -> Result<Self, MidiTemplateError> {
-        Self::prepare_with_bank_mode(source, bank, None, false)
+        Self::prepare_with_bank_and_contexts(
+            source,
+            bank,
+            crate::shared_analytic::SharedAnalyticContextTable::empty(),
+        )
+    }
+
+    pub(crate) fn prepare_with_bank_and_contexts(
+        source: &PreparedMidiSourceTemplate,
+        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<Self, MidiTemplateError> {
+        Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false)
     }
 
     /// Prepare a timing-only source for a mutable instrument event owner.
@@ -499,7 +527,13 @@ impl PreparedMidiInstrumentTemplate {
         release_frames: u64,
     ) -> Result<Self, MidiTemplateError> {
         let bank = crate::midi_note_bank::PreparedMidiNoteBank::empty();
-        Self::prepare_with_bank_mode(source, bank, Some(release_frames), true)
+        Self::prepare_with_bank_mode(
+            source,
+            bank,
+            crate::shared_analytic::SharedAnalyticContextTable::empty(),
+            Some(release_frames),
+            true,
+        )
     }
 
     pub(crate) fn is_event_source(&self) -> bool {
@@ -509,6 +543,7 @@ impl PreparedMidiInstrumentTemplate {
     fn prepare_with_bank_mode(
         source: &PreparedMidiSourceTemplate,
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
         event_release_frames: Option<u64>,
         event_source: bool,
     ) -> Result<Self, MidiTemplateError> {
@@ -618,6 +653,7 @@ impl PreparedMidiInstrumentTemplate {
             },
             max_period_windows,
             bank,
+            shared_contexts,
             release_frames,
             event_source,
         })
@@ -761,10 +797,14 @@ impl PreparedMidiInstrumentTemplate {
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
                     let Some(voice) = span.voice else { continue };
-                    let contribution = voice.sample(
+                    let Some(contribution) = voice.sample(
+                        &self.shared_contexts,
+                        &[],
                         frame - span.start_frame,
                         span.gate_end_frame - span.start_frame,
-                    );
+                    ) else {
+                        continue;
+                    };
                     sample[0] += contribution[0];
                     sample[1] += contribution[1];
                 }
@@ -822,15 +862,16 @@ impl PreparedMidiInstrumentTemplate {
             let frame = start_frame + frame_offset as u64;
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
-                    if let Some(voice) = span.voice {
-                        mix.add_frame(
-                            output_frame,
-                            voice.sample(
-                                frame - span.start_frame,
-                                span.gate_end_frame - span.start_frame,
-                            ),
-                        );
-                    }
+                    let Some(voice) = span.voice else { continue };
+                    let Some(contribution) = voice.sample(
+                        &self.shared_contexts,
+                        &[],
+                        frame - span.start_frame,
+                        span.gate_end_frame - span.start_frame,
+                    ) else {
+                        continue;
+                    };
+                    mix.add_frame(output_frame, contribution);
                 }
             }
         }
@@ -1298,7 +1339,7 @@ mod note_bank_lifetime_tests {
     fn copied_release_voice_does_not_retain_its_note_bank() {
         let mut keys = PreparedMidiNoteBank::empty_keys();
         PreparedMidiNoteBank::add_key(&mut keys, 60, 100).unwrap();
-        let bank = PreparedMidiNoteBank::prepare(&mut keys, &TestInstrument, None).unwrap();
+        let bank = PreparedMidiNoteBank::prepare(&mut keys, &TestInstrument, None, None).unwrap();
         let sampler = bank.sampler(bank.index(60, 100).unwrap()).unwrap();
         let weak: Weak<PreparedMidiNoteBank> = Arc::downgrade(&bank);
         let release = MidiReleaseVoice::from_finite_span(0, 2, 6, sampler, 2, 2)
@@ -1306,6 +1347,13 @@ mod note_bank_lifetime_tests {
             .unwrap();
         drop(bank);
         assert!(weak.upgrade().is_none());
-        assert_eq!(release.sample_at(3), Some([0.25, -0.5]));
+        assert_eq!(
+            release.sample_at(
+                3,
+                &crate::shared_analytic::SharedAnalyticContextTable::default(),
+                &[],
+            ),
+            Some([0.25, -0.5])
+        );
     }
 }

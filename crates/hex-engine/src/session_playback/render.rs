@@ -2,6 +2,7 @@ use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};
 use hex_project::LoopRegion;
+use std::sync::Arc;
 
 impl SessionPlayback {
     /// Render a complete block transactionally. A refusal after any chunk
@@ -304,7 +305,14 @@ impl SessionPlayback {
                     }
                     for release in &self.release_scratch[first_release..release_cursor] {
                         if release.tail_group.is_none() {
-                            render_release_raw(release, table, performance_frame, render_output)?;
+                            render_release_raw(
+                                release,
+                                table,
+                                self.revision.arrangement().shared_contexts(),
+                                &self.retained_contexts,
+                                performance_frame,
+                                render_output,
+                            )?;
                         }
                     }
                     render_route_source_chunk(
@@ -354,7 +362,14 @@ impl SessionPlayback {
                 } else {
                     for release in &self.release_scratch[first_release..release_cursor] {
                         if release.tail_group.is_none() {
-                            render_release_raw(release, table, performance_frame, render_output)?;
+                            render_release_raw(
+                                release,
+                                table,
+                                self.revision.arrangement().shared_contexts(),
+                                &self.retained_contexts,
+                                performance_frame,
+                                render_output,
+                            )?;
                         }
                     }
                     render_route_source_chunk(
@@ -386,7 +401,14 @@ impl SessionPlayback {
             } else {
                 for release in &self.release_scratch[first_release..release_cursor] {
                     if release.tail_group.is_none() {
-                        render_release(release, table, performance_frame, output)?;
+                        render_release(
+                            release,
+                            table,
+                            self.revision.arrangement().shared_contexts(),
+                            &self.retained_contexts,
+                            performance_frame,
+                            output,
+                        )?;
                     }
                 }
                 render_route_source_chunk(
@@ -418,7 +440,14 @@ impl SessionPlayback {
                 .get(tail_cursor)
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             let Some(group) = release.tail_group else {
-                render_release(release, table, performance_frame, output)?;
+                render_release(
+                    release,
+                    table,
+                    self.revision.arrangement().shared_contexts(),
+                    &self.retained_contexts,
+                    performance_frame,
+                    output,
+                )?;
                 tail_cursor += 1;
                 continue;
             };
@@ -439,7 +468,14 @@ impl SessionPlayback {
             let mut tail_buffer = [[0.0; 2]; 256];
             let tail_output = &mut tail_buffer[..output.len()];
             for release in &self.release_scratch[group_start..tail_cursor] {
-                render_release_raw(release, table, performance_frame, tail_output)?;
+                render_release_raw(
+                    release,
+                    table,
+                    self.revision.arrangement().shared_contexts(),
+                    &self.retained_contexts,
+                    performance_frame,
+                    tail_output,
+                )?;
             }
             if let Some(tail) = self
                 .tail_mutable_instruments
@@ -911,6 +947,8 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
 fn render_release(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
+    contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+    retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     performance_frame: u64,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
@@ -920,7 +958,7 @@ fn render_release(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(absolute) {
+        if let Some(sample) = release.voice.sample_at(absolute, contexts, retained) {
             release.mix.add_frame(frame, sample);
         }
     }
@@ -930,6 +968,8 @@ fn render_release(
 fn render_release_raw(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
+    contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+    retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     performance_frame: u64,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
@@ -939,7 +979,7 @@ fn render_release_raw(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(absolute) {
+        if let Some(sample) = release.voice.sample_at(absolute, contexts, retained) {
             frame[0] += sample[0];
             frame[1] += sample[1];
         }
