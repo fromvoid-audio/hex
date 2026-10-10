@@ -370,10 +370,17 @@ not Operator implementation. Source/native/merge gates remain separate.
 Pulse2138 canonical chain-position prerequisite: project snapshots now retain one
 optional instrument's gap among up to 64 effects, with stable-ID ordered-node
 moves, Undo and strict schema16 persistence. Schemas1–15 migrate existing/default
-instruments to the front while preserving explicit silent slots. Arrangement and
-Session compilers refuse non-front positions before history commits because the
-engine still executes only the legacy front-instrument layout. Arbitrary chain
-execution remains Pulse2139; no UI ordering is enabled by this prerequisite.
+instruments to the front while preserving explicit silent slots. No UI ordering
+is enabled by this prerequisite.
+
+Pulse2139 ordered instrument rendering: Arrangement and Session now process
+audio through the effect prefix, inject MIDI at its persisted gap, then process
+the suffix and apply track mix. Stateful prefixes/suffixes share one block
+transaction; copied old-graph MIDI releases process only their captured suffix.
+Focused engine/session/export and callback allocation-probe suites pass, including
+non-front resident, streamed, rollback and release-tail fixtures. Clean full local
+CI and review remain with the integration owner; no native device/listening
+acceptance is claimed.
 
 Menu follow-up2115: user accepted and manually merged PR37 into the stacked
 integration branch fb4ec3a; all14 cleanCI passed e388613. Future picker2116 and

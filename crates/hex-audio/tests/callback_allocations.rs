@@ -742,10 +742,64 @@ fn midi_session_project() -> Result<(Project, TrackId, SceneId, SceneId), Box<dy
     Ok((editor.project().clone(), track, scene_a, scene_b))
 }
 
+fn insert_stateful_effects_at(
+    editor: &mut Editor,
+    track: TrackId,
+    instrument_position: usize,
+) -> Result<(), Box<dyn Error>> {
+    let utility_type = DeviceTypeId::new("hex.utility")?;
+    let utility = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(utility_type)?,
+        ParameterId::new(11)?,
+        ParameterValue::Bool(true),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: utility.clone(),
+    })?;
+    let suffix = match editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: utility,
+    })? {
+        Created::Device(id) => id,
+        _ => return Err("expected suffix device".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected instrument slot")?
+        .id();
+    if instrument_position == 1 {
+        editor.execute(Command::MoveTrackDevice {
+            device: instrument,
+            track,
+            before: Some(suffix),
+        })?;
+    } else if instrument_position != 0 {
+        return Err("unsupported instrument position in allocation fixture".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn sounding_midi_scene_switches_use_the_prepared_release_bank_without_allocations()
 -> Result<(), Box<dyn Error>> {
-    let (project, _track, scene_a, scene_b) = midi_session_project()?;
+    for instrument_position in [0, 1] {
+        sounding_midi_scene_switches_at_position(instrument_position)?;
+    }
+    Ok(())
+}
+
+fn sounding_midi_scene_switches_at_position(
+    instrument_position: usize,
+) -> Result<(), Box<dyn Error>> {
+    let (project, track, scene_a, scene_b) = midi_session_project()?;
+    let mut editor = Editor::new(project, 16)?;
+    insert_stateful_effects_at(&mut editor, track, instrument_position)?;
+    let project = editor.project().clone();
     let revision = Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
@@ -804,6 +858,13 @@ fn sounding_midi_scene_switches_use_the_prepared_release_bank_without_allocation
 #[test]
 fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
+    for instrument_position in [0, 1] {
+        stateful_utility_handoff_at_position(instrument_position)?;
+    }
+    Ok(())
+}
+
+fn stateful_utility_handoff_at_position(instrument_position: usize) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let track = match editor.execute(Command::AddMidiTrack {
         name: "keys".into(),
@@ -832,17 +893,7 @@ fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free
         channel: 0,
         velocity: 120,
     })?;
-    let utility_type = DeviceTypeId::new("hex.utility")?;
-    let utility = hex_engine::patch_native_device_parameter(
-        &hex_engine::default_native_device_state(utility_type)?,
-        ParameterId::new(11)?,
-        ParameterValue::Bool(true),
-    )?;
-    editor.execute(Command::InsertDevice {
-        track,
-        before: None,
-        state: utility,
-    })?;
+    insert_stateful_effects_at(&mut editor, track, instrument_position)?;
     let first_project = editor.project().clone();
     editor.execute(Command::SetTempoPoint {
         beat: BeatTime::ZERO,

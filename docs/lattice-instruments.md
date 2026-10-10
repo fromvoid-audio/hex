@@ -47,11 +47,25 @@ contract; a type ID is never used to guess processing class or fall back to the
 other registry. This matters because effect and instrument registries validate
 their identities independently and may contain the same type ID.
 
-Control prepares an immutable sample-rate-specific configuration. The current
-Arrangement and Session compilers explicitly refuse a non-front instrument
-position before committing a candidate; silently ignoring a persisted order
-would produce incorrect audio. Engine processing of arbitrary instrument/effect
-ordering is a separate follow-up. Its prepared
+Control prepares an immutable sample-rate-specific configuration. Arrangement
+and Session processing now honor the stored gap: audio sources enter before the
+effect chain, the single instrument adds generated MIDI at its gap, and the
+remaining effects process the summed signal. An absent or bypassed instrument
+adds no MIDI, while audio still traverses the effects. Track gain, balance and
+mute apply after the ordered chain. Stateful effects before and after the gap
+share one paired runtime chain and one whole-block history transaction; segment
+processing does not commit between sides. Memoryless effects use separate fused
+prefix/suffix matrices for a non-front gap. The original front-gap path retains
+its existing fused matrix behavior.
+
+When a revision cuts an active MIDI voice, a same-revision release enters at
+the instrument gap. A release carried from an older graph uses that graph's
+captured suffix and mix, never its prefix or the candidate's effect settings.
+Stateful suffix ownership moves through the bounded tail bank and is reclaimed
+with the retired graph on control. The finite active/tail processor limits and
+declared runtime budgets are unchanged.
+
+The prepared
 note is a Copy value containing 41 u64 payload words, release duration and a safe
 stereo sample function pointer: 344 bytes on 64-bit targets. The first three
 words retain the sine phase step, amplitude and attack representation; the

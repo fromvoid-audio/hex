@@ -301,6 +301,129 @@ fn mixed_compile_matches_resident_oracle_with_preview_and_shared_table() {
 }
 
 #[test]
+fn ordered_hybrid_streamed_render_matches_resident_audio_and_midi() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let asset = add_asset(&mut editor, "ordered-stream.wav", SOURCE_FRAMES as u64);
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "ordered hybrid".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(track) => track,
+        other => panic!("unexpected track: {other:?}"),
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 40,
+            source_offset: 0,
+            source_length: 40,
+            looping: false,
+        })
+        .unwrap();
+    let midi = match editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    {
+        Created::Clip(clip) => clip,
+        other => panic!("unexpected clip: {other:?}"),
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let prefix_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: prefix_state,
+        })
+        .unwrap();
+    let suffix_state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::CHANNEL,
+            ParameterValue::Choice(3),
+        )
+        .unwrap();
+    let suffix = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: suffix_state,
+        })
+        .unwrap()
+    {
+        Created::Device(device) => device,
+        other => panic!("unexpected device: {other:?}"),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::MoveTrackDevice {
+            device: instrument,
+            track,
+            before: Some(suffix),
+        })
+        .unwrap();
+
+    let pcm = source_pcm();
+    let resident_media = BTreeMap::from([(asset, Audio::new(48_000, pcm.clone()).unwrap())]);
+    let resident = compile::project(editor.project(), &resident_media).unwrap();
+    let streamed_media = BTreeMap::from([(asset, PreparedAudioSource::Streamed(stream(asset)))]);
+    let streamed =
+        compile::project_with_prepared_audio_sources(editor.project(), &streamed_media, GENERATION)
+            .unwrap();
+
+    let mut expected = [[0.0; 2]; 40];
+    let mut resident_renderer = Renderer::new(&resident);
+    resident_renderer.play();
+    resident_renderer.render(&mut expected).unwrap();
+    let mut actual = [[0.0; 2]; 40];
+    let mut streamed_renderer = Renderer::new(&streamed);
+    streamed_renderer.play();
+    let mut pages = Pages {
+        key: stream(asset).key(),
+        frames: pcm,
+        requests: Vec::new(),
+        missing: false,
+    };
+    streamed_renderer
+        .render_with_pages(&mut actual, &mut pages)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert!(pages.requests.is_empty());
+}
+
+#[test]
 fn streamed_compile_rejects_invalid_referenced_bindings_but_ignores_extras() {
     let (mut editor, streamed_asset, resident_asset, _, pcm) = fixture();
     let mut valid = resident_sources(streamed_asset, resident_asset, &pcm);

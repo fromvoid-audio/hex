@@ -363,14 +363,6 @@ impl PreparedSessionInventory {
             .map_err(|_| crate::Invalid("could not reserve Session instrument configuration"))?;
         let mut instrument_track_indices = BTreeMap::new();
         for track in project.tracks() {
-            if track
-                .instrument_position()
-                .is_some_and(|position| position != 0)
-            {
-                return Err(crate::Invalid(
-                    "Session playback does not support an instrument after serial effects",
-                ));
-            }
             let slot = track.instrument();
             let config = slot
                 .map(|device| {

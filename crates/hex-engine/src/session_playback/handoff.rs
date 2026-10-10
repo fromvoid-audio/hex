@@ -457,6 +457,8 @@ impl SessionPlayback {
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
+            MAX_TRACKS] = [None; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
         let mut tail_runtime_bytes = 0_usize;
         for (slot, active) in active_tail_groups.iter().copied().enumerate() {
@@ -489,7 +491,13 @@ impl SessionPlayback {
             let Some(old_chain) = previous.device_chains.get(old_index) else {
                 return Err(SessionPlaybackError::DeviceRuntime);
             };
-            if !old_chain.has_stateful_processors() {
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if !old_track.instrument_suffix_needs_tail() {
                 continue;
             }
             let already_assigned = old_track_tail_slots
@@ -513,6 +521,14 @@ impl SessionPlayback {
             };
             if let Some(old_slot) = old_track_tail_slots.get_mut(old_index) {
                 *old_slot = Some(slot);
+            } else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            if let Some(metadata) = old_track_tail_metadata.get_mut(old_index) {
+                *metadata = Some((
+                    old_track.instrument_position(),
+                    old_track.instrument_suffix_matrix(),
+                ));
             } else {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -577,6 +593,18 @@ impl SessionPlayback {
                 ) {
                     *candidate_mix = previous_mix;
                 }
+                if let (Some(candidate_start), Some(previous_start)) = (
+                    self.tail_suffix_starts.get_mut(slot),
+                    previous.tail_suffix_starts.get(slot).copied(),
+                ) {
+                    *candidate_start = previous_start;
+                }
+                if let (Some(candidate_matrix), Some(previous_matrix)) = (
+                    self.tail_suffix_matrices.get_mut(slot),
+                    previous.tail_suffix_matrices.get(slot).copied(),
+                ) {
+                    *candidate_matrix = previous_matrix;
+                }
             }
         }
         for (old_index, slot) in old_track_tail_slots.iter().copied().enumerate() {
@@ -596,6 +624,18 @@ impl SessionPlayback {
                     previous.revision.arrangement().tracks().get(old_index),
                 ) {
                     *tail_mix = old_track.mix();
+                }
+                if let (Some(start), Some((suffix_start, _))) = (
+                    self.tail_suffix_starts.get_mut(slot),
+                    old_track_tail_metadata.get(old_index).copied().flatten(),
+                ) {
+                    *start = suffix_start;
+                }
+                if let (Some(matrix), Some((_, suffix_matrix))) = (
+                    self.tail_suffix_matrices.get_mut(slot),
+                    old_track_tail_metadata.get(old_index).copied().flatten(),
+                ) {
+                    *matrix = suffix_matrix;
                 }
             }
         }
