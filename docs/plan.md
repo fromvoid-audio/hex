@@ -36,7 +36,10 @@ gates. See [main track](main-track.md).
 
 Four-color theme settings 15 are source-complete with focused checks passing;
 clean full CI follows integration. See [theme settings](theme-settings.md);
-stateful runtime 16 is still under lifecycle/allocation validation. The local CI
+stateful runtime 16 now passes affected lifecycle/allocation checks, including
+the persistent fallback repair. Integrated full CI and native acceptance follow;
+see [stateful lattice](stateful-lattice.md). Performance follow-up Pulse 2108
+records the observed deadline miss and initial admission limits. The local CI
 headroom guard passed all 14 checks on `5033c02` in 294.905 s
 ([PR32](https://github.com/PORTALSURFER/hex/pull/32)). Original planned Operator
 experiments and the proposed instrument boundary are documented in

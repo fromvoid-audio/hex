@@ -651,7 +651,7 @@ fn streamed_session_seek_stop_and_source_handoff_keep_frame_anchors() {
     let replacement = prepared(&replacement_project, 72, [8; 32]);
     let new_key = StreamSourceKey::new(72, replacement_project.assets().next().unwrap().id());
     let mut next = Playback::try_from_prepared_with_session(replacement).unwrap();
-    next.try_inherit_runtime_from(&previous).unwrap();
+    next.try_inherit_runtime_from(&mut previous).unwrap();
     assert_eq!(next.performance_frame(), 3);
     assert_eq!(
         next.session_route_status(0).unwrap().owner,

@@ -1,7 +1,7 @@
-//! Original fixed-state Utility filters. These are not yet admitted to the
-//! native registry: track summation and captured-release ownership come first.
+//! Original fixed-state Utility filters prepared by the native registry.
 use crate::utility::UtilityError;
-use hex_lattice::StereoFrame;
+use hex_lattice::{NativeProcessorRuntime, StereoFrame};
+use std::any::Any as StdAny;
 
 const DC_CUTOFF_HZ: f64 = 5.0;
 const HISTORY_FLOOR: f64 = 1.0e-30;
@@ -211,6 +211,33 @@ impl UtilityFilterProcessor {
         for frame in frames {
             *frame = self.process_frame(*frame);
         }
+    }
+}
+
+impl NativeProcessorRuntime for UtilityFilterProcessor {
+    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+        UtilityFilterProcessor::process_block(self, frames);
+    }
+
+    fn reset(&mut self) {
+        UtilityFilterProcessor::reset(self);
+    }
+
+    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| self.prepared.sample_rate == previous.prepared.sample_rate)
+    }
+
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+            let _ = self.inherit_history_from(previous);
+        }
+    }
+
+    fn as_any(&self) -> &dyn StdAny {
+        self
     }
 }
 

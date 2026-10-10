@@ -9,7 +9,8 @@ Lowercase text, bundled Ioskeley Mono and accepted compact geometry are preserve
 
 ## Controls and ownership
 
-The small settings icon and the application menu open a compact modal. Each
+The native macOS hex > settings… menu (Command-comma) opens a compact modal.
+Repeated activation focuses the existing draft. The toolbar has no settings button. Each
 color has a swatch, hex readout and RGB sliders with direct numeric channel
 editing. Values are bounded to 0–255. Valid changes preview immediately; Reset
 restores shipped defaults, Cancel/Escape restores the palette present when the
@@ -53,9 +54,15 @@ follows integration; no native macOS interaction has been claimed.
 
 The user's native checklist for the combined build:
 
-- Open settings from the icon and menu; adjust all four roles and check tracks,
+- Open settings from the native menu or Command-comma; adjust all four roles and check tracks,
   selections, browser, status and an open Utility device update immediately.
 - Type an RGB channel, drag another, then press Escape; previous colors and
   editor shortcuts should return. Invalid contrast should leave controls readable.
 - Save a valid palette, quit and relaunch; colors should persist independently
   of the project. Reset then Save restores the shipped palette.
+
+
+Menu access follow-up (Pulse2115): removes the in-window settings button and adds
+the native application-menu action and global Command-comma binding. Existing
+preview/persistence tests exercise that action through keyboard dispatch. The user
+accepted theming on 9 October 2026; native menu access remains a separate check.

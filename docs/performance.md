@@ -1406,3 +1406,12 @@ continuous free resize and flicker acceptance remain open.
 Logs: `artifacts/smooth-clip-waveform-profile{,-2,-3}.log`; release build:
 `artifacts/smooth-clip-release-build.log`; review identity:
 `artifacts/smooth-clip-manifest.json`. Contract: [clip-edit-performance.md](clip-edit-performance.md).
+
+## stateful Utility integration — provisional 9 October 2026
+
+The [stateful runtime report](stateful-lattice.md) records a local 100-track,
+48 kHz/128-frame release workload. DC-enabled Utility p50/p95/p99/max were
+123/299/777/2999 microseconds versus memoryless 19/30/75/778. The measured
+maximum exceeds the 2667-microsecond deadline. Initial stateful admission caps
+refuse 100 tracks with 16 filters each. Pulse 2108 owns reproducible sustained
+profiling and scalability; no physical deadline or large-chain claim is made.

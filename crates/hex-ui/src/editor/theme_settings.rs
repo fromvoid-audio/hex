@@ -217,9 +217,9 @@ impl EditorView {
         }
     }
 
-    pub(super) fn toggle_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.theme_settings.open {
-            self.cancel_theme_settings(window, cx);
+            self.theme_settings.focus.focus(window);
             return;
         }
         self.theme_settings.open = true;
@@ -845,7 +845,7 @@ mod tests {
         let (handle, editor) = editor_fixture(cx, &directory);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        click_bounds(&mut visual, "theme colors");
+        visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         assert!(visual.debug_bounds("theme settings panel").is_some());
 
@@ -864,6 +864,14 @@ mod tests {
         editor.read_with(cx, |view, _| {
             assert_ne!(view.theme_settings.draft.primary.red, 0xf0);
             assert_ne!(theme::preferences(), ThemePreferences::default());
+        });
+
+        let draft = editor.read_with(cx, |view, _| view.theme_settings.draft);
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(view.theme_settings.open);
+            assert_eq!(view.theme_settings.draft, draft);
         });
 
         visual.simulate_keystrokes("escape");
@@ -886,7 +894,7 @@ mod tests {
         let (handle, editor) = editor_fixture(cx, &directory);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        click_bounds(&mut visual, "theme colors");
+        visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.update(cx, |view, cx| {
             view.update_theme_channel(ThemeChannel::PrimaryRed, 235.0, cx)
@@ -918,7 +926,7 @@ mod tests {
         let (handle, editor) = editor_fixture(cx, &directory);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        click_bounds(&mut visual, "theme colors");
+        visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.update(cx, |view, cx| {
             view.update_theme_channel(ThemeChannel::SecondaryBlue, 120.0, cx);
@@ -950,7 +958,7 @@ mod tests {
         let (handle, editor) = editor_fixture(cx, &directory);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        click_bounds(&mut visual, "theme colors");
+        visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.update(cx, |view, cx| {
             // Loading used the valid missing-file path; point the save at a directory so the
@@ -991,7 +999,7 @@ mod tests {
         visual.run_until_parked();
 
         assert_eq!(theme::preferences(), initial);
-        click_bounds(&mut visual, "theme colors");
+        visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert_eq!(view.theme_settings.draft, invalid);

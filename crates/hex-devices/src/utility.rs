@@ -1,6 +1,6 @@
 //! Original, immutable, zero-latency stereo Utility processing.
-use hex_lattice::NativeDeviceDefinition;
 use hex_lattice::{InvalidMatrix, StereoFrame, StereoMatrix};
+use hex_lattice::{NativeDeviceDefinition, NativeProcessorRuntime, PreparedNativeProcessor};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
     ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
@@ -23,6 +23,10 @@ pub mod parameter {
     pub const MUTE: ParameterId = ParameterId::from_static(8);
     pub const MID_SIDE_ENABLED: ParameterId = ParameterId::from_static(9);
     pub const MID_SIDE_BALANCE: ParameterId = ParameterId::from_static(10);
+    pub const DC_REMOVE: ParameterId = ParameterId::from_static(11);
+    pub const BASS_MONO: ParameterId = ParameterId::from_static(12);
+    pub const BASS_MONO_CUTOFF: ParameterId = ParameterId::from_static(13);
+    pub const BASS_MONO_AUDITION: ParameterId = ParameterId::from_static(14);
 }
 
 /// Channel selection applied after input polarity.
@@ -64,6 +68,10 @@ pub struct UtilitySettings {
     mono: bool,
     mute: bool,
     mid_side_balance: Option<f32>,
+    dc_remove: bool,
+    bass_mono: bool,
+    bass_mono_cutoff_hz: f32,
+    bass_mono_audition: bool,
 }
 
 impl UtilitySettings {
@@ -111,6 +119,10 @@ impl UtilitySettings {
             mono,
             mute,
             mid_side_balance,
+            dc_remove: false,
+            bass_mono: false,
+            bass_mono_cutoff_hz: 200.0,
+            bass_mono_audition: false,
         })
     }
 
@@ -163,6 +175,10 @@ impl Default for UtilitySettings {
             mono: false,
             mute: false,
             mid_side_balance: None,
+            dc_remove: false,
+            bass_mono: false,
+            bass_mono_cutoff_hz: 200.0,
+            bass_mono_audition: false,
         }
     }
 }
@@ -247,6 +263,34 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         },
         default: ParameterValue::Float(0.0),
     },
+    ParameterDescriptor {
+        id: parameter::DC_REMOVE,
+        label: "dc remove",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::BASS_MONO,
+        label: "bass mono",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
+    ParameterDescriptor {
+        id: parameter::BASS_MONO_CUTOFF,
+        label: "bass mono cutoff",
+        kind: ParameterKind::Float {
+            min: 50.0,
+            max: 500.0,
+            unit: Some("hz"),
+        },
+        default: ParameterValue::Float(200.0),
+    },
+    ParameterDescriptor {
+        id: parameter::BASS_MONO_AUDITION,
+        label: "bass mono audition",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+    },
 ];
 
 /// Built-in Utility metadata, portable state codec, and control-side factory.
@@ -258,11 +302,16 @@ fn decode_state_fields(
     if state.type_id() != UTILITY_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != 1 {
+    if !matches!(state.state_version(), 1 | 2) {
         return Err(DeviceContractError::UnsupportedStateVersion);
     }
     let bytes = state.payload();
-    if bytes.len() != 19 || bytes[12] > 3 || bytes[13] & !0x0f != 0 || bytes[14] > 1 {
+    let valid_length = if state.state_version() == 1 {
+        bytes.len() == 19
+    } else {
+        bytes.len() == 26
+    };
+    if !valid_length || bytes[12] > 3 || bytes[13] & !0x0f != 0 || bytes[14] > 1 {
         return Err(DeviceContractError::MalformedState);
     }
     let read = |offset| {
@@ -298,7 +347,28 @@ fn decode_state_fields(
         mid_side_balance: mid_side_enabled.then_some(mid_side_balance),
         ..settings
     };
-    Ok((settings, mid_side_enabled, mid_side_balance))
+    let (dc_remove, bass_mono, audition, cutoff) = if state.state_version() == 1 {
+        (false, false, false, 200.0)
+    } else {
+        if bytes[19] > 1 || bytes[20] > 1 || bytes[21] > 1 {
+            return Err(DeviceContractError::MalformedState);
+        }
+        (bytes[19] == 1, bytes[20] == 1, bytes[21] == 1, read(22))
+    };
+    if !cutoff.is_finite() || !(50.0..=500.0).contains(&cutoff) {
+        return Err(DeviceContractError::MalformedState);
+    }
+    Ok((
+        UtilitySettings {
+            dc_remove,
+            bass_mono,
+            bass_mono_cutoff_hz: cutoff,
+            bass_mono_audition: audition,
+            ..settings
+        },
+        mid_side_enabled,
+        mid_side_balance,
+    ))
 }
 
 fn decode_state(state: &NativeDeviceState) -> Result<UtilitySettings, DeviceContractError> {
@@ -319,7 +389,7 @@ fn encode_state_fields(
     mid_side_enabled: bool,
     mid_side_balance: f32,
 ) -> Result<NativeDeviceState, DeviceContractError> {
-    let mut bytes = Vec::with_capacity(19);
+    let mut bytes = Vec::with_capacity(26);
     for value in [settings.gain, settings.balance, settings.width] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -337,7 +407,11 @@ fn encode_state_fields(
     );
     bytes.push(u8::from(mid_side_enabled));
     bytes.extend_from_slice(&mid_side_balance.to_le_bytes());
-    NativeDeviceState::new(UTILITY_TYPE_ID, 1, bytes)
+    bytes.push(u8::from(settings.dc_remove));
+    bytes.push(u8::from(settings.bass_mono));
+    bytes.push(u8::from(settings.bass_mono_audition));
+    bytes.extend_from_slice(&settings.bass_mono_cutoff_hz.to_le_bytes());
+    NativeDeviceState::new(UTILITY_TYPE_ID, 2, bytes)
 }
 
 impl NativeDeviceMetadata for UtilityDefinition {
@@ -348,7 +422,7 @@ impl NativeDeviceMetadata for UtilityDefinition {
         UTILITY_TYPE_ID
     }
     fn state_version(&self) -> u32 {
-        1
+        2
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
@@ -360,8 +434,8 @@ impl NativeDeviceMetadata for UtilityDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        decode_state_fields(state)?;
-        Ok(state.clone())
+        let (settings, mid_side_enabled, mid_side_balance) = decode_state_fields(state)?;
+        encode_state_fields(settings, mid_side_enabled, mid_side_balance)
     }
     fn read_parameter(
         &self,
@@ -385,6 +459,10 @@ impl NativeDeviceMetadata for UtilityDefinition {
             parameter::MUTE => ParameterValue::Bool(settings.mute),
             parameter::MID_SIDE_ENABLED => ParameterValue::Bool(mid_side_enabled),
             parameter::MID_SIDE_BALANCE => ParameterValue::Float(mid_side_balance),
+            parameter::DC_REMOVE => ParameterValue::Bool(settings.dc_remove),
+            parameter::BASS_MONO => ParameterValue::Bool(settings.bass_mono),
+            parameter::BASS_MONO_CUTOFF => ParameterValue::Float(settings.bass_mono_cutoff_hz),
+            parameter::BASS_MONO_AUDITION => ParameterValue::Bool(settings.bass_mono_audition),
             _ => return Err(DeviceContractError::UnknownParameter),
         })
     }
@@ -407,6 +485,10 @@ impl NativeDeviceMetadata for UtilityDefinition {
             settings.channel_mode,
         );
         let (_, mut mid_side_enabled, mut mid_side_balance) = decode_state_fields(state)?;
+        let mut dc_remove = settings.dc_remove;
+        let mut bass_mono = settings.bass_mono;
+        let mut bass_mono_cutoff_hz = settings.bass_mono_cutoff_hz;
+        let mut bass_mono_audition = settings.bass_mono_audition;
         let (mut left, mut right, mut mono, mut mute) = (
             settings.invert_left,
             settings.invert_right,
@@ -432,6 +514,10 @@ impl NativeDeviceMetadata for UtilityDefinition {
             (parameter::MUTE, ParameterValue::Bool(v)) => mute = v,
             (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(v)) => mid_side_enabled = v,
             (parameter::MID_SIDE_BALANCE, ParameterValue::Float(v)) => mid_side_balance = v,
+            (parameter::DC_REMOVE, ParameterValue::Bool(v)) => dc_remove = v,
+            (parameter::BASS_MONO, ParameterValue::Bool(v)) => bass_mono = v,
+            (parameter::BASS_MONO_CUTOFF, ParameterValue::Float(v)) => bass_mono_cutoff_hz = v,
+            (parameter::BASS_MONO_AUDITION, ParameterValue::Bool(v)) => bass_mono_audition = v,
             _ => return Err(DeviceContractError::InvalidParameterValue),
         }
         let settings = UtilitySettings::new(
@@ -446,6 +532,13 @@ impl NativeDeviceMetadata for UtilityDefinition {
             mid_side_enabled.then_some(mid_side_balance),
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let settings = UtilitySettings {
+            dc_remove,
+            bass_mono,
+            bass_mono_cutoff_hz,
+            bass_mono_audition,
+            ..settings
+        };
         encode_state_fields(settings, mid_side_enabled, mid_side_balance)
     }
 }
@@ -455,9 +548,58 @@ impl NativeDeviceDefinition for UtilityDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
-        PreparedUtility::new(decode_state(state).map_err(|_| DeviceContractError::MalformedState)?)
+        let settings = decode_state(state)?;
+        if settings.dc_remove || settings.bass_mono {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        PreparedUtility::new(settings)
             .map(|prepared| prepared.matrix())
             .map_err(|_| DeviceContractError::MalformedState)
+    }
+
+    fn prepare_effect_matrix(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        PreparedUtility::new(decode_state(state)?)
+            .map(|prepared| prepared.matrix())
+            .map_err(|_| DeviceContractError::MalformedState)
+    }
+
+    fn prepare_processor(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let settings = decode_state(state)?;
+        if !settings.dc_remove && !settings.bass_mono {
+            return Ok(None);
+        }
+        let prepared = crate::utility_filters::PreparedUtilityFilters::new(
+            sample_rate,
+            settings.dc_remove,
+            settings.bass_mono,
+            f64::from(settings.bass_mono_cutoff_hz),
+            settings.bass_mono_audition,
+        )
+        .map_err(|_| DeviceContractError::MalformedState)?;
+        Ok(Some(Box::new(PreparedUtilityFilterRuntime(prepared))))
+    }
+}
+
+struct PreparedUtilityFilterRuntime(crate::utility_filters::PreparedUtilityFilters);
+
+impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<crate::utility_filters::UtilityFilterProcessor>()
+    }
+
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(crate::utility_filters::UtilityFilterProcessor::new(self.0))
     }
 }
 
@@ -869,7 +1011,7 @@ mod tests {
                 .unwrap()
                 .descriptors()
                 .len(),
-            10
+            14
         );
         for descriptor in UTILITY_DEFINITION.descriptors() {
             descriptor.validate_descriptor().unwrap();
@@ -910,6 +1052,46 @@ mod tests {
         let future =
             NativeDeviceState::new(UTILITY_TYPE_ID, 99, patched.payload().to_vec()).unwrap();
         assert!(registry.migrate_state(&future).is_err());
+    }
+
+    #[test]
+    fn schema_one_utility_state_migrates_to_neutral_stateful_defaults() {
+        use hex_lattice::NativeDeviceRegistry;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let schema_two = registry.default_state(UTILITY_TYPE_ID).unwrap();
+        let schema_one =
+            NativeDeviceState::new(UTILITY_TYPE_ID, 1, schema_two.payload()[..19].to_vec())
+                .unwrap();
+        let migrated = registry.migrate_state(&schema_one).unwrap();
+        assert_eq!(migrated.state_version(), 2);
+        assert_eq!(migrated.payload().len(), 26);
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&migrated, parameter::DC_REMOVE)
+                .unwrap(),
+            ParameterValue::Bool(false)
+        );
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&migrated, parameter::BASS_MONO)
+                .unwrap(),
+            ParameterValue::Bool(false)
+        );
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&migrated, parameter::BASS_MONO_CUTOFF)
+                .unwrap(),
+            ParameterValue::Float(200.0)
+        );
+        assert_eq!(
+            UTILITY_DEFINITION
+                .read_parameter(&migrated, parameter::BASS_MONO_AUDITION)
+                .unwrap(),
+            ParameterValue::Bool(false)
+        );
     }
 
     #[test]
@@ -991,7 +1173,36 @@ mod tests {
             .payload()
             .to_vec();
         malformed_payload[15..19].copy_from_slice(&f32::NAN.to_le_bytes());
-        let malformed = NativeDeviceState::new(UTILITY_TYPE_ID, 1, malformed_payload).unwrap();
+        let malformed = NativeDeviceState::new(UTILITY_TYPE_ID, 2, malformed_payload).unwrap();
         assert!(registry.migrate_state(&malformed).is_err());
+    }
+
+    #[test]
+    fn legacy_nineteen_byte_state_migrates_to_filter_defaults() {
+        use hex_lattice::NativeDeviceRegistry;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let legacy = NativeDeviceState::new(
+            UTILITY_TYPE_ID,
+            1,
+            UTILITY_DEFINITION.default_state().unwrap().payload()[..19].to_vec(),
+        )
+        .unwrap();
+        let migrated = registry.migrate_state(&legacy).unwrap();
+        assert_eq!(migrated.state_version(), 2);
+        assert_eq!(migrated.payload().len(), 26);
+        for (id, expected) in [
+            (parameter::DC_REMOVE, ParameterValue::Bool(false)),
+            (parameter::BASS_MONO, ParameterValue::Bool(false)),
+            (parameter::BASS_MONO_CUTOFF, ParameterValue::Float(200.0)),
+            (parameter::BASS_MONO_AUDITION, ParameterValue::Bool(false)),
+        ] {
+            assert_eq!(
+                UTILITY_DEFINITION.read_parameter(&migrated, id).unwrap(),
+                expected
+            );
+        }
     }
 }

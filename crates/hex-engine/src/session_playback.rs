@@ -98,6 +98,7 @@ pub enum SessionPlaybackError {
     TempoConversion,
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
+    DeviceRuntime,
     MediaPagesUnavailable,
     Midi(crate::MidiTemplateError),
     Arrangement(&'static str),
@@ -121,6 +122,7 @@ impl fmt::Display for SessionPlaybackError {
                 Self::ArithmeticOverflow => "session playback frame or beat overflow",
                 Self::TempoConversion => "session playback timing conversion failed",
                 Self::ReleaseBankFull => "session playback outgoing release bank is full",
+                Self::DeviceRuntime => "session playback native device runtime is unavailable",
                 Self::MediaPagesUnavailable => {
                     "streamed session playback requires a media page provider"
                 }
@@ -178,6 +180,7 @@ struct ReleaseEntry {
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
+    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -200,6 +203,7 @@ struct SessionContinuation {
 }
 
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
+const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 
 /// Bounded result for targets canceled because their stable track or clip was
 /// removed by the candidate revision.
@@ -227,6 +231,9 @@ pub struct SessionPlayback {
     historical_floor: Option<BeatTime>,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    device_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    tail_mixes: Vec<crate::PreparedTrackMix>,
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
     release_capacity: usize,
@@ -296,6 +303,31 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::Allocation)?;
         route_scratch.extend_from_slice(&routes);
 
+        let mut device_chains = Vec::new();
+        device_chains
+            .try_reserve_exact(arrangement_tracks.len())
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        for track in arrangement_tracks {
+            device_chains.push(
+                track
+                    .new_device_runtime()
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
+            );
+        }
+        let mut tail_groups = Vec::new();
+        tail_groups
+            .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        tail_groups.resize_with(SESSION_TAIL_GROUP_CAPACITY, || None);
+        let mut tail_mixes = Vec::new();
+        tail_mixes
+            .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        tail_mixes.resize(
+            SESSION_TAIL_GROUP_CAPACITY,
+            crate::PreparedTrackMix::identity(),
+        );
+
         let mut releases = Vec::new();
         releases
             .try_reserve_exact(release_capacity)
@@ -321,6 +353,9 @@ impl SessionPlayback {
             historical_floor: None,
             routes,
             route_scratch,
+            device_chains,
+            tail_groups,
+            tail_mixes,
             releases,
             release_scratch,
             release_capacity,
@@ -437,7 +472,7 @@ impl SessionPlayback {
     /// owning graph references. All runtime fields change together on success.
     pub fn try_inherit_state_from(
         &mut self,
-        previous: &Self,
+        previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         self.inherit_state(previous)
     }

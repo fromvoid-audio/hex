@@ -41,6 +41,12 @@ impl SessionPlayback {
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
+        for chain in &mut self.device_chains {
+            chain.reset();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.reset();
+        }
         for route in &mut self.routes {
             changed |= route.pending.take().is_some();
             if let RouteOwner::Session { clip, launch } = route.owner {
@@ -83,6 +89,12 @@ impl SessionPlayback {
         self.suppressions.clear();
         self.historical_floor = None;
         self.release_order = 0;
+        for chain in &mut self.device_chains {
+            chain.reset();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.reset();
+        }
         for route in &mut self.routes {
             route.pending = None;
             if let RouteOwner::Session { clip, .. } = route.owner {
@@ -223,7 +235,7 @@ impl SessionPlayback {
         }
         self.check_release_reservations(&self.route_scratch, self.release_scratch.len())?;
         self.release_scratch
-            .sort_unstable_by_key(|entry| (entry.track_index, entry.order));
+            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
         let route_changed = self.routes != self.route_scratch;
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -362,6 +374,7 @@ impl SessionPlayback {
                                     track_id: route.id,
                                     order: 0,
                                     mix: track.mix(),
+                                    tail_group: None,
                                     continuation: None,
                                     voice,
                                 },
@@ -457,6 +470,7 @@ impl SessionPlayback {
                                 track_id: route.id,
                                 order: 0,
                                 mix,
+                                tail_group: None,
                                 continuation: None,
                                 voice,
                             },

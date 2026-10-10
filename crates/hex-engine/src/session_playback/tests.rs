@@ -4,10 +4,10 @@ use crate::compile::PreparedAudioSource;
 use crate::{BorrowedMediaPage, MediaPages, StreamSourceKey, StreamedSourceMetadata};
 use crate::{PreparedRevision, PreparedSessionInventory};
 use hex_project::{
-    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, Meter, MeterPoint, MidiClipSnapshot,
-    MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot, SessionCellContentSnapshot,
-    SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot, Snapshot, Tempo, TempoPoint,
-    TrackContentSnapshot, TrackSnapshot,
+    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, LoopRegion, Meter, MeterPoint,
+    MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
+    SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot,
+    Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -303,7 +303,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
     let track_id = editor.project().tracks()[0].id();
     editor.execute(Command::RemoveTrack(track_id)).unwrap();
     let mut next = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
     next.render(&mut tail).unwrap();
     assert!(tail.iter().any(|frame| frame[0].abs() > 1.0e-5));
@@ -357,11 +357,319 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         .unwrap();
     let new_project = Project::from_snapshot(new_snapshot).unwrap();
     let mut next = SessionPlayback::new(revision(&new_project, Arc::clone(&table))).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
     next.render(&mut tail).unwrap();
     assert!(tail.iter().any(|frame| frame[0].abs() > 1.0e-5));
     assert!(tail.iter().all(|frame| frame[1] == -frame[0]));
+}
+
+#[test]
+fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    snapshot.tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed: false,
+            state,
+        });
+    snapshot.next_id += 1;
+    let old_project = Project::from_snapshot(snapshot).unwrap();
+    let old_revision = revision(&old_project, Arc::clone(&table));
+    let clip = old_revision.session().midi_clips()[0].id;
+
+    let render_old_tail = |new_project: &Project| {
+        let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        previous
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 64];
+        previous.render(&mut prefix).unwrap();
+
+        let mut next = SessionPlayback::new(revision(new_project, Arc::clone(&table))).unwrap();
+        next.try_inherit_state_from(&mut previous).unwrap();
+        let mut tail = [[0.0; 2]; 64];
+        next.render(&mut tail).unwrap();
+        tail
+    };
+
+    let stopped = without_session_cells(&old_project);
+    let current_dc = with_utility_filter_state(&stopped, true, false);
+    let current_bass = with_utility_filter_state(&stopped, false, true);
+    // The candidate route is silent. Its new device configuration must not
+    // change outgoing voices, which continue through the captured old chain.
+    assert_eq!(render_old_tail(&current_dc), render_old_tail(&current_bass));
+}
+
+#[test]
+fn completed_tail_group_is_retained_on_old_owner_and_its_slot_is_reusable() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
+    let base_revision = revision(&base, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(Arc::clone(&base_revision)).unwrap();
+    let clip = previous.revision.session().midi_clips()[0].id;
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 64];
+    previous.render(&mut prefix).unwrap();
+
+    let changed = with_utility_filter_state(
+        &project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap()),
+        true,
+        false,
+    );
+    let mut first = SessionPlayback::new(revision(&changed, Arc::clone(&table))).unwrap();
+    first.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(first.tail_groups.iter().flatten().count(), 1);
+
+    // Model a completed release while retaining its owner until old-graph
+    // retirement. The next candidate may reuse its numeric slot, but must not
+    // take or drop the completed chain on the callback handoff path.
+    let mut next_release = *first.releases.first().unwrap();
+    first.releases.clear();
+    // Keep a distinct live release on the current track. The next handoff
+    // must allocate a tail group for it and can reuse slot zero only if the
+    // completed group remains on the retired graph.
+    next_release.tail_group = None;
+    next_release.track_index = 0;
+    first.releases.push(next_release);
+    let changed_again = with_utility_filter_state(&base, true, false);
+    let mut second = SessionPlayback::new(revision(&changed_again, table)).unwrap();
+    second.try_inherit_state_from(&mut first).unwrap();
+    assert!(first.tail_groups[0].is_some());
+    assert_eq!(second.tail_groups[0].as_ref().unwrap().stateful_count(), 1);
+    assert_eq!(second.tail_groups.iter().flatten().count(), 1);
+}
+
+#[test]
+fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
+    let base_revision = revision(&base, Arc::clone(&table));
+    let changed = with_utility_filter_state(
+        &project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap()),
+        true,
+        false,
+    );
+    let clip_id = base_revision.session().midi_clips()[0].id;
+
+    let make_full = || {
+        let mut previous = SessionPlayback::new(Arc::clone(&base_revision)).unwrap();
+        previous
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: clip_id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 64];
+        previous.render(&mut prefix).unwrap();
+
+        let mut active = SessionPlayback::new(revision(&changed, Arc::clone(&table))).unwrap();
+        active.try_inherit_state_from(&mut previous).unwrap();
+        let mut next_prefix = [[0.0; 2]; 64];
+        active.render(&mut next_prefix).unwrap();
+
+        let release = *active
+            .releases
+            .first()
+            .expect("first handoff captures a release");
+        for slot in 1..SESSION_TAIL_GROUP_CAPACITY {
+            active.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+            let mut grouped = release;
+            grouped.tail_group = Some(u16::try_from(slot).unwrap());
+            active.releases.push(grouped);
+        }
+        let mut current_chain_release = release;
+        current_chain_release.tail_group = None;
+        current_chain_release.track_index = 0;
+        active.releases.push(current_chain_release);
+        active
+    };
+
+    let mut active = make_full();
+    let mut reference = make_full();
+    assert_eq!(
+        active.tail_groups.iter().flatten().count(),
+        SESSION_TAIL_GROUP_CAPACITY
+    );
+    let next_project = with_utility_filter_state(&base, true, false);
+    let mut candidate = SessionPlayback::new(revision(&next_project, Arc::clone(&table))).unwrap();
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut active),
+        Err(SessionPlaybackError::ReleaseBankFull)
+    );
+    assert_eq!(
+        active.tail_groups.iter().flatten().count(),
+        SESSION_TAIL_GROUP_CAPACITY
+    );
+    assert_eq!(active.device_chains[0].stateful_count(), 1);
+
+    let mut after_refusal = [[0.0; 2]; 128];
+    let mut reference_output = [[0.0; 2]; 128];
+    active.render(&mut after_refusal).unwrap();
+    reference.render(&mut reference_output).unwrap();
+    assert_eq!(after_refusal, reference_output);
+}
+
+#[test]
+fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_across_loop() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut base_snapshot = project(0.5, 0, 8 << 32).snapshot();
+    base_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    let base =
+        with_utility_filter_state(&Project::from_snapshot(base_snapshot).unwrap(), true, false);
+
+    let start = |revision: Arc<PreparedRevision>, clip: hex_project::ClipId| {
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+    };
+
+    let prepared = revision(&base, Arc::clone(&table));
+    let clip = prepared.session().midi_clips()[0].id;
+    let mut paused = start(Arc::clone(&prepared), clip);
+    let mut prefix = [[0.0; 2]; 32];
+    paused.render(&mut prefix).unwrap();
+    let frame = paused.performance_frame();
+    paused.apply(SessionPlaybackCommand::Pause).unwrap();
+    let mut silence = [[1.0; 2]; 64];
+    paused.render(&mut silence).unwrap();
+    assert_eq!(silence, [[0.0; 2]; 64]);
+    assert_eq!(paused.performance_frame(), frame);
+    paused.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut after_pause = [[0.0; 2]; 64];
+    paused.render(&mut after_pause).unwrap();
+    let mut continuous = start(Arc::clone(&prepared), clip);
+    let mut continuous_prefix = [[0.0; 2]; 32];
+    continuous.render(&mut continuous_prefix).unwrap();
+    let mut continuous_tail = [[0.0; 2]; 64];
+    continuous.render(&mut continuous_tail).unwrap();
+    assert_eq!(after_pause, continuous_tail);
+
+    let mut sought = start(Arc::clone(&prepared), clip);
+    let mut pre_seek = [[0.0; 2]; 32];
+    sought.render(&mut pre_seek).unwrap();
+    sought.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    sought.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut after_seek = [[0.0; 2]; 64];
+    sought.render(&mut after_seek).unwrap();
+    let mut fresh_seek = start(Arc::clone(&prepared), clip);
+    fresh_seek.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    fresh_seek.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut fresh_seek_output = [[0.0; 2]; 64];
+    fresh_seek.render(&mut fresh_seek_output).unwrap();
+    assert_eq!(after_seek, fresh_seek_output);
+
+    let mut stopped = start(Arc::clone(&prepared), clip);
+    let mut pre_stop = [[0.0; 2]; 32];
+    stopped.render(&mut pre_stop).unwrap();
+    stopped.apply(SessionPlaybackCommand::Stop).unwrap();
+    stopped.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut after_stop = [[0.0; 2]; 64];
+    stopped.render(&mut after_stop).unwrap();
+    let mut fresh_stop = start(Arc::clone(&prepared), clip);
+    fresh_stop.apply(SessionPlaybackCommand::Stop).unwrap();
+    fresh_stop.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut fresh_stop_output = [[0.0; 2]; 64];
+    fresh_stop.render(&mut fresh_stop_output).unwrap();
+    assert_eq!(after_stop, fresh_stop_output);
+
+    let mut loop_snapshot = base.snapshot();
+    loop_snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
+    let looped = Project::from_snapshot(loop_snapshot).unwrap();
+    let mut with_loop = start(revision(&looped, Arc::clone(&table)), clip);
+    let mut without_loop = start(prepared, clip);
+    let mut looped_output = [[0.0; 2]; 512];
+    let mut plain_output = [[0.0; 2]; 512];
+    with_loop.render(&mut looped_output).unwrap();
+    without_loop.render(&mut plain_output).unwrap();
+    assert_eq!(looped_output, plain_output);
+}
+
+#[test]
+fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_clock() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let project = with_utility_filter_state(&project(0.5, 0, 8 << 32), true, false);
+    let prepared = revision(&project, table);
+    let clip = prepared.session().midi_clips()[0].id;
+    let mut failed = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut reference = SessionPlayback::new(prepared).unwrap();
+    for playback in [&mut failed, &mut reference] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    failed.render(&mut prefix).unwrap();
+    reference.render(&mut reference_prefix).unwrap();
+    assert_eq!(prefix, reference_prefix);
+
+    failed.release_scratch.clear();
+    let owner = failed.routes[0].owner;
+    failed
+        .capture_outgoing(0, owner, failed.arrangement_frame, failed.performance_frame)
+        .unwrap();
+    assert!(!failed.release_scratch.is_empty());
+    let mut invalid_tail = failed.release_scratch[0];
+    invalid_tail.track_index = usize::MAX;
+    invalid_tail.tail_group = Some(u16::MAX);
+    failed.release_scratch.clear();
+    failed.release_scratch.push(invalid_tail);
+    std::mem::swap(&mut failed.releases, &mut failed.release_scratch);
+
+    let committed_frame = failed.performance_frame;
+    let mut refused = [[1.0; 2]; 256];
+    assert_eq!(
+        failed.render(&mut refused),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert_eq!(refused, [[0.0; 2]; 256]);
+    assert_eq!(failed.performance_frame, committed_frame);
+    assert_eq!(failed.arrangement_frame, reference.arrangement_frame);
+
+    // Remove only the deliberately corrupt release, then verify the retry has
+    // the exact same processor history and clock as the untouched twin.
+    failed.releases.clear();
+    let mut retry = [[0.0; 2]; 128];
+    let mut expected = [[0.0; 2]; 128];
+    failed.render(&mut retry).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(retry, expected);
+    assert_eq!(failed.performance_frame, reference.performance_frame);
 }
 
 fn with_session_note_id(project: &Project, note_id: u64) -> Project {
@@ -375,6 +683,48 @@ fn with_session_note_id(project: &Project, note_id: u64) -> Project {
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
     Arc::new(PreparedRevision::prepare(project, &BTreeMap::new(), table, None).unwrap())
+}
+
+fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool) -> Project {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let mut snapshot = project.snapshot();
+    let mut state = UTILITY_DEFINITION.default_state().unwrap();
+    state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(dc_remove),
+        )
+        .unwrap();
+    state = UTILITY_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::BASS_MONO,
+            ParameterValue::Bool(bass_mono),
+        )
+        .unwrap();
+    if let Some(device) = snapshot.tracks[0].devices.first_mut() {
+        device.state = state;
+        device.bypassed = false;
+    } else {
+        snapshot.tracks[0]
+            .devices
+            .push(hex_project::DeviceSnapshot {
+                id: snapshot.next_id,
+                bypassed: false,
+                state,
+            });
+        snapshot.next_id += 1;
+    }
+    Project::from_snapshot(snapshot).unwrap()
+}
+
+fn without_session_cells(project: &Project) -> Project {
+    let mut snapshot = project.snapshot();
+    snapshot.session.cells.clear();
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 #[test]
@@ -394,7 +744,7 @@ fn gain_only_handoff_preserves_route_clock_and_active_audio() {
 
     let changed = project(0.75, 0, 8 << 32);
     let mut next = SessionPlayback::new(revision(&changed, table)).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(next.performance_frame(), 64);
     assert_eq!(
         next.owner(old.routes[0].id),
@@ -426,8 +776,8 @@ fn carried_voice_audio_is_partition_invariant_after_tempo_handoff() {
     let next_revision = revision(&slower, Arc::clone(&table));
     let mut whole = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
     let mut split = SessionPlayback::new(next_revision).unwrap();
-    whole.try_inherit_state_from(&old).unwrap();
-    split.try_inherit_state_from(&old).unwrap();
+    whole.try_inherit_state_from(&mut old).unwrap();
+    split.try_inherit_state_from(&mut old).unwrap();
     let mut expected = vec![[0.0; 2]; 513];
     whole.render(&mut expected).unwrap();
     let mut actual = Vec::new();
@@ -506,8 +856,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     let next_revision = revision(&slower, Arc::clone(&table));
     let mut whole = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
     let mut split = SessionPlayback::new(next_revision).unwrap();
-    whole.try_inherit_state_from(&old).unwrap();
-    split.try_inherit_state_from(&old).unwrap();
+    whole.try_inherit_state_from(&mut old).unwrap();
+    split.try_inherit_state_from(&mut old).unwrap();
     assert!(whole.releases.iter().any(|entry| {
         entry
             .continuation
@@ -547,7 +897,7 @@ fn source_edit_at_exact_cut_remains_future_eligible() {
 
     let edited = with_session_note_id(&project(0.5, cut.raw(), 1 << 30), 77);
     let mut next = SessionPlayback::new(revision(&edited, table)).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut at_cut = [[0.0; 2]; 64];
     next.render(&mut at_cut).unwrap();
     assert!(at_cut.iter().any(|frame| frame[0] != 0.0));
@@ -573,7 +923,7 @@ fn inserted_strictly_historical_note_does_not_chase_after_handoff() {
         .unwrap();
     let edited = with_session_note_id(&project(0.5, cut.raw().saturating_sub(1), 1 << 30), 77);
     let mut next = SessionPlayback::new(revision(&edited, table)).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut after = [[0.0; 2]; 64];
     next.render(&mut after).unwrap();
     assert!(after.iter().all(|frame| *frame == [0.0; 2]));
@@ -595,7 +945,7 @@ fn tempo_handoff_preserves_active_voice_phase_and_remaps_held_gate() {
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 32];
     next.render(&mut actual).unwrap();
 
@@ -627,7 +977,7 @@ fn tempo_handoff_keeps_already_releasing_voice_on_its_original_gate() {
 
     let slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let mut actual = [[0.0; 2]; 32];
     next.render(&mut actual).unwrap();
 
@@ -663,7 +1013,7 @@ fn stopping_after_handoff_cuts_carried_held_voice_without_requerying_history() {
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, table)).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(next.release_voice_count(), 2); // arrangement and carried session voice
 
     next.apply(SessionPlaybackCommand::StopTrack {
@@ -699,7 +1049,7 @@ fn seek_after_anchored_handoff_uses_base_clock_and_resets_history() {
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, table)).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     assert!(next.anchor.is_some());
     next.apply(SessionPlaybackCommand::Seek(0)).unwrap();
     assert_eq!(next.performance_frame(), 0);
@@ -739,7 +1089,7 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
     old.render(&mut first).unwrap();
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut candidate = SessionPlayback::new(revision(&slower, table)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert!(candidate.anchor.is_some());
     let before = candidate.performance_frame();
     candidate.apply(SessionPlaybackCommand::Pause).unwrap();
@@ -784,10 +1134,10 @@ fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
     let candidate_revision = revision(&slower, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     let mut twin = SessionPlayback::new(candidate_revision).unwrap();
-    twin.try_inherit_state_from(&old).unwrap();
+    twin.try_inherit_state_from(&mut old).unwrap();
     candidate.release_capacity = 1;
     assert_eq!(
-        candidate.try_inherit_state_from(&old),
+        candidate.try_inherit_state_from(&mut old),
         Err(SessionPlaybackError::ReleaseBankFull)
     );
     assert_eq!(candidate.performance_frame(), 0);
@@ -796,7 +1146,7 @@ fn failed_handoff_capacity_is_atomic_and_can_be_retried() {
     assert_eq!(old.release_voice_count(), old_release_count);
 
     candidate.release_capacity = SESSION_RELEASE_CAPACITY;
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.performance_frame(), old_frame);
     assert!(candidate.release_voice_count() > 0);
     let mut after_refusal = [[0.0; 2]; 128];
@@ -823,7 +1173,7 @@ fn repeated_handoff_keeps_releasing_voice_when_new_gate_is_unrepresentable() {
 
     let slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(60_000_000).unwrap());
     let mut middle = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    middle.try_inherit_state_from(&old).unwrap();
+    middle.try_inherit_state_from(&mut old).unwrap();
     let second_slower = project_at_tempo(0.5, 0, 1 << 30, Tempo::new(1_000_000).unwrap());
     let mut final_revision = SessionPlayback::new(revision(&second_slower, table)).unwrap();
     let cut_beat = middle
@@ -850,7 +1200,7 @@ fn repeated_handoff_keeps_releasing_voice_when_new_gate_is_unrepresentable() {
             .beat_to_frame(BeatTime::from_raw(1 << 30))
             .is_err()
     );
-    final_revision.try_inherit_state_from(&middle).unwrap();
+    final_revision.try_inherit_state_from(&mut middle).unwrap();
     assert!(final_revision.release_voice_count() > 0);
 }
 
@@ -872,7 +1222,7 @@ fn quantized_same_clip_retrigger_after_handoff_clears_old_occurrence_suppression
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut playback = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    playback.try_inherit_state_from(&old).unwrap();
+    playback.try_inherit_state_from(&mut old).unwrap();
     assert!(!playback.suppressions.is_empty());
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
@@ -910,10 +1260,10 @@ fn repeated_tempo_handoffs_keep_historical_voice_without_requerying_onset() {
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut second = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    second.try_inherit_state_from(&first).unwrap();
+    second.try_inherit_state_from(&mut first).unwrap();
     let faster = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(180_000_000).unwrap());
     let mut third = SessionPlayback::new(revision(&faster, Arc::clone(&table))).unwrap();
-    third.try_inherit_state_from(&second).unwrap();
+    third.try_inherit_state_from(&mut second).unwrap();
     let mut actual = [[0.0; 2]; 32];
     third.render(&mut actual).unwrap();
     let voice = table.prepare_voice(48_000, 60, 100).unwrap();
@@ -964,7 +1314,7 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
         Tempo::new(60_000_000).unwrap(),
     );
     let mut second = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    second.try_inherit_state_from(&first).unwrap();
+    second.try_inherit_state_from(&mut first).unwrap();
     let faster = project_at_tempo(
         0.5,
         cut_beat.raw(),
@@ -972,7 +1322,7 @@ fn repeated_handoffs_suppress_an_occurrence_exactly_at_the_previous_cut() {
         Tempo::new(180_000_000).unwrap(),
     );
     let mut third = SessionPlayback::new(revision(&faster, Arc::clone(&table))).unwrap();
-    third.try_inherit_state_from(&second).unwrap();
+    third.try_inherit_state_from(&mut second).unwrap();
     let mut actual = [[0.0; 2]; 32];
     third.render(&mut actual).unwrap();
     let voice = table.prepare_voice(48_000, 60, 100).unwrap();
@@ -1004,7 +1354,7 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
 
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut next = SessionPlayback::new(revision(&slower, Arc::clone(&table))).unwrap();
-    next.try_inherit_state_from(&old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
     let target = next
         .timing_view()
         .beat_to_frame(BeatTime::from_raw(4 << 32))
@@ -1033,7 +1383,7 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
     snapshot.session.cells.clear();
     let deleted = Project::from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&deleted, table)).unwrap();
-    let report = candidate.try_inherit_state_from(&old).unwrap();
+    let report = candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(report.cancelled_pending_tracks(), &[Some(track)]);
     assert_eq!(
         candidate.owner(track),
@@ -1074,7 +1424,7 @@ fn pending_scene_launch_keeps_its_resolved_clip_when_scene_contents_change() {
     });
     let edited = Project::from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&edited, table)).unwrap();
-    let report = candidate.try_inherit_state_from(&old).unwrap();
+    let report = candidate.try_inherit_state_from(&mut old).unwrap();
     assert!(report.cancelled_pending_tracks().is_empty());
     let route = candidate
         .routes
@@ -1129,7 +1479,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
     )];
     let new_project = Project::from_snapshot(new_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&new_project, table)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.routes[0].pending.unwrap().frame, 96_000);
     assert_eq!(candidate.routes[0].pending.unwrap().beat.raw(), boundary);
     let mut launch = [[0.0; 2]; 1];
@@ -1198,7 +1548,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     let candidate_revision = revision(&changed, Arc::clone(&table));
     let mut failed = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     failed.release_capacity = 1;
-    failed.try_inherit_state_from(&old).unwrap();
+    failed.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(failed.release_voice_count(), 1);
     failed.routes[0].pending = Some(PendingRoute {
         frame: 256,
@@ -1208,7 +1558,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
 
     let mut prefix_probe = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     prefix_probe.release_capacity = 1;
-    prefix_probe.try_inherit_state_from(&old).unwrap();
+    prefix_probe.try_inherit_state_from(&mut old).unwrap();
     prefix_probe.routes[0].pending = failed.routes[0].pending;
     let mut first_chunk = [[0.0; 2]; 256];
     prefix_probe.render(&mut first_chunk).unwrap();
@@ -1217,7 +1567,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
 
     let mut twin = SessionPlayback::new(candidate_revision).unwrap();
     twin.release_capacity = 1;
-    twin.try_inherit_state_from(&old).unwrap();
+    twin.try_inherit_state_from(&mut old).unwrap();
     twin.routes[0].pending = failed.routes[0].pending;
 
     let routes = failed.routes.clone();
@@ -1387,7 +1737,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     );
     let mut failed = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     failed.release_capacity = 1;
-    failed.try_inherit_state_from(&old).unwrap();
+    failed.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(failed.release_voice_count(), 1);
     let audio_clip = failed.revision.session().audio_clips()[0].id;
     failed
@@ -1455,7 +1805,7 @@ fn deleting_the_last_track_keeps_its_copied_session_voice_tail() {
     snapshot.session.cells.clear();
     let deleted = Project::from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&deleted, table)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.release_voice_count(), 2);
     assert_eq!(candidate.performance_frame(), old.performance_frame());
     assert_eq!(candidate.arrangement_frame(), old.arrangement_frame());
@@ -1521,7 +1871,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     let candidate_project = Project::from_snapshot(edited).unwrap();
     let candidate_revision = revision(&candidate_project, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.routes[0].id.value(), 7);
     assert_eq!(candidate.routes[1].id.value(), 1);
     let deleted_tail = candidate
@@ -1638,7 +1988,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
     }
     let edited = Project::from_snapshot(edited_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&edited, table)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(
         candidate.owner(old.routes[0].id),
         Some(SessionPlaybackOwner::Session { clip })
@@ -1681,7 +2031,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
     snapshot.session.cells[0].track = 7;
     let moved = Project::from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&moved, table)).unwrap();
-    candidate.try_inherit_state_from(&old).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(
         candidate.owner(old_track),
         Some(SessionPlaybackOwner::Silence)
@@ -1735,7 +2085,7 @@ fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
     let faster = Project::from_snapshot(faster_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&faster, table)).unwrap();
     assert_eq!(
-        candidate.try_inherit_state_from(&old),
+        candidate.try_inherit_state_from(&mut old),
         Err(SessionPlaybackError::TempoConversion)
     );
     assert_eq!(candidate.performance_frame(), 0);
@@ -2182,7 +2532,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
         .unwrap(),
     );
     let mut candidate = SessionPlayback::new(candidate_revision).unwrap();
-    candidate.try_inherit_state_from(&playback).unwrap();
+    candidate.try_inherit_state_from(&mut playback).unwrap();
     let mut next = [[0.0; 2]; 1];
     candidate.render(&mut next).unwrap();
     assert_eq!(next[0], source_b[7]);
@@ -2212,7 +2562,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
         .unwrap(),
     );
     let mut shortened = SessionPlayback::new(short_revision).unwrap();
-    shortened.try_inherit_state_from(&candidate).unwrap();
+    shortened.try_inherit_state_from(&mut candidate).unwrap();
     let mut silent = [[1.0; 2]; 3];
     shortened.render(&mut silent).unwrap();
     assert_eq!(silent, [[0.0; 2]; 3]);

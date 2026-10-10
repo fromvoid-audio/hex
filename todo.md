@@ -99,6 +99,17 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
 
 ## new requests — separate PRs
 
+- [ ] **native settings menu** — Pulse2115: remove the toolbar settings icon;
+  open the same theme panel from macOS hex > settings… and Command-comma.
+  Repeated activation focuses the current draft. Five existing theme tests and
+  strict UI Clippy/guards pass; clean local CI and native menu acceptance follow.
+  The user accepted theming itself on 9 October 2026 (ticket15).
+- [ ] **larger swatches and visual color picker** — future Pulse2116, separate PR:
+  larger clickable role swatches, XY saturation/brightness field, hue spectrum,
+  HSB/RGB controls and synchronized precise values. Preserve the four-role model,
+  contrast policy, preview/cancel/save and compact native layout. Not included in
+  the menu-access change.
+
 - [x] **captured time selection and edge scrolling** — focused source fix.
   Keep held selection/time-chunk gestures active over empty space, browser and
   outside the window until release. Clamp rows at existing first/last tracks;
@@ -256,6 +267,10 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   persistence, one MIDI instrument slot and serial audio effects, with shared
   native/offline behavior. Define mutable DSP lifecycle, prepared graph ownership,
   bounded events, latency and callback retirement before stateful devices.
+  Paired stateful effects and Utility v2 now pass affected source/probe checks;
+  integrated full CI and native acceptance remain open. Contract:
+  [stateful lattice](docs/stateful-lattice.md). Large-chain timing/admission is
+  tracked separately as Pulse 2108; instruments remain a separate prerequisite.
 - [ ] **bottom device panel** — compact horizontal device chain for the focused
   track, real parameters/bypass/reordering and clip/device view toggles. Build on
   the canonical device model; preserve editor selection and useful track space.

@@ -113,7 +113,7 @@ fn verify(distinct: bool) -> Result<(), Box<dyn Error>> {
         Some(revision.session()),
     )?);
     let mut next = Playback::try_from_prepared_with_session(candidate)?;
-    next.try_inherit_runtime_from(&playback)
+    next.try_inherit_runtime_from(&mut playback)
         .map_err(|error| format!("handoff failed: {error:?}"))?;
     let actual = fixture::render_partitions(&mut next, &[1, 31, 2])?;
     assert_eq!(

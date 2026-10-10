@@ -1,6 +1,8 @@
 //! Audio-owned playback of an immutable prepared project revision.
 //! Construction and destruction belong outside the callback.
-use crate::{Frame, Invalid, MediaPages, PreparedRevision, Project, Renderer, SessionPlayback};
+use crate::{
+    Frame, Invalid, MediaPages, PreparedRevision, Project, RendererRuntime, SessionPlayback,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +229,7 @@ pub struct Playback {
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
+    linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,
     position: u64,
     performance_frame: u64,
@@ -241,10 +244,12 @@ impl Playback {
     /// Share a control-side compiled project without recompiling or copying its graph.
     /// This constructor deliberately keeps legacy Arrangement-only behavior.
     pub fn from_shared(project: Arc<Project>) -> Self {
+        let linear_runtime = Some(Box::new(RendererRuntime::new(&project)));
         Self {
             project,
             prepared_revision: None,
             session_runtime: None,
+            linear_runtime,
             session_unavailable: None,
             position: 0,
             performance_frame: 0,
@@ -255,6 +260,17 @@ impl Playback {
 
     /// Retain an accepted artifact while using the legacy Arrangement renderer.
     pub fn from_prepared(prepared_revision: Arc<PreparedRevision>) -> Self {
+        if prepared_revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .any(crate::Track::has_stateful_devices)
+        {
+            return match SessionPlayback::new(Arc::clone(&prepared_revision)) {
+                Ok(runtime) => Self::from_parts(prepared_revision, Some(Box::new(runtime)), None),
+                Err(error) => Self::from_parts(prepared_revision, None, Some(error)),
+            };
+        }
         Self::from_parts(prepared_revision, None, None)
     }
 
@@ -285,10 +301,20 @@ impl Playback {
         session_runtime: Option<Box<SessionPlayback>>,
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
+        let project = Arc::clone(prepared_revision.arrangement());
+        let refuses_stateful_fallback = session_runtime.is_none()
+            && session_unavailable.is_some()
+            && project
+                .tracks()
+                .iter()
+                .any(crate::Track::has_stateful_devices);
+        let linear_runtime = (session_runtime.is_none() && !refuses_stateful_fallback)
+            .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
-            project: Arc::clone(prepared_revision.arrangement()),
+            project,
             prepared_revision: Some(prepared_revision),
             session_runtime,
+            linear_runtime,
             session_unavailable,
             position: 0,
             performance_frame: 0,
@@ -424,6 +450,9 @@ impl Playback {
                     match command {
                         PlaybackCommand::Play => self.playing = true,
                         PlaybackCommand::PlayFrom(frame) => {
+                            if let Some(runtime) = self.linear_runtime.as_mut() {
+                                runtime.reset();
+                            }
                             self.position = frame;
                             self.performance_frame = frame;
                             self.performance_clock_exhausted = false;
@@ -432,11 +461,17 @@ impl Playback {
                         PlaybackCommand::Pause => self.playing = false,
                         PlaybackCommand::Stop => {
                             self.playing = false;
+                            if let Some(runtime) = self.linear_runtime.as_mut() {
+                                runtime.reset();
+                            }
                             self.position = 0;
                             self.performance_frame = 0;
                             self.performance_clock_exhausted = false;
                         }
                         PlaybackCommand::Seek(frame) => {
+                            if let Some(runtime) = self.linear_runtime.as_mut() {
+                                runtime.reset();
+                            }
                             self.position = frame;
                             self.performance_frame = frame;
                             self.performance_clock_exhausted = false;
@@ -493,9 +528,9 @@ impl Playback {
     /// or retaining ownership of the previous graph.
     pub fn try_inherit_runtime_from(
         &mut self,
-        previous: &Self,
+        previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        match (&mut self.session_runtime, &previous.session_runtime) {
+        match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => next
                 .try_inherit_state_from(old)
                 .map(|_| ())
@@ -521,6 +556,21 @@ impl Playback {
                 self.playing = old.playing();
             }
             (None, None) => {
+                if let (Some(candidate), Some(old)) = (
+                    self.linear_runtime.as_ref(),
+                    previous.linear_runtime.as_ref(),
+                ) && !candidate.can_inherit_from(&self.project, old, &previous.project)
+                {
+                    return Err(PlaybackHandoffError::Session(
+                        crate::SessionPlaybackError::DeviceRuntime,
+                    ));
+                }
+                if let (Some(candidate), Some(old)) = (
+                    self.linear_runtime.as_mut(),
+                    previous.linear_runtime.as_ref(),
+                ) {
+                    candidate.inherit_from(&self.project, old, &previous.project);
+                }
                 self.position = previous.position;
                 self.performance_frame = previous.performance_frame;
                 self.performance_clock_exhausted = previous.performance_clock_exhausted;
@@ -536,6 +586,15 @@ impl Playback {
             return runtime
                 .render(output)
                 .map_err(|_| Invalid("session playback render failed"));
+        }
+        if self.session_unavailable.is_some()
+            && self
+                .project
+                .tracks()
+                .iter()
+                .any(crate::Track::has_stateful_devices)
+        {
+            return Err(Invalid("stateful native device runtime is unavailable"));
         }
         if self.playing && !output.is_empty() && self.contains_streamed_sources() {
             return Err(Invalid("streamed playback requires a media page provider"));
@@ -567,6 +626,15 @@ impl Playback {
             return runtime
                 .render_with_pages(output, pages)
                 .map_err(|_| Invalid("session playback render failed"));
+        }
+        if self.session_unavailable.is_some()
+            && self
+                .project
+                .tracks()
+                .iter()
+                .any(crate::Track::has_stateful_devices)
+        {
+            return Err(Invalid("stateful native device runtime is unavailable"));
         }
         let (next_performance, clock_exhausted) = if self.playing {
             match self.performance_frame.checked_add(
@@ -612,7 +680,11 @@ impl Playback {
             let remaining = output.len() - output_offset;
             if self.position == start {
                 if let Ok(period_length) = usize::try_from(length) {
-                    if period_length > 0 && period_length <= remaining {
+                    let stateful = self
+                        .linear_runtime
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.has_stateful_processors());
+                    if period_length > 0 && period_length <= remaining && !stateful {
                         let period_end = output_offset + period_length;
                         self.render_linear_with_pages(
                             &mut output[output_offset..period_end],
@@ -664,17 +736,20 @@ impl Playback {
         output: &mut [Frame],
         pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
-        let mut renderer = Renderer::new(&self.project);
-        renderer.seek(self.position);
-        if self.playing {
-            renderer.play();
-        }
+        let runtime = self
+            .linear_runtime
+            .as_mut()
+            .ok_or(Invalid("linear renderer runtime is unavailable"))?;
         if let Some(pages) = pages {
-            renderer.render_with_pages(output, pages)?;
+            runtime.render_with_pages(
+                &self.project,
+                &mut self.position,
+                self.playing,
+                output,
+                Some(pages),
+            )
         } else {
-            renderer.render(output)?;
+            runtime.render_without_pages(&self.project, &mut self.position, self.playing, output)
         }
-        self.position = renderer.position();
-        Ok(())
     }
 }
