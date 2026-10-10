@@ -948,6 +948,36 @@ signed build are next. Native seek integration/fresh-publication fences remain
 2164/2186, and native waveform UI/listening remain for user acceptance. No
 review PR has been merged into main automatically.
 
+2026-10-10 Pulse2188 Arrangement seek worker source milestone: `Service` now
+owns a dedicated nonblocking seek-preparation endpoint independent of the
+canonical edit worker. One running request is cancellable at the engine's
+<=256-frame boundaries; one newer pending request replaces older pending work;
+one result slot never blocks new admission. New requests/invalidation remove
+stale pending state. Replaced pending metadata and its prepared-revision `Arc`
+are dropped by the submitter after unlocking; unread runtime candidates move
+under the mailbox lock through fixed worker-owned retirement/ready slots and are
+dropped by the worker after unlocking. Normal operation retains one candidate;
+synthetic defensive dual-stale coverage confirms the two fixed slots remain alive
+until the worker drains them. Latency-sensitive callers must retain their
+audible/current prepared revision across supersede or invalidation until worker
+ownership drains; final immutable graph release is not guaranteed to avoid the
+caller thread. Shutdown signals and wakes the worker without joining the caller;
+a teardown test verifies the detached worker exits and releases its captured
+owner on the worker thread. Candidate construction starts directly from
+the exact PreparedRevision Arc, and `Playback::from_arrangement_preroll` installs
+that state without a post-preroll seek/reset. Results preserve request ID,
+caller generation/revision, graph Arc, destination/work budget and play intent.
+Engine preroll ceilings remain 8,388,608 frames and 32 MiB accounted candidate
+runtime storage (at most two candidate budgets in defensive dual-stale state).
+Eight worker lifecycle tests, one Service endpoint test and the
+engine's 108-test SessionPlayback suite (2 ignored) pass, including held/released
+mutable-feedback continuation through the `Playback` wrapper. UI use, current
+project generation admission, live route/Stop fencing, interactive Session-route
+promotion and native publication remain Pulse2164 and are not implemented by
+this source milestone. The linear candidate refuses Session route actions and
+cannot be installed as an interactive native runtime without the separate
+promotion contract.
+
 2026-10-10 Pulse2186 fresh-runtime publication fence: source adds a conditional
 fresh-install policy tied to a control-captured route snapshot and admitted
 command ticket. The callback validates active revision, active route-state

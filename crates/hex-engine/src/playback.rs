@@ -312,6 +312,32 @@ impl Playback {
         ))
     }
 
+    /// Install a completed control-prepared Arrangement preroll without
+    /// reconstructing or seeking the runtime. The runtime's exact prepared
+    /// revision, clocks and play state are retained as-is. This is still the
+    /// linear Arrangement-only policy: Session route actions and live native
+    /// promotion are not supported by this constructor.
+    pub fn from_arrangement_preroll(
+        runtime: SessionPlayback,
+    ) -> Result<Self, crate::ArrangementPrerollError> {
+        if !runtime.is_linear_arrangement_export() {
+            return Err(crate::ArrangementPrerollError::CandidatePositionMismatch);
+        }
+        let prepared_revision = Arc::clone(runtime.prepared_revision());
+        let project = Arc::clone(prepared_revision.arrangement());
+        Ok(Self {
+            project,
+            prepared_revision: Some(prepared_revision),
+            session_runtime: Some(Box::new(runtime)),
+            linear_runtime: None,
+            session_unavailable: None,
+            position: 0,
+            performance_frame: 0,
+            performance_clock_exhausted: false,
+            playing: false,
+        })
+    }
+
     /// Retain a valid Arrangement artifact when the optional Session runtime
     /// could not be prepared. The capability failure remains explicit.
     pub fn from_prepared_with_session_unavailable(

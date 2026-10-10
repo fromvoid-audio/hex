@@ -22,11 +22,6 @@ pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
 };
-mod preroll;
-pub use preroll::{
-    ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
-};
-
 const QUARTER_RAW: u64 = 1_u64 << 32;
 const FOUR_QUARTERS_RAW: u64 = QUARTER_RAW * 4;
 
@@ -600,6 +595,15 @@ impl SessionPlayback {
         self.performance_frame
     }
 
+    /// Exact immutable graph retained by this runtime.
+    pub fn prepared_revision(&self) -> &Arc<PreparedRevision> {
+        &self.revision
+    }
+
+    pub(crate) const fn is_linear_arrangement_export(&self) -> bool {
+        self.linear_arrangement_export
+    }
+
     pub fn arrangement_frame(&self) -> u64 {
         self.arrangement_frame
     }
@@ -835,7 +839,11 @@ pub(super) fn base_timing_for(
 
 mod commands;
 mod handoff;
+mod preroll;
 mod render;
+pub use preroll::{
+    ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+};
 #[cfg(test)]
 mod tests;
 

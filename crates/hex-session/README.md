@@ -38,6 +38,33 @@ the latest successfully compiled revision without changing project state. Its
 event echoes the generation in `restore_complete`, including when recompilation
 fails, so the UI can reject stale recovery attempts.
 
+`ArrangementSeekWorker` is a separate control thread for bounded fresh
+Arrangement preroll. It does not queue behind edits, and its one-running,
+one-replaceable-pending, one-ready-result mailbox does not block submission when
+the result slot is occupied. A newer request cancels running work and replaces
+pending work. The unread result moves into a worker-owned retirement slot under
+the short mailbox lock; the worker drops it after unlocking. If that slot is
+occupied, the stale ready result stays in its own fixed slot; the worker drains
+both before starting pending work. Replaced pending request metadata and its
+prepared-revision `Arc` are dropped by the submitter after unlocking. A
+latency-sensitive caller must retain its audible/current prepared-revision
+owners across superseding or invalidating requests until worker ownership
+drains; only unread runtime `Playback` destruction is guaranteed to happen on
+the worker.
+Explicit invalidation cancels and clears all admitted work. The worker returns
+the exact prepared graph, request/generation/revision identity, destination,
+replay budget and desired play state with the candidate. The candidate is not
+published to audio; callers still need the current project/route/Stop admission
+fence. Teardown signals cancellation and detaches without joining the caller;
+the worker drains its owned pending item and runtime slots before exit. Pending
+request metadata and prepared-revision handles displaced by submit/invalidate
+may be released on the caller after unlocking.
+This linear Arrangement-only runtime refuses Session route actions and is not
+yet promotable to interactive native playback. Normally the lane owns one
+candidate runtime; its two fixed retirement slots bound defensive stale-state
+retirement to at most two preroll runtime budgets, with no new preparation until
+both drain.
+
 ## Does not own
 
 Serialization formats, durable-write primitives, audio devices or callbacks,

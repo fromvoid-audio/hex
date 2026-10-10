@@ -2135,7 +2135,8 @@ pub use session_inventory::{
     SessionWorkEnvelope,
 };
 pub use session_playback::{
-    LaunchQuantization, SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback,
-    SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus,
-    SessionRouteTarget,
+    ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
+    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, SessionHandoffReport, SessionPendingRouteStatus,
+    SessionPlayback, SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner,
+    SessionRouteStatus, SessionRouteTarget,
 };
