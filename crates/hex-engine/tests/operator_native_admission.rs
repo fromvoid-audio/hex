@@ -173,6 +173,49 @@ fn prepared(
     )
 }
 
+fn edit_feedback(fixture: &mut Fixture, amount: f32) {
+    let current = fixture
+        .editor
+        .project()
+        .track(fixture.track)
+        .and_then(|track| track.instrument())
+        .expect("Operator slot")
+        .state();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        current,
+        ParameterId::from_static(78),
+        ParameterValue::Float(amount),
+    )
+    .expect("feedback patch");
+    fixture
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device: fixture.instrument,
+            state,
+        })
+        .expect("edit Operator feedback");
+}
+
+fn start_route(
+    revision: Arc<PreparedRevision>,
+    session_clip: Option<hex_project::ClipId>,
+) -> SessionPlayback {
+    let mut playback = SessionPlayback::new(revision).expect("runtime");
+    if let Some(clip) = session_clip {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .expect("launch Session clip");
+    }
+    playback
+        .apply(SessionPlaybackCommand::Play)
+        .expect("play route");
+    playback
+}
+
 fn expected_note(age: u64, gate: u64, carrier: f32) -> f32 {
     let release_age = age.saturating_sub(gate);
     let amplitude = if age < gate {
@@ -221,7 +264,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
             .expect("Operator catalog entry")
             .parameters
             .len(),
-        73
+        77
     );
 
     let mut renderer = Renderer::new(revision.arrangement());
@@ -387,4 +430,469 @@ fn changed_operator_context_keeps_old_gate_and_uses_new_law_for_future_notes() {
         }
         absolute_frame += part.len() as u64;
     }
+}
+
+#[test]
+fn operator_feedback_class_changes_keep_old_audio_while_canonical_state_changes() {
+    fn feedback_state(fixture: &Fixture, amount: f32) -> hex_lattice_contract::NativeDeviceState {
+        let current = fixture
+            .editor
+            .project()
+            .track(fixture.track)
+            .and_then(|track| track.instrument())
+            .expect("Operator slot")
+            .state();
+        hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            current,
+            ParameterId::from_static(78),
+            ParameterValue::Float(amount),
+        )
+        .expect("feedback patch")
+    }
+
+    // Arrangement: an active mutable occurrence cannot be silently replaced
+    // by the analytic class on the same stable device identity.
+    let mut arrangement_fixture = fixture();
+    let feedback = feedback_state(&arrangement_fixture, 0.45);
+    arrangement_fixture
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device: arrangement_fixture.instrument,
+            state: feedback,
+        })
+        .expect("enable native feedback");
+    let mutable_revision = prepared(&arrangement_fixture, None);
+    let mut active = SessionPlayback::new(Arc::clone(&mutable_revision)).expect("active");
+    let mut reference = SessionPlayback::new(Arc::clone(&mutable_revision)).expect("reference");
+    for playback in [&mut active, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+    }
+    let mut prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    active.render(&mut prefix).expect("active prefix");
+    reference
+        .render(&mut reference_prefix)
+        .expect("reference prefix");
+    assert_eq!(prefix, reference_prefix);
+    assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    let analytic = feedback_state(&arrangement_fixture, 0.0);
+    arrangement_fixture
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device: arrangement_fixture.instrument,
+            state: analytic,
+        })
+        .expect("disable feedback on the same device");
+    let canonical_state = arrangement_fixture
+        .editor
+        .project()
+        .track(arrangement_fixture.track)
+        .and_then(|track| track.instrument())
+        .expect("canonical Operator slot")
+        .state();
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            canonical_state,
+            ParameterId::from_static(78),
+        )
+        .expect("canonical feedback value"),
+        ParameterValue::Float(0.0),
+        "the desired edit is committed even when active-audio handoff refuses"
+    );
+    let analytic_revision = prepared(&arrangement_fixture, Some(mutable_revision.session()));
+    let mut refused = SessionPlayback::new(analytic_revision).expect("candidate");
+    let before = active.performance_frame();
+    assert_eq!(
+        refused.try_inherit_state_from(&mut active),
+        Err(hex_engine::SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(active.performance_frame(), before);
+    let mut after_refusal = [[0.0; 2]; 64];
+    let mut expected = [[0.0; 2]; 64];
+    active.render(&mut after_refusal).expect("old graph retry");
+    reference
+        .render(&mut expected)
+        .expect("reference continuation");
+    assert_eq!(after_refusal, expected);
+
+    // Session route: the inverse analytic-to-mutable class change is also
+    // refused while its copied MIDI occurrence is sounding.
+    let mut session_fixture = fixture();
+    let analytic_revision = prepared(&session_fixture, None);
+    let mut session_active =
+        SessionPlayback::new(Arc::clone(&analytic_revision)).expect("analytic Session runtime");
+    let mut session_reference =
+        SessionPlayback::new(Arc::clone(&analytic_revision)).expect("reference Session runtime");
+    session_active
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session_fixture.session_clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .expect("launch Session clip");
+    session_reference
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session_fixture.session_clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .expect("launch reference Session clip");
+    session_active
+        .apply(SessionPlaybackCommand::Play)
+        .expect("play Session route");
+    session_reference
+        .apply(SessionPlaybackCommand::Play)
+        .expect("play reference Session route");
+    let mut session_prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    session_active
+        .render(&mut session_prefix)
+        .expect("active Session prefix");
+    session_reference
+        .render(&mut reference_prefix)
+        .expect("reference Session prefix");
+    assert_eq!(session_prefix, reference_prefix);
+    assert!(session_prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    let feedback = feedback_state(&session_fixture, 0.45);
+    session_fixture
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device: session_fixture.instrument,
+            state: feedback,
+        })
+        .expect("enable feedback on same Session instrument");
+    let canonical_state = session_fixture
+        .editor
+        .project()
+        .track(session_fixture.track)
+        .and_then(|track| track.instrument())
+        .expect("canonical Session Operator slot")
+        .state();
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            canonical_state,
+            ParameterId::from_static(78),
+        )
+        .expect("canonical feedback value"),
+        ParameterValue::Float(0.45),
+        "the desired Session edit remains committed after active-audio handoff refusal"
+    );
+    let feedback_revision = prepared(&session_fixture, Some(analytic_revision.session()));
+    let mut session_candidate = SessionPlayback::new(feedback_revision).expect("candidate");
+    let before = session_active.performance_frame();
+    assert_eq!(
+        session_candidate.try_inherit_state_from(&mut session_active),
+        Err(hex_engine::SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(session_active.performance_frame(), before);
+    let mut after_refusal = [[0.0; 2]; 64];
+    let mut expected = [[0.0; 2]; 64];
+    session_active
+        .render(&mut after_refusal)
+        .expect("old Session graph retry");
+    session_reference
+        .render(&mut expected)
+        .expect("reference Session continuation");
+    assert_eq!(after_refusal, expected);
+}
+
+#[test]
+fn operator_feedback_class_change_refusal_covers_other_route_directions() {
+    for (session_route, old_feedback) in [(false, false), (true, true)] {
+        let mut fixture = fixture();
+        if old_feedback {
+            edit_feedback(&mut fixture, 0.45);
+        }
+        let old_revision = prepared(&fixture, None);
+        let route_clip = session_route.then_some(fixture.session_clip);
+        let mut active = start_route(Arc::clone(&old_revision), route_clip);
+        let mut reference = start_route(Arc::clone(&old_revision), route_clip);
+        let mut prefix = [[0.0; 2]; 64];
+        let mut reference_prefix = [[0.0; 2]; 64];
+        active.render(&mut prefix).expect("active prefix");
+        reference
+            .render(&mut reference_prefix)
+            .expect("reference prefix");
+        assert_eq!(prefix, reference_prefix);
+        assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+        edit_feedback(&mut fixture, if old_feedback { 0.0 } else { 0.45 });
+        let next_revision = prepared(&fixture, Some(old_revision.session()));
+        let mut candidate = SessionPlayback::new(next_revision).expect("candidate");
+        let frame_before = active.performance_frame();
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut active),
+            Err(hex_engine::SessionPlaybackError::MutableInstrumentChase),
+            "route={session_route}, old feedback={old_feedback}"
+        );
+        assert_eq!(active.performance_frame(), frame_before);
+
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = [[0.0; 2]; 64];
+        active.render(&mut actual).expect("old graph continuation");
+        reference
+            .render(&mut expected)
+            .expect("reference continuation");
+        assert_eq!(
+            actual, expected,
+            "route={session_route}, old feedback={old_feedback}"
+        );
+    }
+}
+
+#[test]
+fn operator_feedback_exact_cut_note_on_is_admitted_once_on_both_routes() {
+    for session_route in [false, true] {
+        let mut fixture = fixture();
+        let old_revision = prepared(&fixture, None);
+        let session_clip = session_route.then_some(fixture.session_clip);
+        let mut active = start_route(Arc::clone(&old_revision), session_clip);
+
+        edit_feedback(&mut fixture, 0.45);
+        let candidate_revision = prepared(&fixture, Some(old_revision.session()));
+        let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision))
+            .expect("feedback candidate at the exact onset cut");
+        candidate
+            .try_inherit_state_from(&mut active)
+            .expect("an onset exactly at the cut belongs to the new graph");
+
+        let mut reference = start_route(candidate_revision, session_clip);
+        let mut actual = vec![[0.0; 2]; 30_000];
+        let mut expected = vec![[0.0; 2]; 30_000];
+        for (actual_block, expected_block) in actual.chunks_mut(127).zip(expected.chunks_mut(127)) {
+            candidate
+                .render(actual_block)
+                .expect("render admitted exact-cut onset");
+            reference
+                .render(expected_block)
+                .expect("render independent feedback reference");
+        }
+        let mismatch = actual
+            .iter()
+            .zip(&expected)
+            .position(|(actual, expected)| actual != expected);
+        assert_eq!(
+            mismatch.map(|index| (index, actual[index], expected[index])),
+            None,
+            "Session route={session_route}"
+        );
+        assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
+    }
+}
+
+#[test]
+fn operator_feedback_handoff_at_exclusive_release_end_is_quiescent() {
+    let mut fixture = fixture();
+    edit_feedback(&mut fixture, 0.45);
+    let old_revision = prepared(&fixture, None);
+    let mut previous = start_route(Arc::clone(&old_revision), None);
+    // The runtime occurrence remains owned through the maximum declared
+    // oscillator release, including currently silent oscillators.
+    const MAX_OPERATOR_RELEASE_FRAMES: u64 = 4_800;
+    let exact_gate_release_end = 6_000 + MAX_OPERATOR_RELEASE_FRAMES;
+    let mut prefix = vec![[0.0; 2]; exact_gate_release_end as usize];
+    previous
+        .render(&mut prefix)
+        .expect("render through exclusive end");
+    assert_eq!(previous.performance_frame(), exact_gate_release_end);
+
+    edit_feedback(&mut fixture, 0.0);
+    let candidate_revision = prepared(&fixture, Some(old_revision.session()));
+    let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).expect("candidate");
+    candidate
+        .try_inherit_state_from(&mut previous)
+        .expect("no active mutable occurrence remains at its exclusive release end");
+    assert_eq!(candidate.performance_frame(), exact_gate_release_end);
+
+    let mut reference = SessionPlayback::new(candidate_revision).expect("fresh reference");
+    reference
+        .apply(SessionPlaybackCommand::Seek(exact_gate_release_end))
+        .expect("seek before the next note");
+    reference
+        .apply(SessionPlaybackCommand::Play)
+        .expect("play reference");
+    let remaining = 25_000 - exact_gate_release_end as usize;
+    let mut actual = vec![[0.0; 2]; remaining];
+    let mut expected = vec![[0.0; 2]; remaining];
+    for (actual_block, expected_block) in actual.chunks_mut(257).zip(expected.chunks_mut(257)) {
+        candidate
+            .render(actual_block)
+            .expect("render transitioned runtime");
+        reference
+            .render(expected_block)
+            .expect("render independent seek reference");
+    }
+    assert_eq!(actual, expected);
+    assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
+}
+
+#[test]
+fn operator_source_removal_carries_old_feedback_release_without_retriggering() {
+    let mut fixture = fixture();
+    edit_feedback(&mut fixture, 0.45);
+    let old_revision = prepared(&fixture, None);
+    let mut active = start_route(Arc::clone(&old_revision), None);
+    let mut reference = start_route(Arc::clone(&old_revision), None);
+    let mut prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    active.render(&mut prefix).expect("active prefix");
+    reference
+        .render(&mut reference_prefix)
+        .expect("reference prefix");
+    assert_eq!(prefix, reference_prefix);
+    assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    fixture
+        .editor
+        .execute(Command::RemoveMidiClip(fixture.arrangement_clip))
+        .expect("remove active source");
+    let empty_revision = prepared(&fixture, Some(old_revision.session()));
+    let mut candidate = SessionPlayback::new(empty_revision).expect("source-empty candidate");
+    candidate
+        .try_inherit_state_from(&mut active)
+        .expect("source removal can retain the old feedback occurrence and tail");
+
+    let remaining_frames = 25_000 - 64;
+    let mut actual = vec![[0.0; 2]; remaining_frames];
+    let mut reference_pcm = vec![[0.0; 2]; remaining_frames];
+    for (actual_block, reference_block) in actual.chunks_mut(257).zip(reference_pcm.chunks_mut(257))
+    {
+        candidate
+            .render(actual_block)
+            .expect("render retained source tail");
+        reference
+            .render(reference_block)
+            .expect("render unchanged source reference");
+    }
+    let tail_end_from_start = (6_000 + RELEASE_FRAMES) as usize - 64;
+    assert_eq!(
+        &actual[..tail_end_from_start],
+        &reference_pcm[..tail_end_from_start],
+        "old feedback voice keeps its original gate and release"
+    );
+    assert!(
+        actual[tail_end_from_start..]
+            .iter()
+            .all(|frame| *frame == [0.0; 2]),
+        "removed source retriggered a note"
+    );
+    assert!(
+        reference_pcm[24_000 - 64..]
+            .iter()
+            .any(|frame| frame[0].abs() > 1.0e-6)
+    );
+}
+
+#[test]
+fn operator_session_source_removal_carries_old_feedback_release_without_retriggering() {
+    let mut source_fixture = fixture();
+    edit_feedback(&mut source_fixture, 0.45);
+    let old_revision = prepared(&source_fixture, None);
+    let mut active = start_route(Arc::clone(&old_revision), Some(source_fixture.session_clip));
+    let mut reference = start_route(Arc::clone(&old_revision), Some(source_fixture.session_clip));
+    let mut prefix = [[0.0; 2]; 64];
+    let mut reference_prefix = [[0.0; 2]; 64];
+    active.render(&mut prefix).expect("active Session prefix");
+    reference
+        .render(&mut reference_prefix)
+        .expect("reference Session prefix");
+    assert_eq!(prefix, reference_prefix);
+    assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+    let notes = source_fixture
+        .editor
+        .project()
+        .midi_source(source_fixture.session_clip)
+        .expect("Session source")
+        .notes()
+        .iter()
+        .map(|note| note.id())
+        .collect();
+    source_fixture
+        .editor
+        .execute(Command::RemoveMidiNotes {
+            clip: source_fixture.session_clip,
+            notes,
+        })
+        .expect("remove Session source notes");
+    let source_empty_revision = prepared(&source_fixture, Some(old_revision.session()));
+    let mut candidate =
+        SessionPlayback::new(source_empty_revision).expect("source-empty candidate");
+    candidate
+        .try_inherit_state_from(&mut active)
+        .expect("Session source removal can retain the old feedback occurrence and tail");
+
+    let remaining_frames = 50_000 - 64;
+    let mut actual = vec![[0.0; 2]; remaining_frames];
+    let mut reference_pcm = vec![[0.0; 2]; remaining_frames];
+    for (actual_block, reference_block) in actual.chunks_mut(257).zip(reference_pcm.chunks_mut(257))
+    {
+        candidate
+            .render(actual_block)
+            .expect("render retained Session tail");
+        reference
+            .render(reference_block)
+            .expect("render unchanged Session source reference");
+    }
+    assert_eq!(
+        &actual[..(6_000 + RELEASE_FRAMES) as usize - 64],
+        &reference_pcm[..(6_000 + RELEASE_FRAMES) as usize - 64],
+        "the already-active Session note keeps its authored gate and feedback release"
+    );
+    assert!(
+        actual[(6_000 + RELEASE_FRAMES) as usize - 64..]
+            .iter()
+            .all(|frame| *frame == [0.0; 2]),
+        "removed Session source retriggered a note"
+    );
+    assert!(
+        reference_pcm[24_000 - 64..]
+            .iter()
+            .any(|frame| frame[0].abs() > 1.0e-6),
+        "the unedited reference includes the later authored Session note"
+    );
+}
+
+#[test]
+fn registered_operator_feedback_wraps_with_partition_independent_attack() {
+    let mut fixture = fixture();
+    edit_feedback(&mut fixture, 0.45);
+    fixture
+        .editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 12_000,
+            enabled: true,
+        })
+        .expect("enable Arrangement transport loop");
+    let revision = prepared(&fixture, None);
+    assert!(revision.has_arrangement_mutable_instruments());
+
+    fn render(revision: Arc<PreparedRevision>, partition: usize) -> Vec<[f32; 2]> {
+        let mut playback = SessionPlayback::new(revision).expect("feedback loop runtime");
+        playback
+            .apply(SessionPlaybackCommand::Play)
+            .expect("play looped Operator");
+        let mut output = vec![[0.0; 2]; 25_000];
+        for block in output.chunks_mut(partition) {
+            playback.render(block).expect("render feedback loop");
+        }
+        output
+    }
+
+    let expected = render(Arc::clone(&revision), 17);
+    assert_eq!(render(revision, 257), expected);
+    assert!(
+        expected[12_000..12_128]
+            .iter()
+            .any(|frame| frame[0].abs() > 1.0e-6)
+    );
+    assert!(
+        expected[24_000..]
+            .iter()
+            .any(|frame| frame[0].abs() > 1.0e-6)
+    );
 }

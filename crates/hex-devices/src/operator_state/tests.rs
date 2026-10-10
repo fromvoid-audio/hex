@@ -11,8 +11,8 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), 304);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 73);
+    assert_eq!(original.payload().len(), 320);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 77);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -733,6 +733,30 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
         assert!(OperatorSettings::from_state(&malformed).is_err());
         assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
     }
+    for (operator, invalid) in [(0, f32::NAN), (1, f32::INFINITY), (2, -0.001), (3, 1.001)] {
+        let mut bytes = original.payload().to_vec();
+        let offset = VELOCITY_PAYLOAD_BYTES + operator * size_of::<f32>();
+        bytes[offset..offset + 4].copy_from_slice(&invalid.to_le_bytes());
+        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+            .expect("opaque malformed feedback");
+        assert!(OperatorSettings::from_state(&malformed).is_err());
+        assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
+        assert!(
+            OPERATOR_METADATA
+                .read_parameter(&malformed, parameter::feedback(operator as u32 + 1))
+                .is_err()
+        );
+    }
+    for invalid_length in [PAYLOAD_BYTES - 4, PAYLOAD_BYTES + 4] {
+        let malformed = NativeDeviceState::new(
+            OPERATOR_TYPE_ID,
+            OPERATOR_STATE_VERSION,
+            vec![0; invalid_length],
+        )
+        .expect("opaque wrong-length feedback state");
+        assert!(OperatorSettings::from_state(&malformed).is_err());
+        assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
+    }
     let one_edge = patch(&original, parameter::modulation(1, 2), 0.5);
     assert!(
         OPERATOR_METADATA
@@ -752,7 +776,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(78),
+        ParameterId::from_static(82),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -775,6 +799,90 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
             .payload(),
         negative_zero.payload()
     );
+}
+
+#[test]
+fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
+    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    state = patch(&state, parameter::feedback(1), 0.6);
+    assert!(
+        OPERATOR_METADATA
+            .parameter_enabled(&state, parameter::feedback(1))
+            .expect("feedback availability")
+    );
+    let prepared = OPERATOR_METADATA
+        .prepare_instrument(&state, 48_000)
+        .expect("mutable feedback route");
+    assert!(
+        prepared
+            .prepare_shared_analytic_context()
+            .expect("mutable feedback has no analytic sampler")
+            .is_none()
+    );
+
+    // Operator 2 -> Operator 1 disables only Operator 1 self-feedback. Its
+    // authored value remains stored while the effective native route is zero.
+    state = patch(&state, parameter::modulation(2, 1), 0.25);
+    assert!(
+        !OPERATOR_METADATA
+            .parameter_enabled(&state, parameter::feedback(1))
+            .expect("incoming edge disables feedback control")
+    );
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&state, parameter::feedback(1))
+            .expect("authored feedback remains readable"),
+        ParameterValue::Float(0.6)
+    );
+    let prepared = OPERATOR_METADATA
+        .prepare_instrument(&state, 48_000)
+        .expect("analytic route remains valid");
+    assert!(
+        prepared
+            .prepare_shared_analytic_context()
+            .expect("zero effective feedback has an analytic sampler")
+            .is_some()
+    );
+    assert!(
+        prepared
+            .prepare_mutable_runtime()
+            .expect("effective feedback is zero")
+            .is_none()
+    );
+
+    state = patch(&state, parameter::modulation(2, 1), 0.0);
+    assert!(
+        OPERATOR_METADATA
+            .parameter_enabled(&state, parameter::feedback(1))
+            .expect("removing incoming edge reenables feedback")
+    );
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&state, parameter::feedback(1))
+            .expect("authored amount survives route edit"),
+        ParameterValue::Float(0.6)
+    );
+    let prepared = OPERATOR_METADATA
+        .prepare_instrument(&state, 48_000)
+        .expect("mutable route preparation");
+    let factory = prepared
+        .prepare_mutable_runtime()
+        .expect("effective feedback factory")
+        .expect("nonzero feedback selects mutable path");
+    assert_eq!(factory.max_active_occurrences(), 16);
+    assert_eq!(factory.max_events_per_block(), 256);
+    assert!(factory.declared_twin_bytes() <= 4096);
+}
+
+#[test]
+fn malformed_feedback_payload_is_rejected_without_migration_fallback() {
+    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let index = VELOCITY_PAYLOAD_BYTES;
+    let mut payload = state.payload().to_vec();
+    payload[index..index + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+    state = NativeDeviceState::new(OPERATOR_TYPE_ID, 5, payload).expect("state wrapper");
+    assert!(OperatorSettings::from_state(&state).is_err());
+    assert!(OPERATOR_METADATA.migrate_state(&state).is_err());
 }
 
 #[test]
@@ -920,7 +1028,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 73);
+    assert_eq!(definition.descriptors().len(), 77);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");

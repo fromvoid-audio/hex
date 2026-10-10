@@ -1,9 +1,9 @@
 # registered Operator instrument
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes73 descriptors and opaque version4 state,
-migrating versions1–3 with neutral amplitude-velocity amounts; storage, history and UI do not have
-Operator-specific branches.
+catalog. The control codec exposes77 descriptors and opaque version5 state.
+Versions1–4 migrate with neutral feedback; versions1–3 also receive neutral
+amplitude velocity. Storage, history and UI use generic native-device contracts.
 
 The admitted DSP is the original bounded acyclic four-oscillator core with
 independent envelopes, carrier/modulation routing, and per-operator sine, saw,
@@ -12,7 +12,7 @@ domains on control. It retains the existing sine table and, when any non-sine
 shape is selected, a reference to one process-wide immutable harmonic-limited
 table bank. Each note stores four phase steps, velocity, packed cap indices and
 four control-prepared amplitude-velocity scales in the existing bounded 8-word
-shared-note payload. The audio path borrows the shared
+shared-note payload. The zero-effective-feedback analytic path borrows the shared
 configuration to sample it. The inline analytic sampler explicitly refuses this
 processing class, so a selector cannot silently fall back to sine-only playback.
 
@@ -28,14 +28,19 @@ weights; it is not an additional serialized mode. Named topology selections
 update the existing routing parameters through the ordinary immutable device
 patch contract. See the [routing preset contract](operator-routing-presets.md).
 
-The registered native device still does not admit feedback controls or mutable
-voice history. The standalone bounded feedback kernel is specified separately
-in the [Operator feedback contract](operator-feedback.md); routing that state
-through project persistence, native runtime handoff, Session, seeking, loops and
-export remains a later admission gate. Filters, additional waveforms beyond
-these four, unbounded routing, full Operator controls and Live numerical parity
-also remain open. The injected mutable runtime remains test-only. Native
-listening and device-deadline behavior require separate acceptance; see
+Nonzero effective feedback selects the registered bounded mutable runtime with
+16 simultaneous voices, 256 events per block and a 3,640-byte twin. Authored
+amounts remain stored when incoming FM makes a control unavailable; effective
+zero retains analytic playback. The analytic API does not expose a context for
+mutable feedback state, preventing a silent wrong-law fallback. See the
+[feedback contract](operator-feedback.md) for the original recurrence,
+capability limits, storage accounting and validation. Active class-changing
+handoffs can refuse audio admission while desired project edits remain canonical;
+this does not establish live parameter updates on held feedback voices.
+
+Filters, additional waveforms beyond these four, unbounded routing, remaining
+Operator controls and Live numerical parity remain open. Native listening and
+physical device deadlines require separate acceptance; see
 [performance measurements](performance.md).
 
 Fixed oscillators use frequency in Hz times a multiplier, independent of MIDI

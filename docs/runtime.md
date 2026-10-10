@@ -222,8 +222,12 @@ operation currently models one monotonic Arrangement pass.
 
 `PreparedRevision::arrangement_seek_requires_preroll()` reports whether direct
 absolute-frame seeking would omit mutable Arrangement instruments or stateful
-track/return processors. Built-in Sine and Operator remain on the direct path
-because their notes are deterministic functions of note age and gate duration.
+track/return processors. Built-in Sine and Operator with zero effective feedback
+remain on the direct path because their notes are deterministic functions of
+note age and gate duration. Nonzero effective Operator feedback uses the bounded
+mutable runtime and therefore requires the existing prepared-history seek path;
+enabled transport-loop seek/preroll and other unsupported mutable paths remain
+explicit refusals. See docs/operator-feedback.md for its actual admission scope.
 This is a control-side policy query, not a full eligibility or publication
 fence. Native UI/listening acceptance remains open. A 100-track interactive readiness
 profile is recorded in docs/performance.md; it is not a physical deadline.

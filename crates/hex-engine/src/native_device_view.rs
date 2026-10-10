@@ -374,7 +374,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "operator");
-        assert_eq!(operator_view.parameters.len(), 73);
+        assert_eq!(operator_view.parameters.len(), 77);
         for parameter in operator_view
             .parameters
             .iter()

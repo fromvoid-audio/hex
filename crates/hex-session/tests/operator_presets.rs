@@ -167,6 +167,13 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         ParameterValue::Float(0.75),
     )
     .expect("nonneutral velocity setting");
+    let original = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &original,
+        ParameterId::from_static(78),
+        ParameterValue::Float(0.65),
+    )
+    .expect("authored feedback setting");
     let (_, prepared) = session
         .command_prepared_revision(
             Command::ReplaceDeviceState {
@@ -187,7 +194,7 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.payload().len(), 304);
+    assert_eq!(selected.payload().len(), 320);
     assert_eq!(&selected.payload()[288..], &original.payload()[288..]);
     let undone = session
         .undo_prepared_revision(Some(&changed))
@@ -204,5 +211,127 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
     assert_eq!(
         session.project().device(device).expect("device").state(),
         &selected
+    );
+}
+
+#[test]
+fn seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
+    let mut session = Session::new(48_000, 16, 0).expect("session");
+    let (Created::Track(track), mut graph) = session
+        .command_prepared_revision(
+            Command::AddMidiTrack {
+                name: "operator capacity".into(),
+            },
+            None,
+        )
+        .expect("track")
+    else {
+        panic!("expected track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("instrument")
+        .id();
+    let mut state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .expect("Operator defaults");
+    state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(78),
+        ParameterValue::Float(0.4),
+    )
+    .expect("feedback amount");
+    (_, graph) = session
+        .command_prepared_revision(Command::ReplaceDeviceState { device, state }, Some(&graph))
+        .expect("mutable feedback runtime admitted");
+    let (Created::Clip(clip), next) = session
+        .command_prepared_revision(
+            Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(4).expect("clip length"),
+            },
+            Some(&graph),
+        )
+        .expect("clip")
+    else {
+        panic!("expected clip")
+    };
+    graph = next;
+    for _ in 0..16 {
+        (_, graph) = session
+            .command_prepared_revision(
+                Command::AddMidiNote {
+                    clip,
+                    start: hex_project::BeatTime::ZERO,
+                    duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                Some(&graph),
+            )
+            .expect("voice fits declared Operator capacity");
+    }
+
+    let before_refusal = session.project().snapshot();
+    assert!(
+        session
+            .command_prepared_revision(
+                Command::AddMidiNote {
+                    clip,
+                    start: hex_project::BeatTime::ZERO,
+                    duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                },
+                Some(&graph),
+            )
+            .is_err(),
+        "the seventeenth overlapping voice exceeds the declared 16-voice limit"
+    );
+    assert_eq!(session.project().snapshot(), before_refusal);
+
+    let undone = session
+        .undo_prepared_revision(Some(&graph))
+        .expect("undo after refused edit")
+        .expect("sixteenth note remains in history");
+    assert_eq!(
+        session
+            .project()
+            .track(track)
+            .expect("track")
+            .midi_clips()
+            .iter()
+            .find(|candidate| candidate.id() == clip)
+            .expect("clip")
+            .notes()
+            .len(),
+        15,
+        "failed seventeenth edit did not enter history"
+    );
+    session
+        .redo_prepared_revision(Some(&undone))
+        .expect("redo after refusal")
+        .expect("sixteenth note redo");
+    assert_eq!(
+        session
+            .project()
+            .track(track)
+            .expect("track")
+            .midi_clips()
+            .iter()
+            .find(|candidate| candidate.id() == clip)
+            .expect("clip")
+            .notes()
+            .len(),
+        16
     );
 }

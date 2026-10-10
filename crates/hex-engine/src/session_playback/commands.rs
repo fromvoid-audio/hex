@@ -492,6 +492,13 @@ impl SessionPlayback {
                 let mut next_order = self.release_order_scratch;
                 track
                     .for_each_active_midi_span(source_frame, |span, sampler| {
+                        // The transition boundary belongs to the incoming
+                        // owner. A note whose onset equals `source_frame` has
+                        // not rendered yet and must not be carried as an
+                        // outgoing tail.
+                        if span.start >= source_frame {
+                            return;
+                        }
                         let voice = match MidiReleaseVoice::from_finite_span(
                             span.start,
                             span.gate_end,

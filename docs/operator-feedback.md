@@ -2,9 +2,9 @@
 
 This is an original bounded DSP contract, not a measured recreation of Live's
 feedback transfer law. It extends the independently testable standalone
-Operator kernel only. Feedback controls are not serialized or admitted by the
-registered native instrument, and no callback, project handoff, seek, Session,
-transport-loop or export integration is claimed.
+Operator kernel and provides a bounded registered native path. It does not claim
+full Operator feature parity, general mutable-instrument chase, or verified Live
+numerics.
 
 For oscillator `i` at sequential sample `n`, the standalone voice uses:
 
@@ -80,7 +80,50 @@ profile does not time `process_frame` with nonzero feedback. That recurrence is
 covered by unit oracles only; measure it separately before making performance
 claims.
 
-Native admission remains a separate change. It must define prepared occurrence
-identity, state/scratch copying and rollback, context pairing, active tail
-behavior, pause/stop, seeking, transport loops and export together before any
-registered device control can expose feedback.
+## registered native runtime
+
+Pulse2225 exposes four authored amounts through Operator state version5. The
+exact version4 304-byte prefix is preserved; four little-endian f32 amounts are
+appended for a 320-byte state. IDs78–81 use [0,1]. Presets and topology edits
+retain authored values. When an oscillator has an incoming cross-modulation
+edge, its feedback control is unavailable and its effective amount is zero;
+removing the edge reactivates the saved value. If every effective amount is
+zero, the existing shared analytic path remains selected.
+
+Any nonzero effective amount selects a fixed-array mutable runtime. It declares
+16 active occurrences, 256 events per block, and a 3,640-byte twin on the current
+64-bit arm64 build. The paired runtime uses 7,280 declared bytes, within the
+existing 8,192-byte pair ceiling. It does not claim 64-voice Operator support.
+Density admission uses the declared 16-voice capacity, so a denser source is
+refused before the runtime is published. There is no stealing, truncation,
+callback allocation, lazy table initialization, device construction, locking or
+logging. NoteOn preflight verifies finite note setup and release-end arithmetic;
+admitted callback events then initialize their bounded pitch/phase data and use
+the fixed voice slots. NoteOff occurs at its exclusive event offset before an
+equal-offset NoteOn. History transfer requires exact versioned Operator state,
+sample rate, feedback amounts and release configuration.
+
+An active same-device transition between analytic and mutable classes is
+conservatively refused on Arrangement and retained Session MIDI routes. The
+already committed desired project edit remains canonical; the currently
+applied audio keeps its prior graph and PCM until a later publication can be
+admitted. This follows the canonical-versus-applied contract in
+[runtime.md](runtime.md) and its Pulse2180 acceptance gate; this device change
+does not claim project/history rollback or add a device-specific recovery UI.
+The engine tests cover both transition directions on both routes, exact-cut
+NoteOn admission once on both routes, quiescence after the maximum 4,800-frame
+release, and Arrangement and Session source removal while the detached old
+feedback occurrence keeps its authored gate and release without retriggering.
+
+Registered Operator source tests also compare full linear prepared export with
+partitioned playback, verify bounded Arrangement seek preroll, and render two
+transport-loop wraps with partition-independent feedback attacks. These tests
+exercise the explicitly admitted paths; they do not establish native-device
+listening, physical callback deadlines, Session-loop behavior, or every
+generic pause/stop and seek edge case. The actual registered Operator callback
+allocation probe covers onset, held processing, exclusive NoteOff, release and
+shutdown, with all construction and reclamation outside measurement.
+Parameter edits prepare a candidate configuration; this change does not
+establish how active feedback voices respond to changed values. Continuous live
+updates to supported Operator parameters remain a separate acceptance item
+(Pulse2229).

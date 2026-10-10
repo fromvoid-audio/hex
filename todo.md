@@ -1311,6 +1311,28 @@ standalone/0.678s compact, after0.691s/0.702s; note/context/compact sizes change
 or Live numerical parity claim. Full exact-head local CI and native acceptance
 remain pending. See docs/operator-context.md for workload and raw-log provenance.
 
+## 10 October 2026 — review63 velocity test build
+
+Focused [PR102](https://github.com/PORTALSURFER/hex/pull/102), source4a10773,
+passed all16 exact local checks20261010T101119Z-4923c9f6, stale=false. Full CI
+first caught stale descriptor/payload fixture counts; repairs retain independent
+PCM oracles and add nonneutral history/storage coverage. Combinedccc6232 passed
+all16 checks20261010T101108Z-a069085b, stale=false. Fresh optimized release
+25.09seconds; strict ad-hoc signature and signed-binary hash independently
+verified: artifacts/hex-lattice-velocity-review-20261010-ccc6232.app, SHA256
+f2f9cfbc14cc0c926dacd7239fecb18eaf3a20d30b3e6dd2aa80471b9c75283b.
+Its adjacent manifest records65 integrated source PR links (38–102).
+
+The user checklist covers four amplitude velocity controls, notes at different
+velocities, neutral previous sound and save/reopen. Native control/listening
+acceptance remains pending; no app was launched by the agent, earlier apps remain
+intact. Pulse2222 is ready_for_review. Codex attachment registration reached100
+identities; verified links remain in Pulse and this ledger. No hosted CI or
+automatic merges. Pulse2223 standalone bounded self-feedback DSP is separately
+in_progress and absent from this app; native feedback admission remains a later
+gate. Exact Live laws, full Operator, plugins, PDC and physical deadlines remain
+open.
+
 ## 10 October 2026 — standalone Operator feedback kernel
 
 Pulse2223 adds an original compact sequential feedback voice in hex-devices.
@@ -1329,3 +1351,46 @@ Exact-head full local CI and publication follow. Native feedback controls, state
 codec and runtime admission are separately tracked by Pulse2225, including safe
 same-Operator analytic/mutable transitions and preserved unavailable authored
 values. Current review63 app remains unchanged; no native feedback/parity claim.
+
+## 10 October 2026 — review64 feedback-kernel checkpoint
+
+Focused [PR103](https://github.com/PORTALSURFER/hex/pull/103), source00cd95f,
+passed all16 checks20261010T102648Z-f059c465; combined709d846 passed all16
+checks20261010T102658Z-53636e26. Both clean/stale=false. Pulse2223 is
+ready_for_review; native feedback admission2225 remains separate.
+
+Fresh optimized release28.32seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-feedback-kernel-review-20261010-709d846.app.
+Signed binarySHA2566572a324c47d85b20af4b7adc607f8dda0e5d39a5a96018f0fcffc1b08bf2689.
+Adjacent manifest records66 integrated sourcePRlinks38–103. This source includes
+the standalone DSP prerequisite; registered native feedback controls/runtime
+remain absent. User can continue testing existing velocity controls, MIDI
+playback, device reordering and save/reopen. No agent app launch/native acceptance
+or automatic merge. Previous review apps remain intact.
+
+Next2225 preparation found a native memory budget decision: a152-byte voice
+with64slots exceeds the existing4096-byte mutable twin cap even before IDs.
+Astra is reviewing a narrow capacity/budget choice before implementation; no
+silent global budget expansion or64-voice/scalability claim.
+
+## 10 October 2026 — registered Operator feedback admission
+
+Pulse2225 adds version5 state with four persistent authored feedback amounts.
+Unavailable incoming-FM controls retain their values and use effective zero;
+all-zero effective feedback retains analytic rendering. Nonzero feedback selects
+a fixed 16-voice, 256-event mutable runtime with a 3,640-byte twin on arm64.
+Higher polyphony and continuous active-voice parameter changes remain separate
+Pulse2226/2229 follow-ups.
+
+Actual Operator tests cover both active class-switch directions on Arrangement
+and Session, exact-cut attacks, exclusive release quiescence, removed-source
+tails, bounded worker seek, transport loops and prepared export. A concrete
+Session mutable-to-analytic lost-note bug is prevented by pre-mutation refusal
+for a retained same-device source; removed sources remain eligible for tails.
+Refusal preserves applied playback; canonical desired-state history may already
+be committed under Pulse2180. Callback allocation probes cover onset, held notes,
+NoteOff, release and shutdown with construction/reclamation outside measurement.
+
+Targeted checks passed; exact-head full local CI, focused PR publication and
+combined native review build follow. Native UI/listening, physical deadlines,
+full Operator parity and general live parameter update behavior remain open.
