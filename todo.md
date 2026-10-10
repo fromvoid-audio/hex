@@ -1636,3 +1636,15 @@ native visual acceptance remain pending. See [Operator shell context contract]
   Final integrated local CI and PR merge evidence are recorded in Pulse.
 - This kernel prerequisite does not enable live registered parameter edits;
   runtime admission, callback probes and native listening remain Pulse2229.
+
+## 10 October 2026 — EQ8 spectrum kernel (Pulse2287)
+
+- Added original fixed-window stereo FFT telemetry with reusable storage,
+  calibrated Hann normalization and 96 logarithmic bands. Anti-phase channels
+  retain their power; silence has a defined floor.
+- Four focused kernel tests, strict audio crate Clippy, formatting and
+  architecture checks passed in the isolated child. Final integrated local CI
+  and focused PR evidence are recorded in Pulse.
+- No live analyzer is exposed yet. Capture worker remains Pulse2288; actual
+  accepted post-node audio, UI display, callback overhead and native acceptance
+  remain Pulse2250. See [spectrum analysis](docs/spectrum-analysis.md).
