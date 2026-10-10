@@ -676,9 +676,20 @@ impl Playback {
 
     /// Render either the selected mixed source or the legacy finite Arrangement.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.render_with_post_node_observer(output, None)
+    }
+
+    /// Render while exposing bounded borrowed output from each processed
+    /// native device node. The observer is audio-thread code when used by
+    /// `hex-audio`: it must not allocate, block or retain the slice.
+    pub fn render_with_post_node_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), Invalid> {
         if let Some(runtime) = self.session_runtime.as_mut() {
             return runtime
-                .render(output)
+                .render_with_post_node_observer(output, observer)
                 .map_err(|_| Invalid("session playback render failed"));
         }
         if self.session_unavailable.is_some()

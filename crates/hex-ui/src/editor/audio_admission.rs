@@ -40,6 +40,19 @@ pub(super) struct AudioAdmissionStatus {
 }
 
 impl AudioAdmissionStatus {
+    pub(super) fn published_audio_revision(
+        &self,
+        generation: u64,
+        project_revision: u64,
+    ) -> Option<u64> {
+        self.current
+            .filter(|current| {
+                current.project.generation == generation
+                    && current.project.revision == project_revision
+            })
+            .and_then(|current| current.audio_revision)
+    }
+
     #[cfg(test)]
     pub(super) fn current(&self) -> Option<CurrentAdmission> {
         self.current

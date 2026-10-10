@@ -43,6 +43,8 @@ pub struct ResponseGraphEvent {
 pub struct ResponseGraphModel {
     pub primary: Vec<[f32; 2]>,
     pub secondary: Vec<[f32; 2]>,
+    /// Optional non-editable analyzer trace, painted behind the device response.
+    pub analyzer: Option<Vec<[f32; 2]>>,
     pub nodes: Vec<ResponseGraphNode>,
 }
 
@@ -51,6 +53,9 @@ impl ResponseGraphModel {
         if self.primary.len() < 2
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
+            || self.analyzer.as_ref().is_some_and(|curve| {
+                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+            })
             || self.nodes.len() > MAX_NODES
             || !valid_curve(&self.primary)
             || !valid_curve(&self.secondary)
@@ -113,6 +118,7 @@ impl ResponseGraph {
         let model = ResponseGraphModel {
             primary: vec![[0.0, 0.5], [1.0, 0.5]],
             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
+            analyzer: None,
             nodes: Vec::new(),
         };
         Self {
@@ -138,6 +144,7 @@ impl ResponseGraph {
         let style = style.validate()?;
         if self.model.primary != model.primary
             || self.model.secondary != model.secondary
+            || self.model.analyzer != model.analyzer
             || self.model.nodes != model.nodes
             || self.style != style
         {
@@ -438,6 +445,7 @@ impl gpui::Render for ResponseGraph {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
+        let analyzer = self.model.analyzer.clone();
         let nodes = self.model.nodes.clone();
         let style = self.style;
         let bounds_entity = cx.entity();
@@ -464,7 +472,15 @@ impl gpui::Render for ResponseGraph {
                     |_, _, _| (),
                     move |bounds, _, window, app| {
                         bounds_entity.update(app, |graph, _| graph.bounds = Some(bounds));
-                        paint_graph(bounds, &primary, &secondary, &nodes, style, window);
+                        paint_graph(
+                            bounds,
+                            &primary,
+                            &secondary,
+                            analyzer.as_deref(),
+                            &nodes,
+                            style,
+                            window,
+                        );
                     },
                 )
                 .absolute()
@@ -481,6 +497,7 @@ fn paint_graph(
     bounds: Bounds<Pixels>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
+    analyzer: Option<&[[f32; 2]]>,
     nodes: &[ResponseGraphNode],
     style: ControlStyle,
     window: &mut Window,
@@ -505,6 +522,17 @@ fn paint_graph(
     }
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
+    }
+    if let Some(analyzer) = analyzer {
+        paint_curve(
+            origin,
+            width,
+            height,
+            analyzer,
+            px(0.8),
+            style.muted,
+            window,
+        );
     }
     paint_curve(
         origin,
@@ -658,6 +686,7 @@ mod tests {
         ResponseGraphModel {
             primary: vec![[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]],
             secondary: vec![[0.0, 0.1], [0.5, 0.5], [1.0, 0.1]],
+            analyzer: None,
             nodes: vec![ResponseGraphNode {
                 id: 3,
                 position: [0.5, 0.5],
@@ -670,6 +699,11 @@ mod tests {
     #[test]
     fn response_graph_accepts_bounded_curves_and_rejects_invalid_models() {
         assert!(model().validate().is_ok());
+        let mut with_analyzer = model();
+        with_analyzer.analyzer = Some(vec![[0.0, 0.4], [0.5, 0.8], [1.0, 0.2]]);
+        assert!(with_analyzer.validate().is_ok());
+        with_analyzer.analyzer.as_mut().unwrap()[1][1] = f32::NAN;
+        assert!(with_analyzer.validate().is_err());
         let mut invalid = model();
         invalid.nodes[0].position[0] = f32::NAN;
         assert!(invalid.validate().is_err());

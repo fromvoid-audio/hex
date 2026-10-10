@@ -1150,6 +1150,196 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
 }
 
 #[test]
+fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
+    use hex_lattice_contract::DeviceTypeId;
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let make_playback = |looping: bool| {
+        let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+        let state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.eq8"),
+        )
+        .unwrap();
+        snapshot.tracks[0].devices.push(DeviceSnapshot {
+            id: 7,
+            bypassed: false,
+            state,
+        });
+        snapshot.next_id = snapshot.next_id.max(8);
+        if looping {
+            snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
+        } else {
+            snapshot.tempo_points = vec![
+                TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT),
+                TempoPoint::new(
+                    // The tempo transition falls within the first 256-frame
+                    // render chunk; it must not alter the observed render path.
+                    BeatTime::from_ratio(1, 100).unwrap(),
+                    Tempo::new(90_000_000).unwrap(),
+                ),
+            ];
+        }
+        let project = legacy_project_from_snapshot(snapshot).unwrap();
+        let prepared = revision(&project, Arc::clone(&table));
+        let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        playback
+    };
+
+    for (looping, expected_chunks) in [
+        (
+            true,
+            vec![
+                (0, 64),
+                (64, 64),
+                (128, 64),
+                (192, 64),
+                (256, 64),
+                (320, 64),
+                (384, 64),
+                (448, 64),
+            ],
+        ),
+        (false, vec![(0, 256), (256, 256)]),
+    ] {
+        let mut ordinary = make_playback(looping);
+        let mut observed = make_playback(looping);
+        let mut ordinary_output = [[0.0; 2]; 512];
+        let mut observed_output = [[0.0; 2]; 512];
+        let mut calls = Vec::new();
+        ordinary.render(&mut ordinary_output).unwrap();
+        observed
+            .render_with_post_node_observer(
+                &mut observed_output,
+                Some(&mut |identity, offset, frames| {
+                    if identity.device_type.as_str() == Ok("hex.eq8") {
+                        calls.push((identity, offset, frames.len()));
+                    }
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(observed_output, ordinary_output);
+        let chunks: Vec<_> = calls
+            .iter()
+            .map(|(_, offset, length)| (*offset, *length))
+            .collect();
+        assert_eq!(chunks, expected_chunks);
+        assert!(calls.iter().all(|(identity, _, _)| {
+            identity.owner == hex_lattice::ProcessorChainOwner::Track(1) && identity.device_id == 7
+        }));
+    }
+}
+
+#[test]
+fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
+    use crate::{PlaybackAction, SessionPlaybackCommand};
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let eq8 = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.eq8"),
+    )
+    .unwrap();
+    let make_return_project = |bypassed: bool| {
+        let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+        snapshot.tracks[0].sends.push(SendLevelSnapshot {
+            return_track: 70,
+            gain: 0.5,
+        });
+        snapshot.return_tracks.push(ReturnTrackSnapshot {
+            id: 70,
+            name: "return".into(),
+            gain: 1.0,
+            muted: false,
+            devices: vec![DeviceSnapshot {
+                id: 80,
+                bypassed,
+                state: eq8.clone(),
+            }],
+        });
+        snapshot.next_id = snapshot.next_id.max(81);
+        legacy_project_from_snapshot(snapshot).unwrap()
+    };
+    let return_identity = crate::PostNodeIdentity::new(
+        hex_lattice::ProcessorChainOwner::Return(70),
+        80,
+        DeviceTypeId::from_static("hex.eq8"),
+    );
+
+    let render_return = |bypassed: bool| {
+        let project = make_return_project(bypassed);
+        let mut playback =
+            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
+                .unwrap();
+        playback.apply(PlaybackCommand::Play);
+        let mut output = [[0.0; 2]; 256];
+        let mut calls = Vec::new();
+        playback
+            .render_with_post_node_observer(
+                &mut output,
+                Some(&mut |identity, offset, frames| {
+                    calls.push((identity, offset, frames.len()));
+                }),
+            )
+            .unwrap();
+        calls
+    };
+
+    let active_return_calls = render_return(false);
+    assert!(
+        active_return_calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+    let bypassed_return_calls = render_return(true);
+    // A bypassed processor still owns a post-node boundary: the runtime
+    // advances its bypass state and exposes the dry signal at that point.
+    assert!(
+        bypassed_return_calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+
+    let project = make_return_project(false);
+    let clip = match project.session_cells()[0].content() {
+        hex_project::SessionCellContent::Midi(clip) => clip.id(),
+        _ => panic!("fixture session cell must be MIDI"),
+    };
+    let prepared = revision(&project, table);
+    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let mut calls = Vec::new();
+    playback
+        .render_with_post_node_observer(
+            &mut output,
+            Some(&mut |identity, offset, frames| {
+                calls.push((identity, offset, frames.len()));
+            }),
+        )
+        .unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+}
+
+#[test]
 fn removed_track_release_retains_its_original_device_matrix() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};

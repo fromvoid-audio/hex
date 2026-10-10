@@ -95,17 +95,22 @@ channel. Target, capture generation, sample-rate changes and sequence gaps clear
 the rolling window. Ordinary applied-revision changes keep contiguous output
 samples and update the published revision. Sample-rate changes reconstruct the
 kernel on the worker. Results expire after 100 ms without accepted capture. The
-worker thread owns FFT construction/reconstruction and analysis; no FFT or
-backend tap is integrated into the current CPAL callback.
+worker thread owns FFT construction/reconstruction and analysis. The prepared
+CPAL callback only stages the selected EQ8 post-node output into fixed storage
+and submits bounded batches; it performs no FFT.
 
-The owner must first quiesce the callback and return its capture producer to a
-control thread, then call `SpectrumWorker::shutdown_and_join(capture)`. That
-method drops the queue producer on control and joins the worker. Dropping the
-worker handle only requests worker exit and does not join; it is not a substitute
-for the explicit lifecycle. Backend target selection, actual-output observer
-placement, revision stamping and UI display remain separate integration work.
+The callback owns the capture producer. After a successful stream pause, the
+lifecycle owner drops the stream/callback first, joins the worker reaper second,
+and releases the exclusive output lease last. Failed pauses retain the stream,
+worker and lease. Dropping the reaper only requests worker exit; it does not join.
 See [spectrum analysis](../../docs/spectrum-analysis.md) for the numeric
-contract and limits.
+contract, post-node selection and limits.
+
+Run `cargo run -p hex-audio --release --example profile_eq8_spectrum -- 128 4000`
+to compare prepared callback timing with no worker, an attached inactive worker,
+and the EQ8 tap enabled. The example checks matching PCM against an independent
+prepared renderer and reports per-scenario percentiles and checksums. It is a
+headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 

@@ -242,6 +242,7 @@ fn handle_graph_event(
 
 pub(super) struct GraphModelRequest<'a> {
     pub(super) device: DeviceId,
+    pub(super) owner: hex_engine::ProcessorChainOwner,
     pub(super) canonical_state: &'a NativeDeviceState,
     pub(super) device_view: &'a NativeDeviceView,
     pub(super) sample_rate: u32,
@@ -256,6 +257,7 @@ pub(super) fn graph_model(
 ) -> Option<ResponseGraphModel> {
     let GraphModelRequest {
         device,
+        owner,
         canonical_state,
         device_view,
         sample_rate,
@@ -342,9 +344,47 @@ pub(super) fn graph_model(
             }
         })
         .collect();
+    let target_identity =
+        hex_engine::PostNodeIdentity::new(owner, device.value(), device_view.type_id);
+    let analyzer = view
+        .device_panel
+        .spectrum_result
+        .as_ref()
+        .filter(|result| {
+            view.audio
+                .as_ref()
+                .and_then(|audio| audio.control.spectrum_target.desired())
+                .is_some_and(|target| {
+                    target.identity == target_identity
+                        && target.token == result.stamp.target
+                        && target.project_generation == result.stamp.generation
+                        && target.sample_rate_hz == result.stamp.sample_rate_hz
+                        && result.stamp.applied_revision >= target.activation_floor
+                })
+        })
+        .map(|result| {
+            result
+                .frame
+                .bins_dbfs
+                .iter()
+                .enumerate()
+                .map(|(index, dbfs)| {
+                    let (low, high) =
+                        hex_audio::spectrum::band_bounds_hz(result.frame.sample_rate_hz, index)
+                            .unwrap_or((MIN_HZ, MAX_HZ));
+                    let center = (low * high).sqrt();
+                    let upper = MAX_HZ.min(result.frame.sample_rate_hz as f32 * 0.49);
+                    [
+                        log_position(center, MIN_HZ, upper),
+                        ((dbfs + 72.0) / 72.0).clamp(0.0, 1.0),
+                    ]
+                })
+                .collect()
+        });
     Some(ResponseGraphModel {
         primary,
         secondary,
+        analyzer,
         nodes,
     })
 }

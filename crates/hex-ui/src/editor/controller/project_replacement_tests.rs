@@ -61,6 +61,148 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
     event
 }
 
+fn eq8_project() -> (
+    Arc<Project>,
+    hex_project::TrackId,
+    hex_project::DeviceId,
+    hex_project::TrackId,
+) {
+    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "eq8 source".into(),
+        })
+        .expect("track")
+    {
+        hex_project::Created::Track(track) => track,
+        other => panic!("unexpected track result: {other:?}"),
+    };
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+    )
+    .expect("eq8 state");
+    let device = match editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .expect("insert eq8")
+    {
+        hex_project::Created::Device(device) => device,
+        other => panic!("unexpected device result: {other:?}"),
+    };
+    let other_track = match editor
+        .execute(Command::AddTrack {
+            name: "other".into(),
+        })
+        .expect("other track")
+    {
+        hex_project::Created::Track(track) => track,
+        other => panic!("unexpected track result: {other:?}"),
+    };
+    (
+        Arc::new(editor.project().clone()),
+        track,
+        device,
+        other_track,
+    )
+}
+
+#[gpui::test]
+fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service =
+            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let (project, track, device, other_track) = eq8_project();
+    let target = hex_audio::spectrum_target::SpectrumTarget {
+        token: hex_audio::spectrum_worker::SpectrumTargetId(1),
+        identity: hex_engine::PostNodeIdentity::new(
+            hex_engine::ProcessorChainOwner::Track(track.value()),
+            device.value(),
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+        ),
+        project_generation: 1,
+        activation_floor: 1,
+        sample_rate_hz: 48_000,
+    };
+
+    window
+        .update(cx, |view, _, cx| {
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.project_generation = 1;
+            view.selected_track = Some(track);
+            view.clip_view_open = true;
+            view.device_panel_active = true;
+            assert!(view.spectrum_target_is_visible_and_current(target));
+
+            view.clip_view_open = false;
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+            view.device_panel_active = true;
+
+            view.selected_track = Some(other_track);
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+            view.selected_track = Some(track);
+
+            let mut without_eq8 = Editor::new((*project).clone(), 8).expect("editor");
+            without_eq8
+                .execute(Command::RemoveDevice(device))
+                .expect("remove eq8");
+            view.state = Some(event(Arc::new(without_eq8.project().clone()), 2, false).state);
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+            view.state = Some(event(Arc::clone(&project), 3, false).state);
+
+            let mut replaced_eq8 = Editor::new((*project).clone(), 8).expect("editor");
+            replaced_eq8
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Effect,
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .expect("utility state"),
+                })
+                .expect("replace eq8 type");
+            view.state = Some(event(Arc::new(replaced_eq8.project().clone()), 4, false).state);
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+            view.state = Some(event(Arc::clone(&project), 5, false).state);
+
+            // Reopening the same project preserves numeric IDs but advances the
+            // project generation, so an old callback target cannot reattach.
+            view.receive(event(Arc::clone(&project), 2, true));
+            assert_ne!(view.project_generation, target.project_generation);
+            assert!(!view.spectrum_target_is_visible_and_current(target));
+
+            view.device_panel.spectrum_result =
+                Some(hex_audio::spectrum_worker::PublishedSpectrum {
+                    stamp: hex_audio::spectrum_worker::SpectrumStamp {
+                        target: target.token,
+                        generation: target.project_generation,
+                        sample_rate_hz: target.sample_rate_hz,
+                        applied_revision: target.activation_floor,
+                    },
+                    frame: hex_audio::spectrum::SpectrumFrame {
+                        sample_rate_hz: target.sample_rate_hz,
+                        bins_dbfs: [-120.0; hex_audio::spectrum::SPECTRUM_BANDS],
+                    },
+                    captured_at: std::time::Instant::now(),
+                    processed_at: std::time::Instant::now(),
+                });
+            // A backend replacement starts without a selected target. Tick's
+            // retirement path clears cached data even before a new frame arrives.
+            assert!(view.retire_stale_spectrum_target());
+            assert!(view.device_panel.spectrum_result.is_none());
+            cx.notify();
+        })
+        .expect("spectrum target context");
+}
+
 #[gpui::test]
 fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {

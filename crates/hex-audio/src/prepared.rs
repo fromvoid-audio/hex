@@ -1,9 +1,14 @@
 //! Bounded ownership handoff for compiled arrangement playback.
 //! Control constructs/drops graphs; callback swaps at most one per block and returns
 //! old ownership through a reserved retirement queue. Used by the native prepared output.
+use crate::{
+    spectrum_target,
+    spectrum_worker::{SpectrumCapture, SpectrumStamp},
+};
 use hex_engine::{
     Frame, Invalid, MAX_SESSION_ROUTE_TRACKS, PlaybackAction, PlaybackActionRejection,
-    PlaybackCommand, PlaybackHandoffRejection, SessionCapabilityStatus, playback::Playback,
+    PlaybackCommand, PlaybackHandoffRejection, PostNodeIdentity, SessionCapabilityStatus,
+    playback::Playback,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::{
@@ -13,6 +18,7 @@ use std::sync::{
         Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
     },
 };
+use std::time::Instant;
 
 // Queue capacity and per-block consumption budget must stay equal: every
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
@@ -140,6 +146,9 @@ fn command_cut(entry_ticket: u64, stop_marker: u64) -> CommandCut {
 
 struct Publication {
     revision: u64,
+    /// UI/control project context this compiled playback belongs to. This is
+    /// audio publication metadata, not project schema or engine state.
+    control_context_generation: u64,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
@@ -595,6 +604,7 @@ pub struct Control {
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
     pub status: Arc<Status>,
+    pub spectrum_target: spectrum_target::SpectrumTargetControl,
     rate: u32,
     revision: u64,
     command_ticket: u64,
@@ -610,6 +620,10 @@ pub struct Callback {
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
     status: Arc<Status>,
+    rate: u32,
+    spectrum_target: spectrum_target::SpectrumTargetCallback,
+    spectrum_capture: Option<SpectrumCapture>,
+    spectrum_stage: SpectrumStage,
     active: Option<Publication>,
     deferred: Option<Publication>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -625,11 +639,22 @@ pub struct Callback {
     test_before_fresh_runtime_apply: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
 /// published before playback; an empty provider emits silence.
 pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
+    channel_with_spectrum(rate, None)
+}
+
+/// Construct the prepared callback with an optional prebuilt bounded spectrum
+/// producer. The worker and queue are created off the audio thread.
+pub fn channel_with_spectrum(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
@@ -641,6 +666,7 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
     let closing = Arc::new(AtomicBool::new(false));
     let publication_pending = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Status::try_new()?);
+    let (spectrum_target, callback_target) = spectrum_target::channel();
     Ok((
         Control {
             publications,
@@ -651,6 +677,7 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             closing: closing.clone(),
             publication_pending: publication_pending.clone(),
             status: status.clone(),
+            spectrum_target,
             rate,
             revision: 0,
             command_ticket: 0,
@@ -665,6 +692,10 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             closing,
             publication_pending,
             status,
+            rate,
+            spectrum_target: callback_target,
+            spectrum_capture: capture,
+            spectrum_stage: SpectrumStage::default(),
             active: None,
             deferred: None,
             held_retirement: None,
@@ -679,8 +710,94 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             test_before_fresh_runtime_apply: None,
             #[cfg(test)]
             test_after_fresh_runtime_apply_decision: None,
+            #[cfg(test)]
+            test_after_spectrum_target_boundary: None,
         },
     ))
+}
+
+struct SpectrumStage {
+    frames: [[f32; 2]; 256],
+    seen: [u64; 4],
+    expected: usize,
+    observed: bool,
+    valid: bool,
+    target: Option<spectrum_target::SpectrumTarget>,
+    epoch: u64,
+}
+
+impl Default for SpectrumStage {
+    fn default() -> Self {
+        Self {
+            frames: [[0.0; 2]; 256],
+            seen: [0; 4],
+            expected: 0,
+            observed: false,
+            valid: false,
+            target: None,
+            epoch: 0,
+        }
+    }
+}
+
+impl SpectrumStage {
+    fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
+        self.frames.fill([0.0; 2]);
+        self.seen.fill(0);
+        self.expected = expected;
+        self.observed = false;
+        self.valid = expected <= self.frames.len();
+        self.target = Some(target);
+        self.epoch = epoch;
+    }
+
+    fn observe(&mut self, identity: PostNodeIdentity, offset: usize, frames: &[[f32; 2]]) {
+        let Some(target) = self.target else {
+            return;
+        };
+        if identity != target.identity {
+            return;
+        }
+        self.observed = true;
+        let Some(end) = offset.checked_add(frames.len()) else {
+            self.valid = false;
+            return;
+        };
+        if end > self.expected || end > self.frames.len() {
+            self.valid = false;
+            return;
+        }
+        for (relative, frame) in frames.iter().enumerate() {
+            let index = offset + relative;
+            let word = index / 64;
+            let mask = 1_u64 << (index % 64);
+            let Some(bits) = self.seen.get_mut(word) else {
+                self.valid = false;
+                return;
+            };
+            if *bits & mask != 0 {
+                self.valid = false;
+                return;
+            }
+            *bits |= mask;
+            self.frames[index] = *frame;
+        }
+    }
+
+    fn complete(&self) -> bool {
+        self.valid
+            && self.observed
+            && self.target.is_some()
+            && (0..self.expected).all(|index| self.seen[index / 64] & (1_u64 << (index % 64)) != 0)
+    }
+
+    fn clear(&mut self) {
+        self.target = None;
+        self.expected = 0;
+        self.observed = false;
+        self.valid = false;
+        self.seen.fill(0);
+    }
 }
 
 impl Control {
@@ -705,6 +822,18 @@ impl Control {
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
+    ) -> Result<u64, PublishError> {
+        self.publish_with_policy_and_context_generation(playback, policy, 0)
+    }
+
+    /// Publish a prepared graph tagged with the control-side project context
+    /// that produced it. Existing callers retain generation zero through
+    /// `publish` and `publish_with_policy`.
+    pub fn publish_with_policy_and_context_generation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
     ) -> Result<u64, PublishError> {
         let reason = if self.closing.load(Acquire) {
             Some("playback is shutting down")
@@ -740,6 +869,7 @@ impl Control {
             });
         let publication = Publication {
             revision,
+            control_context_generation,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback),
@@ -871,6 +1001,12 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.spectrum_target.begin_block();
+        #[cfg(test)]
+        if let Some(barrier) = self.test_after_spectrum_target_boundary.take() {
+            barrier.wait();
+            barrier.wait();
+        }
         if let Some(publication) = self.held_retirement.take() {
             self.return_graph(publication);
             if self.held_retirement.is_some() {
@@ -1130,6 +1266,47 @@ impl Callback {
         self.publish_active_routes(false);
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        let Some(target) = self
+            .spectrum_capture
+            .as_ref()
+            .and(self.spectrum_target.current())
+        else {
+            self.spectrum_stage.clear();
+            return self.render_unobserved(output);
+        };
+        let epoch = self.spectrum_target.current_epoch();
+        let active_matches_target = self.active.as_ref().is_some_and(|active| {
+            active.control_context_generation == target.project_generation
+                && active.revision >= target.activation_floor
+                && active.playback.sample_rate() == target.sample_rate_hz
+        });
+        if target.sample_rate_hz != self.rate || !active_matches_target {
+            self.spectrum_stage.begin(target, epoch, output.len());
+            self.spectrum_stage.valid = false;
+            return self.render_unobserved(output);
+        }
+        self.spectrum_stage.begin(target, epoch, output.len());
+        if self.closing.load(Acquire) {
+            output.fill([0.0; 2]);
+            return Ok(());
+        }
+        if let Some(active) = self.active.as_mut() {
+            let stage = &mut self.spectrum_stage;
+            let mut observe = |identity, offset, frames: &[Frame]| {
+                stage.observe(identity, offset, frames);
+            };
+            active
+                .playback
+                .render_with_post_node_observer(output, Some(&mut observe))?;
+        } else {
+            output.fill([0.0; 2]);
+        }
+        self.publish_transport();
+        self.publish_active_routes(false);
+        Ok(())
+    }
+
+    fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
@@ -1142,6 +1319,51 @@ impl Callback {
         self.publish_transport();
         self.publish_active_routes(false);
         Ok(())
+    }
+
+    /// Accept or reject the staged post-node signal after the caller has
+    /// validated the complete final output block. A skipped attempt consumes a
+    /// capture sequence so the next accepted window cannot bridge the gap.
+    pub fn finish_spectrum_block(
+        &mut self,
+        captured_start: Instant,
+        output_valid: bool,
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        let target = self.spectrum_stage.target?;
+        let complete = self.spectrum_stage.complete();
+        let current = self.spectrum_target.current();
+        let current_epoch = self.spectrum_target.current_epoch();
+        let valid = output_valid
+            && complete
+            && current == Some(target)
+            && current_epoch == self.spectrum_stage.epoch
+            && self.active.as_ref().is_some_and(|active| {
+                active.control_context_generation == target.project_generation
+                    && active.revision >= target.activation_floor
+                    && active.playback.sample_rate() == target.sample_rate_hz
+            })
+            && target.sample_rate_hz == self.rate;
+        let outcome = if let Some(capture) = self.spectrum_capture.as_mut() {
+            if valid {
+                let stamp = SpectrumStamp {
+                    target: target.token,
+                    generation: target.project_generation,
+                    sample_rate_hz: target.sample_rate_hz,
+                    applied_revision: self.active.as_ref().map_or(0, |active| active.revision),
+                };
+                Some(capture.submit_at(
+                    stamp,
+                    &self.spectrum_stage.frames[..self.spectrum_stage.expected],
+                    captured_start,
+                ))
+            } else {
+                Some(capture.skip())
+            }
+        } else {
+            None
+        };
+        self.spectrum_stage.clear();
+        outcome
     }
 
     fn publish_active_routes(&mut self, force: bool) {
@@ -1207,6 +1429,502 @@ impl Callback {
 mod tests {
     use super::*;
     use std::sync::{Barrier, Weak};
+
+    fn spectrum_test_target(
+        owner: hex_engine::ProcessorChainOwner,
+        project_generation: u64,
+        activation_floor: u64,
+        sample_rate_hz: u32,
+    ) -> spectrum_target::SpectrumTarget {
+        spectrum_target::SpectrumTarget {
+            token: crate::spectrum_worker::SpectrumTargetId(1),
+            identity: PostNodeIdentity::new(
+                owner,
+                11,
+                hex_engine::DeviceTypeId::from_static("hex.eq8"),
+            ),
+            project_generation,
+            activation_floor,
+            sample_rate_hz,
+        }
+    }
+
+    fn spectrum_eq8_graph() -> (Playback, PostNodeIdentity) {
+        use hex_lattice_contract::DeviceTypeId;
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SessionSnapshot, Snapshot, Tempo,
+            TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const DEVICE_ID: u64 = 11;
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const FRAMES: u64 = 512;
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.eq8"),
+        )
+        .unwrap();
+        let project = CanonicalProject::from_snapshot(Snapshot {
+            sample_rate: 48_000,
+            next_id: DEVICE_ID + 1,
+            assets: vec![AssetSnapshot {
+                id: ASSET_ID,
+                path: "analyzer-test.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: FRAMES,
+                playback_frames: FRAMES,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            }],
+            tracks: vec![TrackSnapshot {
+                id: TRACK_ID,
+                name: "analyzer fixture".into(),
+                gain: 1.0,
+                balance: 0.0,
+                muted: false,
+                soloed: false,
+                devices: vec![DeviceSnapshot {
+                    id: DEVICE_ID,
+                    bypassed: false,
+                    state,
+                }],
+                instrument: None,
+                instrument_position: None,
+                content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    id: CLIP_ID,
+                    asset: ASSET_ID,
+                    start: 0,
+                    duration: FRAMES,
+                    source_offset: 0,
+                    source_length: FRAMES,
+                    looping: true,
+                    source_phase: 0,
+                    fade: ClipFade::neutral(FRAMES).unwrap(),
+                }]),
+                sends: Vec::new(),
+            }],
+            return_tracks: Vec::<ReturnTrackSnapshot>::new(),
+            session: SessionSnapshot::default(),
+            loop_region: None,
+            master_gain: 1.0,
+            tempo_points: vec![TempoPoint::new(hex_project::BeatTime::ZERO, Tempo::DEFAULT)],
+            meter_points: vec![MeterPoint::new(
+                hex_project::BeatTime::ZERO,
+                hex_project::Meter::COMMON_TIME,
+            )],
+        })
+        .unwrap();
+        let asset = project.assets().next().unwrap().id();
+        let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize]).unwrap();
+        let media = [(asset, audio)].into_iter().collect();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        (
+            playback,
+            PostNodeIdentity::new(
+                hex_engine::ProcessorChainOwner::Track(TRACK_ID),
+                DEVICE_ID,
+                DeviceTypeId::from_static("hex.eq8"),
+            ),
+        )
+    }
+
+    fn spectrum_test_channel() -> (
+        Control,
+        Callback,
+        crate::spectrum_worker::SpectrumReader,
+        crate::spectrum_worker::SpectrumReaper,
+    ) {
+        let stamp = SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 48_000,
+            applied_revision: 0,
+        };
+        let (capture, reader, reaper) =
+            crate::spectrum_worker::spawn_spectrum_worker(stamp).unwrap();
+        let (control, callback) = channel_with_spectrum(48_000, Some(capture)).unwrap();
+        (control, callback, reader, reaper)
+    }
+
+    fn shutdown_spectrum_test_channel(
+        mut control: Control,
+        mut callback: Callback,
+        reaper: crate::spectrum_worker::SpectrumReaper,
+    ) {
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+        drop(callback);
+        drop(control);
+        reaper.shutdown_and_join().unwrap();
+    }
+
+    #[test]
+    fn spectrum_stage_accumulates_exact_offsets_and_rejects_overlap_or_wrong_owner() {
+        let target = spectrum_test_target(hex_engine::ProcessorChainOwner::Track(3), 0, 1, 48_000);
+        let mut stage = SpectrumStage::default();
+        stage.begin(target, 1, 4);
+        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
+        let wrong_owner =
+            spectrum_test_target(hex_engine::ProcessorChainOwner::Return(3), 0, 1, 48_000);
+        stage.observe(wrong_owner.identity, 2, &[[0.8, 0.9]]);
+        assert!(!stage.complete());
+        stage.observe(target.identity, 2, &[[0.5, 0.6], [0.7, 0.8]]);
+        assert!(stage.complete());
+        assert_eq!(
+            stage.frames[..4],
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]
+        );
+
+        stage.begin(target, 2, 4);
+        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
+        stage.observe(target.identity, 1, &[[0.5, 0.6]]);
+        assert!(!stage.complete());
+
+        stage.begin(target, 3, 4);
+        stage.observe(target.identity, usize::MAX, &[[0.1, 0.2]]);
+        assert!(!stage.complete());
+    }
+
+    #[test]
+    fn existing_publication_methods_use_control_context_generation_zero() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(0)
+        );
+        control
+            .publish_with_policy(graph().0, PublicationPolicy::InstallFreshRuntime)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(0)
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn analyzer_waits_for_exact_publication_generation_and_activation_floor() {
+        let (mut control, mut callback, _reader, reaper) = spectrum_test_channel();
+        let generation_a = 41;
+        let generation_b = 42;
+        let (playback_a, identity) = spectrum_eq8_graph();
+        let revision_a = control
+            .publish_with_policy_and_context_generation(
+                playback_a,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_a,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_a)
+        );
+
+        let target_a = spectrum_test_target(identity.owner, generation_a, revision_a, 48_000);
+        control
+            .spectrum_target
+            .select(identity, generation_a, revision_a, 48_000)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_a));
+
+        let mut output = [[0.0; 2]; 16];
+        callback.render(&mut output).unwrap();
+        assert!(callback.spectrum_stage.complete());
+
+        let (playback_b, identity_b) = spectrum_eq8_graph();
+        assert_eq!(identity_b, identity);
+        let revision_b = control
+            .publish_with_policy_and_context_generation(
+                playback_b,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_b,
+            )
+            .unwrap();
+        assert!(revision_b > target_a.activation_floor);
+        callback.begin_block();
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_b)
+        );
+
+        // A project can switch after render but before the adapter submits its
+        // block. The final admission check must reject the old project's tap.
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
+        );
+
+        let (target_b, _) = control
+            .spectrum_target
+            .select(identity, generation_b, revision_b + 1, 48_000)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_b));
+        callback.render(&mut output).unwrap();
+        assert!(
+            !callback.spectrum_stage.valid,
+            "activation floor is not reached"
+        );
+        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 1 })
+        );
+
+        let (playback_c, identity_c) = spectrum_eq8_graph();
+        assert_eq!(identity_c, identity);
+        let revision_c = control
+            .publish_with_policy_and_context_generation(
+                playback_c,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_b,
+            )
+            .unwrap();
+        assert_eq!(revision_c, revision_b + 1);
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert!(callback.spectrum_stage.complete());
+        assert!(matches!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 2 })
+                | Some(crate::spectrum_worker::CaptureOutcome::QueueFull { sequence: 2 })
+        ));
+
+        // A later ordinary publication in the same project must keep the
+        // selected token and its original lower-bound activation revision.
+        let revision_d = control
+            .publish_with_policy_and_context_generation(
+                spectrum_eq8_graph().0,
+                PublicationPolicy::InheritRuntime,
+                generation_b,
+            )
+            .unwrap();
+        assert!(revision_d > revision_c);
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_b));
+        callback.render(&mut output).unwrap();
+        assert!(matches!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 3 })
+                | Some(crate::spectrum_worker::CaptureOutcome::QueueFull { sequence: 3 })
+        ));
+
+        let (target_wrong_rate, _) = control
+            .spectrum_target
+            .select(identity, generation_b, revision_d, 44_100)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_wrong_rate));
+        callback.render(&mut output).unwrap();
+        assert!(!callback.spectrum_stage.valid);
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 4 })
+        );
+        shutdown_spectrum_test_channel(control, callback, reaper);
+    }
+
+    #[test]
+    fn generation_context_survives_full_queue_retry_and_deferred_handoff() {
+        let (mut control, mut callback, _reader, reaper) = spectrum_test_channel();
+        let generation_a = 71;
+        let generation_b = 72;
+        let (playback_a, identity) = spectrum_eq8_graph();
+        let revision_a = control
+            .publish_with_policy_and_context_generation(
+                playback_a,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_a,
+            )
+            .unwrap();
+        let rejected = control
+            .publish_with_policy_and_context_generation(
+                spectrum_eq8_graph().0,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_b,
+            )
+            .unwrap_err();
+        assert_eq!(rejected.reason, "playback publication already pending");
+        assert_eq!(control.revision, revision_a);
+
+        let (target_b, _) = control
+            .spectrum_target
+            .select(identity, generation_b, revision_a + 1, 48_000)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_b));
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_a)
+        );
+        let mut output = [[0.0; 2]; 16];
+        callback.render(&mut output).unwrap();
+        assert!(!callback.spectrum_stage.valid);
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
+        );
+
+        control
+            .publish_with_policy_and_context_generation(
+                rejected.playback,
+                PublicationPolicy::InstallFreshRuntime,
+                generation_b,
+            )
+            .unwrap();
+        callback.test_transient_handoff_refusals = 1;
+        callback.begin_block();
+        assert_eq!(
+            callback
+                .deferred
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_b)
+        );
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_a)
+        );
+        callback.render(&mut output).unwrap();
+        assert!(!callback.spectrum_stage.valid);
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 1 })
+        );
+
+        callback.begin_block();
+        assert!(callback.deferred.is_none());
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(generation_b)
+        );
+        callback.render(&mut output).unwrap();
+        assert!(callback.spectrum_stage.complete());
+        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert!(matches!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 2 })
+                | Some(crate::spectrum_worker::CaptureOutcome::QueueFull { sequence: 2 })
+        ));
+        shutdown_spectrum_test_channel(control, callback, reaper);
+    }
+
+    #[test]
+    fn selected_target_is_rejected_when_project_switches_at_block_boundary() {
+        let (mut control, mut callback, _reader, reaper) = spectrum_test_channel();
+        let (playback_a, identity) = spectrum_eq8_graph();
+        control
+            .publish_with_policy_and_context_generation(
+                playback_a,
+                PublicationPolicy::InstallFreshRuntime,
+                0,
+            )
+            .unwrap();
+        callback.begin_block();
+        let (target_a, _) = control
+            .spectrum_target
+            .select(identity, 0, 1, 48_000)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_a));
+
+        let after_target_selection = Arc::new(Barrier::new(2));
+        callback.test_after_spectrum_target_boundary = Some(Arc::clone(&after_target_selection));
+        std::thread::scope(|scope| {
+            let callback_thread = scope.spawn(|| callback.begin_block());
+            after_target_selection.wait();
+            let (playback_b, identity_b) = spectrum_eq8_graph();
+            assert_eq!(identity_b, identity);
+            let revision_b = control
+                .publish_with_policy_and_context_generation(
+                    playback_b,
+                    PublicationPolicy::InstallFreshRuntime,
+                    1,
+                )
+                .unwrap();
+            after_target_selection.wait();
+            callback_thread.join().unwrap();
+            assert_eq!(revision_b, 2);
+        });
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .map(|publication| publication.control_context_generation),
+            Some(1)
+        );
+        let mut output = [[0.0; 2]; 8];
+        assert_eq!(callback.spectrum_target.current(), Some(target_a));
+        assert_eq!(
+            callback.spectrum_target.current(),
+            control.spectrum_target.desired()
+        );
+        callback.render(&mut output).unwrap();
+        assert!(!callback.spectrum_stage.valid);
+        assert_eq!(callback.spectrum_stage.target, Some(target_a));
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
+        );
+
+        let (target_b, _) = control
+            .spectrum_target
+            .select(identity, 1, 2, 48_000)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.spectrum_target.current(), Some(target_b));
+        assert_eq!(target_b.project_generation, 1);
+        callback.render(&mut output).unwrap();
+        assert!(callback.spectrum_stage.complete());
+        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert!(matches!(
+            callback.finish_spectrum_block(Instant::now(), true),
+            Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 1 })
+                | Some(crate::spectrum_worker::CaptureOutcome::QueueFull { sequence: 1 })
+        ));
+        shutdown_spectrum_test_channel(control, callback, reaper);
+    }
 
     fn assert_fresh_fence_rejection(control: &mut Control, expected_revision: u64) {
         assert_eq!(
@@ -1406,6 +2124,7 @@ mod tests {
             .publications
             .push(Publication {
                 revision: 99,
+                control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 playback: Box::new(graph().0),
@@ -1741,6 +2460,7 @@ mod tests {
                 .retired
                 .push(Publication {
                     revision,
+                    control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
@@ -2018,6 +2738,7 @@ mod tests {
         let (playback, weak_revision, _, _) = session_audio_graph();
         callback.held_retirement = Some(Publication {
             revision: 1,
+            control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback),
@@ -2130,6 +2851,7 @@ mod tests {
                     .retired
                     .push(Publication {
                         revision,
+                        control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -2202,6 +2924,7 @@ mod tests {
                     .retired
                     .push(Publication {
                         revision,
+                        control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -2213,6 +2936,7 @@ mod tests {
         let (held, held_weak) = graph();
         callback.held_retirement = Some(Publication {
             revision: 4,
+            control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held),
@@ -2358,6 +3082,7 @@ mod tests {
                 .publications
                 .push(Publication {
                     revision: 3,
+                    control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(queued),

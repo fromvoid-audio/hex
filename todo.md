@@ -1728,3 +1728,19 @@ native visual acceptance remain pending. See [Operator shell context contract]
   partition invariance, superseded switches and disable/mode/reset cancellation.
 - Parent Pulse2253 still owns the headphone UI, callback lease/cancellation and
   user listening acceptance; this prerequisite does not expose a control.
+
+
+### 11 october 2026 — pulse2250: integrated eq8 output spectrum
+
+- Added typed owner/device post-node observation, transactional fixed-size capture,
+  bounded analysis worker and selected EQ8 spectrum overlay behind the response curve.
+- Analyzer target cancellation handles hidden panel/clip tab, focus/type/removal,
+  same-ID project reopen and backend reset; ordinary parameter revisions retain the
+  rolling window. Queue races/exhaustion and original capture-time staleness have
+  targeted regressions.
+- Actual publication generation/rate/revision fences cover reused IDs, deferred
+  admission and same-project updates; registered callback probes report zero total/net
+  allocations. Release capture overhead and its unpaced/backpressure/environment
+  limits are recorded in docs/performance.md.
+- Native spectrum display/input/listening, paced throughput and physical device
+  deadlines remain for user validation; final-source full local CI is the merge gate.

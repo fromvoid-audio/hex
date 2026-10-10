@@ -51,6 +51,18 @@ pub(super) fn render(
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
     retire_removed_eq8_graphs(view, cx, &alive);
+    if let Some(audio) = view.audio.as_mut()
+        && let Some(target) = audio.control.spectrum_target.desired()
+        && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
+        && !devices.iter().any(|device| {
+            device.id().value() == target.identity.device_id
+                && device.state().type_id() == target.identity.device_type
+                && target.identity.device_type.as_str() == Ok("hex.eq8")
+        })
+    {
+        let _ = audio.control.spectrum_target.clear();
+        view.device_panel.spectrum_result = None;
+    }
     view.device_panel
         .pending_values
         .retain(|key, _| alive.contains(&key.device));
@@ -152,7 +164,9 @@ pub(super) fn render(
             }),
         );
     for (index, device) in devices.iter().enumerate() {
-        chain = chain.child(render_return_effect(view, cx, &devices, index, device));
+        chain = chain.child(render_return_effect(
+            view, cx, return_id, &devices, index, device,
+        ));
     }
     chain = chain.child(
         div()
@@ -170,6 +184,7 @@ pub(super) fn render(
 fn render_return_effect(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
+    return_id: hex_project::ReturnId,
     devices: &[hex_project::Device],
     index: usize,
     device: &hex_project::Device,
@@ -283,6 +298,7 @@ fn render_return_effect(
                     view,
                     cx,
                     id,
+                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
                     device.state(),
                     device_view,
                     view.state

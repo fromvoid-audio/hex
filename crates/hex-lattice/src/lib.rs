@@ -547,6 +547,19 @@ impl NativeRuntimeChain {
         Self::process_entries(&mut self.entries, frames);
     }
 
+    /// Process the full chain while observing each entry's output in order.
+    /// The observer borrows the current audio block and must not retain it.
+    /// This is intended for bounded, allocation-free diagnostics such as an
+    /// analyzer tap; musical behavior remains unchanged.
+    pub fn process_block_observed(
+        &mut self,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
+    ) {
+        Self::process_entries_observed(&mut self.entries, frames, frame_offset, observer);
+    }
+
     /// Process a control-prevalidated effect segment without ending the
     /// surrounding transactional block. The range indexes the prepared effect
     /// order; callers must begin once and commit only after the full render block.
@@ -563,26 +576,67 @@ impl NativeRuntimeChain {
         Ok(())
     }
 
+    /// Process a prepared segment and observe each matching post-node signal.
+    /// The callback receives the stable device ID and a borrowed view of the
+    /// rendered segment. It must do bounded, nonblocking work and cannot retain
+    /// the samples after returning.
+    pub fn process_range_observed(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
+    ) -> Result<(), DeviceContractError> {
+        let entries = self
+            .entries
+            .get_mut(range)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        Self::process_entries_observed(entries, frames, frame_offset, observer);
+        Ok(())
+    }
+
     fn process_entries(entries: &mut [RuntimeEntry], frames: &mut [StereoFrame]) {
         for entry in entries {
-            if entry.bypassed {
-                if let Some(runtime) = entry.scratch.as_mut() {
-                    if entry.matrix.is_identity() {
-                        runtime.process_bypassed_block(frames);
-                    } else {
-                        for frame in frames.iter_mut() {
-                            let audible = *frame;
-                            let mut internal = entry.matrix.apply(audible);
-                            runtime.process_bypassed_block(std::slice::from_mut(&mut internal));
-                            *frame = audible;
-                        }
+            Self::process_entry(entry, frames);
+        }
+    }
+
+    fn process_entries_observed(
+        entries: &mut [RuntimeEntry],
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
+    ) {
+        for entry in entries {
+            Self::process_entry(entry, frames);
+            observer(
+                entry.owner,
+                entry.device_id,
+                entry.device_type,
+                frame_offset,
+                frames,
+            );
+        }
+    }
+
+    fn process_entry(entry: &mut RuntimeEntry, frames: &mut [StereoFrame]) {
+        if entry.bypassed {
+            if let Some(runtime) = entry.scratch.as_mut() {
+                if entry.matrix.is_identity() {
+                    runtime.process_bypassed_block(frames);
+                } else {
+                    for frame in frames.iter_mut() {
+                        let audible = *frame;
+                        let mut internal = entry.matrix.apply(audible);
+                        runtime.process_bypassed_block(std::slice::from_mut(&mut internal));
+                        *frame = audible;
                     }
                 }
-            } else {
-                entry.matrix.apply_block(frames);
-                if let Some(runtime) = entry.scratch.as_mut() {
-                    runtime.process_block(frames);
-                }
+            }
+        } else {
+            entry.matrix.apply_block(frames);
+            if let Some(runtime) = entry.scratch.as_mut() {
+                runtime.process_block(frames);
             }
         }
     }

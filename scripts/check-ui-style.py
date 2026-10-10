@@ -48,7 +48,7 @@ widgets = (
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
-    'control(', 'selected_value)', 'input_heading)', 'output_heading)', 'polarity)',
+    'control(', 'spectrum_toggle(', 'selected_value)', 'input_heading)', 'output_heading)', 'polarity)',
     'channel)', 'dial)', 'mono)', 'bass)', 'cutoff_row)', 'audition)', 'input)',
     'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
 )

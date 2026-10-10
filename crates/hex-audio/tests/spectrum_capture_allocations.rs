@@ -15,7 +15,7 @@ fn bounded_spectrum_capture_push_is_allocation_and_deallocation_free() {
         sample_rate_hz: 48_000,
         applied_revision: 1,
     };
-    let (mut capture, worker) = spawn_spectrum_worker(stamp).expect("valid test worker");
+    let (mut capture, _reader, reaper) = spawn_spectrum_worker(stamp).expect("valid test worker");
     let frames = [[0.25, -0.25]; 256];
     let mut outcome = None;
     let measured = measure(|| {
@@ -33,8 +33,9 @@ fn bounded_spectrum_capture_push_is_allocation_and_deallocation_free() {
         "capture push changed net allocation bytes"
     );
 
-    worker
-        .shutdown_and_join(capture)
-        .expect("control-side capture reclamation and worker join");
+    drop(capture);
+    reaper
+        .shutdown_and_join()
+        .expect("worker join after callback-side capture reclamation");
     assert_eq!(outcome, Some(CaptureOutcome::Queued { sequence: 0 }));
 }
