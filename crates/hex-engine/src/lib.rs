@@ -692,6 +692,12 @@ impl Track {
         hex_lattice::NativeRuntimeChain::new(instances)
     }
 
+    pub(crate) fn device_runtime_storage_preflight_bytes(&self) -> Option<usize> {
+        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_instances(
+            &self.device_chain,
+        )
+    }
+
     pub(crate) fn with_sends(mut self, sends: Vec<CompiledSend>) -> Self {
         self.sends = sends;
         if !self.sends.is_empty() {
