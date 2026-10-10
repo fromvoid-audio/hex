@@ -2,7 +2,7 @@
 
 ## bounded kernel — Pulse2287
 
-`hex-audio::spectrum` provides original observational analysis for the planned
+`hex-audio::spectrum` provides original observational analysis for the
 EQ8 output analyzer (Pulse2250). It is backend telemetry, separate from native
 musical device processing. A separate reusable crate is unnecessary while this
 backend is its only consumer. The kernel adds no callback capture, worker, UI,
@@ -27,15 +27,15 @@ Live analyzer match.
 
 Analysis reuses fixed boxed f64 workspace and fixed output arrays. All finite
 f32 input magnitudes remain within f64 transform/power range. Inspection shows
-no per-analysis heap operation; callback integration has not yet been measured.
+no per-analysis heap operation; integrated callback probes are described below.
 `reset` clears transform scratch; assembling a fresh rolling window, gap
 handling, cadence and result freshness belong to Pulse2288.
 
 Focused regression tests cover frequency/gain, silence, anti-phase stereo,
 rate endpoints, reset and malformed input followed by valid analysis. Final
 exact-source full local CI, PR review and merge evidence live in Pulse2287.
-Live post-node capture, accepted-render publication, retirement, callback
-overhead and native visual/listening acceptance remain Pulse2250.
+Pulse2250 owns live post-node integration and its separate native
+visual/listening acceptance.
 
 ## bounded capture worker — Pulse2288
 
@@ -69,7 +69,7 @@ callback-owned producer, joins the worker reaper, then releases the output
 lease. Failed pauses retain all three. Dropping the reaper requests exit but
 does not join.
 
-Nine deterministic worker tests cover cadence, changing context/revision, gaps,
+Deterministic worker tests cover cadence, changing context/revision, gaps,
 malformed/rate input, exhaustion, idle freshness and lifecycle. An opt-in capture
 probe asserts zero total allocation count/bytes and zero signed net count/bytes,
 with construction and reclamation outside measurement. It tests submission, not
@@ -84,7 +84,13 @@ only current graph owners are observed, never retired tails. The callback stages
 at most 256 frames with exact render offsets, publishes only complete finite
 final-output blocks, and marks failed or rolled-back renders as sequence gaps.
 With no active analyzer or before the selected project publication reaches its
-activation revision, playback uses the ordinary unobserved render path.
+activation revision and exact control-context generation, playback uses the
+ordinary unobserved render path. The immutable generation belongs to the audio
+publication; it is not a project schema field. Legacy publication APIs use
+generation zero, which remains valid. The UI supplies its pending project
+generation, and capture and submission both verify actual generation and rate
+against the active publication. Target epochs supplement this proof; reused
+device IDs after opening another project cannot satisfy it.
 
 The compact EQ8 panel toggle selects one exact EQ8 node. A bounded control queue
 and desired epoch invalidate stale callback targets immediately, including when

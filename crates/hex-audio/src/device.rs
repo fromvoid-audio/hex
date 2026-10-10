@@ -165,7 +165,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                         .iter()
                         .flatten()
                         .all(|sample| sample.is_finite());
-                callback.finish_spectrum_block(start, render_valid);
+                let _ = callback.finish_spectrum_block(start, render_valid);
                 if !render_valid {
                     block[..frames].fill([0.0; 2]);
                     status.render_fault.store(true, Relaxed);

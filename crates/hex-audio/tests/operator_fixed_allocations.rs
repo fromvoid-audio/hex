@@ -300,7 +300,11 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
     let (capture, _reader, reaper) = spawn_spectrum_worker(initial_stamp)?;
     let (mut control, mut callback) = prepared::channel_with_spectrum(48_000, Some(capture))?;
     let activation_floor = control
-        .publish(playback)
+        .publish_with_policy_and_context_generation(
+            playback,
+            hex_audio::prepared::PublicationPolicy::InheritRuntime,
+            1,
+        )
         .map_err(|_| "publication refused")?;
     let target_identity = hex_engine::PostNodeIdentity::new(
         hex_engine::ProcessorChainOwner::Track(track.value()),
@@ -332,16 +336,29 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
     }
     control
         .spectrum_target
-        .select(target_identity, 0, activation_floor, 48_000)
+        .select(target_identity, 1, activation_floor, 48_000)
         .map_err(|_| "spectrum target refused")?;
     let mut active_output = false;
+    let mut accepted_capture = false;
+    let mut rejected_capture = false;
     for block_index in 0..48 {
         oracle.render(&mut expected)?;
         let measured = measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("eq8 render");
             let finite = output.iter().flatten().all(|sample| sample.is_finite());
-            callback.finish_spectrum_block(Instant::now(), finite && block_index != 47);
+            match callback.finish_spectrum_block(Instant::now(), finite && block_index != 47) {
+                Some(
+                    hex_audio::spectrum_worker::CaptureOutcome::Queued { .. }
+                    | hex_audio::spectrum_worker::CaptureOutcome::QueueFull { .. },
+                ) => {
+                    accepted_capture = true;
+                }
+                Some(hex_audio::spectrum_worker::CaptureOutcome::Skipped { .. }) => {
+                    rejected_capture = true;
+                }
+                _ => {}
+            }
         });
         assert_eq!(
             output, expected,
@@ -356,6 +373,14 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
     assert!(
         active_output,
         "registered EQ8 path produced no audible frames"
+    );
+    assert!(
+        accepted_capture,
+        "matching EQ8 context never submitted output"
+    );
+    assert!(
+        rejected_capture,
+        "invalid output did not advance the capture gap"
     );
 
     control.request_shutdown();

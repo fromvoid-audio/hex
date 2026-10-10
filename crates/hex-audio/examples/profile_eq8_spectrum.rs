@@ -1,7 +1,7 @@
 //! Headless EQ8 output-tap timing comparison; no CPAL device or UI.
 use hex_audio::{
     prepared,
-    spectrum_worker::{SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker},
+    spectrum_worker::{CaptureOutcome, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker},
 };
 use hex_engine::{PreparedRevision, SineTable, playback::Playback};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -138,9 +138,11 @@ fn run(
         }
     };
     let publication = control
-        .publish(Playback::try_from_prepared_with_session(Arc::clone(
-            &revision,
-        ))?)
+        .publish_with_policy_and_context_generation(
+            Playback::try_from_prepared_with_session(Arc::clone(&revision))?,
+            prepared::PublicationPolicy::InheritRuntime,
+            1,
+        )
         .map_err(|error| format!("{error:?}"))?;
     control
         .command(hex_engine::PlaybackCommand::Play)
@@ -168,17 +170,29 @@ fn run(
     let mut expected = output;
     let mut checksum = 0_u64;
     let mut non_silent = false;
+    let mut queued = 0_usize;
+    let mut queue_full = 0_usize;
     callback.begin_block();
     for sample in 0..WARMUPS + samples {
         let start = Instant::now();
         callback.begin_block();
         callback.render(&mut output[..block])?;
-        callback.finish_spectrum_block(start, true);
+        let capture = callback.finish_spectrum_block(start, true);
         let nanos = start.elapsed().as_nanos();
         if sample >= WARMUPS {
             elapsed.push(nanos);
         }
 
+        match (mode, capture) {
+            (Mode::Enabled, Some(CaptureOutcome::Queued { .. })) => queued += 1,
+            (Mode::Enabled, Some(CaptureOutcome::QueueFull { .. })) => queue_full += 1,
+            (Mode::NoWorker | Mode::WorkerDisabled, None) => {}
+            _ => {
+                return Err(
+                    format!("{} unexpected capture outcome: {capture:?}", mode.name()).into(),
+                );
+            }
+        }
         oracle.render(&mut expected[..block])?;
         if output[..block] != expected[..block] {
             return Err(format!(
@@ -199,10 +213,20 @@ fn run(
     if !non_silent {
         return Err(format!("{} produced only silence", mode.name()).into());
     }
+    if matches!(mode, Mode::Enabled) && queued == 0 {
+        return Err("enabled analyzer never queued a real post-node capture".into());
+    }
     if let Some(reader) = reader.as_mut() {
         let _ = reader.try_latest();
     }
-    report(mode, block, samples, &mut elapsed, checksum);
+    report(
+        mode,
+        block,
+        samples,
+        &mut elapsed,
+        checksum,
+        [queued, queue_full],
+    );
 
     control.request_shutdown();
     callback.begin_block();
@@ -215,17 +239,26 @@ fn run(
     Ok(())
 }
 
-fn report(mode: Mode, block: usize, samples: usize, values: &mut [u128], checksum: u64) {
+fn report(
+    mode: Mode,
+    block: usize,
+    samples: usize,
+    values: &mut [u128],
+    checksum: u64,
+    captures: [usize; 2],
+) {
     values.sort_unstable();
     let percentile = |percent: usize| -> f64 {
         let index = (values.len() - 1) * percent / 100;
         values[index] as f64 / 1_000.0
     };
     println!(
-        "{{\"scenario\":\"{}\",\"rate_hz\":{RATE},\"block\":{block},\"warmups\":{WARMUPS},\"samples\":{samples},\"p50_us\":{:.3},\"p95_us\":{:.3},\"max_us\":{:.3},\"checksum\":{checksum}}}",
+        "{{\"scenario\":\"{}\",\"rate_hz\":{RATE},\"block\":{block},\"warmups\":{WARMUPS},\"samples\":{samples},\"p50_us\":{:.3},\"p95_us\":{:.3},\"max_us\":{:.3},\"checksum\":{checksum},\"queued_captures\":{},\"queue_full_captures\":{}}}",
         mode.name(),
         percentile(50),
         percentile(95),
         values[values.len() - 1] as f64 / 1_000.0,
+        captures[0],
+        captures[1],
     );
 }

@@ -155,7 +155,11 @@ impl EditorView {
             } else {
                 PublicationPolicy::InheritRuntime
             };
-            match audio.control.publish_with_policy(pending.playback, policy) {
+            match audio.control.publish_with_policy_and_context_generation(
+                pending.playback,
+                policy,
+                pending.project_generation,
+            ) {
                 Ok(audio_revision) => {
                     let project_revision = super::audio_admission::ProjectRevision {
                         generation: pending.project_generation,

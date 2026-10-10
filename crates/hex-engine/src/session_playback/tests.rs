@@ -1233,6 +1233,113 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
 }
 
 #[test]
+fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
+    use crate::{PlaybackAction, SessionPlaybackCommand};
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let eq8 = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.eq8"),
+    )
+    .unwrap();
+    let make_return_project = |bypassed: bool| {
+        let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+        snapshot.tracks[0].sends.push(SendLevelSnapshot {
+            return_track: 70,
+            gain: 0.5,
+        });
+        snapshot.return_tracks.push(ReturnTrackSnapshot {
+            id: 70,
+            name: "return".into(),
+            gain: 1.0,
+            muted: false,
+            devices: vec![DeviceSnapshot {
+                id: 80,
+                bypassed,
+                state: eq8.clone(),
+            }],
+        });
+        snapshot.next_id = snapshot.next_id.max(81);
+        legacy_project_from_snapshot(snapshot).unwrap()
+    };
+    let return_identity = crate::PostNodeIdentity::new(
+        hex_lattice::ProcessorChainOwner::Return(70),
+        80,
+        DeviceTypeId::from_static("hex.eq8"),
+    );
+
+    let render_return = |bypassed: bool| {
+        let project = make_return_project(bypassed);
+        let mut playback =
+            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
+                .unwrap();
+        playback.apply(PlaybackCommand::Play);
+        let mut output = [[0.0; 2]; 256];
+        let mut calls = Vec::new();
+        playback
+            .render_with_post_node_observer(
+                &mut output,
+                Some(&mut |identity, offset, frames| {
+                    calls.push((identity, offset, frames.len()));
+                }),
+            )
+            .unwrap();
+        calls
+    };
+
+    let active_return_calls = render_return(false);
+    assert!(
+        active_return_calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+    let bypassed_return_calls = render_return(true);
+    // A bypassed processor still owns a post-node boundary: the runtime
+    // advances its bypass state and exposes the dry signal at that point.
+    assert!(
+        bypassed_return_calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+
+    let project = make_return_project(false);
+    let clip = match project.session_cells()[0].content() {
+        hex_project::SessionCellContent::Midi(clip) => clip.id(),
+        _ => panic!("fixture session cell must be MIDI"),
+    };
+    let prepared = revision(&project, table);
+    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let mut calls = Vec::new();
+    playback
+        .render_with_post_node_observer(
+            &mut output,
+            Some(&mut |identity, offset, frames| {
+                calls.push((identity, offset, frames.len()));
+            }),
+        )
+        .unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|(identity, _, _)| *identity == return_identity)
+    );
+}
+
+#[test]
 fn removed_track_release_retains_its_original_device_matrix() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
