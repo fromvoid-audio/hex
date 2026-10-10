@@ -34,33 +34,30 @@ pub(super) fn graph(
     values: [f32; 6],
 ) -> Stateful<Div> {
     let key = GraphKey { device, operator };
-    if !view
-        .device_panel
+    view.device_panel
         .operator_envelope_graphs
-        .contains_key(&key)
-    {
-        let style = super::super::control_style();
-        let entity = cx.new(|graph_cx| {
-            let mut graph = ResponseGraph::new(
-                graph_cx,
-                format!("operator-envelope-{}-{operator}", device.value()),
-                style,
-            );
-            graph.set_editable(true, graph_cx);
-            graph
-        });
-        let subscription = cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
-            handle_event(view, key, *event, cx);
-        });
-        view.device_panel.operator_envelope_graphs.insert(
-            key,
+        .entry(key)
+        .or_insert_with(|| {
+            let style = super::super::control_style();
+            let entity = cx.new(|graph_cx| {
+                let mut graph = ResponseGraph::new(
+                    graph_cx,
+                    format!("operator-envelope-{}-{operator}", device.value()),
+                    style,
+                );
+                graph.set_editable(true, graph_cx);
+                graph
+            });
+            let subscription =
+                cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
+                    handle_event(view, key, *event, cx);
+                });
             GraphControl {
                 entity,
                 selected_node: 1,
                 _subscription: subscription,
-            },
-        );
-    }
+            }
+        });
     let window = view
         .device_panel
         .operator_envelope_gestures
