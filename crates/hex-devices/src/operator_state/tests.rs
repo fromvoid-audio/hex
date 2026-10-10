@@ -11,8 +11,8 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), 240);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 57);
+    assert_eq!(original.payload().len(), 288);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 69);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -104,7 +104,31 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
                     );
                 }
             }
-            ParameterKind::Bool => panic!("unexpected bool parameter"),
+            ParameterKind::Bool => {
+                for value in [false, true] {
+                    let changed = OPERATOR_METADATA
+                        .patch_parameter(&original, descriptor.id, ParameterValue::Bool(value))
+                        .expect("fixed toggle");
+                    assert_eq!(
+                        OPERATOR_METADATA
+                            .read_parameter(&changed, descriptor.id)
+                            .expect("read toggle"),
+                        ParameterValue::Bool(value)
+                    );
+                    assert_eq!(
+                        OperatorSettings::from_state(&changed)
+                            .expect("decode")
+                            .to_state()
+                            .expect("encode"),
+                        changed
+                    );
+                }
+                assert!(
+                    OPERATOR_METADATA
+                        .patch_parameter(&original, descriptor.id, ParameterValue::Choice(0))
+                        .is_err()
+                );
+            }
         }
     }
     assert_eq!(
@@ -498,7 +522,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
             1,
             original.payload().to_vec(),
         ),
-        (OPERATOR_TYPE_ID, 3, original.payload().to_vec()),
+        (OPERATOR_TYPE_ID, 4, original.payload().to_vec()),
         (OPERATOR_TYPE_ID, 1, original.payload()[..220].to_vec()),
         (OPERATOR_TYPE_ID, 2, vec![0; 228]),
     ] {
@@ -538,7 +562,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(62),
+        ParameterId::from_static(74),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -706,7 +730,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 57);
+    assert_eq!(definition.descriptors().len(), 69);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");

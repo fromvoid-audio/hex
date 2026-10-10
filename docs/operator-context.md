@@ -3,7 +3,7 @@
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`
-occupies592 bytes and owns no per-context allocations. Each
+occupies688 bytes and owns no per-context allocations. Each
 `PreparedOperatorNote` is48 bytes, with four phase increments, one velocity
 coefficient and four packed cap indices. The caller must sample a note against
 its preparing configuration. Native context identity/ownership belongs to
@@ -23,10 +23,10 @@ the prior sampling route and exact PCM. Non-sine shapes use a process-wide bank
 whose table data is245,880 bytes; the fixed OnceLock cell occupies24 bytes on this64-bit target, including
 the16-byte Box descriptor (245,904 bytes total before allocator bookkeeping). Each
 non-sine context holds only a static reference. For100 notes sharing one
-configuration, the shared configuration and compact-note storage is5392 bytes; this excludes
+configuration, the shared configuration and compact-note storage is5488 bytes; this excludes
 host note records, banks, references and graph/retirement storage.
 
-All66 device tests pass. Exact-bit comparisons cover arbitrary/reverse acyclic
+The current77 device tests pass. Exact-bit comparisons cover arbitrary/reverse acyclic
 routes, three rates, pitch/velocity pairs, zero/early/long gates, release ends,
 large ages and reverse query order. Independent envelope/FM oracles remain
 passing; the control codec's four-operator PCM oracle also exercises the compact
@@ -54,10 +54,16 @@ Reproduce with `cargo run --release -p hex-devices --example profile_fm4` and
 Pulse2172 adds the registered shared-context adapter and exercises it through
 Arrangement, Session, callback and export paths; Pulse2183 adds registered
 mixed-waveform rendering and generic choice/state migration. The current shared
-configuration is592 bytes and compact notes are48 bytes. The standalone timing
+configuration is688 bytes and compact notes are48 bytes. The standalone timing
 measurements above predate the waveform work and must not be treated as its
 performance evidence. Mutable feedback, FM sideband aliasing quality, remaining
 Operator behavior and native listening remain open. See the
 [waveform contract](operator-waveforms.md) for correctness evidence and the
 reproducible profile command. Full local CI is recorded in the focused PR and
 Pulse ticket.
+
+Pulse2205 adds four control-prepared tuning modes to the shared configuration.
+The measured arm64 context/note sizes are688/48 bytes. Fixed Hz and multiplier
+are converted to phase steps before playback; callback sampling and the shared
+eight-word note payload remain unchanged. Earlier timings above predate fixed
+tuning and do not establish its performance.

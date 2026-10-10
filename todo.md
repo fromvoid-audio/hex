@@ -1069,3 +1069,12 @@ crate tests/Clippy pass. An ignored release profile now reuses the 100-track
 mutable fixture for both linear and interactive preroll; the interactive profile
 uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Captured release timing
 evidence and its limits are recorded in [performance](docs/performance.md).
+
+## 10 October2026 — Pulse2205 Operator fixed tuning
+
+Original per-oscillator Fixed mode, frequency and multiplier now use the generic
+Lattice metadata/state contract. Version3 preserves old prefixes, uses288 bytes
+and69 descriptors; shared context/note sizes are688/48 bytes. Independent PCM,
+canonical refusal/history, opaque persistence and callback allocation checks pass.
+See [the contract](docs/operator-fixed-tuning.md). Full local CI, focused PR and
+combined native review/listening are pending; no full Operator parity claim.

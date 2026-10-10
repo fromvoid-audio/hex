@@ -9,6 +9,43 @@ const RELEASE_FRAMES: u64 = 240;
 const LOOP_FRAMES: u64 = 12_000;
 const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
 
+#[test]
+fn fixed_operator_is_rendered_at_effective_frequency_by_the_shared_project_path() {
+    let mut fixture = fixture();
+    let mut state = operator_state(1.0);
+    for (id, value) in [
+        (63, ParameterValue::Float(125.0)),
+        (64, ParameterValue::Float(2.0)),
+        (62, ParameterValue::Bool(true)),
+    ] {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            &state,
+            ParameterId::from_static(id),
+            value,
+        )
+        .expect("fixed patch");
+    }
+    fixture
+        .editor
+        .execute(Command::ReplaceDeviceState {
+            device: fixture.instrument,
+            state,
+        })
+        .expect("fixed state");
+    let revision = prepared(&fixture, None);
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).expect("playback");
+    playback.apply(hex_engine::playback::PlaybackCommand::Play);
+    let mut frames = [[0.0; 2]; 1600];
+    playback.render(&mut frames).expect("fixed render");
+    for (index, frame) in frames.iter().enumerate() {
+        let expected = (TAU * 250.0 * index as f64 / 48_000.0).sin() as f32;
+        assert!((frame[0] - expected).abs() < 0.000_02, "frame{index}");
+        assert_eq!(frame[0], frame[1]);
+    }
+}
+
 fn beat(numerator: u64, denominator: u64) -> BeatTime {
     BeatTime::from_ratio(numerator, denominator).expect("bounded test beat")
 }
@@ -184,7 +221,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
             .expect("Operator catalog entry")
             .parameters
             .len(),
-        57
+        69
     );
 
     let mut renderer = Renderer::new(revision.arrangement());
