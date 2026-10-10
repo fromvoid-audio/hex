@@ -50,6 +50,21 @@ discards older requests and preserves later admitted commands in FIFO order.
 Ordinary edits preserve transport through graph replacement. Opening a
 project stops at the start and clears pending UI transport/selection.
 
+Fresh candidates may opt into `InstallFreshRuntimeIfUnchanged` with a
+`FreshRuntimeFence` captured on the control side. Capture reads one coherent route
+header, then Acquire-loads the admitted-command ticket. At the callback's final
+pre-swap point, the fence must still match active revision (zero when empty), the
+active runtime's route-state generation, and the admitted ticket, with no pending
+priority Stop. A changed fence returns the candidate through normal retirement,
+reports a typed `runtime-fence-changed` rejection and clears the publication gate;
+it never clears a pending Stop. The normal command cut then affects the old graph.
+An action or Stop admitted after successful validation follows the accepted graph
+swap and therefore applies to the new graph. If retirement capacity is full, the
+candidate remains deferred while the previous graph continues, and is revalidated
+when a slot becomes available. The existing unconditional fresh and inherited
+handoffs are unchanged. This fence only protects audio runtime freshness; it does
+not replace the Session worker's project-generation/revision admission checks.
+
 Edited model revision and applied audio revision remain visibly distinct until
 the callback accepts a graph. Canonical session history commits after successful
 control-side compilation; later callback admission failure does not roll back the
