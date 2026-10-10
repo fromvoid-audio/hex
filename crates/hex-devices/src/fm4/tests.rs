@@ -70,6 +70,180 @@ fn note(oscillators: [Oscillator; 4], matrix: [[f64; 4]; 4], carriers: [f64; 4])
     .unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn previous_full_evaluation(
+    table: &SineTable,
+    sample_rate: u32,
+    pitch: u8,
+    velocity: u8,
+    oscillators: [Oscillator; 4],
+    routing: Routing,
+    envelope: Envelope,
+    age: u64,
+    gate: u64,
+) -> f32 {
+    let base_frequency = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+    let mut steps = [0_u64; 4];
+    let mut phases = [0_u64; 4];
+    for (index, oscillator) in oscillators.iter().enumerate() {
+        let frequency = base_frequency * oscillator.ratio;
+        steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
+        phases[index] = phase_from_turns(oscillator.phase_turns);
+    }
+    let mut signals = [0.0; 4];
+    for &target in &routing.order {
+        let modulation: f64 = signals
+            .iter()
+            .enumerate()
+            .map(|(source, signal)| signal * routing.modulation[source][target])
+            .sum();
+        let phase = steps[target]
+            .wrapping_mul(age)
+            .wrapping_add(phases[target])
+            .wrapping_add(phase_from_turns(modulation));
+        signals[target] = table.sample_phase(phase) as f64 * oscillators[target].level;
+    }
+    let output: f64 = signals
+        .iter()
+        .zip(routing.carriers)
+        .map(|(signal, weight)| signal * weight)
+        .sum();
+    let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
+    let amplitude = (PreparedEnvelope {
+        attack: frames(envelope.attack_seconds),
+        decay: frames(envelope.decay_seconds),
+        sustain: envelope.sustain,
+        release: frames(envelope.release_seconds),
+    })
+    .level(age, gate)
+        * (f64::from(velocity) / 127.0);
+    if amplitude == 0.0 {
+        return 0.0;
+    }
+    (output * amplitude) as f32
+}
+
+fn assert_matches_previous_full_evaluation(
+    oscillators: [Oscillator; 4],
+    matrix: [[f64; 4]; 4],
+    carriers: [f64; 4],
+    expected_audible: [bool; 4],
+) {
+    let sample_rate = 48_000;
+    let pitch = 61;
+    let envelope = Envelope::new(0.002, 0.03, 0.41, 0.025).unwrap();
+    let routing = Routing::new(matrix, carriers).unwrap();
+    let table = SineTable::new();
+    for velocity in [1, 91, 127] {
+        let prepared =
+            PreparedFm4::new(sample_rate, pitch, velocity, oscillators, routing, envelope).unwrap();
+        assert_eq!(prepared.levels.map(|level| level != 0.0), expected_audible);
+        let packed = prepared.into_analytic_note();
+        for gate in [0, 1, 37, 713, 2_147] {
+            for age in [0, 1, 37, 96, 712, 713, 714, 1_000, 2_147, 3_347] {
+                let previous = previous_full_evaluation(
+                    &table,
+                    sample_rate,
+                    pitch,
+                    velocity,
+                    oscillators,
+                    routing,
+                    envelope,
+                    age,
+                    gate,
+                );
+                assert_eq!(
+                    prepared.sample(&table, age, gate).to_bits(),
+                    previous.to_bits()
+                );
+                assert_eq!(packed.sample(age, gate)[0].to_bits(), previous.to_bits());
+                assert_eq!(packed.sample(age, gate)[1].to_bits(), previous.to_bits());
+            }
+        }
+    }
+}
+
+#[test]
+fn skips_only_non_audible_operator_ancestors_and_preserves_full_evaluation_bits() {
+    let oscillators = [
+        oscillator(1.0, 0.7, 0.13),
+        oscillator(2.0, 0.4, 0.21),
+        oscillator(3.0, 0.6, 0.07),
+        oscillator(4.0, 0.8, 0.19),
+    ];
+
+    // A single carrier leaves three unconnected oscillators inaudible.
+    assert_matches_previous_full_evaluation(
+        oscillators,
+        [[0.0; 4]; 4],
+        [1.0, 0.0, 0.0, 0.0],
+        [true, false, false, false],
+    );
+
+    // A serial chain retains every ancestor of its sole carrier.
+    let mut serial = [[0.0; 4]; 4];
+    serial[0][1] = 0.11;
+    serial[1][2] = -0.19;
+    serial[2][3] = 0.23;
+    assert_matches_previous_full_evaluation(oscillators, serial, [0.0, 0.0, 0.0, 1.0], [true; 4]);
+
+    // Multiple carriers retain each audible branch and preserve signed mixing.
+    assert_matches_previous_full_evaluation(
+        oscillators,
+        [[0.0; 4]; 4],
+        [0.75, -0.5, 0.25, -0.0],
+        [true, true, true, false],
+    );
+
+    // Both incoming branches of carrier 4 stay active; disconnected op 3 is skipped.
+    let mut branch = [[0.0; 4]; 4];
+    branch[0][3] = 0.31;
+    branch[1][3] = -0.17;
+    branch[2][1] = -0.0;
+    assert_matches_previous_full_evaluation(
+        oscillators,
+        branch,
+        [0.0, 0.0, 0.0, 0.8],
+        [true, true, false, true],
+    );
+
+    // A zero-level middle modulator cuts off its otherwise nonzero parent.
+    // Exercise both signed zeros while the serial path and carrier are active.
+    for middle_level in [0.0, -0.0] {
+        let mut silent_middle = oscillators;
+        silent_middle[1].level = middle_level;
+        let mut serial_to_carrier = [[0.0; 4]; 4];
+        serial_to_carrier[0][1] = 0.37;
+        serial_to_carrier[1][3] = -0.29;
+        assert_matches_previous_full_evaluation(
+            silent_middle,
+            serial_to_carrier,
+            [0.0, 0.0, 0.0, 0.8],
+            [false, false, false, true],
+        );
+    }
+
+    // Signed-zero carrier weights do not create an audible seed.
+    assert_matches_previous_full_evaluation(
+        oscillators,
+        [[0.0; 4]; 4],
+        [-0.0, 0.0, -0.0, 0.0],
+        [false; 4],
+    );
+}
+
+#[test]
+fn unreachable_oscillators_still_undergo_nyquist_validation() {
+    let oscillators = [
+        oscillator(1.0, 1.0, 0.0),
+        oscillator(2.0, 1.0, 0.0),
+        oscillator(3.0, 1.0, 0.0),
+        oscillator(128.0, 1.0, 0.0),
+    ];
+    let routing = Routing::new([[0.0; 4]; 4], [1.0, 0.0, 0.0, 0.0]).unwrap();
+    assert!(PreparedFm4::new(48_000, 69, 127, oscillators, routing, sustained()).is_err());
+}
+
 #[test]
 fn each_carrier_has_independent_frequency_level_and_phase() {
     let table = SineTable::new();

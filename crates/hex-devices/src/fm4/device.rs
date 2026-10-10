@@ -1,7 +1,7 @@
 //! Original generic state and instrument-definition adapter for the FM4 kernel.
 //!
-//! This definition is intentionally not admitted by the built-in instrument
-//! registry. Its version-1 payload is a bounded, exact little-endian sequence
+//! This built-in definition is admitted by the native instrument registry. Its
+//! version-1 payload is a bounded, exact little-endian sequence
 //! of 36 finite `f32` fields; preparation validates it through the standalone
 //! oscillator, routing and envelope constructors.
 use super::{Envelope, OPERATORS, Oscillator, PreparedFm4, Routing};

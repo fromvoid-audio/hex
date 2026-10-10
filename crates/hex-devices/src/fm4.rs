@@ -201,6 +201,16 @@ impl PreparedFm4 {
             phases[index] = phase_from_turns(oscillator.phase_turns);
             levels[index] = oscillator.level;
         }
+        // All oscillator frequencies and the complete authored graph are
+        // validated above/before construction. Only now remove operators that
+        // cannot contribute to a nonzero carrier. The existing prepared level
+        // slots encode the result, so the note ABI and PreparedFm4 stay fixed.
+        let audible = audible_operator_ancestors(&levels, &routing);
+        for (index, is_audible) in audible.into_iter().enumerate() {
+            if !is_audible {
+                levels[index] = 0.0;
+            }
+        }
         // Finite, validated times/rate guarantee bounded conversions and sums.
         let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
         Ok(Self {
@@ -267,6 +277,9 @@ impl PreparedFm4 {
         }
         let mut signals = [0.0; OPERATORS];
         for &target in &self.routing.order {
+            if self.levels[target] == 0.0 {
+                continue;
+            }
             let modulation: f64 = signals
                 .iter()
                 .enumerate()
@@ -285,6 +298,23 @@ impl PreparedFm4 {
             .sum();
         (output * amplitude) as f32
     }
+}
+
+fn audible_operator_ancestors(levels: &[f64; OPERATORS], routing: &Routing) -> [bool; OPERATORS] {
+    let mut audible = std::array::from_fn(|operator| {
+        routing.carriers[operator] != 0.0 && levels[operator] != 0.0
+    });
+    for &target in routing.order.iter().rev() {
+        if !audible[target] {
+            continue;
+        }
+        for source in 0..OPERATORS {
+            if levels[source] != 0.0 && routing.modulation[source][target] != 0.0 {
+                audible[source] = true;
+            }
+        }
+    }
+    audible
 }
 
 fn sample_fm4_note(
@@ -314,6 +344,10 @@ fn sample_fm4_note(
         if target >= OPERATORS {
             return [0.0; 2];
         }
+        let level = f64::from_bits(payload[8 + target]);
+        if level == 0.0 {
+            continue;
+        }
         let modulation: f64 = signals
             .iter()
             .enumerate()
@@ -325,8 +359,7 @@ fn sample_fm4_note(
             .wrapping_mul(age_frames)
             .wrapping_add(payload[4 + target])
             .wrapping_add(phase_from_turns(modulation));
-        signals[target] =
-            f64::from(table.sample_phase(phase)) * f64::from_bits(payload[8 + target]);
+        signals[target] = f64::from(table.sample_phase(phase)) * level;
     }
     let output: f64 = signals
         .iter()
