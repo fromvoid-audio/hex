@@ -1,5 +1,6 @@
 //! Prepared stateless tone generation for the original Hex sine instrument.
 pub mod utility;
+pub mod utility_filters;
 
 static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 1] =
     [&utility::UTILITY_DEFINITION];
