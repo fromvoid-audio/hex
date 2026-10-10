@@ -66,6 +66,8 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
+        self.tail_output_active.fill(false);
+        self.tail_output_scratch.fill(false);
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.reset();
         }
@@ -149,6 +151,8 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
+        self.tail_output_active.fill(false);
+        self.tail_output_scratch.fill(false);
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.reset();
         }
