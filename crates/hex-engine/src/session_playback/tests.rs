@@ -1827,6 +1827,97 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
 }
 
 #[test]
+fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_suffix() {
+    use hex_devices::eq8::parameter as eq8_parameter;
+    use hex_lattice::NativeDeviceDefinition;
+    use hex_lattice_contract::ParameterValue;
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let make_project = |gain_db: f32, q: f32, kind: u32| {
+        let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+        let mut state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+        )
+        .unwrap();
+        for parameter in [eq8_parameter::enabled(0, 0), eq8_parameter::enabled(1, 0)] {
+            state =
+                crate::patch_native_device_parameter(&state, parameter, ParameterValue::Bool(true))
+                    .unwrap();
+        }
+        for (parameter, value) in [
+            (eq8_parameter::gain(0, 0), ParameterValue::Float(gain_db)),
+            (eq8_parameter::q(0, 0), ParameterValue::Float(q)),
+            (eq8_parameter::kind(0, 0), ParameterValue::Choice(kind)),
+        ] {
+            state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
+        }
+        snapshot.tracks[0].devices.push(DeviceSnapshot {
+            id: 7,
+            bypassed: false,
+            state: state.clone(),
+        });
+        snapshot.next_id = snapshot.next_id.max(8);
+        (legacy_project_from_snapshot(snapshot).unwrap(), state)
+    };
+    let mut source_snapshot = project(0.5, 0, 8 << 32).snapshot();
+    source_snapshot.master_gain = 1.0;
+    let source_project = legacy_project_from_snapshot(source_snapshot).unwrap();
+    let mut source = SessionPlayback::new(revision(&source_project, Arc::clone(&table))).unwrap();
+    source.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let (old_project, old_state) = make_project(3.0, 1.0, 0);
+    let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let old_prepared = hex_devices::eq8::EQ8_DEFINITION
+        .prepare_processor(&old_state, 48_000)
+        .unwrap()
+        .unwrap();
+    let mut reference_runtime = old_prepared.create_runtime();
+    let mut input = [[0.0; 2]; 128];
+    let mut expected = input;
+    let mut output = input;
+    source.render(&mut input).unwrap();
+    expected.copy_from_slice(&input);
+    reference_runtime.process_block(&mut expected);
+    old.render(&mut output).unwrap();
+    assert_eq!(output, expected, "initial registered EQ8 PCM oracle");
+    assert!(!old.device_chains[0].committed_range_is_quiescent(0..1));
+
+    for (gain_db, q, kind) in [(6.0, 1.0, 0), (6.0, 2.0, 0), (6.0, 2.0, 1)] {
+        let (candidate_project, candidate_state) = make_project(gain_db, q, kind);
+        let mut candidate =
+            SessionPlayback::new(revision(&candidate_project, Arc::clone(&table))).unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
+        assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
+        let prepared = hex_devices::eq8::EQ8_DEFINITION
+            .prepare_processor(&candidate_state, 48_000)
+            .unwrap()
+            .unwrap();
+        let mut next_reference = prepared.create_runtime();
+        assert!(next_reference.can_retarget_parameters_from(reference_runtime.as_ref()));
+        next_reference.copy_history_from(reference_runtime.as_ref());
+        input.fill([0.0; 2]);
+        expected.fill([0.0; 2]);
+        output.fill([0.0; 2]);
+        source.render(&mut input).unwrap();
+        expected.copy_from_slice(&input);
+        next_reference.process_block(&mut expected);
+        candidate.render(&mut output).unwrap();
+        assert_eq!(output, expected, "retargeted EQ8 parameter PCM oracle");
+        assert!(
+            output
+                .iter()
+                .all(|frame| frame.iter().all(|sample| sample.is_finite()))
+        );
+        assert!(output.iter().any(|frame| frame[0].abs() > 1.0e-6));
+        reference_runtime = next_reference;
+        old = candidate;
+    }
+}
+
+#[test]
 fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();

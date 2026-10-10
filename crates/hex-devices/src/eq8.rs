@@ -787,6 +787,16 @@ impl NativeProcessorRuntime for Eq8Runtime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
+    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && self.mode == previous.mode
+                    && self.enabled_bands == previous.enabled_bands
+            })
+    }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             let _ = self.inherit_history_from(previous);

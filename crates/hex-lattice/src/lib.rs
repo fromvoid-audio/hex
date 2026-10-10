@@ -130,6 +130,15 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool;
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime);
+    /// Whether this candidate runtime can keep the previous runtime history
+    /// across an authored parameter change. Implementations must only return
+    /// true when the existing history remains meaningful and the new
+    /// configuration can transition without a reset. This does not authorize
+    /// transferring history across identity, routing, bypass, rate, or runtime
+    /// version changes; those are checked by `NativeRuntimeChain` first.
+    fn can_retarget_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
     fn as_any(&self) -> &dyn StdAny;
 }
 
@@ -374,6 +383,57 @@ impl NativeRuntimeChain {
                         }
                         _ => false,
                     }
+            })
+    }
+
+    /// Whether a same-position processor range can keep history across an
+    /// authored parameter change. Entry identity and processing topology must
+    /// remain exact; a changed configuration is accepted only when both
+    /// candidate twins explicitly support retargeting from the old committed
+    /// runtime. Empty ranges and malformed ranges are refused.
+    pub fn can_retarget_parameters_from_range(
+        &self,
+        previous: &Self,
+        range: std::ops::Range<usize>,
+    ) -> bool {
+        if range.start >= range.end
+            || range.end > self.entries.len()
+            || range.end > previous.entries.len()
+        {
+            return false;
+        }
+        self.entries[range.clone()]
+            .iter()
+            .zip(&previous.entries[range])
+            .all(|(candidate, old)| {
+                let stable_processing_identity = candidate.owner == old.owner
+                    && candidate.device_id == old.device_id
+                    && candidate.device_type == old.device_type
+                    && candidate.runtime_version == old.runtime_version
+                    && candidate.sample_rate == old.sample_rate
+                    && candidate.bypassed == old.bypassed
+                    && candidate.matrix == old.matrix;
+                if !stable_processing_identity {
+                    return false;
+                }
+                let configuration_matches = match (&candidate.configuration, &old.configuration) {
+                    (Some(candidate), Some(old)) => {
+                        std::sync::Arc::ptr_eq(candidate, old) || candidate == old
+                    }
+                    _ => false,
+                };
+                if configuration_matches {
+                    return true;
+                }
+                let (Some(candidate_primary), Some(candidate_scratch), Some(old_primary)) = (
+                    candidate.primary.as_deref(),
+                    candidate.scratch.as_deref(),
+                    old.primary.as_deref(),
+                ) else {
+                    return false;
+                };
+                candidate_primary.can_retarget_parameters_from(old_primary)
+                    && candidate_scratch.can_retarget_parameters_from(old_primary)
             })
     }
 
@@ -1240,6 +1300,260 @@ mod tests {
         assert!(
             !old.configuration_matches_range(&same_content, std::ops::Range { start: 1, end: 0 })
         );
+    }
+
+    struct RetargetPrepared {
+        allow: bool,
+        scratch_allow: bool,
+        version: u32,
+        runtime_count: std::sync::atomic::AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct RetargetRuntime {
+        allow: bool,
+    }
+
+    impl PreparedNativeProcessor for RetargetPrepared {
+        fn runtime_version(&self) -> u32 {
+            self.version
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<RetargetRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            let twin = self
+                .runtime_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::new(RetargetRuntime {
+                allow: if twin == 0 {
+                    self.allow
+                } else {
+                    self.scratch_allow
+                },
+            })
+        }
+    }
+
+    impl NativeProcessorRuntime for RetargetRuntime {
+        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn reset(&mut self) {}
+        fn is_quiescent(&self) -> bool {
+            true
+        }
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+        fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            self.allow && previous.as_any().is::<Self>()
+        }
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn parameter_retarget_requires_stable_chain_topology_and_candidate_twin_opt_in() {
+        let device_type = DeviceTypeId::from_static("test.parameter-retarget");
+        let instance = |payload: u8,
+                        allow: bool,
+                        scratch_allow: bool,
+                        owner,
+                        device_id,
+                        device_type,
+                        version,
+                        bypassed,
+                        matrix,
+                        sample_rate| {
+            let configuration =
+                std::sync::Arc::new(NativeDeviceState::new(device_type, 1, vec![payload]).unwrap());
+            let definition: std::sync::Arc<dyn PreparedNativeProcessor> =
+                std::sync::Arc::new(RetargetPrepared {
+                    allow,
+                    scratch_allow,
+                    version,
+                    runtime_count: std::sync::atomic::AtomicUsize::new(0),
+                });
+            PreparedProcessorInstance {
+                owner,
+                device_id,
+                device_type,
+                matrix,
+                bypassed,
+                sample_rate,
+                configuration: Some(configuration),
+                definition: Some(definition),
+            }
+        };
+        let old = NativeRuntimeChain::new(vec![instance(
+            1,
+            false,
+            false,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        let candidate = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(candidate.can_retarget_parameters_from_range(&old, 0..1));
+        assert!(!candidate.configuration_matches_range(&old, 0..1));
+
+        let one_twin_opted_in = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            false,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!one_twin_opted_in.can_retarget_parameters_from_range(&old, 0..1));
+
+        let no_opt_in = NativeRuntimeChain::new(vec![instance(
+            2,
+            false,
+            false,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!no_opt_in.can_retarget_parameters_from_range(&old, 0..1));
+
+        let bypassed = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            true,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!bypassed.can_retarget_parameters_from_range(&old, 0..1));
+
+        let wrong_rate = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            44_100,
+        )])
+        .unwrap();
+        assert!(!wrong_rate.can_retarget_parameters_from_range(&old, 0..1));
+        assert!(!candidate.can_retarget_parameters_from_range(&old, 0..0));
+        assert!(!candidate.can_retarget_parameters_from_range(&old, 0..2));
+
+        let wrong_owner = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Return(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!wrong_owner.can_retarget_parameters_from_range(&old, 0..1));
+
+        let wrong_id = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            10,
+            device_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!wrong_id.can_retarget_parameters_from_range(&old, 0..1));
+
+        let other_type = DeviceTypeId::from_static("test.other-parameter-retarget");
+        let wrong_type = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            other_type,
+            1,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!wrong_type.can_retarget_parameters_from_range(&old, 0..1));
+
+        let wrong_version = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            2,
+            false,
+            StereoMatrix::identity(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!wrong_version.can_retarget_parameters_from_range(&old, 0..1));
+
+        let wrong_matrix = NativeRuntimeChain::new(vec![instance(
+            2,
+            true,
+            true,
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            1,
+            false,
+            StereoMatrix::new([[0.5, 0.0], [0.0, 1.0]]).unwrap(),
+            48_000,
+        )])
+        .unwrap();
+        assert!(!wrong_matrix.can_retarget_parameters_from_range(&old, 0..1));
     }
 
     impl NativeProcessorRuntime for IncompatibleRuntime {

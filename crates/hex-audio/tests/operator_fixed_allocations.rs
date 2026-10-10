@@ -9,7 +9,12 @@ use hex_engine::{
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
-use std::{collections::BTreeMap, error::Error, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{Arc, atomic::Ordering},
+    time::Instant,
+};
 
 #[test]
 fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_callback()
@@ -282,10 +287,11 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         velocity: 100,
     })?;
 
-    let revision = Arc::new(PreparedRevision::prepare(
+    let table = Arc::new(SineTable::new());
+    let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        Arc::clone(&table),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
@@ -382,6 +388,80 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         rejected_capture,
         "invalid output did not advance the capture gap"
     );
+
+    // Recompile and hand off several compatible EQ8 parameter edits while
+    // playback is active. The callback owns only the bounded runtime transfer;
+    // project editing, preparation, oracle work and graph reclamation stay on
+    // the control side.
+    for (parameter, value) in [
+        (4, ParameterValue::Float(10.0)),
+        (5, ParameterValue::Float(2.4)),
+        (4, ParameterValue::Float(5.0)),
+    ] {
+        let track_snapshot = editor.project().track(track).ok_or("track missing")?;
+        let current = track_snapshot
+            .devices()
+            .iter()
+            .find(|device| device.id() == eq8_device)
+            .ok_or("eq8 missing")?
+            .state();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            current,
+            ParameterId::from_static(parameter),
+            value,
+        )?;
+        editor.execute(Command::ReplaceDeviceState {
+            device: eq8_device,
+            state,
+        })?;
+        let next_revision = Arc::new(PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(revision.session()),
+        )?);
+        let candidate = Playback::try_from_prepared_with_session(Arc::clone(&next_revision))?;
+        let mut oracle_candidate =
+            Playback::try_from_prepared_with_session(Arc::clone(&next_revision))?;
+        oracle_candidate
+            .try_inherit_runtime_from(&mut oracle)
+            .map_err(|_| "oracle runtime handoff refused")?;
+        let accepted_revision = control
+            .publish_with_policy_and_context_generation(
+                candidate,
+                hex_audio::prepared::PublicationPolicy::InheritRuntime,
+                1,
+            )
+            .map_err(|error| error.reason)?;
+        oracle_candidate.render(&mut expected)?;
+        let measured = measure(|| {
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("eq8 parameter handoff render");
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "compatible EQ8 parameter handoff callback allocation"
+        );
+        assert_eq!(
+            control.status.applied_revision.load(Ordering::Acquire),
+            accepted_revision
+        );
+        assert_eq!(output, expected, "compatible EQ8 handoff changed PCM");
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        control.reclaim();
+        oracle = oracle_candidate;
+        revision = next_revision;
+    }
 
     control.request_shutdown();
     let measured = measure(|| {

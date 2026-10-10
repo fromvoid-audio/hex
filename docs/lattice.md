@@ -168,3 +168,13 @@ retires controls, pending values and type-specific page state keyed to the forme
 device type before rendering the new controls. Session and GPUI regressions cover
 replacement, invalid/stale targets, preservation and Undo; full local CI and
 native pointer acceptance remain open until delivery.
+
+## compatible effect parameter history
+
+An optional default-false runtime proof allows certified EQ8 parameter changes
+to adopt ordinary filter history in the effect-only Arrangement handoff. Both
+candidate twins must certify compatibility after ordered identity/topology checks;
+uncertified effects retain existing tail behavior. This does not transfer ordinary
+history out of a separately owned instrument-release suffix. Return adoption uses the same proof and keeps one owner for the old current
+chain, while independently carried tails stay separate. See
+[eq8 parameter history](eq-eight-parameter-history.md).

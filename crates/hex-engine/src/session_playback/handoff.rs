@@ -1712,12 +1712,22 @@ impl SessionPlayback {
                     return true;
                 };
                 let candidate_suffix_start = candidate_track.instrument_position();
+                let exact_chain_configuration = old_chain.len() == candidate_chain.len()
+                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                let retargetable_effect_configuration = !exact_chain_configuration
+                    && old_chain.len() == candidate_chain.len()
+                    && old_track.instrument_position() == candidate_suffix_start
+                    && old_chain
+                        .configuration_matches_range(candidate_chain, 0..candidate_suffix_start)
+                    && candidate_chain.can_retarget_parameters_from_range(
+                        old_chain,
+                        candidate_suffix_start..old_chain.len(),
+                    );
                 old_track.instrument_position() != candidate_suffix_start
                     || old_track.mix() != candidate_track.mix()
                     || old_track.instrument_suffix_matrix()
                         != candidate_track.instrument_suffix_matrix()
-                    || old_chain.len() != candidate_chain.len()
-                    || !old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len())
+                    || !(exact_chain_configuration || retargetable_effect_configuration)
             });
             if !detached || old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
                 continue;

@@ -212,13 +212,19 @@ impl ReturnEffectTailPlan {
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let new_index = new_buses.iter().position(|bus| bus.id == old_bus.id);
-            let unchanged = if let Some(new_index) = new_index {
+            let inherits_current_bus = if let Some(new_index) = new_index {
                 let new_chain = new_chains
                     .get(new_index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                let same_configuration = old_chain.len() == new_chain.len()
+                let same_topology = old_chain.len() == new_chain.len();
+                let same_configuration = same_topology
                     && old_chain.configuration_matches_range(new_chain, 0..old_chain.len());
-                if same_configuration && new_chain.can_inherit_from(old_chain) {
+                let retargetable_configuration = !same_configuration
+                    && same_topology
+                    && new_chain.can_retarget_parameters_from_range(old_chain, 0..old_chain.len());
+                if (same_configuration || retargetable_configuration)
+                    && new_chain.can_inherit_from(old_chain)
+                {
                     if let Some(should_inherit) = plan.inherit_bus.get_mut(new_index) {
                         *should_inherit = true;
                     } else {
@@ -231,7 +237,7 @@ impl ReturnEffectTailPlan {
             } else {
                 false
             };
-            if unchanged
+            if inherits_current_bus
                 || old_bus.muted
                 || old_bus.gain == 0.0
                 || old_chain.committed_range_is_quiescent(0..old_chain.len())
