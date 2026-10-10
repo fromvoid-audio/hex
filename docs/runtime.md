@@ -162,15 +162,19 @@ refused rather than sent through the fast path.
 
 Audio device/render faults and shutdown refuse both initial admission and ready
 candidate publication; the editor tick invalidates retained seek intents after
-reclaim when it observes those flags. Publication is the cancellation boundary:
-before publication, invalidation cancels preparation or returns the uninstalled
-candidate. After publication, the accepted audio owner cannot be withdrawn by
-UI cancellation; the pending request remains until a terminal result, with UI
-success suppressed. Its original audio fence still rejects intervening audio
-revision, route or command-ticket changes. A canonical edit/Open alone is not
-an audio fence change, so a previously published seek can briefly install before
-the newer replacement reaches audio. Stronger post-publication cancellation is
-a separate follow-up; this path does not promise atomic withdrawal.
+reclaim when it observes those flags. Before publication, invalidation cancels
+preparation or returns the uninstalled candidate. After conditional publication,
+Pulse2208 arbitrates cancellation against callback installation with one
+revision-keyed atomic decision cell allocated on control. UI invalidation CASes
+pending to cancelled; the callback CASes pending to applying immediately before
+active graph replacement. If cancellation wins, the candidate is rejected and
+returned through existing retirement ownership while the old graph stays active.
+If application wins, the UI waits for the exact terminal revision and the newer
+canonical graph follows. The original route/command fence remains in force.
+Ordinary inherited publication is unaffected. The callback moves the token with
+its Publication and never allocates/clones/finally drops it. See the bounded
+[decision and ownership contract](prepared-seek-cancellation.md), including
+Stop ordering, shutdown and backpressure evidence.
 
 An unconsumed worker result is replaced through the worker's fixed retirement
 slot. A consumed result that becomes stale is returned intact to that slot; if

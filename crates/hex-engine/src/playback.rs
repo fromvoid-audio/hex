@@ -167,6 +167,7 @@ pub enum PlaybackHandoffError {
     ActiveArrangementStateCannotBeDropped,
     PerformanceClockExhausted,
     RuntimeFenceChanged,
+    FreshRuntimeCancelled,
 }
 
 /// Compact truthful category for asynchronous callback handoff refusals.
@@ -179,6 +180,7 @@ pub enum PlaybackHandoffRejection {
     ArrangementStateCannotBeCaptured = 4,
     ActiveArrangementStateCannotBeDropped = 5,
     RuntimeFenceChanged = 6,
+    FreshRuntimeCancelled = 7,
 }
 
 impl PlaybackHandoffRejection {
@@ -193,6 +195,7 @@ impl PlaybackHandoffRejection {
             }
             PlaybackHandoffError::PerformanceClockExhausted => Self::PerformanceClockExhausted,
             PlaybackHandoffError::RuntimeFenceChanged => Self::RuntimeFenceChanged,
+            PlaybackHandoffError::FreshRuntimeCancelled => Self::FreshRuntimeCancelled,
             PlaybackHandoffError::ArrangementStateCannotBeCaptured => {
                 Self::ArrangementStateCannotBeCaptured
             }
@@ -210,6 +213,7 @@ impl PlaybackHandoffRejection {
             4 => Some(Self::ArrangementStateCannotBeCaptured),
             5 => Some(Self::ActiveArrangementStateCannotBeDropped),
             6 => Some(Self::RuntimeFenceChanged),
+            7 => Some(Self::FreshRuntimeCancelled),
             _ => None,
         }
     }
@@ -234,6 +238,7 @@ impl PlaybackHandoffRejection {
             Self::RuntimeFenceChanged => {
                 "fresh playback was rejected because the active runtime changed"
             }
+            Self::FreshRuntimeCancelled => "fresh playback was cancelled before it became active",
         }
     }
 }
