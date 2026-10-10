@@ -566,7 +566,7 @@ candidate's Arrangement notes rather than the old Session owner. Stop is the exp
 Pulse2160 now carries nonquiescent mutable owners across revision handoffs with
 their original gate deadlines and old effect suffix, or clamps held gates at
 the cut when the candidate instrument is absent/bypassed. Mutable tail/seek/loop
-chase limits and prepared export remain separate prerequisites.
+chase limits remain separate prerequisites.
 Source tests cover short-note partitioning, the 128-onset/256-edge query bound,
 hybrid audio plus an ordered suffix, atomic refusal/retry and injected registry
 preparation. Onsets sort by source frame and full occurrence key before ID
@@ -580,4 +580,20 @@ SessionPlayback on this 64-bit arm64 build, separate from the 2 MiB active and
 so this is not a process-wide bound. See
 [lattice instrument lifecycle](docs/lattice-instruments.md). Full local CI,
 including the protected cache-ownership runner, remains with root; this does not
-admit a built-in mutable instrument or establish export support.
+admit a built-in mutable instrument.
+
+Pulse2159: export jobs now retain the exact captured `Arc<PreparedRevision>` and
+render the linear Arrangement range with the shared SessionPlayback owner; no
+project clone or worker-side recompilation is used. Prepared mutable export is
+proof-only: start-zero is supported, nonzero starts are refused if the compiled
+Arrangement has an enabled mutable instrument, and mutable Arrangement source
+loops are refused. The global transport loop and unused Session loop inventory
+do not wrap or block this export. Feature-gated integration coverage checks an
+independent hybrid prefix/instrument/suffix PCM16 oracle, release across a
+256-frame boundary, exact range lengths and atomic refusal without temporary
+files. Focused engine/export/session tests, strict Clippy and local-CI runner tests pass;
+full local CI remains with root; built-in
+mutable admission, chase/range support and user-facing mutable instruments are
+not established. The same enabled track slot currently prepares a mutable
+factory for both Arrangement and Session; a Session-only mutable factory cannot
+be represented by current preparation, so this case is not claimed as tested.

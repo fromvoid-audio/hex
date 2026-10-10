@@ -173,9 +173,13 @@ Explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
 active-device allocation fixtures. Under the non-default `allocation-probe`
 feature, `hex-audio` may also use `hex-lattice` as a dev-dependency and enable
 the engine's `instrument-test-support` feature to inject a bounded mutable
-instrument fixture through normal revision preparation. Production audio
-must continue to depend only on engine and its device/queue libraries. The
-architecture guard distinguishes this narrow dev edge from runtime dependencies.
+instrument fixture through normal revision preparation. `hex-export` may use
+`hex-project`, `hex-lattice` and `hex-lattice-contract` as dev-dependencies;
+its non-default `instrument-test-support` feature forwards the engine fixture
+seam for shared prepared-export PCM tests. Production audio must continue to
+depend only on engine and its device/queue libraries; production export depends
+only on engine and the standard library. The architecture guard distinguishes these dev edges from
+runtime dependencies.
 
 The next general architecture has one canonical editable project, stable IDs and
 asset references, a control-side compiler, and an audio-owned compiled graph.

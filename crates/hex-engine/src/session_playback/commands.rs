@@ -3,6 +3,19 @@ use crate::MidiTiming;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export
+            && matches!(
+                command,
+                SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::StopTrack { .. }
+                    | SessionPlaybackCommand::StopAllClips { .. }
+                    | SessionPlaybackCommand::BackToArrangement { .. }
+                    | SessionPlaybackCommand::CancelPending { .. }
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => self.playing = false,

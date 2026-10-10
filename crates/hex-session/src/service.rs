@@ -1,7 +1,7 @@
 //! Bounded control worker for decoding, project edits, saves, and graph compilation.
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::{PreparedImport, Session, SessionError};
-use hex_engine::{PreparedRevision, Project as PlaybackProject, playback::Playback};
+use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
@@ -255,13 +255,14 @@ pub struct Service {
     _export_worker: JoinHandle<()>,
 }
 
-type Exporter =
-    Arc<dyn Fn(&Path, &PlaybackProject, u64, u64) -> Result<ExportReport, String> + Send + Sync>;
+type Exporter = Arc<
+    dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
+>;
 
 struct ExportJob {
     revision: u64,
     path: PathBuf,
-    project: Arc<PlaybackProject>,
+    prepared: Arc<PreparedRevision>,
     frames: u64,
 }
 
@@ -279,8 +280,8 @@ impl Service {
             sample_rate,
             history_capacity,
             max_resident_frames,
-            Arc::new(|path, project, start, frames| {
-                hex_export::render_new(path, project, start, frames)
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
                     .map_err(|error| error.to_string().to_lowercase())
             }),
         )
@@ -1186,7 +1187,7 @@ fn run_worker(
                             Ok(ExportJob {
                                 revision,
                                 path: path.clone(),
-                                project: Arc::clone(prepared.arrangement()),
+                                prepared: Arc::clone(prepared),
                                 frames,
                             })
                         }
@@ -1370,7 +1371,7 @@ fn run_export_worker(
             ExportWork::Render(job) => ExportEvent {
                 revision: job.revision,
                 path: job.path.clone(),
-                result: exporter(&job.path, &job.project, 0, job.frames),
+                result: exporter(&job.path, &job.prepared, 0, job.frames),
             },
         };
         if events.send(event).is_err() {
@@ -3756,7 +3757,7 @@ mod service_tests {
             Arc::new(move |path, project, start, frames| {
                 entered.wait();
                 release.wait();
-                hex_export::render_new(path, project, start, frames)
+                hex_export::render_prepared_new(path, Arc::clone(project), start, frames)
                     .map_err(|error| error.to_string().to_lowercase())
             })
         };
@@ -4553,7 +4554,7 @@ mod service_tests {
                 let _ = finished_sender.send(());
                 Ok(ExportReport {
                     path: path.to_path_buf(),
-                    sample_rate: project.sample_rate(),
+                    sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
                 })
