@@ -33,7 +33,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
     assert!(visual.debug_bounds("midi-source-controls").is_some());
     assert!(visual.debug_bounds("midi-note-roll").is_some());
     let open_panel = visual.debug_bounds("clip-view").expect("open detail panel");
-    assert!(f32::from(open_panel.size.height) >= 228.0);
+    assert!(f32::from(open_panel.size.height) >= 213.0);
 
     let toggle = visual
         .debug_bounds("clip-view-toggle")
@@ -188,7 +188,7 @@ fn open_clip_detail_keeps_its_body_height_after_selection_is_removed(cx: &mut Te
         .debug_bounds("clip-detail-empty")
         .expect("truthful empty detail body");
     assert_eq!(empty.size.height, populated.size.height);
-    assert!(f32::from(empty_body.size.height) >= 228.0);
+    assert!(f32::from(empty_body.size.height) >= 213.0);
     editor.read_with(cx, |view, _| {
         assert!(
             view.clip_view_open,
@@ -341,7 +341,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(188.0));
+    assert_eq!(panel.size.height, px(213.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
     let chain = visual
@@ -360,7 +360,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
     assert_eq!(instrument_card.size.width, px(286.0));
-    assert_eq!(effect_card.size.width, px(286.0));
+    assert_eq!(effect_card.size.width, px(144.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -420,31 +420,14 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             format!("device-body-{}", device_id.value()).into_boxed_str(),
         ))
         .expect("bounded device controls viewport");
-    let before_scroll_last = visual
+    let last_control = visual
         .debug_bounds(last_parameter_selector)
         .expect("last utility control is rendered");
-    let scroll_point = point(
-        device_body.origin.x + device_body.size.width / 2.0,
-        device_body.origin.y + device_body.size.height / 2.0,
-    );
-    visual.simulate_event(gpui::ScrollWheelEvent {
-        position: scroll_point,
-        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-900.0))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
-    let scrolled_last = visual
-        .debug_bounds(last_parameter_selector)
-        .expect("last utility control remains rendered after scrolling");
-    assert_ne!(
-        before_scroll_last.origin.y, scrolled_last.origin.y,
-        "the internal device body scrolls its overflow controls"
-    );
     assert!(
-        scrolled_last.origin.y >= device_body.origin.y
-            && scrolled_last.origin.y + scrolled_last.size.height
+        last_control.origin.y >= device_body.origin.y
+            && last_control.origin.y + last_control.size.height
                 <= device_body.origin.y + device_body.size.height,
-        "the final utility parameter can be scrolled fully into the fixed body viewport"
+        "the compact Utility panel keeps its final control visible in the fixed body viewport"
     );
 
     let panel_before_menu = visual.debug_bounds("device-panel").expect("device panel");

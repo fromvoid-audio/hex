@@ -1,12 +1,22 @@
 use crate::ControlStyle;
 use gpui::{
-    Context, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, SharedString,
-    Window, div, prelude::*, px, rgb,
+    Context, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, PathBuilder,
+    SharedString, Window, canvas, div, point, prelude::*, px, rgb,
 };
 
 #[derive(Debug, Clone)]
 pub struct ToggleChanged {
     pub checked: bool,
+}
+
+/// Presentation-only density for the shared boolean/choice entities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiscreteControlAppearance {
+    #[default]
+    Standard,
+    CompactButton,
+    CompactIconButton,
+    CompactSelector,
 }
 
 /// Validated toggle construction data for an infallible GPUI entity factory.
@@ -15,6 +25,7 @@ pub struct ToggleConfig {
     label: SharedString,
     checked: bool,
     style: ControlStyle,
+    appearance: DiscreteControlAppearance,
 }
 
 impl ToggleConfig {
@@ -29,7 +40,13 @@ impl ToggleConfig {
             label: label.into(),
             checked,
             style: style.validate()?,
+            appearance: DiscreteControlAppearance::Standard,
         })
+    }
+
+    pub fn with_appearance(mut self, appearance: DiscreteControlAppearance) -> Self {
+        self.appearance = appearance;
+        self
     }
 }
 
@@ -40,6 +57,7 @@ pub struct Toggle {
     checked: bool,
     enabled: bool,
     style: ControlStyle,
+    appearance: DiscreteControlAppearance,
     focus: FocusHandle,
 }
 
@@ -64,6 +82,7 @@ impl Toggle {
             checked: config.checked,
             enabled: true,
             style: config.style,
+            appearance: config.appearance,
             focus: cx.focus_handle(),
         }
     }
@@ -148,16 +167,59 @@ impl gpui::Render for Toggle {
         } else {
             self.style.muted
         };
-        div()
+        let mut root = div()
             .id(self.id.clone())
             .debug_selector(|| self.id.to_string())
             .flex()
-            .h(px(20.0))
-            .px(px(3.0))
-            .gap(px(5.0))
+            .h(px(
+                if matches!(
+                    self.appearance,
+                    DiscreteControlAppearance::CompactButton
+                        | DiscreteControlAppearance::CompactIconButton
+                ) {
+                    14.0
+                } else {
+                    20.0
+                },
+            ))
+            .px(px(
+                if matches!(
+                    self.appearance,
+                    DiscreteControlAppearance::CompactButton
+                        | DiscreteControlAppearance::CompactIconButton
+                ) {
+                    1.0
+                } else {
+                    3.0
+                },
+            ))
+            .gap(px(
+                if self.appearance == DiscreteControlAppearance::CompactButton {
+                    3.0
+                } else {
+                    5.0
+                },
+            ))
             .items_center()
-            .rounded(px(2.0))
-            .bg(rgb(self.style.surface))
+            .rounded(px(
+                if self.appearance == DiscreteControlAppearance::CompactButton {
+                    1.5
+                } else {
+                    2.0
+                },
+            ))
+            .bg(rgb(
+                if matches!(
+                    self.appearance,
+                    DiscreteControlAppearance::CompactButton
+                        | DiscreteControlAppearance::CompactIconButton
+                ) && self.checked
+                {
+                    self.style.accent
+                } else {
+                    self.style.surface
+                },
+            ))
             .border_1()
             .border_color(rgb(if self.focus.is_focused(window) {
                 self.style.accent
@@ -171,24 +233,95 @@ impl gpui::Render for Toggle {
                 gpui::CursorStyle::PointingHand
             } else {
                 gpui::CursorStyle::Arrow
-            })
-            .child(
-                div()
-                    .size(px(12.0))
-                    .rounded(px(2.0))
-                    .border_1()
-                    .border_color(rgb(self.style.border))
-                    .bg(rgb(state_color)),
-            )
-            .child(
+            });
+        if self.appearance == DiscreteControlAppearance::CompactIconButton {
+            let enabled = self.enabled;
+            let icon_color = rgb(if enabled {
+                self.style.text
+            } else {
+                self.style.muted
+            });
+            root = root.child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let left = bounds.origin.x + px(1.0);
+                        let right = bounds.origin.x + bounds.size.width - px(1.0);
+                        let top = bounds.origin.y + px(1.0);
+                        let bottom = bounds.origin.y + bounds.size.height - px(1.0);
+                        let mid = bounds.origin.y + bounds.size.height * 0.58;
+                        let mut path = PathBuilder::stroke(px(1.1));
+                        path.move_to(point(left, mid));
+                        path.line_to(point(left, top + px(3.0)));
+                        path.line_to(point(
+                            bounds.origin.x + bounds.size.width * 0.3,
+                            top + px(1.0),
+                        ));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.5, top));
+                        path.line_to(point(
+                            bounds.origin.x + bounds.size.width * 0.7,
+                            top + px(1.0),
+                        ));
+                        path.line_to(point(right, top + px(3.0)));
+                        path.line_to(point(right, mid));
+                        path.move_to(point(left, mid));
+                        path.line_to(point(left, bottom));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.36, bottom));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.36, mid));
+                        path.line_to(point(left, mid));
+                        path.move_to(point(bounds.origin.x + bounds.size.width * 0.64, mid));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.64, bottom));
+                        path.line_to(point(right, bottom));
+                        path.line_to(point(right, mid));
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, icon_color);
+                        }
+                    },
+                )
+                .size(px(10.0)),
+            );
+        } else if self.appearance == DiscreteControlAppearance::CompactButton {
+            root = root.child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .text_size(px(self.style.font_size))
-                    .text_color(rgb(text_color))
+                    .text_center()
+                    .text_size(px(8.0))
+                    .text_color(rgb(if self.enabled {
+                        self.style.text
+                    } else {
+                        self.style.muted
+                    }))
                     .child(self.label.clone()),
-            )
+            );
+        } else {
+            root = root
+                .child(
+                    div()
+                        .size(px(12.0))
+                        .rounded(px(2.0))
+                        .border_1()
+                        .border_color(rgb(self.style.border))
+                        .bg(rgb(state_color)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_size(px(self.style.font_size))
+                        .text_color(rgb(text_color))
+                        .child(self.label.clone()),
+                );
+        }
+        if matches!(
+            self.appearance,
+            DiscreteControlAppearance::CompactButton | DiscreteControlAppearance::CompactIconButton
+        ) {
+            root = root.w_full();
+        }
+        root
     }
 }
 
@@ -204,6 +337,7 @@ pub struct SelectorConfig {
     choices: Vec<SharedString>,
     selected: usize,
     style: ControlStyle,
+    appearance: DiscreteControlAppearance,
 }
 
 impl SelectorConfig {
@@ -225,7 +359,13 @@ impl SelectorConfig {
             choices,
             selected,
             style: style.validate()?,
+            appearance: DiscreteControlAppearance::Standard,
         })
+    }
+
+    pub fn with_appearance(mut self, appearance: DiscreteControlAppearance) -> Self {
+        self.appearance = appearance;
+        self
     }
 }
 
@@ -237,6 +377,7 @@ pub struct Selector {
     open: bool,
     enabled: bool,
     style: ControlStyle,
+    appearance: DiscreteControlAppearance,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
 }
@@ -263,6 +404,7 @@ impl Selector {
             open: false,
             enabled: true,
             style: config.style,
+            appearance: config.appearance,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
@@ -396,6 +538,7 @@ impl gpui::Render for Selector {
             .flex_col()
             .min_w_0()
             .track_focus(&self.focus)
+            .rounded(px(2.0))
             .border_1()
             .border_color(rgb(if self.focus.is_focused(window) {
                 self.style.accent
@@ -405,14 +548,39 @@ impl gpui::Render for Selector {
             .child(
                 div()
                     .flex()
-                    .h(px(20.0))
-                    .px(px(4.0))
+                    .h(px(
+                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                            14.0
+                        } else {
+                            20.0
+                        },
+                    ))
+                    .px(px(
+                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                            2.0
+                        } else {
+                            4.0
+                        },
+                    ))
                     .gap(px(4.0))
                     .items_center()
+                    .rounded(px(
+                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                            1.5
+                        } else {
+                            2.0
+                        },
+                    ))
                     .border_1()
                     .border_color(rgb(self.style.border))
                     .bg(rgb(self.style.raised))
-                    .text_size(px(self.style.font_size))
+                    .text_size(px(
+                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                            8.0
+                        } else {
+                            self.style.font_size
+                        },
+                    ))
                     .text_color(rgb(if self.enabled {
                         self.style.text
                     } else {
@@ -427,6 +595,9 @@ impl gpui::Render for Selector {
                     .child(div().flex_1().min_w_0().overflow_hidden().child(selected))
                     .child(div().text_color(rgb(self.style.muted)).child("▾")),
             );
+        if self.appearance == DiscreteControlAppearance::CompactSelector {
+            root = root.w_full();
+        }
         if self.open && self.enabled {
             let options = self.choices.clone();
             let current = self.selected;
@@ -439,9 +610,16 @@ impl gpui::Render for Selector {
                         .id(SharedString::from(format!("{}-option-{index}", self.id)))
                         .debug_selector(|| format!("{}-option-{index}", self.id))
                         .flex()
-                        .h(px(19.0))
+                        .h(px(
+                            if self.appearance == DiscreteControlAppearance::CompactSelector {
+                                18.0
+                            } else {
+                                19.0
+                            },
+                        ))
                         .px(px(4.0))
                         .items_center()
+                        .rounded(px(2.0))
                         .border_b_1()
                         .border_color(rgb(self.style.border))
                         .bg(rgb(if index == current {

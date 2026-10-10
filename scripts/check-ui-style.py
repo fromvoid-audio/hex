@@ -27,7 +27,7 @@ widgets = (
     'super::waveform::waveform_source_segment_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
-    'menu_message(', 'action_button(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
@@ -38,6 +38,9 @@ widgets = (
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
+    'control(', 'selected_value)', 'input_heading)', 'output_heading)', 'polarity)',
+    'channel)', 'dial)', 'mono)', 'bass)', 'cutoff_row)', 'audition)', 'input)',
+    'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

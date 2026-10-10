@@ -1394,3 +1394,64 @@ NoteOff, release and shutdown with construction/reclamation outside measurement.
 Targeted checks passed; exact-head full local CI, focused PR publication and
 combined native review build follow. Native UI/listening, physical deadlines,
 full Operator parity and general live parameter update behavior remain open.
+
+## 10 October 2026 — review65 native-feedback checkpoint
+
+Focused [PR104](https://github.com/PORTALSURFER/hex/pull/104), sourcef927aea,
+passed all16 local checks20261010T110805Z-f279bcc4; combinedcf53fb2 passed all16
+checks20261010T110805Z-481ef91b. Both clean/stale=false. Pulse2225 is
+ready_for_review; native UI/listening remains open. Four old tail/capacity
+fixtures now render genuinely audible outgoing Arrangement notes, preserving
+their original two-owner assertions after the exact-cut phantom-tail fix.
+
+Fresh optimized release31.09seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-feedback-native-review-20261010-cf53fb2.app.
+Signed binarySHA2567483db2bf08a4975f3ce0b23004e3d4cfb0fc3b75a69f977704849d4814d3cd8.
+Adjacent manifest records67 integrated sourcePRlinks38–104. This app enables
+native feedback controls and the bounded16-voice runtime. Check feedback while
+stopped, incoming-FM availability/reactivation, MIDI playback and save/reopen.
+Source removal retains already-playing authored gates/releases while removed
+later notes do not retrigger. Active class switching remains a conservative
+refusal with canonical-versus-applied state visible under Pulse2180.
+
+No agent app launch or automatic merge. Previous apps remain intact. Codex
+attachment limit100 prevented PR attachment; verified link retained in Pulse
+and this ledger. Vendor future-compatibility warnings remain Pulse2143; no
+physical deadline,64-voice support or full Live feedback-law parity claim.
+
+## 10 October 2026 — native-device UI focus
+
+User accepted review65 feedback/playback, modulation availability and save/reopen.
+PR104 stays open until an explicit merge decision. Live Operator parameter
+updates2229 returned to todo after architecture research only; no source edits.
+
+Pulse2232 is the active focused Utility UI PR: replace the generic wrapped list
+with compact Input/Output grouping, visible knobs/switches and a mode-dependent
+width/M-S control. Preserve existing canonical gestures, theme/font, fixed rail,
+reordering and regular/Return-device behavior. Operator's dedicated oscillator/
+envelope/routing panel follows separately under2233. Pulse remains planning
+authority; native visual/input acceptance belongs to the user.
+
+Utility visual acceptance now requires Live-style widget shapes, rounded corners
+and composition, rendered independently with Hex theme colors. A generic
+two-column arrangement is insufficient. The fixed device rail is 228px and
+Utility uses a narrow 184px frame; verify reference proportions and all control bounds.
+
+Utility source is frozen for publication validation: shared compact widget shapes,
+rounded 184px frame, UI-only percent/side/hz codecs and shared popup behavior.
+The mode value uses common pending retirement; switch/ack/undo/redo regression
+passes. Targeted UI tests: 368 passed, 2 existing ignored; strict package clippy,
+desktop build, fmt and architecture/UI/GPUI guards passed. Full local CI and
+fresh signed combined build follow; native visual/input acceptance remains open.
+
+## 10 October 2026 — Utility native visual refinement
+
+User reviewed PR105's review66 build: parameter behavior is retained, but the
+panel remains too wide and its controls too tall/thick. Pulse2232 returns to
+in_progress. Refine the same PR against the supplied Live Utility screenshot:
+narrower Input/Output columns, shorter controls, thin outlines and rounded
+frames/buttons/readouts. Preserve Hex colors, lowercase/font rules, canonical
+gestures, pending-value retirement, mode popup and regular/Return consistency.
+The screenshot's logical scale is inferred; exact visual acceptance remains
+with the user. Fresh source checks and a signed combined build follow the
+refinement; Operator UI2233 remains a separate subsequent PR.

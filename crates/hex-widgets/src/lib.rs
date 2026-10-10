@@ -11,13 +11,18 @@ pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
 };
 pub use discrete::{
-    Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
+    DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
+    ToggleConfig,
 };
-pub use frame::{DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT, device_frame};
+pub use frame::{
+    COMPACT_DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT,
+    compact_rounded_device_frame, device_frame, rounded_device_frame,
+};
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
-    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
-    NumericControlKind, NumericEscape, NumericEventPhase, bind_numeric_control_keys,
+    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
+    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
+    bind_numeric_control_keys,
 };
 pub use style::ControlStyle;
 

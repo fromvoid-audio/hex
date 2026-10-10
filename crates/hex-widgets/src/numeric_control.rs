@@ -3,8 +3,9 @@ use crate::{ControlStyle, NumericError, NumericSpec};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-    SharedString, Style, Window, actions, div, prelude::*, px, relative, rgb,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
+    Point, ShapedLine, SharedString, Style, Window, actions, canvas, div, point, prelude::*, px,
+    relative, rgb,
 };
 use std::ops::Range;
 
@@ -67,6 +68,15 @@ pub enum NumericControlKind {
     VerticalSlider,
 }
 
+/// Presentation-only geometry that keeps the same shared edit entity and events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NumericControlAppearance {
+    #[default]
+    Standard,
+    CompactDial,
+    InlineValue,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericEventPhase {
     Begin,
@@ -100,6 +110,7 @@ pub struct NumericControlConfig {
     value: f64,
     text: String,
     style: ControlStyle,
+    appearance: NumericControlAppearance,
 }
 
 impl NumericControlConfig {
@@ -122,7 +133,13 @@ impl NumericControlConfig {
             value,
             text,
             style,
+            appearance: NumericControlAppearance::Standard,
         })
+    }
+
+    pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
+        self.appearance = appearance;
+        self
     }
 }
 
@@ -161,6 +178,7 @@ pub struct NumericControl {
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
     pub(crate) style: ControlStyle,
+    appearance: NumericControlAppearance,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
 }
@@ -190,6 +208,7 @@ impl NumericControl {
             value,
             text,
             style,
+            appearance,
         } = config;
         Self {
             id,
@@ -210,6 +229,7 @@ impl NumericControl {
             last_origin_x: None,
             press: None,
             style,
+            appearance,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
@@ -217,6 +237,11 @@ impl NumericControl {
 
     pub fn value(&self) -> f64 {
         self.value
+    }
+
+    /// Text currently shown in the editable value field.
+    pub fn display_text(&self) -> &str {
+        &self.text
     }
 
     /// Update caller-owned styling without replacing this control or its draft.
@@ -870,8 +895,121 @@ impl gpui::Render for NumericControl {
             }));
         }
 
-        let mut root = match self.kind {
-            NumericControlKind::Knob => {
+        let mut root = match (self.kind, self.appearance) {
+            (NumericControlKind::Knob, NumericControlAppearance::CompactDial) => {
+                let quarter_turn = std::f32::consts::FRAC_PI_4;
+                let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
+                    .clamp(-5.0 * quarter_turn, quarter_turn);
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .flex_col()
+                    .w(px(64.0))
+                    .h(px(52.0))
+                    .gap(px(1.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context("hex_numeric_control")
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .h(px(10.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(9.0))
+                            .text_color(rgb(if enabled { style.muted } else { style.border }))
+                            .overflow_hidden()
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{}-knob", self.id)))
+                            .debug_selector(|| format!("{}-knob", self.id))
+                            .relative()
+                            .size(px(26.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(rgb(if enabled { style.border } else { style.rail }))
+                            .bg(rgb(style.surface))
+                            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
+                            .cursor(if enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::Arrow
+                            })
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        let center = point(
+                                            bounds.origin.x + px(13.0),
+                                            bounds.origin.y + px(13.0),
+                                        );
+                                        let end = point(
+                                            center.x + px(angle.cos() * 9.0),
+                                            center.y + px(angle.sin() * 9.0),
+                                        );
+                                        let top = point(
+                                            bounds.origin.x + px(13.0),
+                                            bounds.origin.y + px(2.0),
+                                        );
+                                        let tick_end = point(top.x, top.y + px(3.0));
+                                        let mut needle = PathBuilder::stroke(px(1.0));
+                                        needle.move_to(center);
+                                        needle.line_to(end);
+                                        if let Ok(path) = needle.build() {
+                                            window.paint_path(path, rgb(style.accent));
+                                        }
+                                        let mut marker = PathBuilder::stroke(px(1.0));
+                                        marker.move_to(top);
+                                        marker.line_to(tick_end);
+                                        if let Ok(path) = marker.build() {
+                                            window.paint_path(path, rgb(style.muted));
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            ),
+                    )
+                    .child(value_field_sized(
+                        self.id.clone(),
+                        value_text,
+                        ValueFieldPresentation {
+                            invalid: self.invalid_text,
+                            editing: self.editing,
+                            enabled,
+                            style,
+                            width: px(64.0),
+                            height: px(14.0),
+                        },
+                        self.value_mouse_down_listener(cx),
+                    ))
+            }
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::InlineValue) => div()
+                .id(self.id.clone())
+                .flex()
+                .w(px(46.0))
+                .h(px(14.0))
+                .items_center()
+                .track_focus(&self.focus)
+                .key_context("hex_numeric_control")
+                .child(value_field_sized(
+                    self.id.clone(),
+                    value_text,
+                    ValueFieldPresentation {
+                        invalid: self.invalid_text,
+                        editing: self.editing,
+                        enabled,
+                        style,
+                        width: px(46.0),
+                        height: px(14.0),
+                    },
+                    self.value_mouse_down_listener(cx),
+                )),
+            (NumericControlKind::Knob, _) => {
                 let quarter_turn = std::f32::consts::FRAC_PI_4;
                 let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
                     .clamp(-5.0 * quarter_turn, quarter_turn);
@@ -935,7 +1073,7 @@ impl gpui::Render for NumericControl {
                         self.value_mouse_down_listener(cx),
                     ))
             }
-            NumericControlKind::HorizontalSlider => div()
+            (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
                 .h(px(24.0))
@@ -970,7 +1108,7 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
-            NumericControlKind::VerticalSlider => div()
+            (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
                 .flex_col()
@@ -1174,12 +1312,52 @@ fn value_field(
     style: ControlStyle,
     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    value_field_sized(
+        id,
+        child,
+        ValueFieldPresentation {
+            invalid,
+            editing,
+            enabled,
+            style,
+            width: px(46.0),
+            height: px(18.0),
+        },
+        on_down,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ValueFieldPresentation {
+    invalid: bool,
+    editing: bool,
+    enabled: bool,
+    style: ControlStyle,
+    width: Pixels,
+    height: Pixels,
+}
+
+fn value_field_sized(
+    id: SharedString,
+    child: NumericTextElement,
+    presentation: ValueFieldPresentation,
+    on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let ValueFieldPresentation {
+        invalid,
+        editing,
+        enabled,
+        style,
+        width,
+        height,
+    } = presentation;
     div()
         .id(SharedString::from(format!("{}-value", id)))
         .debug_selector(|| format!("{}-value", id))
         .flex()
-        .w(px(46.0))
-        .h(px(18.0))
+        .w(width)
+        .h(height)
+        .rounded(px(2.0))
         .px(px(2.0))
         .items_center()
         .justify_center()
