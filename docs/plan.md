@@ -3791,14 +3791,16 @@ PRs #12–#16 passed their individual full local CI runs, were accepted by the u
 in the combined review build, and are merged on 9 October. The captured selection
 fix remains a separate unmerged work unit.
 
-## staged prerequisite — return-track model (Pulse2176)
+## return-track stages — Pulse2176 and Pulse2177
 
-The control-side model and schema17 represent ordered return buses, generic
-effect chains, mix gain/mute and bounded sparse sends from regular tracks. Global
-ID validation and one-step history include these records; removing a return
-cascades its sends. Schemas1–16 migrate strictly to empty return/send state.
-Engine compilation explicitly rejects projects containing returns or sends
-until Pulse2177 implements routed playback. UI placement and controls remain in
-Pulse2178. Effect class validation stays in registered control preparation; the
-project and storage crates preserve generic opaque state without registry
-branches. See [return tracks](return-tracks.md).
+Pulse2176 provides the schema17 model: ordered return buses, generic effect
+chains, gain/mute and bounded sparse regular-track sends. Schemas1–16 migrate
+strictly to empty return/send state, and project/storage remain independent of
+the DSP registry. Pulse2177 now compiles and renders the acyclic
+regular-track → Return → Main topology in Arrangement, SessionPlayback and
+prepared export. Send taps are post-track-fader; Return gain/mute precede the
+single Main master gain. Registered Return effects must explicitly report zero
+algorithmic latency. Scratch and runtimes are prepared on control, compatible
+bus history is preflighted before handoff, and removal uses the bounded release
+policy in [return tracks](return-tracks.md). General latency compensation and
+native pinned rows/interactions remain separate gates; UI2178 owns the latter.

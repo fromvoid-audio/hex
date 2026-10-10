@@ -72,8 +72,11 @@ Prepared stateful processors declare `Option<u32>` frames: the default `None`
 means unknown, while registered Utility filters report `Some(0)` because they
 use no fixed buffering or lookahead. Their IIR phase/group delay is separate.
 This metadata does not remove interface latency or implement general device
-latency compensation. Processing does not introduce clipping or a limiter;
-extreme finite inputs and gains can still overflow, as in the existing renderer.
+latency compensation. Return effect admission now requires a registered
+processor's explicit zero-latency declaration; unknown and nonzero values are
+refused before candidate history is committed. Processing does not introduce
+clipping or a limiter; extreme finite inputs and gains can still overflow, as in
+the existing renderer.
 
 ## Delivery and acceptance
 

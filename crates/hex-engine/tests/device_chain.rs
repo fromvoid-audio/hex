@@ -308,18 +308,19 @@ impl NativeDeviceDefinition for TestDevice {
         _sample_rate: u32,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
-        let scale = match state.payload() {
-            [] => 1.0,
-            [2] => 0.5,
-            [3] => 2.0,
+        let (scale, latency) = match state.payload() {
+            [] => (1.0, None),
+            [2] => (0.5, None),
+            [3] => (2.0, Some(1)),
             _ => return Err(DeviceContractError::MalformedState),
         };
-        Ok(Some(Box::new(SquarePrepared { scale })))
+        Ok(Some(Box::new(SquarePrepared { scale, latency })))
     }
 }
 
 struct SquarePrepared {
     scale: f32,
+    latency: Option<u32>,
 }
 impl PreparedNativeProcessor for SquarePrepared {
     fn runtime_version(&self) -> u32 {
@@ -335,6 +336,10 @@ impl PreparedNativeProcessor for SquarePrepared {
             previous_left: 0.0,
             scale: self.scale,
         })
+    }
+
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        self.latency
     }
 }
 
@@ -427,7 +432,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
             .unwrap()
             .unwrap();
         PreparedProcessorInstance {
-            track_id: 3,
+            owner: hex_lattice::ProcessorChainOwner::Track(3),
             device_id,
             device_type: TEST_TYPE,
             matrix: TestDevice.prepare_matrix(&state).unwrap(),
@@ -635,4 +640,43 @@ fn typed_utility_filter_edit_round_trips_and_undoes_as_one_project_command() {
         editor.project().track(track).unwrap().devices()[0].state(),
         &changed_state
     );
+}
+
+#[test]
+fn return_effect_compilation_requires_explicit_zero_algorithmic_latency() {
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&UTILITY_DEFINITION, &TestDevice];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    for state in [
+        TestDevice.default_state().unwrap(),
+        NativeDeviceState::new(TEST_TYPE, 1, vec![3]).unwrap(),
+    ] {
+        let (mut editor, asset, track) = imported_audio_project();
+        let return_track = match editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        {
+            Created::ReturnTrack(id) => id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.5,
+            })
+            .unwrap();
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5, -0.25]]).unwrap())]);
+        let error =
+            compile::project_with_registry(editor.project(), &media, &registry).unwrap_err();
+        assert!(error.0.contains("unknown or nonzero algorithmic latency"));
+    }
 }

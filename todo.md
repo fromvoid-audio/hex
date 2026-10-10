@@ -253,11 +253,12 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   above main, below the scrollable regular-track region. Implement canonical
   return routing, sends, history and persistence, not decorative rows. Pulse2176
   now supplies the model/storage prerequisite; see [return tracks](docs/return-tracks.md).
-  Pulse2177 must compile routed audio and validate registered effect classes,
-  bounded processing, latency compensation and retirement. Pulse2178 must place
-  return rows above Main and prove compact native interaction. Until then the
-  engine refuses projects with returns or sends. Keep both sections usable at
-  small heights and prevent implicit feedback cycles.
+  Pulse2177 now routes Arrangement, SessionPlayback and prepared export through
+  bounded regular-to-Return-to-Main buses. Effectful returns require registered
+  zero-latency processing, preserve compatible history, and retire removed buses
+  on control; general compensation remains open. Pulse2178 must place return
+  rows above Main and prove compact native interaction. Keep both sections
+  usable at small heights and prevent implicit feedback cycles.
 - [ ] **project-wide time selection on main/master** — separate feature PR
   after the pinned main row. Selecting time there addresses every project track
   as one rectangle, including returns when implemented, gaps and every supported
@@ -738,7 +739,17 @@ generic effect chains, bounded sparse regular-track sends and transactional
 commands are in schema17. Send and device state survive snapshots, undo/redo and
 strict round-trip; return removal cascades sends, track removal drops its sends,
 and schemas1–16 migrate to empty returns/sends. Playback compilation explicitly
-refuses projects containing return routes until audio2177. Focused model/storage/
-engine regressions, affected package checks, local fmt, architecture and style
-checks passed; full local CI and native return-row interaction/listening remain
-open for the integration owner. See [return track contract](docs/return-tracks.md).
+refused routes before audio2177. See [return track contract](docs/return-tracks.md).
+
+Pulse2177 audio routing: implemented regular-track post-fader sends into ordered
+Return effect chains, Return gain/mute, Main sum and one master gain in Arrangement,
+SessionPlayback and prepared linear export. Return runtime owner identity is typed
+Track/Return; processor admission requires registry preparation and explicit zero
+algorithmic latency. Fixed 256-frame scratch and chains are prepared on control;
+compatible bus state is inherited after preflight, seek/stop reset matches regular
+effects, loop wraps preserve history, and removed-return runtimes retire on control.
+Removed regular-track release tails keep existing Main-only processing and their
+sends stop at the revision boundary. Focused routing, tail, handoff, unsupported
+latency/class, prepared-edit atomicity, export, and callback allocation probes pass.
+Full workspace checks, release workload/memory evidence, and native listening
+remain open; UI pinned rows remain Pulse2178. See [return tracks](docs/return-tracks.md).

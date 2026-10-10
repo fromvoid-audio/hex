@@ -1769,6 +1769,140 @@ fn stateful_utility_processing_and_revision_handoff_are_callback_allocation_free
     Ok(())
 }
 
+#[test]
+fn stateful_utility_return_render_and_retirement_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let asset = match editor.execute(Command::AddAsset {
+        path: "memory/return-callback.wav".into(),
+        sample_rate: RATE,
+        frames: 256,
+    })? {
+        Created::Asset(asset) => asset,
+        _ => return Err("expected audio asset".into()),
+    };
+    let track = match editor.execute(Command::AddTrack {
+        name: "source".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected audio track".into()),
+    };
+    editor.execute(Command::PlaceClip {
+        track,
+        asset,
+        start: 0,
+        duration: 1_000_000,
+        source_offset: 0,
+        source_length: 256,
+        looping: true,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: 0,
+        end: 256,
+        enabled: true,
+    })?;
+    let return_track = match editor.execute(Command::AddReturnTrack {
+        name: "filter return".into(),
+    })? {
+        Created::ReturnTrack(return_track) => return_track,
+        _ => return Err("expected return track".into()),
+    };
+    editor.execute(Command::SetReturnSend {
+        track,
+        return_track,
+        gain: 0.5,
+    })?;
+    let utility = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(DeviceTypeId::new("hex.utility")?)?,
+        ParameterId::new(11)?,
+        ParameterValue::Bool(true),
+    )?;
+    editor.execute(Command::InsertReturnDevice {
+        return_track,
+        before: None,
+        state: utility,
+    })?;
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..256)
+                .map(|index| {
+                    let phase = index as f32 * 0.137;
+                    [0.3 + phase.sin() * 0.2, -0.25 + (phase * 0.73).cos() * 0.31]
+                })
+                .collect(),
+        )?,
+    )]);
+    let first_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    oracle.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; 256];
+    oracle.render(&mut expected)?;
+
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &first_revision,
+        ))?)
+        .map_err(|_| "initial Return graph publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "Play command admission failed")?;
+    let mut actual = [[0.0; 2]; 256];
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+
+    let changed_return = editor
+        .project()
+        .return_tracks()
+        .iter()
+        .find(|item| item.id() == return_track)
+        .ok_or("expected return track")?
+        .devices()[0]
+        .id();
+    editor.execute(Command::SetDeviceBypass {
+        device: changed_return,
+        bypassed: true,
+    })?;
+    let second_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        Some(first_revision.session()),
+    )?);
+    let mut replacement_oracle =
+        Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
+    replacement_oracle
+        .try_inherit_runtime_from(&mut oracle)
+        .map_err(|_| "compatible Return handoff was refused")?;
+    let mut expected_handoff = [[0.0; 2]; 256];
+    replacement_oracle.render(&mut expected_handoff)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &second_revision,
+        ))?)
+        .map_err(|_| "Return replacement publication failed")?;
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected_handoff);
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    let mut reclaimed = 0;
+    let retired = measure(|| reclaimed = control.reclaim());
+    assert!(reclaimed >= 1);
+    assert_eq!(retired.count_total, 0);
+    assert!(retired.count_current < 0);
+    assert!(retired.bytes_current < 0);
+    control.reclaim();
+    Ok(())
+}
+
 fn stateful_utility_handoff_at_position(
     instrument_position: usize,
     bypass_instrument: bool,

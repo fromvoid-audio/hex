@@ -59,6 +59,9 @@ impl SessionPlayback {
         for chain in &mut self.device_chains {
             chain.reset();
         }
+        for chain in &mut self.return_chains {
+            chain.reset();
+        }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
@@ -136,6 +139,9 @@ impl SessionPlayback {
         self.route_historical_floors.fill(None);
         self.release_order = 0;
         for chain in &mut self.device_chains {
+            chain.reset();
+        }
+        for chain in &mut self.return_chains {
             chain.reset();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
