@@ -9,7 +9,7 @@ mod style;
 pub use discrete::{
     Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
 };
-pub use frame::device_frame;
+pub use frame::{DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT, device_frame};
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
