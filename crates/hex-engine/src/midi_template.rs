@@ -649,11 +649,11 @@ impl SourceSpan {
     }
 }
 
-pub(crate) use spans::MidiReleaseVoice;
 pub use spans::{
     MIDI_SPAN_BUFFER_CAPACITY, MidiInstrumentRenderContext, MidiRenderSpan, MidiSpanBuffer,
     PreparedMidiInstrumentTemplate,
 };
+pub(crate) use spans::{MidiReleaseVoice, TransportDensitySpan, admit_transport_loop_density};
 
 /// Fixed-capacity output storage reusable across stateless edge queries.
 #[derive(Clone, Debug)]

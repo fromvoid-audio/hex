@@ -6,7 +6,7 @@ const NOTE_BEFORE_START: u64 = 1_000_000;
 const NOTE_INTRO_ONLY: u64 = 1_000_001;
 const NOTE_REPEATED: u64 = 1_000_002;
 
-fn mutable_definition() -> MutableFeedbackDefinition {
+pub(super) fn mutable_definition() -> MutableFeedbackDefinition {
     MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
             id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
@@ -126,7 +126,7 @@ fn session_expanded_oracle_project() -> Project {
     legacy_project_from_snapshot(snapshot).expect("valid expanded source-loop oracle")
 }
 
-fn arrangement_loop_project() -> Project {
+pub(super) fn arrangement_loop_project() -> Project {
     let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
     let track = snapshot.tracks.first_mut().expect("fixture track");
     track.instrument.as_mut().expect("fixture instrument").state =
@@ -178,7 +178,7 @@ fn arrangement_expanded_oracle_project() -> Project {
     clip.notes = (0..4)
         .map(|iteration| MidiNoteSnapshot {
             id: first_note_id + iteration,
-            start_raw: (u64::from(iteration) + 1) * Q,
+            start_raw: (iteration + 1) * Q,
             duration_raw: Q / 2,
             pitch: 60,
             channel: 0,
@@ -189,7 +189,9 @@ fn arrangement_expanded_oracle_project() -> Project {
     legacy_project_from_snapshot(snapshot).expect("valid expanded Arrangement oracle")
 }
 
-fn try_prepare_mutable(project: &Project) -> Result<Arc<PreparedRevision>, crate::Invalid> {
+pub(super) fn try_prepare_mutable(
+    project: &Project,
+) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     let definition = mutable_definition();
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)
@@ -204,7 +206,7 @@ fn try_prepare_mutable(project: &Project) -> Result<Arc<PreparedRevision>, crate
     .map(Arc::new)
 }
 
-fn prepare_mutable(project: &Project) -> Arc<PreparedRevision> {
+pub(super) fn prepare_mutable(project: &Project) -> Arc<PreparedRevision> {
     try_prepare_mutable(project).expect("mutable source loop prepares")
 }
 
@@ -386,18 +388,6 @@ fn mutable_arrangement_source_loops_admit_finite_occurrences_and_clip_gate_at_lo
             .expect("mutable runtime")
             .next_occurrence_id(),
         4
-    );
-}
-
-#[test]
-fn mutable_transport_loop_refusal_remains_separate_from_source_loop_admission() {
-    let mut snapshot = arrangement_loop_project().snapshot();
-    snapshot.loop_region = Some(LoopRegion::new(0, 48_000, true).expect("valid transport loop"));
-    let transport_loop =
-        legacy_project_from_snapshot(snapshot).expect("valid transport loop project");
-    assert_eq!(
-        SessionPlayback::new(prepare_mutable(&transport_loop)).err(),
-        Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
     );
 }
 

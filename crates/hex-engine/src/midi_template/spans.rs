@@ -22,6 +22,18 @@ const MIDI_SPAN_MAX_PERIOD_WINDOWS: u128 = 326;
 const Q32: u128 = 1_u128 << 32;
 const FRAME_DENOMINATOR: u128 = 60_000_000;
 
+pub(crate) use density::DensitySpan as TransportDensitySpan;
+
+pub(crate) fn admit_transport_loop_density(
+    intro: &[TransportDensitySpan],
+    repeats: &[TransportDensitySpan],
+    first_pass: u64,
+    period: u64,
+    release_raw: u64,
+) -> Result<usize, MidiTemplateError> {
+    density::admit_transport_loop_density(intro, repeats, first_pass, period, release_raw)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct VoiceSpan {
     start: u64,

@@ -377,6 +377,11 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
+                            loop_region: self
+                                .revision
+                                .arrangement()
+                                .loop_region()
+                                .filter(|region| region.enabled()),
                             timing: &timing,
                         },
                         index,
@@ -771,6 +776,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
+    loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
 }
 
@@ -790,6 +796,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        loop_region,
         timing,
     } = context;
     if runtimes.get(index).and_then(Option::as_ref).is_none() {
@@ -826,6 +833,29 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                         )
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
                     |span| {
+                        let is_wrap_chase = arrangement_loop_pass > 0
+                            && loop_region.is_some_and(|region| {
+                                arrangement_frame == region.start()
+                                    && span.start < region.start()
+                                    && span.gate_end > region.start()
+                            });
+                        let source_start = if is_wrap_chase {
+                            arrangement_frame
+                        } else {
+                            span.start
+                        };
+                        let source_gate_end = if is_wrap_chase {
+                            loop_region
+                                .map(|region| span.gate_end.min(region.end()))
+                                .ok_or(())
+                        } else {
+                            Ok(loop_region
+                                .map_or(span.gate_end, |region| span.gate_end.min(region.end())))
+                        };
+                        let Ok(source_gate_end) = source_gate_end else {
+                            event_error = true;
+                            return;
+                        };
                         event_error |= onsets
                             .push(crate::mutable_instrument::MutableNoteOnset {
                                 key: crate::mutable_instrument::MutableOccurrenceKey::new(
@@ -837,8 +867,8 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                                 ),
                                 onset_beat: span.onset_beat,
                                 gate_end_beat: span.gate_end_beat,
-                                source_start: span.start,
-                                source_gate_end: span.gate_end,
+                                source_start,
+                                source_gate_end,
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
