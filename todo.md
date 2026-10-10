@@ -972,3 +972,16 @@ and UI-style guards pass. This does not supersede session-worker project identit
 admission checks or change unconditional fresh/inherited publication. Full local
 CI, exact-head review and native integration remain pending; do not mark Pulse2186
 done before those gates.
+
+
+## 2026-10-10 combined native review 54
+
+Combines source PR38–87, adding conditional fresh-runtime publication (Pulse2186,
+PR86) and original derived Operator routing presets (Pulse2187, PR87) to
+review53. Both focused heads passed all16 local checks independently:
+7227e144 / `20261010T062045Z-817fcd13` and
+66f0abe / `20261010T062240Z-7d26bc1a`. Canonical preset changes now have exact
+one-edit Undo/Redo coverage. Combined exact-head CI, fresh release/signing and
+user UI/listening acceptance are separate gates. Native seek worker integration
+is active on Pulse2188 and not included in this checkpoint; full Operator parity,
+mutable loops, plugin hosting and general latency compensation remain open.
