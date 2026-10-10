@@ -123,9 +123,13 @@ Each track stores up to 64 serial effects and one optional instrument. The
 instrument's canonical chain position is a validated gap in the effect vector,
 persisted in schema16 and changed through stable-ID transactional edits. A
 borrowed ordered-chain view reports explicit node class/slot references. The
-current Arrangement and Session compilers refuse a non-front instrument before
-history commits; execution of arbitrary instrument/effect ordering is deferred
-to the next engine integration stage.
+first instrument added to an empty slot defaults to the front; it can then be
+moved freely among effects. Arrangement, Session and offline rendering honor
+the stored gap: audio enters the effect prefix, the instrument adds audio from
+MIDI at the gap,
+and the suffix processes their sum. An absent or bypassed instrument adds no
+instrument audio while source audio continues through the effects. See the
+[instrument ordering and release contract](lattice-instruments.md).
 
 `hex_engine::compile::project` resolves the snapshot's asset IDs through a decoded
 PCM bank, checks exact rate/frame metadata, and produces immutable playback data.
@@ -134,8 +138,14 @@ repeats that region; a one-shot emits silence after its region is exhausted.
 Compilation and history allocate on the control side and must not enter a callback.
 The render hot path shares original PCM through Arc and scans clips once per block.
 
-The desktop fixed bank is unchanged. Replacing it with editable compiled playback
-requires explicit graph ownership and off-callback final destruction first.
+The generated `--demo` retains its fixed bank. The default desktop editor uses
+the canonical project through `hex-session`, which compiles immutable
+`PreparedRevision` candidates on control and constructs audio-owned playback
+before publication. The bounded audio handoff preserves the running graph on
+refusal; retired playback/graph owners return to control for final destruction.
+See [runtime ownership](runtime.md) and the finite device limits in the
+[instrument contract](lattice-instruments.md). This does not establish general
+mutable chase, unrestricted device density or physical audio deadlines.
 
 ## Modern CPU and latency requirements
 

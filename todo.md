@@ -667,3 +667,10 @@ measurements show similar speed and bounded note-memory reduction, not native
 deadline proof. Host admission/retirement and native Operator remain open under
 2169/19. Full CI evidence is recorded in the focused PR/Pulse ticket.
 See [compact kernel contract](docs/operator-context.md).
+
+Pulse2173: current architecture orientation now documents one freely positioned
+instrument, actual prefix/instrument/suffix rendering and the canonical prepared
+editor path separately from the fixed generated demo. Source was checked against
+compiler/bootstrap/session/audio ownership; links and diff reviewed. Historical
+milestones and native/mutable/performance limitations are preserved. Docs-only
+local guards/format evidence is tracked in its separate PR/Pulse ticket.
