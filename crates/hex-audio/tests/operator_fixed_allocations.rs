@@ -226,3 +226,104 @@ fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<(), Box<dyn Error>>
+{
+    let mut editor = Editor::new(Project::new(48_000)?, 16)?;
+    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+        name: "eq eight allocation".into(),
+    })?
+    else {
+        return Err("track missing".into());
+    };
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let mut state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.eq8"),
+    )?;
+    for (id, value) in [
+        (1, ParameterValue::Bool(true)),
+        (2, ParameterValue::Choice(3)),
+        (3, ParameterValue::Float(1_200.0)),
+        (4, ParameterValue::Float(8.0)),
+        (5, ParameterValue::Float(1.2)),
+    ] {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            ParameterId::from_static(id),
+            value,
+        )?;
+    }
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    })?;
+    let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })?
+    else {
+        return Err("clip missing".into());
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?;
+
+    let revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    control
+        .publish(playback)
+        .map_err(|_| "publication refused")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "play refused")?;
+    let mut output = [[0.0; 2]; 128];
+    let mut active_output = false;
+    for _ in 0..48 {
+        let measured = measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).expect("eq8 render");
+        });
+        active_output |= output.iter().flatten().any(|sample| sample.abs() > 1.0e-6);
+        assert_eq!(measured.count_total, 0, "callback allocation count");
+        assert_eq!(measured.bytes_total, 0, "callback allocation bytes");
+        assert_eq!(measured.count_current, 0, "callback net allocation count");
+        assert_eq!(measured.bytes_current, 0, "callback net allocation bytes");
+    }
+    assert!(
+        active_output,
+        "registered EQ8 path produced no audible frames"
+    );
+
+    control.request_shutdown();
+    let measured = measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).expect("eq8 shutdown render");
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    control.reclaim();
+    Ok(())
+}

@@ -6,6 +6,7 @@ mod frame;
 mod numeric;
 mod numeric_control;
 mod numeric_text;
+mod response_graph;
 mod style;
 
 pub use color_picker::{
@@ -25,6 +26,9 @@ pub use numeric_control::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
     NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
     bind_numeric_control_keys,
+};
+pub use response_graph::{
+    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
 };
 pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS};
 

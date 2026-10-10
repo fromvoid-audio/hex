@@ -128,6 +128,8 @@ pub enum ParameterPresentation {
     /// Display and edit the canonical value directly.
     #[default]
     Linear,
+    /// Canonical positive values are edited and presented on a logarithmic scale.
+    Logarithmic,
     /// Canonical values are linear amplitudes presented and entered in dB.
     LinearAmplitudeDecibels,
 }
@@ -151,6 +153,11 @@ impl ParameterDescriptor {
         }
         if self.presentation == ParameterPresentation::LinearAmplitudeDecibels
             && !matches!(self.kind, ParameterKind::Float { min, max, .. } if min >= 0.0 && max > min)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if self.presentation == ParameterPresentation::Logarithmic
+            && !matches!(self.kind, ParameterKind::Float { min, max, .. } if min > 0.0 && max > min)
         {
             return Err(DeviceContractError::InvalidDescriptor);
         }

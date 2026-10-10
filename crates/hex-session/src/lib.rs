@@ -547,6 +547,59 @@ impl Session {
         Ok((Arc::new(preview.project().clone()), prepared))
     }
 
+    /// Prepare two native parameter values as one atomic project overlay.
+    /// Both values are validated into a single replacement state before any
+    /// candidate project or playback revision is built.
+    pub fn preview_device_parameter_pair(
+        &self,
+        device: hex_project::DeviceId,
+        first: (
+            hex_lattice_contract::ParameterId,
+            hex_lattice_contract::ParameterValue,
+        ),
+        second: (
+            hex_lattice_contract::ParameterId,
+            hex_lattice_contract::ParameterValue,
+        ),
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        if first.0 == second.0 {
+            return Err(SessionError::Invalid(
+                "device parameter pair must target two distinct parameters",
+            ));
+        }
+        let class = self.native_device_class(device)?;
+        let current = self
+            .project()
+            .device(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            current.state(),
+            first.0,
+            first.1,
+        )?;
+        let state =
+            hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared(
+            Command::ReplaceDeviceState { device, state },
+            |candidate| {
+                hex_engine::PreparedRevision::prepare(
+                    candidate,
+                    &media,
+                    Arc::clone(&table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
     /// Commit only this parameter onto the latest authored device state.
     pub fn commit_device_parameter(
         &mut self,
@@ -566,6 +619,43 @@ impl Session {
             parameter,
             value,
         )?;
+        self.command_prepared_revision(Command::ReplaceDeviceState { device, state }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    /// Commit a validated native parameter pair as one replacement state and
+    /// one undoable editor command.
+    pub fn commit_device_parameter_pair(
+        &mut self,
+        device: hex_project::DeviceId,
+        first: (
+            hex_lattice_contract::ParameterId,
+            hex_lattice_contract::ParameterValue,
+        ),
+        second: (
+            hex_lattice_contract::ParameterId,
+            hex_lattice_contract::ParameterValue,
+        ),
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        if first.0 == second.0 {
+            return Err(SessionError::Invalid(
+                "device parameter pair must target two distinct parameters",
+            ));
+        }
+        let class = self.native_device_class(device)?;
+        let current = self
+            .project()
+            .device(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            current.state(),
+            first.0,
+            first.1,
+        )?;
+        let state =
+            hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
         self.command_prepared_revision(Command::ReplaceDeviceState { device, state }, previous)
             .map(|(_, prepared)| prepared)
     }

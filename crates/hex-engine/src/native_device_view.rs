@@ -141,6 +141,51 @@ pub fn native_device_parameter_for_class(
     }
 }
 
+/// Sample a prepared native effect's two processor-lane responses at bounded
+/// frequencies. These lanes are processor-defined (EQ8 stereo, L/R or M/S),
+/// not a general physical L/R transfer matrix. This control-side query uses
+/// prepared coefficients so visualizations cannot drift from the actual DSP.
+pub fn native_effect_frequency_response(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    frequencies_hz: &[f32],
+) -> Result<Option<Vec<[f32; 2]>>, Invalid> {
+    if frequencies_hz.is_empty()
+        || frequencies_hz.len() > 256
+        || frequencies_hz.iter().any(|frequency| {
+            !frequency.is_finite() || *frequency <= 0.0 || *frequency >= sample_rate as f32 * 0.5
+        })
+        || frequencies_hz.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(Invalid("invalid native response frequency range"));
+    }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let Some(processor) = registry
+        .prepare_processor(state, sample_rate)
+        .map_err(|_| Invalid("native device response is unavailable"))?
+    else {
+        return Ok(None);
+    };
+    let mut response = Vec::new();
+    response
+        .try_reserve_exact(frequencies_hz.len())
+        .map_err(|_| Invalid("native device response allocation failed"))?;
+    for frequency in frequencies_hz {
+        let Some(magnitude) = processor.frequency_response_at_hz(*frequency) else {
+            return Ok(None);
+        };
+        if magnitude
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(Invalid("native device response is invalid"));
+        }
+        response.push(magnitude);
+    }
+    Ok(Some(response))
+}
+
 /// Look up descriptors only in the explicitly selected class registry.
 pub fn native_device_descriptors_for_class(
     class: NativeDeviceClass,
@@ -232,16 +277,19 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].name, "utility");
-        let original = crate::default_native_device_state(catalog[0].type_id).unwrap();
-        let first = catalog[0].parameters[0];
+        assert_eq!(catalog.len(), 2);
+        let utility = catalog
+            .iter()
+            .find(|entry| entry.name == "utility")
+            .unwrap();
+        let original = crate::default_native_device_state(utility.type_id).unwrap();
+        let first = utility.parameters[0];
         let changed =
             crate::patch_native_device_parameter(&original, first.id, ParameterValue::Float(0.25))
                 .unwrap();
         let view = native_device_view(&changed).unwrap();
         assert_eq!(view.name, "utility");
-        assert_eq!(view.parameters.len(), catalog[0].parameters.len());
+        assert_eq!(view.parameters.len(), utility.parameters.len());
         assert_eq!(view.parameters[0].value, ParameterValue::Float(0.25));
         assert_eq!(
             crate::native_device_parameter(&original, first.id).unwrap(),
@@ -282,6 +330,56 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frequency_response_uses_registered_effect_coefficients_and_channel_banks() {
+        let state = crate::default_native_device_state(hex_devices::eq8::EQ8_TYPE_ID).unwrap();
+        let flat = native_effect_frequency_response(&state, 48_000, &[500.0, 1_000.0, 2_000.0])
+            .unwrap()
+            .expect("eq8 response");
+        assert!(
+            flat.iter()
+                .flatten()
+                .all(|magnitude| (*magnitude - 1.0).abs() < 1e-6)
+        );
+
+        let definition = &hex_devices::eq8::EQ8_DEFINITION;
+        let mut changed = definition
+            .patch_parameter(
+                &state,
+                hex_devices::eq8::parameter::MODE,
+                ParameterValue::Choice(1),
+            )
+            .unwrap();
+        changed = definition
+            .patch_parameter(
+                &changed,
+                hex_devices::eq8::parameter::enabled(1, 3),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        changed = definition
+            .patch_parameter(
+                &changed,
+                hex_devices::eq8::parameter::frequency(1, 3),
+                ParameterValue::Float(1_000.0),
+            )
+            .unwrap();
+        changed = definition
+            .patch_parameter(
+                &changed,
+                hex_devices::eq8::parameter::gain(1, 3),
+                ParameterValue::Float(6.0),
+            )
+            .unwrap();
+        let response =
+            native_effect_frequency_response(&changed, 48_000, &[500.0, 1_000.0, 2_000.0])
+                .unwrap()
+                .expect("eq8 response");
+        assert!(response[1][0] > 1.9);
+        assert!((response[1][1] - 1.0).abs() < 1e-6);
+        assert!(native_effect_frequency_response(&changed, 48_000, &[0.0]).is_err());
+    }
+
+    #[test]
     fn unsupported_or_malformed_states_are_not_presented_as_defaults() {
         let entry = native_device_catalog().unwrap().remove(0);
         let unknown =
@@ -299,8 +397,9 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 1);
-        assert_eq!(effects[0].name, "utility");
+        assert_eq!(effects.len(), 2);
+        assert!(effects.iter().any(|entry| entry.name == "utility"));
+        assert!(effects.iter().any(|entry| entry.name == "eq eight"));
         assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()

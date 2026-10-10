@@ -486,6 +486,112 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
+    cx: &mut TestAppContext,
+) {
+    let service = Service::new(48_000, 8, 8_000_000).expect("service");
+    let _initial = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "eq8 source".into(),
+        }))
+        .expect("add track");
+    let track = match receive_service_event(&service)
+        .created
+        .expect("track created")
+    {
+        Created::Track(track) => track,
+        _ => panic!("track result"),
+    };
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static("hex.eq8")),
+            before: None,
+        })
+        .expect("add regular EQ8");
+    let regular_event = receive_service_event(&service);
+    let regular_device = regular_event
+        .state
+        .project
+        .track(track)
+        .expect("regular track")
+        .devices()[0]
+        .id();
+    service
+        .submit(Request::Edit(Command::AddReturnTrack {
+            name: "eq8 return".into(),
+        }))
+        .expect("add return");
+    let return_track = match receive_service_event(&service)
+        .created
+        .expect("return created")
+    {
+        Created::ReturnTrack(id) => id,
+        _ => panic!("return result"),
+    };
+    service
+        .submit(Request::Edit(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+            )
+            .expect("EQ8 default state"),
+        }))
+        .expect("insert return EQ8");
+    let state = receive_service_event(&service).state;
+    let return_device = state
+        .project
+        .return_tracks()
+        .iter()
+        .find(|candidate| candidate.id() == return_track)
+        .expect("return owner")
+        .devices()[0]
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let regular_body = Box::leak(format!("eq8-body-{}", regular_device.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(regular_body).is_some(),
+        "regular EQ8 body"
+    );
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let return_body = Box::leak(format!("eq8-body-{}", return_device.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(return_body).is_some(),
+        "Return EQ8 body"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.device_panel.eq8_panels.contains_key(&regular_device),
+            "changing owner retires cached regular panel state"
+        );
+        assert!(view.device_panel.eq8_panels.contains_key(&return_device));
+    });
+    editor.update(cx, |view, cx| {
+        view.focused_return = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(regular_body).is_some(),
+        "regular EQ8 returns"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_panel.eq8_panels.contains_key(&regular_device));
+        assert!(!view.device_panel.eq8_panels.contains_key(&return_device));
+    });
+}
+
+#[gpui::test]
 fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_pages(
     cx: &mut TestAppContext,
 ) {

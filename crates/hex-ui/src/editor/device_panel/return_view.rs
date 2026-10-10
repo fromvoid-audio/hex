@@ -30,6 +30,7 @@ pub(super) fn render(
         .map(|snapshot| snapshot.target);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -49,6 +50,7 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    retire_removed_eq8_graphs(view, cx, &alive);
     view.device_panel
         .pending_values
         .retain(|key, _| alive.contains(&key.device));
@@ -276,6 +278,17 @@ fn render_return_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq8") {
+                super::eq8_panel::render_body(
+                    view,
+                    cx,
+                    id,
+                    device.state(),
+                    device_view,
+                    view.state
+                        .as_ref()
+                        .map_or(48_000, |state| state.project.sample_rate()),
+                )
             } else {
                 let mut body = div()
                     .id(ElementId::Name(
@@ -305,7 +318,7 @@ fn render_return_effect(
                 }
                 body
             };
-            if device_view.type_id.as_str() == Ok("hex.utility") {
+            if matches!(device_view.type_id.as_str(), Ok("hex.utility" | "hex.eq8")) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
@@ -333,7 +346,10 @@ fn render_return_effect(
             );
             let body = div()
                 .h(px(
-                    if device.state().type_id().as_str() == Ok("hex.utility") {
+                    if matches!(
+                        device.state().type_id().as_str(),
+                        Ok("hex.utility" | "hex.eq8")
+                    ) {
                         UTILITY_FRAME_BODY_HEIGHT
                     } else {
                         DEVICE_FRAME_BODY_HEIGHT
@@ -342,7 +358,10 @@ fn render_return_effect(
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 .child(theme::text(format!("unsupported device state · {error}")));
-            if device.state().type_id().as_str() == Ok("hex.utility") {
+            if matches!(
+                device.state().type_id().as_str(),
+                Ok("hex.utility" | "hex.eq8")
+            ) {
                 compact_device_frame(title, control_style(), actions, body).into_any_element()
             } else {
                 device_frame(title, control_style(), actions, body).into_any_element()
@@ -357,10 +376,10 @@ fn render_return_effect(
             device_view,
         ),
     );
-    let frame_width = if device.state().type_id().as_str() == Ok("hex.utility") {
-        UTILITY_FRAME_WIDTH
-    } else {
-        DEVICE_FRAME_WIDTH
+    let frame_width = match device.state().type_id().as_str() {
+        Ok("hex.utility") => UTILITY_FRAME_WIDTH,
+        Ok("hex.eq8") => super::eq8_panel::FRAME_WIDTH,
+        _ => DEVICE_FRAME_WIDTH,
     };
     div()
         .id(ElementId::Name(

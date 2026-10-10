@@ -707,7 +707,10 @@ fn run_worker(
                         if outcome.canonical_changed {
                             unsaved = true;
                             replacement_revision = Some(prepared);
-                        } else if matches!(gesture, GestureRequest::Change { .. }) {
+                        } else if matches!(
+                            gesture,
+                            GestureRequest::Change { .. } | GestureRequest::ChangePair { .. }
+                        ) {
                             preview_prepared = Some(prepared);
                             preview_project = outcome.preview_project;
                         } else {
