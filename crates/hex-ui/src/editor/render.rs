@@ -269,7 +269,7 @@ impl Render for EditorView {
                 .flex_col()
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
-                .child(self.mixer_strip(cx))
+                .child(self.mixer_strip(cx, true))
         } else {
             div()
                 .flex_1()
@@ -278,7 +278,7 @@ impl Render for EditorView {
                 .flex_col()
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
-                .child(self.mixer_strip(cx))
+                .child(self.mixer_strip(cx, false))
         };
         let workspace = div()
             .flex_1()
