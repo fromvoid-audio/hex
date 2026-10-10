@@ -126,6 +126,10 @@ pub struct PreparedSessionMidiClip {
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_enabled: bool,
+    // Registry declarations affect event/voice admission even when the saved
+    // device identity and state are unchanged, so they are part of template
+    // reuse and runtime handoff compatibility.
+    mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
     pub work: SessionWorkEnvelope,
 }
 
@@ -232,6 +236,7 @@ impl PreparedSessionMidiClip {
         self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_enabled == other.instrument_enabled
+            && self.mutable_limits == other.mutable_limits
     }
 
     pub(crate) fn occurrence(
@@ -730,28 +735,19 @@ impl PreparedSessionInventory {
                 SessionCellContent::Stop => PreparedSessionCellContent::Stop,
                 SessionCellContent::Midi(clip) => {
                     let source_identity = clip.source_identity();
-                    let (
-                        instrument_id,
-                        instrument_state,
-                        instrument_enabled,
-                        instrument_bank,
-                        mutable_tail_frames,
-                    ) = instrument_configs
+                    let config = instrument_configs
                         .iter()
                         .find(|config| config.track == cell.track())
-                        .map(|config| {
-                            (
-                                config.device_id,
-                                config.state.clone(),
-                                config.config.is_some() && !config.bypassed,
-                                config.note_bank.as_ref(),
-                                config
-                                    .mutable_runtime
-                                    .as_ref()
-                                    .map(|factory| factory.max_release_tail_frames()),
-                            )
-                        })
                         .ok_or(crate::Invalid("Session cell track is missing"))?;
+                    let mutable_limits = config
+                        .mutable_runtime
+                        .as_deref()
+                        .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
+                        .transpose()?;
+                    let instrument_id = config.device_id;
+                    let instrument_state = config.state.clone();
+                    let instrument_enabled = config.config.is_some() && !config.bypassed;
+                    let instrument_bank = config.note_bank.as_ref();
                     let cached = can_reuse
                         .then(|| previous.and_then(|old| old.midi_clip(clip.id())))
                         .flatten()
@@ -779,12 +775,13 @@ impl PreparedSessionInventory {
                         .ok_or(crate::Invalid("Session MIDI note bank is missing"))?;
                     let instrument = if let Some(old) = cached.filter(|old| {
                         Arc::ptr_eq(old.instrument.note_bank(), bank)
-                            && old.instrument.is_event_source() == mutable_tail_frames.is_some()
+                            && old.instrument.is_event_source() == mutable_limits.is_some()
+                            && old.mutable_limits == mutable_limits
                     }) {
                         Arc::clone(&old.instrument)
-                    } else if let Some(tail_frames) = mutable_tail_frames {
+                    } else if let Some(limits) = mutable_limits {
                         Arc::new(
-                            PreparedMidiInstrumentTemplate::prepare_events(&source, tail_frames)
+                            PreparedMidiInstrumentTemplate::prepare_events(&source, limits)
                                 .map_err(template_error)?,
                         )
                     } else {
@@ -799,7 +796,8 @@ impl PreparedSessionInventory {
                     };
                     let work = if let Some(old) = cached.filter(|old| {
                         Arc::ptr_eq(old.instrument.note_bank(), bank)
-                            && old.instrument.is_event_source() == mutable_tail_frames.is_some()
+                            && old.instrument.is_event_source() == mutable_limits.is_some()
+                            && old.mutable_limits == mutable_limits
                     }) {
                         old.work
                     } else {
@@ -842,6 +840,7 @@ impl PreparedSessionInventory {
                         instrument_id,
                         instrument_state,
                         instrument_enabled,
+                        mutable_limits,
                         work,
                     });
                     PreparedSessionCellContent::Midi(clip.id())

@@ -259,7 +259,7 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
 }
 
 #[test]
-fn mutable_transport_admission_bounds_aggregate_edges_across_arrangement_clips() {
+fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
     let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
     let track = &mut snapshot.tracks[0];
     track.instrument.as_mut().expect("fixture instrument").state =
@@ -317,11 +317,68 @@ fn mutable_transport_admission_bounds_aggregate_edges_across_arrangement_clips()
     snapshot.loop_region = Some(LoopRegion::new(600, 800, true).expect("valid transport loop"));
     let project = legacy_project_from_snapshot(snapshot).expect("valid adjacent clip fixture");
 
-    // At the first short-note frame, 48 long gates end while 128 adjacent
-    // clips each contribute one NoteOn and one NoteOff in the same 256-frame
-    // query: 304 ordered edges, although no more than 48 voices overlap.
+    // One finite 256-frame query spans 48 long notes and 128 short clips. Its
+    // aggregate NoteOn/NoteOff edges exceed the host capacity, although no
+    // more than 48 voices overlap. Reject at candidate preparation, before a
+    // transport-loop runtime can be constructed.
     assert_eq!(
-        SessionPlayback::new(prepare_mutable(&project)).err(),
+        super::source_loop_tests::try_prepare_mutable(&project).unwrap_err(),
+        crate::Invalid("mutable midi event density exceeds the instrument capacity per query")
+    );
+}
+
+#[test]
+fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
+    let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
+    let first_note_id = snapshot.next_id;
+    let track = &mut snapshot.tracks[0];
+    track.instrument.as_mut().expect("fixture instrument").state =
+        hex_lattice_contract::NativeDeviceState::new(
+            hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
+            1,
+            vec![0],
+        )
+        .expect("valid test instrument state");
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut track.content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let clip = &mut midi_clips[0];
+    clip.length_raw = beat_raw_for_frames(2_000);
+    clip.source_length_raw = clip.length_raw;
+    clip.loop_start_raw = 0;
+    clip.loop_end_raw = clip.source_length_raw;
+    clip.looping = false;
+    clip.notes = (0..128_u64)
+        .map(|index| MidiNoteSnapshot {
+            id: first_note_id + index,
+            start_raw: beat_raw_for_frames(17 + index),
+            duration_raw: beat_raw_for_frames(1),
+            pitch: 36 + (index % 48) as u8,
+            channel: 0,
+            velocity: 100,
+        })
+        .chain((0..64_u64).map(|index| MidiNoteSnapshot {
+            id: first_note_id + 128 + index,
+            start_raw: beat_raw_for_frames(450),
+            duration_raw: beat_raw_for_frames(550),
+            pitch: 36 + (index % 48) as u8,
+            channel: 0,
+            velocity: 100,
+        }))
+        .collect();
+    snapshot.next_id = first_note_id + 192;
+    snapshot.loop_region = Some(LoopRegion::new(0, 800, true).expect("valid transport loop"));
+    let project = legacy_project_from_snapshot(snapshot).expect("valid edge-density project");
+
+    // The finite Arrangement has at most 256 edges in any 256-frame window,
+    // at most 128 onsets, and at most 64 release-inclusive voices. On a
+    // transport wrap, however, the 64 gate-offs clamped to loop end map to
+    // phase zero alongside the 256 short-note edges in phases 17 through 145.
+    let finite = prepare_mutable(&project);
+    assert_eq!(
+        SessionPlayback::new(finite).err(),
         Some(SessionPlaybackError::MutableInstrumentLoopDensity)
     );
 }

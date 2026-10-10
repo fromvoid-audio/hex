@@ -419,6 +419,28 @@ prepared audio callback and requires zero total and signed-net allocations.
 These are headless source checks; native device, audible deadline and broader
 musical editing acceptance remain open.
 
+## Mutable device capacity admission — Pulse 2220
+
+Before publishing a finite Arrangement revision or ongoing Session inventory,
+the control-side compiler proves both event-edge density and release-inclusive
+voice density against each prepared mutable device's declarations. The effective
+limits are the smaller of the device declaration and the host capacities (256
+events and 64 active occurrences). Every sliding half-open 256-frame window
+counts both NoteOn and NoteOff edges, including dense short notes across multiple
+clips; exact-boundary NoteOffs sort before NoteOns. Active voices include their
+declared release tails. Zero or over-host factory declarations and candidates
+that exceed either bound are rejected before project history or playback
+publication. The audio callback continues to use the same fixed bounded event
+and voice storage, so it never needs to drop an admitted NoteOff or allocate a
+larger buffer. Session template/work reuse also keys on the copied declarations,
+so swapping a same-ID registry implementation with tighter event limits or a
+longer release tail re-runs admission instead of retaining stale proof data.
+
+Tests cover the 320-edge multi-clip event-only counterexample with bounded onset
+and voice density, exact event and NoteOff/NoteOn boundaries, lower registered
+device capacities, first-seam source-loop tails, and a rejected editor candidate
+that preserves undo/redo, project contents and already-prepared PCM.
+
 ## Canonical Session data ownership — source accepted
 
 MidiSource owns source markers, loop settings and notes. Arrangement MidiClip

@@ -2057,3 +2057,15 @@ native input latency, callback deadlines, first audible output or UI readiness.
 They reinforce the need for responsive pending feedback and cancellation while
 reconstruction runs off the UI and audio callback. Native integration is
 Pulse2192; no comparison with Live or general 100-track workload claim follows.
+
+## native configuration comparison evidence — 10 October 2026
+
+The measurement-only configuration_profile example exercises the actual
+NativeRuntimeChain comparator at17,408 synthetic device slots. A busy-host paired
+272-chain run measured143334ns shared-Arc median versus2871083ns independent-equal
+median; its distribution and adversarial final-device/final-byte mismatch are
+recorded in[configuration-comparison.md](configuration-comparison.md). Payload
+size bounds are not measured memory traffic. Idle-host confirmation is Pulse2219;
+these samples do not establish native callback deadlines or justify an exact
+configuration semantics change. Pulse2108 retains control-side transition
+certificates as a separate possible optimization with exact fallback.

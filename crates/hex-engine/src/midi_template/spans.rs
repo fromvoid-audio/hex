@@ -532,7 +532,7 @@ impl PreparedMidiInstrumentTemplate {
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
         shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<Self, MidiTemplateError> {
-        Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false)
+        Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false, None)
     }
 
     /// Prepare a timing-only source for a mutable instrument event owner.
@@ -540,15 +540,16 @@ impl PreparedMidiInstrumentTemplate {
     /// analytic path.
     pub(crate) fn prepare_events(
         source: &PreparedMidiSourceTemplate,
-        release_frames: u64,
+        limits: crate::midi_compile::MutableInstrumentLimits,
     ) -> Result<Self, MidiTemplateError> {
         let bank = crate::midi_note_bank::PreparedMidiNoteBank::empty();
         Self::prepare_with_bank_mode(
             source,
             bank,
             crate::shared_analytic::SharedAnalyticContextTable::empty(),
-            Some(release_frames),
+            Some(limits.max_release_tail_frames),
             true,
+            Some(limits),
         )
     }
 
@@ -562,6 +563,7 @@ impl PreparedMidiInstrumentTemplate {
         shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
         event_release_frames: Option<u64>,
         event_source: bool,
+        mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
     ) -> Result<Self, MidiTemplateError> {
         let intro = prepare_spans(
             &source.intro_spans,
@@ -605,6 +607,24 @@ impl PreparedMidiInstrumentTemplate {
             source.period,
             release_raw,
         )?;
+        if let Some(limits) = mutable_limits {
+            let max_events = limits
+                .max_events_per_query
+                .min(crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY);
+            if source.max_query_edges() > max_events {
+                return Err(MidiTemplateError::InvalidSource(
+                    "mutable midi source exceeds instrument event capacity",
+                ));
+            }
+            let max_voices = limits
+                .max_active_occurrences
+                .min(crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK);
+            if max_active_voices > max_voices {
+                return Err(MidiTemplateError::InvalidSource(
+                    "mutable midi source exceeds instrument voice capacity",
+                ));
+            }
+        }
         let max_query_onsets = source.max_query_onsets();
         let max_span_hits = max_active_voices
             .checked_add(max_query_onsets)
