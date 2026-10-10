@@ -1,6 +1,22 @@
 # Project plan
 
-## active work unit — captured time-selection dragging, 9 October 2026
+Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
+Repository documents retain contracts, acceptance evidence and request order.
+
+## active work unit — persistent recent projects, 9 October 2026
+
+Pulse ticket 39: add native File > recent projects with ten bounded MRU paths.
+Record only successful opens, using the completed document path; failed opens
+retain the list. Stable path actions route through the same replacement safeguards.
+Separate versioned preferences load/save off the UI thread, preserve malformed
+files and native path bytes, and coalesce ordered writes. No project-schema changes.
+
+Acceptance: MRU/cap/native-path/round-trip and malformed-file tests; stable menu
+action identity after reorder; success-only promotion and guarded-open regressions.
+Full local CI on the focused clean commit, then a fresh review app for native
+submenu/reopen/restart checks. Next separate request: compact header (ticket 10).
+
+## accepted and merged work unit — captured time-selection dragging, 9 October 2026
 
 Keep an Arrangement time gesture captured from its valid pointer-down until
 left-button release, even over blank space, the browser or outside the window.
@@ -17,6 +33,8 @@ No capture/compilation/history edits during pointer updates or timer ticks.
 Bound per-tick work to visible geometry/current gesture and existing frame limits.
 Cover selection painting and time-chunk movement where they share capture/targets.
 Source checks and a focused PR precede a fresh native review build for the user.
+PR #17 passed full local CI on clean `25b797e`; the user accepted the review
+build and authorized merge on 9 October. Merged as `a250f83` (Pulse ticket 38).
 
 ## source-complete work unit — Space restarts at the edit position, 9 October 2026
 

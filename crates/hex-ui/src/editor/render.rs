@@ -2,10 +2,10 @@ use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
     ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, Redo,
-    RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop,
-    ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn,
-    ZoomOut,
+    OpenProject, OpenRecentProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection,
+    PreviousTrack, Quit, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
+    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
+    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme::{self, Palette};
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -416,6 +416,10 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
+            .on_action(cx.listener(|view, action: &OpenRecentProject, _, cx| {
+                view.open_recent_project(action);
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &SaveProject, _, cx| {
                 view.save_project(cx);
                 cx.notify();

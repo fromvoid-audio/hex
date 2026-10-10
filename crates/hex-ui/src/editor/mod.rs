@@ -35,6 +35,7 @@ mod mixer;
 mod musical_time;
 mod overview;
 mod play_intent;
+mod recent_projects;
 mod recovery;
 mod recovery_state;
 mod refresh;
@@ -68,6 +69,7 @@ use hex_audio::{PreparedOutput, prepared::Status};
 use hex_engine::playback::{Playback, PlaybackAction, PlaybackCommand};
 use hex_project::{ClipId, Command, SceneId, TrackId};
 use hex_session::service::{Request, Service, ViewState};
+use recent_projects::RecentProjectsState;
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
 use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
@@ -169,10 +171,16 @@ actions!(
     ]
 );
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = hex_editor, no_json)]
+pub(super) struct OpenRecentProject {
+    pub(super) path: std::path::PathBuf,
+}
+
 fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
-    menus::install(cx);
+    menus::install(cx, &[]);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -440,6 +448,7 @@ pub(super) struct EditorView {
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
     browser: browser::BrowserState,
+    recent_projects: RecentProjectsState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::InsertTrackAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -462,6 +471,7 @@ impl EditorView {
             service,
             output,
             browser::default_preferences_path(),
+            recent_projects::default_preferences_path(),
         )
     }
 
@@ -472,8 +482,16 @@ impl EditorView {
         service: Service,
         output: Result<PreparedOutput, String>,
         preferences_path: std::path::PathBuf,
+        recent_projects_path: std::path::PathBuf,
     ) -> Self {
-        Self::new_with_browser_preferences_path(window, cx, service, output, preferences_path)
+        Self::new_with_browser_preferences_path(
+            window,
+            cx,
+            service,
+            output,
+            preferences_path,
+            recent_projects_path,
+        )
     }
 
     fn new_with_browser_preferences_path(
@@ -482,6 +500,7 @@ impl EditorView {
         service: Service,
         output: Result<PreparedOutput, String>,
         preferences_path: std::path::PathBuf,
+        recent_projects_path: std::path::PathBuf,
     ) -> Self {
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
@@ -500,7 +519,7 @@ impl EditorView {
                     .await;
                 if this
                     .update(cx, |view, cx| {
-                        if view.tick() {
+                        if view.tick(cx) {
                             cx.notify();
                         }
                     })
@@ -530,6 +549,7 @@ impl EditorView {
         });
         focus.focus(window);
         let browser = browser::BrowserState::new(cx, preferences_path);
+        let recent_projects = RecentProjectsState::new(recent_projects_path);
         let mut view = Self {
             service,
             audio,
@@ -629,6 +649,7 @@ impl EditorView {
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
             browser,
+            recent_projects,
             context_menu: None,
             edit_cursor: None,
             time_selection: None,
@@ -638,6 +659,7 @@ impl EditorView {
             suppress_cursor_click: false,
         };
         view.browser_scan_initial(cx);
+        view.start_recent_projects_load(cx);
         view
     }
 

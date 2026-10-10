@@ -1483,6 +1483,7 @@ fn browser_restores_missing_user_folder_without_touching_real_preferences(cx: &m
                     service,
                     Err("offline test".into()),
                     preferences_path.clone(),
+                    directory.0.join("recent-projects.json"),
                 )
             })
         })
@@ -1519,6 +1520,7 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
                     service,
                     Err("offline test".into()),
                     preferences_path.clone(),
+                    directory.0.join("recent-projects.json"),
                 )
             })
         })

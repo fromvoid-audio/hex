@@ -232,3 +232,9 @@ Native checklist: paint and move a range below the last track; drag rapidly into
 browser and back; hold beyond left/right edges while zoomed/panned; release outside
 the window, then move normally and confirm no continued selection/scrolling.
 Also try Command/Option and Escape. Native AppKit delivery remains user acceptance.
+
+Native acceptance, 9 October 2026: the user accepted the captured-selection
+review build `hex-time-gesture-20261009.app` and authorized PR #17 to merge.
+It is merged as `a250f83`; exact source `25b797e` passed all 14 local CI steps.
+Pulse ticket 38 records this completion. This establishes the reviewed interaction
+acceptance, not physical input/paint timing measurements.

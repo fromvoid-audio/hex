@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Persist small, versioned application preferences that are independent of any
-one project, beginning with user-added browser folders.
+Persist small, versioned application preferences independent of any one project:
+user-added browser folders and recently opened project paths.
 
 ## Dependencies
 
@@ -15,9 +15,13 @@ path representations, bounded reads, and atomic same-directory publication.
 Project documents or history, browser listings, UI layout/navigation, audio
 state, plugin state, or synchronous filesystem work on the UI thread.
 
-User paths are retained in order, including folders that are currently missing.
+Browser places are retained in order, including folders that are currently
+missing. Recently opened projects use a separate document and retain missing
+paths so users can see and diagnose moved projects.
 UTF-8 paths use portable strings; non-UTF-8 paths use native Unix bytes or
 Windows UTF-16 code units and produce an explicit error on another platform.
-Documents are capped at 64 KiB, 14 user-added places, 4 KiB per path and 8 KiB
-of combined native path data. Saves use a synced temporary file in the destination
-directory and atomically rename it into place.
+Each document is capped at 64 KiB, 4 KiB per path and 8 KiB of combined native
+path data. Browser places are capped at 14; recent projects are capped at 10,
+most recent first. Saves use a synced temporary file in the destination
+directory and atomically rename it into place. Each feature uses its own file so
+independent background saves cannot overwrite one another.

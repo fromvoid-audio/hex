@@ -153,7 +153,7 @@ fn wait_for_worker(
     for _ in 0..500 {
         cx.update_window(handle, |_, _, cx| {
             editor.update(cx, |view, cx| {
-                view.tick();
+                view.tick(cx);
                 cx.notify();
             });
         })
