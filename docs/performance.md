@@ -1,3 +1,47 @@
+## mixed Session profiler oracle repair — 10 October 2026
+
+Pulse2113 fixes the independent profiling fixture, without changing runtime DSP,
+scheduling or comparison tolerance. Canonical snapshots always emit hybrid track
+contents. The oracle previously shortened Arrangement sources to the three-beat
+transport period only for the legacy instrument snapshot variant. Consequently
+its first repeated Arrangement occurrence was missing: regressions reproduced
+exact PCM mismatches at frame72,001 (constant tempo) and120,001 (repeating tempo)
+on source8b9b9428b8ac368162a5665f47c7c2e6d9d8049f. Matching both snapshot variants
+restores the intended finite reference. The exact full-output oracle now passes
+for direct, partitioned and prepared-wrapper playback across multiple wraps.
+
+One release run per mode on Apple M5 Pro/macOS26.6.2:48kHz,100 tracks,
+50 Arrangement/50 Session routes,4/8 sine voices per source, varied track gain/
+balance and0.73 master gain. Playback measures4,000 blocks of128frames after
+100 warmups; oracle setup and checksums are outside timing. Handoff measures100
+gain-only edits at64-frame steps, excluding compilation, render/oracle checks
+and retirement. No concurrent Cargo ran; other desktop load was uncontrolled.
+
+| Mode | p50 µs | p99 µs | max µs |
+| --- | ---: | ---: | ---: |
+| Playback, constant tempo |134.459|270.958|489.042|
+| Wrapper, constant tempo |127.625|265.458|485.667|
+| Playback, repeating tempo |126.291|262.625|375.167|
+| Wrapper, repeating tempo |136.000|272.791|399.000|
+| Gain handoff, constant tempo |17.541|22.417|23.584|
+| Gain handoff, repeating tempo |16.792|20.542|22.167|
+
+All six profiler modes complete their exact PCM checks. Playback reports zero
+sampled blocks beyond its nominal period; constant/repeating direct and wrapper
+checksums match respectively. These are short headless samples, not native audio
+API, plugin-chain, sustained physical deadline or before/after speed claims.
+The old fixture aborted before timing, so no valid baseline timing exists.
+
+Immutable binaries, six logs and source/hardware manifest:
+`artifacts/profiles/session-oracle-20261010/`. Capture base is the source above
+plus tracked fixture diffSHA256
+`7efd5d7d407081872c57a4afbe7817a3d61ebd6adb3c2c758a84fdef387245ae`;
+new regression source hash is recorded separately. Playback binarySHA256
+`d4e482bf8dea3e72bfa7a849725e6777b3a4ba7fd6e62620f793387d198665ec`;
+handoff binarySHA256
+`01f188cfcfcb76ac5dbb78b2d67b370cbaa4c3fa089d0b471fb8c6506dcbffb5`.
+Subsequent edits only document this evidence.
+
 ## prepared linear export policy — 10 October 2026
 
 Pulse 2159 adds an Arrangement-only export policy to shared playback. Three
@@ -364,10 +408,11 @@ sampler bytes, because repeated pitch/velocity pairs share entries. These are
 fixture-specific accounted bytes; maximum admitted graph storage is separately
 derived in `lattice-instruments.md` and is not a measurement of the full graph.
 
-The existing profile_session_playback aborts its independent mixed Session/finite
-PCM oracle comparison on the unchanged baseline, before timing in both direct
-and wrapper modes. Pulse2113 tracks diagnosis separately; do not weaken the
-comparison or claim usable timings from that example. Source/contract:
+On the 9 October baseline, profile_session_playback aborted its independent
+mixed Session/finite PCM comparison before timing in both direct and wrapper
+modes. Pulse2113 subsequently identified an obsolete snapshot-variant match in
+the profiling oracle; the 10 October checkpoint above restores exact comparison
+and reports new timings. The failed baseline has no usable timing result. Source/contract:
 [lattice instruments](lattice-instruments.md), Pulse2114.
 
 ## Wide analytic payload profiles — 9 October 2026
