@@ -1398,3 +1398,27 @@ NoteOff, release and shutdown with construction/reclamation outside measurement.
 Targeted checks passed; exact-head full local CI, focused PR publication and
 combined native review build follow. Native UI/listening, physical deadlines,
 full Operator parity and general live parameter update behavior remain open.
+
+## 10 October 2026 — review65 native-feedback checkpoint
+
+Focused [PR104](https://github.com/PORTALSURFER/hex/pull/104), sourcef927aea,
+passed all16 local checks20261010T110805Z-f279bcc4; combinedcf53fb2 passed all16
+checks20261010T110805Z-481ef91b. Both clean/stale=false. Pulse2225 is
+ready_for_review; native UI/listening remains open. Four old tail/capacity
+fixtures now render genuinely audible outgoing Arrangement notes, preserving
+their original two-owner assertions after the exact-cut phantom-tail fix.
+
+Fresh optimized release31.09seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-feedback-native-review-20261010-cf53fb2.app.
+Signed binarySHA2567483db2bf08a4975f3ce0b23004e3d4cfb0fc3b75a69f977704849d4814d3cd8.
+Adjacent manifest records67 integrated sourcePRlinks38–104. This app enables
+native feedback controls and the bounded16-voice runtime. Check feedback while
+stopped, incoming-FM availability/reactivation, MIDI playback and save/reopen.
+Source removal retains already-playing authored gates/releases while removed
+later notes do not retrigger. Active class switching remains a conservative
+refusal with canonical-versus-applied state visible under Pulse2180.
+
+No agent app launch or automatic merge. Previous apps remain intact. Codex
+attachment limit100 prevented PR attachment; verified link retained in Pulse
+and this ledger. Vendor future-compatibility warnings remain Pulse2143; no
+physical deadline,64-voice support or full Live feedback-law parity claim.
