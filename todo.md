@@ -61,6 +61,11 @@ Utility filters passed all 14 checks on `ee87e6e` (147.627 s, [PR27](https://git
 stateful runtime 16 admission remains active. Native panel/Utility acceptance stays open.
 Native interaction/listening remains open. See
 [device controls](docs/device-controls.md).
+Pinned main 12 is source-complete in [PR30](https://github.com/PORTALSURFER/hex/pull/30),
+all 14 clean CI steps passed on `3ee1edd` (270.703 s). Main-project selection 14
+is under focused verification; source checks include mixed-content 100-track
+splitting in one Undo. Empty-project and move-scope regression tests pass after storage recovery; all
+four project split, seven main-row and eighteen edit-cursor tests pass. Native acceptance remains open; see [main track](docs/main-track.md).
 
 ## merged PR history and remaining acceptance
 

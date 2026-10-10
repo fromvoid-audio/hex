@@ -375,12 +375,21 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let started = cursor_down_entity.update(cx, |view, _| {
-                            let move_started = view.begin_time_range_move_gesture(x, y);
+                            let move_started = view.begin_main_time_range_move_gesture(x, y)
+                                || view.begin_time_range_move_gesture(x, y);
                             let started = if move_started {
                                 view.update_time_range_copy_modifier(event.modifiers.alt);
                                 true
                             } else {
-                                view.begin_time_selection_gesture(x, y, event.modifiers.platform)
+                                view.begin_main_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                ) || view.begin_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                )
                             };
                             if started {
                                 view.focus.focus(window);
@@ -539,6 +548,34 @@ impl EditorView {
         lines: &[super::musical_time::GridLine],
         cx: &mut Context<Self>,
     ) -> Div {
+        let lane_entity = cx.entity();
+        let lane = div()
+            .id("main-track-lane")
+            .debug_selector(|| "main-track-lane".to_owned())
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .children([main_track_grid_layer(bands, lines, viewport)])
+            .children(self.main_time_selection_overlay(viewport))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, _, cx| {
+                        lane_entity.update(cx, |view, _| {
+                            view.main_track_lane_bounds = Some(super::drag::LaneBounds {
+                                left: f32::from(bounds.origin.x),
+                                width: f32::from(bounds.size.width),
+                                top: f32::from(bounds.origin.y),
+                                height: f32::from(bounds.size.height),
+                            });
+                            view.main_track_lane_epoch = view.drag_layout_generation;
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
         div()
             .debug_selector(|| "pinned-main-track".to_owned())
             .h(px(TRACK_ROW_HEIGHT))
@@ -547,16 +584,7 @@ impl EditorView {
             .border_t_1()
             .border_color(rgb(Palette::BORDER))
             .bg(rgb(Palette::SURFACE))
-            .child(
-                div()
-                    .id("main-track-lane")
-                    .debug_selector(|| "main-track-lane".to_owned())
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .children([main_track_grid_layer(bands, lines, viewport)]),
-            )
+            .child(lane)
             .child(
                 div()
                     .id("main-track-header")

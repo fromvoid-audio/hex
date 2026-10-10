@@ -197,6 +197,12 @@ pub enum Command {
         clip: ClipId,
         frame: u64,
     },
+    /// Split every Arrangement clip crossing one absolute frame on the given
+    /// tracks as one atomic edit.
+    SplitTracksAtFrame {
+        tracks: Vec<TrackId>,
+        frame: u64,
+    },
     /// Trim an absolute timeline edge, clamping to the nearest valid clip region.
     TrimClipEdge {
         clip: ClipId,
@@ -1084,6 +1090,9 @@ impl Project {
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
                 Ok(Created::Clip(right_id))
+            }
+            Command::SplitTracksAtFrame { tracks, frame } => {
+                crate::split_tracks::apply(self, &tracks, frame)
             }
             Command::NudgeClip { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;

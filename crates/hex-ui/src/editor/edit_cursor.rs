@@ -97,6 +97,7 @@ impl EditorView {
             anchor_frame: frame,
             end_frame: frame,
         });
+        self.time_selection_project_scope = false;
         self.selected_track = Some(track);
         self.focus.focus(window);
         cx.notify();
@@ -111,6 +112,30 @@ impl EditorView {
         {
             return self.cancel_time_selection_gesture();
         }
+        if self.time_selection_project_scope {
+            let first_last = self.state.as_ref().and_then(|state| {
+                Some((
+                    state.project.tracks().first()?.id(),
+                    state.project.tracks().last()?.id(),
+                ))
+            });
+            if let Some((first, last)) = first_last {
+                if let Some(cursor) = self.edit_cursor.as_mut() {
+                    cursor.track = first;
+                }
+                if let Some(selection) = self.time_selection.as_mut() {
+                    selection.anchor_track = first;
+                    selection.end_track = last;
+                }
+            } else {
+                self.edit_cursor = None;
+                self.time_selection = None;
+                self.time_selection_project_scope = false;
+                self.time_selection_gesture = None;
+                self.suppress_cursor_click = false;
+                return true;
+            }
+        }
         let Some(cursor) = &mut self.edit_cursor else {
             return self.cancel_time_selection_gesture();
         };
@@ -122,6 +147,7 @@ impl EditorView {
         {
             self.edit_cursor = None;
             self.time_selection = None;
+            self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
             self.suppress_cursor_click = false;
             return true;
@@ -133,6 +159,7 @@ impl EditorView {
             })
         }) {
             self.time_selection = None;
+            self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
             self.suppress_cursor_click = false;
             return true;
@@ -209,6 +236,45 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
+        if self.time_selection_project_scope {
+            let tracks: Vec<_> = state
+                .project
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect();
+            let beat = state.project.tempo_map().frame_to_beat(cursor.frame).ok();
+            let has_crossing_clip = state.project.tracks().iter().any(|track| {
+                track.clips().iter().any(|clip| {
+                    cursor.frame > clip.start()
+                        && clip
+                            .start()
+                            .checked_add(clip.duration())
+                            .is_some_and(|end| cursor.frame < end)
+                }) || beat.is_some_and(|beat| {
+                    track.midi_clips().iter().any(|clip| {
+                        beat > clip.start()
+                            && clip
+                                .start()
+                                .raw()
+                                .checked_add(clip.length().raw())
+                                .is_some_and(|end| beat.raw() < end)
+                    })
+                })
+            });
+            if !has_crossing_clip {
+                self.error = Some("edit cursor must be inside a clip to split".into());
+                return;
+            }
+            self.cancel_duplicate_chain();
+            if self.enqueue(Request::Edit(Command::SplitTracksAtFrame {
+                tracks,
+                frame: cursor.frame,
+            })) {
+                self.selected_clip = None;
+            }
+            return;
+        }
         let Some(track) = state.project.track(cursor.track) else {
             self.error = Some("edit cursor track no longer exists".into());
             return;

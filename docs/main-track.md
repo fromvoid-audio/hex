@@ -10,8 +10,8 @@ Main is not a regular TrackId or clip/sample destination. Arrangement bounds
 remain the upper regular region. The outer drag surface spans both regions so
 crossing/releasing over main updates and cancels previews safely instead of
 leaving stale regular drop targets. No project schema or audio routing changes.
-Main-project time selection (ticket 14) and real return routing/rows (13) follow as
-separate focused features.
+Main-project time selection (ticket 14) is implemented in a separate focused
+change under verification. Real return routing/rows (13) remain a separate feature.
 
 Source checks pass: 304 UI tests with two existing ignores, including empty/short/
 dense minimum 880×540 geometry, canonical master commands in Arrangement/Session,
@@ -25,3 +25,31 @@ reachable. At minimum window size, check browser width, timeline/header alignmen
 and master controls. Drop a browser sample into trailing empty regular space,
 then try a drop on main: only the regular drop should create a track. Existing
 clip and captured time-selection drags should keep working across boundaries.
+
+## project time selection
+
+Pulse 14 treats main as an editing proxy over all canonical project tracks. A
+point click places the cursor across those tracks; dragging paints one steady
+time rectangle, preserving gaps. The upper-third hover handle moves that whole
+rectangle horizontally; Option copies it. The lower region paints a new range.
+Copy/cut/replace-paste and ripple insertion reuse the existing bounded worker
+commands, immutable media and one Undo, without turning main into a TrackId.
+An empty project has no valid proxy range. Topology changes reconcile the scope
+with the current project; future canonical returns join it when implemented.
+
+Command-E on the main cursor dispatches `SplitTracksAtFrame`. The project
+validates a nonempty unique track set, converts the cursor frame to musical time
+once, and splits strictly crossing audio/MIDI clips on a private candidate. A
+later failure leaves the complete original intact, including direct Project
+application; touching clip boundaries is not a split. One Editor command means
+one history entry. Ordinary single-clip splitting retains its existing policy.
+
+Focused source checks cover mixed audio/MIDI atomic splitting and one Undo on
+100 tracks. They do not establish native input-to-paint latency or physical
+audio deadlines. After storage recovery, all four project split tests, seven main-row UI tests
+and eighteen edit-cursor tests pass. Empty/stale topology and explicit move-scope
+retention regressions pass, along with strict project/UI Clippy and source guards.
+Full clean CI and native acceptance are still pending. In the
+combined build, select time on main, copy/cut/paste and ripple-paste over gaps,
+move through the upper-third handle, Option-copy, and split a main cursor across
+audio and MIDI. Check Undo, selection after track deletion, and empty projects.
