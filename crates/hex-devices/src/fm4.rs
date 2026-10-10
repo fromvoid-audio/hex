@@ -6,6 +6,8 @@
 //! fixed arrays and a borrowed sine table.
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
+mod operator;
+pub use operator::PreparedOperatorFm4;
 
 use crate::{Invalid, PHASE_SCALE, SineTable};
 use hex_lattice::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, StereoFrame};
@@ -160,33 +162,24 @@ impl PreparedEnvelope {
     }
 }
 
-/// One immutable, fully prepared note. Contains no heap owners or shared state.
-/// The host supplies authored note age and gate duration in frames. The same
-/// sample is available directly after a seek without replay for this kernel.
+/// Shared immutable acyclic oscillator graph. No envelope or velocity policy.
 #[derive(Debug, Clone, Copy)]
-pub struct PreparedFm4 {
+struct PreparedFmCore {
     steps: [u64; OPERATORS],
     phases: [u64; OPERATORS],
     levels: [f64; OPERATORS],
     routing: Routing,
-    envelope: PreparedEnvelope,
-    velocity: f64,
 }
 
-impl PreparedFm4 {
-    pub fn new(
+impl PreparedFmCore {
+    fn new(
         sample_rate: u32,
         pitch: u8,
-        velocity: u8,
         oscillators: [Oscillator; OPERATORS],
         routing: Routing,
-        envelope: Envelope,
     ) -> Result<Self, Invalid> {
-        if !(8_000..=192_000).contains(&sample_rate)
-            || pitch > 127
-            || !(1..=127).contains(&velocity)
-        {
-            return Err(Invalid("invalid fm sample rate, pitch or note-on velocity"));
+        if !(8_000..=192_000).contains(&sample_rate) || pitch > 127 {
+            return Err(Invalid("invalid fm sample rate or pitch"));
         }
         let frequency = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
         let mut steps = [0; OPERATORS];
@@ -211,13 +204,80 @@ impl PreparedFm4 {
                 levels[index] = 0.0;
             }
         }
-        // Finite, validated times/rate guarantee bounded conversions and sums.
-        let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
         Ok(Self {
             steps,
             phases,
             levels,
             routing,
+        })
+    }
+
+    #[inline]
+    fn routed_output<const SHAPE_OPERATORS: bool>(
+        &self,
+        table: &SineTable,
+        age_frames: u64,
+        operator_amplitudes: [f64; OPERATORS],
+    ) -> f64 {
+        let mut signals = [0.0; OPERATORS];
+        for &target in &self.routing.order {
+            if self.levels[target] == 0.0 {
+                continue;
+            }
+            let modulation: f64 = signals
+                .iter()
+                .enumerate()
+                .map(|(source, signal)| signal * self.routing.modulation[source][target])
+                .sum();
+            let phase = self.steps[target]
+                .wrapping_mul(age_frames)
+                .wrapping_add(self.phases[target])
+                .wrapping_add(phase_from_turns(modulation));
+            let signal = f64::from(table.sample_phase(phase)) * self.levels[target];
+            signals[target] = if SHAPE_OPERATORS {
+                signal * operator_amplitudes[target]
+            } else {
+                signal
+            };
+        }
+        signals
+            .iter()
+            .zip(self.routing.carriers)
+            .map(|(signal, weight)| signal * weight)
+            .sum()
+    }
+}
+
+/// One immutable, fully prepared note. Contains no heap owners or shared state.
+/// The host supplies authored note age and gate duration in frames. The same
+/// sample is available directly after a seek without replay for this kernel.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedFm4 {
+    core: PreparedFmCore,
+    envelope: PreparedEnvelope,
+    velocity: f64,
+}
+
+impl PreparedFm4 {
+    pub fn new(
+        sample_rate: u32,
+        pitch: u8,
+        velocity: u8,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelope: Envelope,
+    ) -> Result<Self, Invalid> {
+        if !(8_000..=192_000).contains(&sample_rate)
+            || pitch > 127
+            || !(1..=127).contains(&velocity)
+        {
+            return Err(Invalid("invalid fm sample rate, pitch or note-on velocity"));
+        }
+        let core = PreparedFmCore::new(sample_rate, pitch, oscillators, routing)?;
+        // Finite, validated times/rate guarantee bounded conversions and sums.
+        let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
+        Ok(Self {
+            core,
             envelope: PreparedEnvelope {
                 attack: frames(envelope.attack_seconds),
                 decay: frames(envelope.decay_seconds),
@@ -243,21 +303,21 @@ impl PreparedFm4 {
     pub fn into_analytic_note(self) -> PreparedAnalyticNote {
         let _ = crate::shared_sine_table();
         let mut payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
-        payload[0..4].copy_from_slice(&self.steps);
-        payload[4..8].copy_from_slice(&self.phases);
-        for (target, level) in payload[8..12].iter_mut().zip(self.levels) {
+        payload[0..4].copy_from_slice(&self.core.steps);
+        payload[4..8].copy_from_slice(&self.core.phases);
+        for (target, level) in payload[8..12].iter_mut().zip(self.core.levels) {
             *target = level.to_bits();
         }
         for source in 0..OPERATORS {
             for target in 0..OPERATORS {
                 payload[12 + source * OPERATORS + target] =
-                    self.routing.modulation[source][target].to_bits();
+                    self.core.routing.modulation[source][target].to_bits();
             }
         }
-        for (target, carrier) in payload[28..32].iter_mut().zip(self.routing.carriers) {
+        for (target, carrier) in payload[28..32].iter_mut().zip(self.core.routing.carriers) {
             *target = carrier.to_bits();
         }
-        for (target, order) in payload[32..36].iter_mut().zip(self.routing.order) {
+        for (target, order) in payload[32..36].iter_mut().zip(self.core.routing.order) {
             *target = order as u64;
         }
         payload[36] = self.envelope.attack;
@@ -275,27 +335,9 @@ impl PreparedFm4 {
         if amplitude == 0.0 {
             return 0.0;
         }
-        let mut signals = [0.0; OPERATORS];
-        for &target in &self.routing.order {
-            if self.levels[target] == 0.0 {
-                continue;
-            }
-            let modulation: f64 = signals
-                .iter()
-                .enumerate()
-                .map(|(source, signal)| signal * self.routing.modulation[source][target])
-                .sum();
-            let phase = self.steps[target]
-                .wrapping_mul(age_frames)
-                .wrapping_add(self.phases[target])
-                .wrapping_add(phase_from_turns(modulation));
-            signals[target] = f64::from(table.sample_phase(phase)) * self.levels[target];
-        }
-        let output: f64 = signals
-            .iter()
-            .zip(self.routing.carriers)
-            .map(|(signal, weight)| signal * weight)
-            .sum();
+        let output = self
+            .core
+            .routed_output::<false>(table, age_frames, [1.0; OPERATORS]);
         (output * amplitude) as f32
     }
 }
