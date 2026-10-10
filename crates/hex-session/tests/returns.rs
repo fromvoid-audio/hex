@@ -436,7 +436,7 @@ fn removing_return_with_active_parameter_gesture_cancels_stale_owner() {
     service
         .submit(Request::DeviceGesture(GestureRequest::Begin {
             key,
-            target: GestureTarget {
+            target: GestureTarget::DeviceParameter {
                 device,
                 parameter: ParameterId::from_static(1),
             },
@@ -487,4 +487,467 @@ fn removing_return_with_active_parameter_gesture_cancels_stale_owner() {
             .is_some_and(|reason| reason.contains("removed or replaced"))
     }));
     assert!(removed.state.project.track(track).is_some());
+}
+
+#[test]
+fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
+    use hex_session::device_gesture::{GestureKey, GesturePhase, GestureRequest, GestureTarget};
+
+    let service = Service::new(8_000, 16, 0).expect("service");
+    wait(&service);
+    let track_event = edit(
+        &service,
+        Command::AddMidiTrack {
+            name: "source".into(),
+        },
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("midi track expected")
+    };
+    let clip_event = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).expect("clip length"),
+        },
+    );
+    let Some(Created::Clip(clip)) = clip_event.created else {
+        panic!("midi clip expected")
+    };
+    edit(
+        &service,
+        Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 120,
+        },
+    );
+    let return_event = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "send bus".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(return_track)) = return_event.created else {
+        panic!("return track expected")
+    };
+    let canonical_send = edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.25,
+        },
+    );
+    let canonical_revision = canonical_send.state.revision;
+    let canonical_pcm = rendered(&mut { canonical_send });
+
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let target = GestureTarget::ReturnSend {
+        track,
+        return_track,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target,
+        }))
+        .expect("begin send gesture");
+    let begun = wait(&service);
+    assert!(
+        begun.gesture_ack.as_ref().is_some_and(|ack| {
+            ack.key == key && ack.phase == GesturePhase::Begin && ack.accepted
+        })
+    );
+    assert_eq!(
+        begun.active_device_gesture.map(|snapshot| snapshot.target),
+        Some(target)
+    );
+
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(0.75),
+        }))
+        .expect("preview send level");
+    let preview = wait(&service);
+    assert!(preview.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    assert_eq!(preview.state.revision, canonical_revision);
+    assert!(preview.state.unsaved);
+    assert_eq!(
+        preview.state.project.track(track).unwrap().sends()[0].gain(),
+        0.25,
+        "preview cannot mutate canonical project state"
+    );
+    let overlay = preview
+        .device_preview
+        .as_ref()
+        .expect("prepared send preview");
+    assert_eq!(
+        overlay.state.project.track(track).unwrap().sends()[0].gain(),
+        0.75
+    );
+    assert_ne!(
+        rendered(&mut { preview }),
+        canonical_pcm,
+        "preview graph changes audible PCM without a canonical edit"
+    );
+
+    let (path, _directory) = temp_project_path();
+    service
+        .submit(Request::SaveNew(path.clone()))
+        .expect("save finalizes the active numeric gesture");
+    let saved = wait(&service);
+    assert!(saved.error.is_none(), "save: {:?}", saved.error);
+    assert!(saved.save_complete && !saved.state.unsaved);
+    assert!(saved.gesture_ack.as_ref().is_some_and(|ack| {
+        ack.key == key && ack.phase == GesturePhase::Commit && ack.accepted
+    }));
+    assert_eq!(saved.state.revision, canonical_revision + 1);
+    assert_eq!(
+        saved.state.project.track(track).unwrap().sends()[0].gain(),
+        0.75
+    );
+    assert_eq!(
+        hex_storage::load(&path).expect("saved canonical send project"),
+        *saved.state.project
+    );
+
+    service
+        .submit(Request::Undo)
+        .expect("undo one send gesture");
+    let undone = wait(&service);
+    assert!(undone.error.is_none(), "undo: {:?}", undone.error);
+    assert_eq!(
+        undone.state.project.track(track).unwrap().sends()[0].gain(),
+        0.25,
+        "gesture produces one canonical undo step"
+    );
+    service
+        .submit(Request::Redo)
+        .expect("redo one send gesture");
+    let redone = wait(&service);
+    assert_eq!(
+        redone.state.project.track(track).unwrap().sends()[0].gain(),
+        0.75
+    );
+}
+
+#[test]
+fn return_send_gesture_cancel_rebases_after_same_target_and_unrelated_edits() {
+    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+
+    let service = Service::new(8_000, 16, 0).expect("service");
+    wait(&service);
+    let track_event = edit(
+        &service,
+        Command::AddTrack {
+            name: "source".into(),
+        },
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track expected")
+    };
+    let return_event = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "send bus".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(return_track)) = return_event.created else {
+        panic!("return expected")
+    };
+    edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.25,
+        },
+    );
+    let target = GestureTarget::ReturnSend {
+        track,
+        return_track,
+    };
+    let first_key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key: first_key,
+            target,
+        }))
+        .expect("begin send gesture");
+    let _ = wait(&service);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key: first_key,
+            sequence: 1,
+            value: ParameterValue::Float(0.75),
+        }))
+        .expect("preview send");
+    let _ = wait(&service);
+
+    let unrelated = edit(
+        &service,
+        Command::ReturnGain {
+            return_track,
+            gain: 1.5,
+        },
+    );
+    assert_eq!(unrelated.state.project.return_tracks()[0].gain(), 1.5);
+    assert_eq!(
+        unrelated.state.project.track(track).unwrap().sends()[0].gain(),
+        0.25
+    );
+    assert_eq!(
+        unrelated
+            .device_preview
+            .as_ref()
+            .expect("rebased send overlay")
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()[0]
+            .gain(),
+        0.75
+    );
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Cancel {
+            key: first_key,
+        }))
+        .expect("cancel after unrelated edit");
+    let canceled_unrelated = wait(&service);
+    assert!(
+        canceled_unrelated
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted)
+    );
+    assert_eq!(
+        canceled_unrelated.state.project.return_tracks()[0].gain(),
+        1.5
+    );
+    assert_eq!(
+        canceled_unrelated
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()[0]
+            .gain(),
+        0.25,
+        "cancel restores latest canonical state, including unrelated changes"
+    );
+
+    let second_key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key: second_key,
+            target,
+        }))
+        .expect("begin second send gesture");
+    let _ = wait(&service);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key: second_key,
+            sequence: 1,
+            value: ParameterValue::Float(0.8),
+        }))
+        .expect("preview second send");
+    let _ = wait(&service);
+    let same_target = edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.5,
+        },
+    );
+    assert_eq!(
+        same_target.state.project.track(track).unwrap().sends()[0].gain(),
+        0.5
+    );
+    assert_eq!(
+        same_target
+            .device_preview
+            .as_ref()
+            .expect("same-target edit rebases active overlay")
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()[0]
+            .gain(),
+        0.8
+    );
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Cancel {
+            key: second_key,
+        }))
+        .expect("cancel after same-target edit");
+    let canceled_same_target = wait(&service);
+    assert_eq!(
+        canceled_same_target
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()[0]
+            .gain(),
+        0.5,
+        "cancel cannot undo or resurrect over a newer canonical send edit"
+    );
+}
+
+#[test]
+fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state() {
+    use hex_session::device_gesture::{GestureKey, GesturePhase, GestureRequest, GestureTarget};
+
+    let service = Service::new(8_000, 16, 0).expect("service");
+    wait(&service);
+    let track_event = edit(
+        &service,
+        Command::AddTrack {
+            name: "source".into(),
+        },
+    );
+    let Some(Created::Track(track)) = track_event.created else {
+        panic!("track expected")
+    };
+    let return_event = edit(
+        &service,
+        Command::AddReturnTrack {
+            name: "send bus".into(),
+        },
+    );
+    let Some(Created::ReturnTrack(return_track)) = return_event.created else {
+        panic!("return expected")
+    };
+    let saved_revision = edit(
+        &service,
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.25,
+        },
+    )
+    .state
+    .revision;
+    let (path, _directory) = temp_project_path();
+    service
+        .submit(Request::SaveNew(path))
+        .expect("establish clean project");
+    let saved = wait(&service);
+    assert!(saved.save_complete && !saved.state.unsaved);
+    let target = GestureTarget::ReturnSend {
+        track,
+        return_track,
+    };
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target,
+        }))
+        .expect("begin invalid-value gesture");
+    let _ = wait(&service);
+    for (sequence, value) in [f32::NAN, f32::INFINITY, -0.01, 2.01]
+        .into_iter()
+        .enumerate()
+    {
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: sequence as u64 + 1,
+                value: ParameterValue::Float(value),
+            }))
+            .expect("submit invalid send preview");
+        let event = wait(&service);
+        assert!(event.gesture_ack.as_ref().is_some_and(|ack| !ack.accepted));
+        assert!(event.device_preview.is_none());
+        assert_eq!(event.state.revision, saved_revision);
+        assert!(!event.state.unsaved);
+        assert_eq!(event.active_device_gesture.unwrap().sequence, 0);
+    }
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(f32::INFINITY),
+        }))
+        .expect("submit rejected terminal value");
+    let rejected = wait(&service);
+    assert!(
+        rejected
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| { ack.phase == GesturePhase::Commit && !ack.accepted })
+    );
+    assert!(rejected.active_device_gesture.is_none());
+    assert_eq!(rejected.state.revision, saved_revision);
+    assert!(!rejected.state.unsaved);
+    assert_eq!(
+        rejected.state.project.track(track).unwrap().sends()[0].gain(),
+        0.25
+    );
+
+    let remove_key = GestureKey {
+        generation: 0,
+        token: 2,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key: remove_key,
+            target,
+        }))
+        .expect("begin removal gesture");
+    let _ = wait(&service);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key: remove_key,
+            sequence: 1,
+            value: ParameterValue::Float(0.9),
+        }))
+        .expect("preview before target removal");
+    let _ = wait(&service);
+    let removed = edit(&service, Command::RemoveReturnTrack(return_track));
+    assert!(removed.state.project.return_tracks().is_empty());
+    assert!(
+        removed
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()
+            .is_empty()
+    );
+    assert!(removed.active_device_gesture.is_none());
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key: remove_key,
+            sequence: 2,
+            value: ParameterValue::Float(0.9),
+        }))
+        .expect("submit stale send terminal");
+    let stale = wait(&service);
+    assert!(stale.gesture_ack.as_ref().is_some_and(|ack| !ack.accepted));
+    assert!(stale.state.project.return_tracks().is_empty());
+    assert!(stale.state.project.track(track).unwrap().sends().is_empty());
 }

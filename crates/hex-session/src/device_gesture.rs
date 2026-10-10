@@ -1,7 +1,7 @@
 //! One worker-owned, typed native parameter overlay. No callback ownership.
 use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
-use hex_project::{DeviceId, Project};
+use hex_project::{DeviceId, Project, ReturnId, TrackId};
 use std::sync::Arc;
 
 pub use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -14,9 +14,15 @@ pub struct GestureKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GestureTarget {
-    pub device: DeviceId,
-    pub parameter: ParameterId,
+pub enum GestureTarget {
+    DeviceParameter {
+        device: DeviceId,
+        parameter: ParameterId,
+    },
+    ReturnSend {
+        track: TrackId,
+        return_track: ReturnId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -272,7 +278,7 @@ mod client_tests {
     #[test]
     fn coalesces_changes_and_preserves_final_value_until_terminal_ack() {
         let mut client = GestureClient::default();
-        let target = GestureTarget {
+        let target = GestureTarget::DeviceParameter {
             device: device(),
             parameter: ParameterId::new(1).unwrap(),
         };
@@ -308,7 +314,7 @@ mod client_tests {
     #[test]
     fn admitted_terminal_cannot_be_replaced_before_its_ack() {
         let mut client = GestureClient::default();
-        let target = GestureTarget {
+        let target = GestureTarget::DeviceParameter {
             device: device(),
             parameter: ParameterId::new(1).unwrap(),
         };
@@ -341,7 +347,7 @@ mod client_tests {
     #[test]
     fn queue_full_retry_keeps_exact_reserved_request_and_ignores_stale_ack() {
         let mut client = GestureClient::default();
-        let target = GestureTarget {
+        let target = GestureTarget::DeviceParameter {
             device: device(),
             parameter: ParameterId::new(1).unwrap(),
         };
@@ -384,8 +390,16 @@ pub(crate) struct GestureOutcome {
 
 struct Active {
     snapshot: GestureSnapshot,
-    class: NativeDeviceClass,
-    type_id: DeviceTypeId,
+    kind: ActiveKind,
+}
+
+#[derive(Clone, Copy)]
+enum ActiveKind {
+    Device {
+        class: NativeDeviceClass,
+        type_id: DeviceTypeId,
+    },
+    ReturnSend,
 }
 
 #[derive(Default)]
@@ -494,16 +508,52 @@ impl GestureMachine {
                 {
                     return Err(SessionError::Invalid("device gesture token is stale"));
                 }
-                let class = session.native_device_class(target.device)?;
-                let device = session
-                    .project()
-                    .device(target.device)
-                    .ok_or(SessionError::Invalid("device no longer exists"))?;
-                let value = hex_engine::native_device_parameter_for_class(
-                    class,
-                    device.state(),
-                    target.parameter,
-                )?;
+                let (kind, value) = match target {
+                    GestureTarget::DeviceParameter { device, parameter } => {
+                        let class = session.native_device_class(device)?;
+                        let device_state = session
+                            .project()
+                            .device(device)
+                            .ok_or(SessionError::Invalid("device no longer exists"))?;
+                        let value = hex_engine::native_device_parameter_for_class(
+                            class,
+                            device_state.state(),
+                            parameter,
+                        )?;
+                        (
+                            ActiveKind::Device {
+                                class,
+                                type_id: device_state.state().type_id(),
+                            },
+                            value,
+                        )
+                    }
+                    GestureTarget::ReturnSend {
+                        track,
+                        return_track,
+                    } => {
+                        let source = session
+                            .project()
+                            .track(track)
+                            .ok_or(SessionError::Invalid("return send source no longer exists"))?;
+                        if !session
+                            .project()
+                            .return_tracks()
+                            .iter()
+                            .any(|candidate| candidate.id() == return_track)
+                        {
+                            return Err(SessionError::Invalid(
+                                "return send target no longer exists",
+                            ));
+                        }
+                        let gain = source
+                            .sends()
+                            .iter()
+                            .find(|send| send.return_track() == return_track)
+                            .map_or(0.0, hex_project::SendLevel::gain);
+                        (ActiveKind::ReturnSend, ParameterValue::Float(gain))
+                    }
+                };
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
                         key,
@@ -511,8 +561,7 @@ impl GestureMachine {
                         sequence: 0,
                         value,
                     },
-                    class,
-                    type_id: device.state().type_id(),
+                    kind,
                 });
                 self.last_key = Some(key);
             }
@@ -523,12 +572,8 @@ impl GestureMachine {
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
-                let (project, prepared) = session.preview_device_parameter(
-                    active.target.device,
-                    active.target.parameter,
-                    value,
-                    previous.map(Arc::as_ref),
-                )?;
+                let (project, prepared) =
+                    preview_target(session, active.target, value, previous.map(Arc::as_ref))?;
                 if let Some(current) = self.active.as_mut() {
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value;
@@ -544,12 +589,8 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
                 let before = session.project().clone();
-                let prepared = session.commit_device_parameter(
-                    active.target.device,
-                    active.target.parameter,
-                    value,
-                    previous.map(Arc::as_ref),
-                )?;
+                let prepared =
+                    commit_target(session, active.target, value, previous.map(Arc::as_ref))?;
                 outcome.canonical_changed = session.project() != &before;
                 outcome.playback = Some(prepared);
                 self.active = None;
@@ -578,23 +619,50 @@ impl GestureMachine {
             .active
             .as_ref()
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
-        let device = session
-            .project()
-            .device(snapshot.target.device)
-            .filter(|device| device.state().type_id() == active.type_id)
-            .ok_or(SessionError::Invalid(
-                "device gesture target was removed or replaced",
-            ))?;
-        if session.native_device_class(snapshot.target.device)? != active.class {
-            return Err(SessionError::Invalid(
-                "device gesture target changed native class",
-            ));
+        match (snapshot.target, active.kind) {
+            (
+                GestureTarget::DeviceParameter { device, parameter },
+                ActiveKind::Device { class, type_id },
+            ) => {
+                let device_state = session
+                    .project()
+                    .device(device)
+                    .filter(|device| device.state().type_id() == type_id)
+                    .ok_or(SessionError::Invalid(
+                        "device gesture target was removed or replaced",
+                    ))?;
+                if session.native_device_class(device)? != class {
+                    return Err(SessionError::Invalid(
+                        "device gesture target changed native class",
+                    ));
+                }
+                hex_engine::native_device_parameter_for_class(
+                    class,
+                    device_state.state(),
+                    parameter,
+                )?;
+            }
+            (
+                GestureTarget::ReturnSend {
+                    track,
+                    return_track,
+                },
+                ActiveKind::ReturnSend,
+            ) => {
+                if session.project().track(track).is_none() {
+                    return Err(SessionError::Invalid("return send source was removed"));
+                }
+                if !session
+                    .project()
+                    .return_tracks()
+                    .iter()
+                    .any(|candidate| candidate.id() == return_track)
+                {
+                    return Err(SessionError::Invalid("return send target was removed"));
+                }
+            }
+            _ => return Err(SessionError::Invalid("numeric gesture target changed kind")),
         }
-        hex_engine::native_device_parameter_for_class(
-            active.class,
-            device.state(),
-            snapshot.target.parameter,
-        )?;
         Ok(snapshot)
     }
 
@@ -609,9 +677,9 @@ impl GestureMachine {
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
         let result = self.checked_active(session, active.key).and_then(|_| {
-            session.preview_device_parameter(
-                active.target.device,
-                active.target.parameter,
+            preview_target(
+                session,
+                active.target,
                 active.value,
                 previous.map(Arc::as_ref),
             )
@@ -659,5 +727,49 @@ impl GestureMachine {
             previous,
             generation,
         ))
+    }
+}
+
+fn preview_target(
+    session: &Session,
+    target: GestureTarget,
+    value: ParameterValue,
+    previous: Option<&PreparedRevision>,
+) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+    match target {
+        GestureTarget::DeviceParameter { device, parameter } => {
+            session.preview_device_parameter(device, parameter, value, previous)
+        }
+        GestureTarget::ReturnSend {
+            track,
+            return_track,
+        } => session.preview_return_send(track, return_track, send_gain(value)?, previous),
+    }
+}
+
+fn commit_target(
+    session: &mut Session,
+    target: GestureTarget,
+    value: ParameterValue,
+    previous: Option<&PreparedRevision>,
+) -> Result<Arc<PreparedRevision>, SessionError> {
+    match target {
+        GestureTarget::DeviceParameter { device, parameter } => {
+            session.commit_device_parameter(device, parameter, value, previous)
+        }
+        GestureTarget::ReturnSend {
+            track,
+            return_track,
+        } => session.commit_return_send(track, return_track, send_gain(value)?, previous),
+    }
+}
+
+fn send_gain(value: ParameterValue) -> Result<f32, SessionError> {
+    match value {
+        ParameterValue::Float(gain) if gain.is_finite() && (0.0..=2.0).contains(&gain) => Ok(gain),
+        ParameterValue::Float(_) => Err(SessionError::Invalid(
+            "return send gain must be finite and between zero and two",
+        )),
+        _ => Err(SessionError::Invalid("return send gain must be numeric")),
     }
 }

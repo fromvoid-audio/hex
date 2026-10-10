@@ -857,6 +857,7 @@ impl Render for EditorView {
             .child(self.transport(cx))
             .child(workspace)
             .child(self.status_bar())
+            .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
             .children(self.context_menu_overlay(window, cx))

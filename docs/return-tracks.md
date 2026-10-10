@@ -60,13 +60,21 @@ tracks. It caps the section at 67 logical pixels (header plus two rows), so a
 pane open; all returns remain reachable by scrolling inside the section. Return
 focus selects its device view without changing the selected regular track or
 project-wide time-selection scope. Returns can be added, removed, muted and
-gain-adjusted. Regular-track send menus list named returns and expose bounded
-0..2 linear gain steps with the current linear value; setting zero removes the
-sparse send. Continuous drag/type send editing with one undo step is tracked
-separately as Pulse2179, because the current project command is one history edit
-per value and must not be called for every pointer update. The bounded step helper
-snaps floating-point roundoff near 0 and 2 to exact endpoints while preserving
-interior values such as 0.375 without quantization.
+gain-adjusted. Regular-track send menus list named returns and expose one compact numeric slider
+and value field per return, with bounded 0..2 linear gain and three displayed
+fractional digits. Pointer movement and valid text entry share one session-wide,
+typed send-gesture target with device parameter controls: updates are transient
+prepared previews and a successful release/commit creates one canonical history
+edit. The menu finalizes only its source track's send drafts when that source scrolls
+out of view; valid drafts commit once, invalid drafts cancel back to the canonical
+value with a lowercase error, and editor keyboard focus is restored. If the
+terminal edit is refused, the draft stays accessible and the source row is scrolled
+back into view. Removing a source/return cancels and retires matching cached send
+controls. These controls remain bounded to 0..2; setting zero removes the sparse
+send. This continuous drag/type lifecycle is Pulse2179. Automated UI coverage
+checks popup bounds at 880×540, input geometry after scroll, valid/invalid offscreen
+draft handling, focus restoration and stale-owner retirement; native pointer,
+keyboard and audible acceptance remains open.
 
 Return device view accepts native effects, uses the same descriptor-driven
 parameter controls and device-gesture finalization/acknowledgement as regular

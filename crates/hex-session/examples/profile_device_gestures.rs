@@ -104,20 +104,23 @@ fn fixture(track_count: usize) -> Result<Fixture, Box<dyn Error>> {
             }),
         )?;
         latest_state = Some(event.state);
-        targets.push(GestureTarget {
+        targets.push(GestureTarget::DeviceParameter {
             device,
             parameter: ParameterId::new(1)?,
         });
     }
     let target = *targets.first().ok_or("profile needs at least one track")?;
     let state = latest_state.ok_or("fixture has no canonical state")?;
+    let GestureTarget::DeviceParameter { device, parameter } = target else {
+        return Err("profile target must be a device parameter".into());
+    };
     let initial_gain = hex_engine::native_device_parameter(
         state
             .project
-            .device(target.device)
+            .device(device)
             .ok_or("utility missing")?
             .state(),
-        target.parameter,
+        parameter,
     )?;
     Ok(Fixture {
         service,
@@ -133,6 +136,9 @@ fn gesture_roundtrip(
     current: ParameterValue,
     iteration: usize,
 ) -> Result<ParameterValue, Box<dyn Error>> {
+    let GestureTarget::DeviceParameter { device, parameter } = target else {
+        return Err("profile target must be a device parameter".into());
+    };
     let key = client.begin(0, target, current)?;
     let begin_request = client
         .next_request()
@@ -189,10 +195,10 @@ fn gesture_roundtrip(
         preview
             .state
             .project
-            .device(target.device)
+            .device(device)
             .ok_or("preview utility missing")?
             .state(),
-        target.parameter,
+        parameter,
     )?;
     if preview_value != ParameterValue::Float(3.25) {
         return Err("preview did not retain coalesced value".into());
@@ -226,10 +232,10 @@ fn gesture_roundtrip(
         committed
             .state
             .project
-            .device(target.device)
+            .device(device)
             .ok_or("committed utility missing")?
             .state(),
-        target.parameter,
+        parameter,
     )?;
     if committed_value != final_gain {
         return Err("committed value did not match final-value oracle".into());

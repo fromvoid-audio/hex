@@ -191,7 +191,7 @@ impl EditorView {
             "track-rows",
             track_count,
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                let Some(state) = this.state.as_ref() else {
+                let Some(state) = this.state.as_ref().cloned() else {
                     return Vec::new();
                 };
                 let mut items = Vec::with_capacity(range.end.saturating_sub(range.start));
@@ -199,7 +199,7 @@ impl EditorView {
                     if let Some(track) = state.project.tracks().get(index) {
                         let selected = this.selected_track() == Some(track.id());
                         items.push(this.track_row(
-                            state,
+                            &state,
                             track,
                             index,
                             selected,
