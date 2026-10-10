@@ -863,3 +863,13 @@ tests (3), engine suite (153 passed/1 ignored), lattice suite (24) and strict
 Clippy pass. Architecture, UI-style, GPUI-patch and format guards pass. Full
 local CI and parent integration review remain outstanding. Do not mark Pulse2181
 done or describe this as seek support.
+
+
+2026-10-10 combined review52 source milestone: PR82 canonical admission status
+and PR83 bounded instrument checkpoints supplement review51 (PR38–81).
+Each focused exact head passed all16 local checks on a clean tree; the combined
+exact-head suite and fresh signed app are the next gates. PR82 preserves saved
+edits/history and separates transient preview failures from canonical audio
+status. PR83 provides instrument/ledger state copies at an exact capture frame;
+whole-Arrangement replay and native seek remain Pulse2182/2164. Native UI/listening
+acceptance is still required, and no new PR has been merged into main.
