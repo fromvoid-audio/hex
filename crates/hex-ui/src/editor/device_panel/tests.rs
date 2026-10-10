@@ -232,7 +232,7 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     visual.run_until_parked();
 
     let source = visual
-        .debug_bounds("browser-device-effect-1")
+        .debug_bounds("browser-device-effect-2")
         .expect("registered utility in device browser");
     let down = point(
         source.origin.x + source.size.width / 2.0,
@@ -299,6 +299,114 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
         assert!(view.clip_view_open, "successful drop keeps the pane open");
         assert!(view.device_panel_active);
     });
+}
+
+#[gpui::test]
+fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppContext) {
+    let (service, _state, track, effect, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("clear default sine slot");
+    let empty = receive_service_event(&service);
+    assert!(
+        empty
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_none()
+    );
+
+    let (handle, editor) = actor_editor_window(cx, service, empty.state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let panel_before = visual
+        .debug_bounds("device-panel")
+        .expect("fixed device panel");
+    assert_eq!(panel_before.size.height, px(188.0));
+    let source = visual
+        .debug_bounds("browser-device-instrument-1")
+        .expect("registered FM4 browser entry after sine");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+
+    let card_selector = Box::leak(format!("device-drop-card-{}", effect.value()).into_boxed_str());
+    let card = visual
+        .debug_bounds(card_selector)
+        .expect("effect card receives instrument drop");
+    let destination = point(
+        card.origin.x + px(24.0),
+        card.origin.y + card.size.height / 2.0,
+    );
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.active_native_device_drag
+                .as_ref()
+                .and_then(|drag| drag.destination.get())
+                .map(|target| target.before),
+            Some(Some(effect)),
+            "instrument drops target the canonical front position"
+        );
+    });
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .and_then(|track| track.instrument())
+            .is_some_and(|instrument| {
+                instrument.state().type_id().as_str() == Ok("hex.instrument.fm4")
+            })
+    });
+    visual.run_until_parked();
+    let instrument_id = editor.read_with(cx, |view, _| {
+        let instrument = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        assert_eq!(
+            instrument.state().type_id().as_str(),
+            Ok("hex.instrument.fm4")
+        );
+        instrument.id()
+    });
+    let body = Box::leak(format!("instrument-device-{}", instrument_id.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(body).is_some(),
+        "FM4 has a rendered card"
+    );
+    let carrier =
+        Box::leak(format!("device-{}-parameter-29-slider", instrument_id.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(carrier).is_some(),
+        "FM4's real carrier descriptor is rendered"
+    );
+    let panel_after = visual.debug_bounds("device-panel").expect("device panel");
+    assert_eq!(panel_after.size.height, px(188.0));
+    assert_eq!(panel_after.size.height, panel_before.size.height);
 }
 
 #[gpui::test]
@@ -613,7 +721,7 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
     );
 
     let source = visual
-        .debug_bounds("browser-device-effect-1")
+        .debug_bounds("browser-device-effect-2")
         .expect("registered utility row");
     let down = point(
         source.origin.x + source.size.width / 2.0,
@@ -735,7 +843,7 @@ fn device_drag_clears_preview_on_outside_release_and_escape(cx: &mut TestAppCont
     });
 
     let source = visual
-        .debug_bounds("browser-device-effect-1")
+        .debug_bounds("browser-device-effect-2")
         .expect("registered utility row");
     let card_selector = Box::leak(format!("device-drop-card-{}", device.value()).into_boxed_str());
     let card = visual.debug_bounds(card_selector).expect("device card");

@@ -18,10 +18,33 @@ const PREVIOUS_INLINE_SAMPLER_BYTES: usize = 40;
 const WARMUP_BLOCKS: usize = 100;
 const MEASURED_BLOCKS: usize = 3_000;
 
-fn fixture(instrument_position: usize) -> Result<Project, Box<dyn Error>> {
+#[derive(Clone, Copy)]
+struct Workload {
+    instrument_position: usize,
+    fm4: bool,
+    dense_sustain: bool,
+    one_note: bool,
+}
+
+fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
     let mut next_id = 1_u64;
     let mut tracks = Vec::with_capacity(TRACKS);
     let two_quarters = BeatTime::from_ratio(2, 1)?.raw();
+    let note_count = if workload.one_note {
+        1
+    } else {
+        NOTES_PER_TRACK
+    };
+    let note_duration = if workload.dense_sustain {
+        BeatTime::from_ratio(120, 1)?.raw()
+    } else {
+        two_quarters
+    };
+    let clip_length = if workload.dense_sustain {
+        BeatTime::from_ratio(128, 1)?.raw()
+    } else {
+        64_u64 << 32
+    };
     for track_index in 0..TRACKS {
         let track_id = next_id;
         next_id += 1;
@@ -40,14 +63,18 @@ fn fixture(instrument_position: usize) -> Result<Project, Box<dyn Error>> {
             ParameterId::from_static(1),
             ParameterValue::Float(0.999),
         )?;
-        let notes = (0..NOTES_PER_TRACK)
+        let notes = (0..note_count)
             .map(|note_index| {
                 let id = next_id;
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
-                    start_raw: ((note_index * 4) as u64) << 32,
-                    duration_raw: two_quarters,
+                    start_raw: if workload.dense_sustain {
+                        0
+                    } else {
+                        ((note_index * 4) as u64) << 32
+                    },
+                    duration_raw: note_duration,
                     pitch: 48 + ((track_index + note_index) % 36) as u8,
                     channel: 0,
                     velocity: 100,
@@ -76,17 +103,24 @@ fn fixture(instrument_position: usize) -> Result<Project, Box<dyn Error>> {
             instrument: Some(hex_project::DeviceSnapshot {
                 id: instrument_id,
                 bypassed: false,
-                state: hex_project::default_instrument_state()?,
+                state: if workload.fm4 {
+                    hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Instrument,
+                        DeviceTypeId::from_static("hex.instrument.fm4"),
+                    )?
+                } else {
+                    hex_project::default_instrument_state()?
+                },
             }),
-            instrument_position: Some(instrument_position),
+            instrument_position: Some(workload.instrument_position),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
-                length_raw: 64_u64 << 32,
-                source_length_raw: 64_u64 << 32,
+                length_raw: clip_length,
+                source_length_raw: clip_length,
                 source_start_raw: 0,
                 loop_start_raw: 0,
-                loop_end_raw: 64_u64 << 32,
+                loop_end_raw: clip_length,
                 looping: false,
                 notes,
             }]),
@@ -110,6 +144,8 @@ fn measure(
     prepared: Option<&Arc<PreparedRevision>>,
     force_session: bool,
     block_size: usize,
+    warmup_blocks: usize,
+    measured_blocks: usize,
 ) -> Result<(), Box<dyn Error>> {
     let construction_started = Instant::now();
     let mut playback = match prepared {
@@ -125,13 +161,13 @@ fn measure(
     );
     playback.apply(PlaybackCommand::Play);
     let mut output = vec![[0.0; 2]; block_size];
-    for _ in 0..WARMUP_BLOCKS {
+    for _ in 0..warmup_blocks {
         playback.render(black_box(&mut output))?;
     }
 
-    let mut timings = Vec::with_capacity(MEASURED_BLOCKS);
+    let mut timings = Vec::with_capacity(measured_blocks);
     let started = Instant::now();
-    for _ in 0..MEASURED_BLOCKS {
+    for _ in 0..measured_blocks {
         let block_started = Instant::now();
         playback.render(black_box(&mut output))?;
         timings.push(block_started.elapsed().as_nanos());
@@ -145,7 +181,7 @@ fn measure(
         .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
             (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
         });
-    let total_frames = block_size * MEASURED_BLOCKS;
+    let total_frames = block_size * measured_blocks;
     let deadline_us = block_size as f64 / f64::from(RATE) * 1_000_000.0;
     println!(
         "block={block_size:3} frames total={total_frames} elapsed={:.3}s max_block={:.1}us audio_deadline={deadline_us:.1}us max/deadline={:.2}x output_digest={output_digest:016x}",
@@ -171,8 +207,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         0
     };
+    let workload = Workload {
+        instrument_position,
+        fm4: arguments.iter().any(|argument| argument == "--fm4"),
+        dense_sustain: arguments
+            .iter()
+            .any(|argument| argument == "--dense-sustain"),
+        one_note: arguments.iter().any(|argument| argument == "--one-note"),
+    };
+    let warmup_blocks = if arguments.iter().any(|argument| argument == "--short") {
+        10
+    } else {
+        WARMUP_BLOCKS
+    };
+    let measured_blocks = if arguments.iter().any(|argument| argument == "--short") {
+        100
+    } else {
+        MEASURED_BLOCKS
+    };
     println!("instrument position: {instrument_position}");
-    let editable = fixture(instrument_position)?;
+    println!(
+        "instrument={} notes_per_track={} dense_sustain={} warmup_blocks={} measured_blocks={}",
+        if workload.fm4 { "fm4" } else { "sine" },
+        if workload.one_note {
+            1
+        } else {
+            NOTES_PER_TRACK
+        },
+        workload.dense_sustain,
+        warmup_blocks,
+        measured_blocks,
+    );
+    let editable = fixture(workload)?;
     let project = compile::project(&editable, &Default::default())?;
     let prepare_started = Instant::now();
     let prepared = prepared_runtime
@@ -243,6 +309,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             prepared.as_ref(),
             forced_session_runtime,
             block_size,
+            warmup_blocks,
+            measured_blocks,
         )?;
     }
     Ok(())

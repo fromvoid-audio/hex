@@ -5,10 +5,10 @@
 Implement original native device DSP, including a linear stereo Utility processor,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
-Own the standalone original four-operator phase-modulation kernel and its
-versioned native instrument definition for explicit caller-owned registries.
-FM4 remains excluded from the built-in instrument catalog and is not yet a
-selectable desktop device.
+Own the original four-operator phase-modulation kernel and its versioned,
+registered analytic instrument definition. FM4 is selectable as a bounded
+acyclic native instrument; mutable feedback and full Operator behavior remain
+outside this crate's current runtime contract.
 
 ## Dependencies
 

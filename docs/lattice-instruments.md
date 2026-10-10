@@ -71,9 +71,9 @@ stereo sample function pointer: 344 bytes on 64-bit targets. The first three
 words retain the sine phase step, amplitude and attack representation; the
 remaining words are zero. The 41-word capacity can also carry the validated
 standalone FM4 kernel without a heap owner or unsafe conversion. `Fm4Definition`
-is available to an explicitly constructed caller-owned registry with a bounded
-version-1 codec and generic parameters; it remains excluded from the built-in
-registry and cannot be selected by a project yet. Definitions
+is registered alongside sine in the built-in instrument catalog. Its bounded
+version-1 codec and generic parameters use the same catalog, project preparation,
+Session inventory and panel paths. Definitions
 validate fields before packing. Sample functions must be deterministic, bounded
 and free of allocation, deallocation, waiting, I/O and mutable shared state.
 This trusted native definition contract is not a sandbox for arbitrary external
@@ -203,20 +203,23 @@ density/fault paths, native APIs, physical device deadlines or listening
 acceptance. Root runs clean full local CI after integration.
 
 Release timing methodology and provisional regression are recorded in
-[performance](performance.md). Indexed-bank and wide-payload before/after profiles are recorded separately there. The preexisting mixed Session profile comparison
-failure is separate Pulse2113. Native instrument UI/catalog editing is implemented in the follow-up below; mutable
-FM contracts and Operator remain open work, independent of this source foundation.
+[performance](performance.md). Indexed-bank and wide-payload before/after
+profiles are separate evidence there. The preexisting mixed Session profile comparison
+failure is separate Pulse2113. Native instrument UI/catalog editing and built-in
+FM4 admission are implemented; mutable FM contracts and full Operator remain open
+work, independent of this source foundation.
 
 ## Instrument panel and canonical class routing
 
-The focused track's device panel renders its canonical instrument slot before
-serial effects. Add requests only fill an empty instrument slot; attempting to
+The focused track's device panel renders its one canonical instrument slot at
+its stored position among serial effects. Add requests only fill an empty instrument slot; attempting to
 add while occupied is refused without a project edit or playback publication.
 Replacement is a separate request that names the stable device ID, class and
 registered type. It validates that the target still exists in the requested
 class, then transactionally replaces its authored state while preserving device
-ID, chain position and bypass. Removal remains separate. Instruments have no
-effect-chain reorder actions. The admitted sine instrument has no parameter
+ID, chain position and bypass. Removal remains separate. Instruments and effects
+can be reordered through stable-ID device-header drags; the first instrument
+added to an empty slot defaults to the front. The admitted sine instrument has no parameter
 descriptors, so the panel invents no controls.
 An absent instrument leaves no placeholder block in the chain. Settled user
 removals retire controls without a stale-target warning; loss of a target while
@@ -237,6 +240,6 @@ parameter/gesture refusal for sine, and save/reopen. Rendered
 GPUI coverage also exercises settled Utility and sine removal, Undo restoration,
 warning cleanup, and fixed panel geometry; active/draft target-loss diagnostics
 remain covered separately. Full local CI and native acceptance are separate gates.
-This panel does not register FM4 or implement Operator;
-general instrument replacement-tail comparison remains part of the FM4 admission
-work.
+The browser exposes registered FM4 through the same canonical slot and generic
+parameter panel. FM4 authored-state and replacement continuity use the shared
+instrument contracts; this does not implement mutable Operator voices or plugins.

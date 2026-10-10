@@ -19,6 +19,63 @@ regression; control initialization plus noninitializing callback lookup repaired
 that path. No established speedup/no-regression claim, sustained stress or
 instrument preparation-time budget follows from these short render measurements.
 
+## Built-in FM4 admission workload — 10 October 2026
+
+The release `profile_instrument` example exercises the newly built-in FM4
+sampler through ordinary prepared Arrangement playback on Apple M5 Pro arm64,
+macOS 26.6.2, 48 kHz. This short profile uses 10 warm-up and 100 measured
+blocks per size. Each track has two Utility effects at gain 0.999; the default
+instrument gap is zero, so both effects are after the instrument. The dense-sustain
+option starts all notes at frame zero and holds them for 120 quarter notes inside
+the 128-quarter-note clip, so the final block remains audible. The 100×1 case has
+one simultaneously held note per track; 100×16 has 16 per track. FM4 uses its
+default unmodulated single carrier (operator 1, ratio and level 1) and default 5 ms attack,
+100 ms decay, 0.7 sustain and 100 ms release. The same example's sine mode is
+included as harness context, not a controlled DSP comparison; background load
+and power scheduling were uncontrolled.
+
+| Instrument / notes per track | Frames/block | Total render | Max block | Nominal period | Max/period |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FM4 / 1 | 128 | 0.027 s | 375.8 µs | 2,666.7 µs | 0.14× |
+| FM4 / 1 | 512 | 0.089 s | 979.4 µs | 10,666.7 µs | 0.09× |
+| FM4 / 16 | 128 | 0.356 s | 3,760.0 µs | 2,666.7 µs | 1.41× |
+| FM4 / 16 | 512 | 1.412 s | 14,774.4 µs | 10,666.7 µs | 1.39× |
+| Sine / 1 | 128 | 0.004 s | 135.7 µs | 2,666.7 µs | 0.05× |
+| Sine / 1 | 512 | 0.014 s | 187.2 µs | 10,666.7 µs | 0.02× |
+| Sine / 16 | 128 | 0.055 s | 663.5 µs | 2,666.7 µs | 0.25× |
+| Sine / 16 | 512 | 0.213 s | 2,242.5 µs | 10,666.7 µs | 0.21× |
+
+The 100×16 FM4 maxima exceed both nominal periods, an open scalability and
+deadline follow-up for Pulse2108; this microbenchmark is not a physical callback
+test. The FM4 and sine runs use identical scheduler workloads, but the timing
+samples are short and noisy, so they do not establish a general relative-cost
+claim. Each output digest covers only the final block (which is sustained and
+non-silent here), not the whole rendered run; independent PCM fixtures establish
+the behavior. Construction times and indexed-bank component accounting are in
+the retained logs. In the 100×1 case the indexed bank component is 45,000 bytes;
+in 100×16 it is 576,000 bytes. These are component sizes, not total project or
+process memory.
+
+Reproduce from the repository root with:
+
+```sh
+CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/Users/portalsurfer/dev/hex/artifacts/build-cache/stateful-lattice cargo build --release -p hex-engine --example profile_instrument
+/Users/portalsurfer/dev/hex/artifacts/build-cache/stateful-lattice/release/examples/profile_instrument --fm4 --dense-sustain --one-note --short --prepared-runtime
+/Users/portalsurfer/dev/hex/artifacts/build-cache/stateful-lattice/release/examples/profile_instrument --fm4 --dense-sustain --short --prepared-runtime
+```
+
+The second command omits `--one-note` to select 16 notes per track. Matching
+sine runs omit `--fm4`. Raw captured output is in
+`artifacts/profiles/fm4-admission-20261010/{fm4-100x1,fm4-100x16,sine-100x1,sine-100x16}.log`.
+Binary/source identity and workload details are in
+`artifacts/profiles/fm4-admission-20261010/identity.txt`: the release binary
+SHA-256 is `4e6816b646bbdcbb6ff844011e55a20079668d0d0e090d611619b56be5399d76`,
+and the profile-relevant source diff SHA-256 is
+`af9f4fcb4b1bde3de5e2cdb7ab47849c943c6772ad1ab61f08dd1fe5a2a59530` at HEAD
+`167ca73ca7347eb1fe466220a0ae601c99ef2bf0`. Profiles precede final
+documentation/test-selector edits; renderer and profile-example source are
+unchanged since capture.
+
 ## Ordered instrument gap render profile — 10 October 2026
 
 On Apple M5 Pro arm64, the release `profile_instrument` fixture is 100 tracks ×

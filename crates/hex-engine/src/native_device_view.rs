@@ -300,12 +300,19 @@ mod tests {
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].name, "utility");
-        assert_eq!(instruments.len(), 1);
-        assert_eq!(instruments[0].name, "sine");
+        assert_eq!(instruments.len(), 2);
+        let sine = instruments
+            .iter()
+            .find(|entry| entry.name == "sine")
+            .expect("original sine instrument remains registered");
+        let fm4 = instruments
+            .iter()
+            .find(|entry| entry.name == "fm4")
+            .expect("FM4 instrument is registered");
 
         let state = crate::default_native_device_state_for_class(
             NativeDeviceClass::Instrument,
-            instruments[0].type_id,
+            sine.type_id,
         )
         .unwrap();
         let before = state.clone();
@@ -313,21 +320,15 @@ mod tests {
         assert_eq!(view.name, "sine");
         assert!(view.parameters.is_empty());
         assert_eq!(
-            native_device_descriptors_for_class(
-                NativeDeviceClass::Instrument,
-                instruments[0].type_id,
-            )
-            .unwrap(),
-            instruments[0].parameters
+            native_device_descriptors_for_class(NativeDeviceClass::Instrument, sine.type_id,)
+                .unwrap(),
+            sine.parameters
         );
 
         assert!(native_device_view_for_class(NativeDeviceClass::Effect, &state).is_err());
         assert!(
-            crate::default_native_device_state_for_class(
-                NativeDeviceClass::Effect,
-                instruments[0].type_id,
-            )
-            .is_err()
+            crate::default_native_device_state_for_class(NativeDeviceClass::Effect, sine.type_id,)
+                .is_err()
         );
         assert!(
             crate::patch_native_device_parameter_for_class(
@@ -342,6 +343,23 @@ mod tests {
             state, before,
             "wrong-class access preserves the source bytes"
         );
+
+        let fm4_state = crate::default_native_device_state_for_class(
+            NativeDeviceClass::Instrument,
+            fm4.type_id,
+        )
+        .unwrap();
+        let fm4_view =
+            native_device_view_for_class(NativeDeviceClass::Instrument, &fm4_state).unwrap();
+        assert_eq!(fm4_view.name, "fm4");
+        assert_eq!(fm4_view.parameters.len(), 32);
+        assert_eq!(fm4_view.parameters[0].value, ParameterValue::Float(1.0));
+        assert_eq!(
+            native_device_descriptors_for_class(NativeDeviceClass::Instrument, fm4.type_id)
+                .unwrap(),
+            fm4.parameters
+        );
+        assert!(native_device_view_for_class(NativeDeviceClass::Effect, &fm4_state).is_err());
 
         let effect_state = crate::default_native_device_state_for_class(
             NativeDeviceClass::Effect,
