@@ -34,6 +34,11 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         created: None,
         duplicate_complete: false,
         restore_complete: None,
+        device_preview: None,
+        gesture_ack: None,
+        gesture_protocol_ack: false,
+        gesture_request: false,
+        active_device_gesture: None,
     }
 }
 

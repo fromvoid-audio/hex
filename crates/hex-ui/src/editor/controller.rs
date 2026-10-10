@@ -83,6 +83,7 @@ impl EditorView {
                 }
             }
         }
+        visible_change |= self.pump_device_gesture();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_edit_cursor(now);
@@ -113,6 +114,7 @@ impl EditorView {
                         audio_revision,
                         project_generation: pending.project_generation,
                         state: pending.state,
+                        device_preview_identity: pending.device_preview_identity,
                     });
                 }
                 Err(rejected) => {
@@ -178,7 +180,19 @@ impl EditorView {
             reconcile_revision_acks(&mut self.applied_revisions, applied, None);
         let audible = promote_playback_candidates(&mut self.playback_candidates, applied);
         if let Some(candidate) = audible {
-            self.audible_playback = Some(candidate);
+            let preview_source_is_valid =
+                candidate.device_preview_identity.is_none_or(|identity| {
+                    identity.canonical_revision == candidate.state.revision
+                        && identity.project_generation == candidate.project_generation
+                });
+            if preview_source_is_valid {
+                self.audible_playback = Some(candidate);
+            } else {
+                visible_change |= replace_error(
+                    &mut self.error,
+                    "device preview source did not match its prepared revision",
+                );
+            }
         }
         if let Some(revision) = applied_project_revision {
             self.applied_project_revision = Some(revision);
@@ -355,7 +369,7 @@ impl EditorView {
         }
         // Scene duplication is admitted only with no pending worker request, so
         // its next completion is the exact response for this bounded intent.
-        let scene_duplicate_intent = if event.request_complete {
+        let scene_duplicate_intent = if event.request_complete && !event.gesture_request {
             self.pending_scene_duplicate.take()
         } else {
             None
@@ -376,7 +390,7 @@ impl EditorView {
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
-        } else {
+        } else if !event.gesture_request {
             self.move_time_selection_complete(&event);
         }
         if self
@@ -401,7 +415,9 @@ impl EditorView {
             self.piano_beat_start = hex_project::BeatTime::ZERO;
             self.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
-            self.project_generation = self.project_generation.wrapping_add(1);
+            self.project_generation = self.project_generation.saturating_add(1);
+            self.device_gesture.reset();
+            self.device_gesture_barriers.clear();
             self.edit_cursor = None;
             self.time_selection = None;
             self.time_selection_gesture = None;
@@ -636,6 +652,31 @@ impl EditorView {
                 }
             }
         }
+        if event.gesture_protocol_ack
+            && let Some(ack) = event.gesture_ack.as_ref()
+        {
+            self.acknowledge_device_gesture(ack);
+        } else if let Some(reason) = event
+            .gesture_ack
+            .as_ref()
+            .and_then(|ack| ack.reason.as_ref())
+        {
+            self.error = Some(reason.clone());
+        }
+        if super::device_gesture::actor_retired_gesture(
+            event.project_replaced,
+            event.active_device_gesture.is_some(),
+            event.gesture_ack.as_ref(),
+            self.device_gesture.snapshot().map(|snapshot| snapshot.key),
+        ) && self.device_gesture.snapshot().is_some()
+        {
+            self.device_gesture.reset();
+            super::device_gesture::retire_deferred(
+                &mut self.pending_requests,
+                &mut self.device_gesture_barriers,
+                event.project_replaced,
+            );
+        }
         let playback_capability =
             event
                 .playback
@@ -651,8 +692,26 @@ impl EditorView {
                 .pending_playback
                 .as_ref()
                 .map(|pending| (pending.project_generation, pending.install_fresh_runtime));
+            let source_state = event
+                .device_preview
+                .as_ref()
+                .filter(|preview| {
+                    preview.identity.project_generation == self.project_generation
+                        && preview.identity.canonical_revision == revision
+                })
+                .map(|preview| Arc::clone(&preview.state))
+                .unwrap_or_else(|| Arc::clone(&event_state));
+            let preview_identity = event
+                .device_preview
+                .as_ref()
+                .filter(|preview| {
+                    preview.identity.project_generation == self.project_generation
+                        && preview.identity.canonical_revision == revision
+                })
+                .map(|preview| preview.identity);
             let mut pending =
-                pending_playback_for_state(event_state, self.project_generation, playback);
+                pending_playback_for_state(source_state, self.project_generation, playback);
+            pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
                 event.project_replaced,
                 self.project_generation,
@@ -674,6 +733,7 @@ impl EditorView {
             }
         }
         if event.request_complete
+            && !event.gesture_request
             && self.mode == super::EditorMode::Session
             && self.selected_cell.is_none()
             && self.selected_scene.is_some()
@@ -750,8 +810,29 @@ impl EditorView {
         if !matches!(&request, Request::Open(_)) {
             self.pending_open_path = None;
         }
+        if matches!(
+            &request,
+            Request::Open(_)
+                | Request::Undo
+                | Request::Redo
+                | Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::Export(_)
+        ) && self.device_gesture.snapshot().is_some()
+        {
+            return self.enqueue_device_barrier(request);
+        }
+        let mut request = Some(request);
+        if let Some(accepted) = self.enqueue_after_device_terminal(&mut request) {
+            return accepted;
+        }
+        let Some(request) = request else {
+            return false;
+        };
         if !self.pending_requests.is_empty() {
-            if self.pending_requests.len() < UI_REQUEST_CAPACITY {
+            if self.pending_requests.len() + self.device_gesture_barriers.len()
+                < UI_REQUEST_CAPACITY
+            {
                 self.pending_requests.push_back(request);
                 return true;
             } else {
@@ -765,7 +846,8 @@ impl EditorView {
                 true
             }
             Err(SubmitError::Full(request))
-                if self.pending_requests.len() < UI_REQUEST_CAPACITY =>
+                if self.pending_requests.len() + self.device_gesture_barriers.len()
+                    < UI_REQUEST_CAPACITY =>
             {
                 self.pending_requests.push_back(request);
                 true
@@ -1259,6 +1341,7 @@ fn pending_playback_for_state(
         state,
         playback,
         install_fresh_runtime: false,
+        device_preview_identity: None,
     }
 }
 
@@ -1474,6 +1557,7 @@ mod tests {
                 unsaved: false,
                 document_path: None,
             }),
+            device_preview_identity: None,
         }
     }
 

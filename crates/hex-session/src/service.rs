@@ -1,4 +1,5 @@
 //! Bounded control worker for decoding, project edits, saves, and graph compilation.
+use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, Project as PlaybackProject, playback::Playback};
 use hex_export::ExportReport;
@@ -56,6 +57,29 @@ pub struct Event {
     pub duplicate_complete: bool,
     /// Generation echoed for each processed restore request, including errors.
     pub restore_complete: Option<u64>,
+    /// The preview graph's exact read-only source view, kept separate from
+    /// canonical project state and its revision/history.
+    pub device_preview: Option<DevicePreview>,
+    /// Acknowledgment for a direct gesture request or an automatic rebase.
+    pub gesture_ack: Option<GestureAck>,
+    /// True when this event consumed a queued gesture protocol request.
+    pub gesture_protocol_ack: bool,
+    /// True only when this event completes a directly submitted gesture request.
+    pub gesture_request: bool,
+    pub active_device_gesture: Option<GestureSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DevicePreviewIdentity {
+    pub project_generation: u64,
+    pub key: crate::device_gesture::GestureKey,
+    pub sequence: u64,
+    pub canonical_revision: u64,
+}
+
+pub struct DevicePreview {
+    pub identity: DevicePreviewIdentity,
+    pub state: Arc<ViewState>,
 }
 
 /// Export completion is separate from canonical view events, so an older render
@@ -107,6 +131,7 @@ pub fn prepare_audio_preview(
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    DeviceGesture(GestureRequest),
     AddNativeDevice {
         track: hex_project::TrackId,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
@@ -358,6 +383,33 @@ fn view_state(
     })
 }
 
+fn preview_view_state(
+    canonical: &Arc<ViewState>,
+    project: Arc<Project>,
+    prepared: Arc<PreparedRevision>,
+) -> Arc<ViewState> {
+    let rate = u64::from(project.sample_rate());
+    let content_end = latest_clip_end(&project).max(
+        project
+            .loop_region()
+            .map(|region| region.end())
+            .unwrap_or(0),
+    );
+    Arc::new(ViewState {
+        project,
+        waveforms: canonical.waveforms.clone(),
+        midi_preview: Arc::clone(prepared.midi_preview()),
+        timeline_frames: content_end
+            .saturating_add(rate.saturating_mul(2))
+            .max(rate.saturating_mul(8)),
+        can_undo: canonical.can_undo,
+        can_redo: canonical.can_redo,
+        revision: canonical.revision,
+        unsaved: canonical.unsaved,
+        document_path: canonical.document_path.clone(),
+    })
+}
+
 struct DocumentHandle {
     path: PathBuf,
     token: FileToken,
@@ -433,6 +485,8 @@ fn run_worker(
     let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
     let mut state = view_state(&session, Arc::clone(&midi_preview), revision, unsaved, None);
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
+    let mut project_generation = 0_u64;
+    let mut device_gesture = GestureMachine::default();
     let initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
@@ -450,6 +504,11 @@ fn run_worker(
                 created: None,
                 duplicate_complete: false,
                 restore_complete: None,
+                device_preview: None,
+                gesture_ack: None,
+                gesture_protocol_ack: false,
+                gesture_request: false,
+                active_device_gesture: None,
             }
         }
         Err(error) => Event {
@@ -464,6 +523,11 @@ fn run_worker(
             created: None,
             duplicate_complete: false,
             restore_complete: None,
+            device_preview: None,
+            gesture_ack: None,
+            gesture_protocol_ack: false,
+            gesture_request: false,
+            active_device_gesture: None,
         },
     };
     if !send_event(&events, initial) {
@@ -483,375 +547,36 @@ fn run_worker(
         let mut error = None;
         let mut export_completion = None;
         let mut export_job = None;
-        match request {
-            Request::Import(path) => match import(
+        let mut gesture_ack = None;
+        let mut gesture_protocol_ack = false;
+        let mut gesture_request = false;
+        let mut preview_prepared = None;
+        let mut preview_project = None;
+        let barrier = matches!(
+            &request,
+            Request::Open(_)
+                | Request::Undo
+                | Request::Redo
+                | Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::Export(_)
+        );
+        let mut barrier_failure = None;
+        if barrier {
+            if let Some(outcome) = device_gesture.finish(
                 &mut session,
-                path,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                compiled.as_ref().map(|(_, artifact)| artifact),
+                project_generation,
             ) {
-                Ok(prepared) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("audio imported".into());
-                }
-                Err(reason) => error = Some(reason),
-            },
-            Request::ImportToTrack { path, track, start } => match import_to_track(
-                &mut session,
-                path,
-                track,
-                start,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                false,
-            ) {
-                Ok(prepared) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("audio imported to selected track".into());
-                }
-                Err(reason) => error = Some(reason),
-            },
-            Request::ImportToTrackWithOverwrite { path, track, start } => match import_to_track(
-                &mut session,
-                path,
-                track,
-                start,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                true,
-            ) {
-                Ok(prepared) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("audio imported, overlapping clips cut".into());
-                }
-                Err(reason) => error = Some(reason),
-            },
-            Request::ImportToNewTrack {
-                path,
-                before_track,
-                start,
-            } => match import_to_new_track(
-                &mut session,
-                path,
-                before_track,
-                start,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-            ) {
-                Ok(prepared) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("audio imported to new track".into());
-                }
-                Err(reason) => error = Some(reason),
-            },
-            Request::ImportToSession { path, track, scene } => match import_to_session(
-                &mut session,
-                path,
-                track,
-                scene,
-                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-            ) {
-                Ok(prepared) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("audio source imported to session".into());
-                }
-                Err(reason) => error = Some(reason),
-            },
-            Request::Open(path) => {
-                open_complete = true;
-                match open_project(&session, history_capacity, &path) {
-                    Ok((candidate, candidate_base, candidate_path, candidate_token)) => {
-                        match compile(
-                            &candidate,
-                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                        ) {
-                            Ok(prepared) => {
-                                session = candidate;
-                                media_base = Some(candidate_base);
-                                document = Some(DocumentHandle {
-                                    path: candidate_path,
-                                    token: candidate_token,
-                                });
-                                unsaved = false;
-                                project_replaced = true;
-                                replacement_revision = Some(prepared);
-                                status = Some("project opened".into());
-                            }
-                            Err(reason) => error = Some(reason),
-                        }
-                    }
-                    Err(reason) => error = Some(reason),
-                }
-            }
-            Request::CopyTimeRange(range) => match session.project().capture_time_range(&range) {
-                Ok(captured) => {
-                    range_clipboard = Some(Arc::new(captured));
-                    status = Some("time selection copied".into());
-                }
-                Err(reason) => error = Some(reason.to_string()),
-            },
-            Request::CutTimeRange(range) => match session.project().capture_time_range(&range) {
-                Ok(captured) => {
-                    match session.command_prepared_revision(
-                        Command::DeleteTimeRange { range },
-                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    ) {
-                        Ok((_, prepared)) => {
-                            range_clipboard = Some(Arc::new(captured));
-                            if session.project() != state.project.as_ref() {
-                                unsaved = true;
-                                replacement_revision = Some(prepared);
-                            }
-                            status = Some("time selection cut".into());
-                        }
-                        Err(reason) => error = Some(reason.to_string()),
-                    }
-                }
-                Err(reason) => error = Some(reason.to_string()),
-            },
-            Request::PasteTimeRange { track, frame } => {
-                if let Some(clipboard) = &range_clipboard {
-                    match session.command_prepared_revision(
-                        Command::PasteTimeRangeOnSourceTracks {
-                            clipboard: Arc::clone(clipboard),
-                            track,
-                            frame,
-                        },
-                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    ) {
-                        Ok((_, prepared)) => {
-                            if session.project() != state.project.as_ref() {
-                                unsaved = true;
-                                replacement_revision = Some(prepared);
-                            }
-                            status = Some("time selection pasted".into());
-                        }
-                        Err(reason) => error = Some(reason.to_string()),
-                    }
-                } else {
-                    error = Some("time clipboard is empty · copy a selection first".into());
-                }
-            }
-            Request::InsertTimeRange { track, frame } => {
-                if let Some(clipboard) = &range_clipboard {
-                    match session.command_prepared_revision(
-                        Command::InsertTimeRangeOnSourceTracks {
-                            clipboard: Arc::clone(clipboard),
-                            track,
-                            frame,
-                        },
-                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    ) {
-                        Ok((_, prepared)) => {
-                            if session.project() != state.project.as_ref() {
-                                unsaved = true;
-                                replacement_revision = Some(prepared);
-                            }
-                            status = Some("time selection inserted".into());
-                        }
-                        Err(reason) => error = Some(reason.to_string()),
-                    }
-                } else {
-                    error = Some("time clipboard is empty · copy a selection first".into());
-                }
-            }
-            Request::AddNativeDevice {
-                track,
-                type_id,
-                before,
-            } => match hex_engine::default_native_device_state(*type_id) {
-                Ok(state) => {
-                    let before_project = session.project().clone();
-                    match session.command_prepared_revision(
-                        Command::InsertDevice {
-                            track,
-                            before,
-                            state,
-                        },
-                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    ) {
-                        Ok((result, prepared)) if session.project() != &before_project => {
+                gesture_ack = Some(outcome.ack.clone());
+                gesture_protocol_ack = true;
+                if outcome.ack.accepted {
+                    if let Some(prepared) = outcome.playback {
+                        if outcome.canonical_changed {
+                            revision = revision.saturating_add(1);
                             unsaved = true;
-                            replacement_revision = Some(prepared);
-                            created = Some(result);
-                            status = Some("device added".into());
-                        }
-                        Ok(_) => status = Some("no change".into()),
-                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                    }
-                }
-                Err(reason) => error = Some(reason.to_string().to_lowercase()),
-            },
-            Request::SetDeviceParameter {
-                device,
-                parameter,
-                value,
-            } => {
-                let patched = session
-                    .project()
-                    .device(device)
-                    .ok_or_else(|| "device is missing".to_owned())
-                    .and_then(|entry| {
-                        hex_engine::patch_native_device_parameter(entry.state(), parameter, value)
-                            .map_err(|reason| reason.to_string().to_lowercase())
-                    });
-                match patched {
-                    Ok(state) => {
-                        let before_project = session.project().clone();
-                        match session.command_prepared_revision(
-                            Command::ReplaceDeviceState { device, state },
-                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                        ) {
-                            Ok((_, prepared)) if session.project() != &before_project => {
-                                unsaved = true;
-                                replacement_revision = Some(prepared);
-                                status = Some("device parameter changed".into());
-                            }
-                            Ok(_) => status = Some("no change".into()),
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                        }
-                    }
-                    Err(reason) => error = Some(reason),
-                }
-            }
-            Request::Edit(command) => {
-                duplicate_complete = matches!(&command, Command::DuplicateClip(_));
-                let before = session.project().clone();
-                match session.command_prepared_revision(
-                    command,
-                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                ) {
-                    Ok((result, prepared)) if session.project() != &before => {
-                        unsaved = true;
-                        replacement_revision = Some(prepared);
-                        created = Some(result);
-                        status = Some("edit committed".into());
-                    }
-                    Ok(_) => status = Some("no change".into()),
-                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                }
-            }
-            Request::Undo => match session
-                .undo_prepared_revision(compiled.as_ref().map(|(_, artifact)| artifact.as_ref()))
-            {
-                Ok(Some(prepared)) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("undo committed".into());
-                }
-                Ok(None) => status = Some("nothing to undo".into()),
-                Err(reason) => error = Some(reason.to_string().to_lowercase()),
-            },
-            Request::Redo => match session
-                .redo_prepared_revision(compiled.as_ref().map(|(_, artifact)| artifact.as_ref()))
-            {
-                Ok(Some(prepared)) => {
-                    unsaved = true;
-                    replacement_revision = Some(prepared);
-                    status = Some("redo committed".into());
-                }
-                Ok(None) => status = Some("nothing to redo".into()),
-                Err(reason) => error = Some(reason.to_string().to_lowercase()),
-            },
-            Request::SaveNew(path) => {
-                save_complete = true;
-                match project_for_save(&session, media_base.as_deref()) {
-                    Ok(project) => match absolute_document_path(&path) {
-                        Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
-                            Ok(token) => {
-                                document = Some(DocumentHandle { path, token });
-                                unsaved = false;
-                                state = view_state(
-                                    &session,
-                                    Arc::clone(&midi_preview),
-                                    revision,
-                                    unsaved,
-                                    document.as_ref().map(|handle| handle.path.as_path()),
-                                );
-                                status = Some("project saved".into());
-                            }
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                        },
-                        Err(reason) => error = Some(reason),
-                    },
-                    Err(reason) => error = Some(reason),
-                }
-            }
-            Request::SaveCurrent => {
-                save_complete = true;
-                match (
-                    document.as_mut(),
-                    project_for_save(&session, media_base.as_deref()),
-                ) {
-                    (None, _) => {
-                        error = Some("cannot save current project before it has a file path".into())
-                    }
-                    (_, Err(reason)) => error = Some(reason),
-                    (Some(handle), Ok(project)) => {
-                        match hex_storage::replace_existing(&handle.path, &handle.token, &project) {
-                            Ok(outcome) => {
-                                let commit = apply_current_save_outcome(handle, outcome);
-                                unsaved = commit.dirty;
-                                status = Some(commit.status.into());
-                                error = commit.error;
-                                state = view_state(
-                                    &session,
-                                    Arc::clone(&midi_preview),
-                                    revision,
-                                    unsaved,
-                                    document.as_ref().map(|current| current.path.as_path()),
-                                );
-                            }
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
-                        }
-                    }
-                }
-            }
-            Request::Export(path) => {
-                status = Some("export queued".into());
-                let clip_end = compiled
-                    .as_ref()
-                    .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
-                    .unwrap_or(0);
-                let job = match (compiled.as_ref(), clip_end) {
-                    (_, 0) => Err("nothing to export".to_owned()),
-                    (Some((compiled_revision, prepared)), frames)
-                        if *compiled_revision == revision =>
-                    {
-                        Ok(ExportJob {
-                            revision,
-                            path: path.clone(),
-                            project: Arc::clone(prepared.arrangement()),
-                            frames,
-                        })
-                    }
-                    _ => Err("latest project revision has not compiled".to_owned()),
-                };
-                match job {
-                    Ok(job) => export_job = Some(job),
-                    Err(reason) => {
-                        export_completion = Some(ExportEvent {
-                            revision,
-                            path,
-                            result: Err(reason),
-                        });
-                    }
-                }
-            }
-            Request::RestorePlayback { generation } => {
-                restore_complete = Some(generation);
-                match compiled.as_ref() {
-                    Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                        restore_prepared = Some(Arc::clone(prepared));
-                    }
-                    _ => match compile(
-                        &session,
-                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    ) {
-                        Ok(prepared) => {
-                            compiled = Some((revision, Arc::clone(&prepared)));
                             midi_preview = Arc::clone(prepared.midi_preview());
+                            compiled = Some((revision, Arc::clone(&prepared)));
                             state = view_state(
                                 &session,
                                 Arc::clone(&midi_preview),
@@ -859,21 +584,459 @@ fn run_worker(
                                 unsaved,
                                 document.as_ref().map(|handle| handle.path.as_path()),
                             );
+                        }
+                        restore_prepared = Some(prepared);
+                    }
+                } else {
+                    barrier_failure = outcome.ack.reason;
+                    restore_prepared = outcome.playback;
+                }
+            }
+        }
+        if let Some(reason) = barrier_failure {
+            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+                save_complete = true;
+            }
+            if let Request::Export(path) = &request {
+                export_completion = Some(ExportEvent {
+                    revision,
+                    path: path.clone(),
+                    result: Err(reason.clone()),
+                });
+            }
+            error = Some(reason);
+        } else {
+            match request {
+                Request::DeviceGesture(gesture) => {
+                    gesture_request = true;
+                    gesture_protocol_ack = true;
+                    let outcome = device_gesture.handle(
+                        &mut session,
+                        gesture,
+                        compiled.as_ref().map(|(_, artifact)| artifact),
+                        project_generation,
+                    );
+                    gesture_ack = Some(outcome.ack);
+                    if let Some(prepared) = outcome.playback {
+                        if outcome.canonical_changed {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                        } else if matches!(gesture, GestureRequest::Change { .. }) {
+                            preview_prepared = Some(prepared);
+                            preview_project = outcome.preview_project;
+                        } else {
                             restore_prepared = Some(prepared);
                         }
-                        Err(reason) => {
-                            compiled = None;
-                            error = Some(reason);
+                    }
+                }
+                Request::Import(path) => match import(
+                    &mut session,
+                    path,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio imported".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::ImportToTrack { path, track, start } => match import_to_track(
+                    &mut session,
+                    path,
+                    track,
+                    start,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    false,
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio imported to selected track".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::ImportToTrackWithOverwrite { path, track, start } => {
+                    match import_to_track(
+                        &mut session,
+                        path,
+                        track,
+                        start,
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        true,
+                    ) {
+                        Ok(prepared) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("audio imported, overlapping clips cut".into());
                         }
-                    },
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ImportToNewTrack {
+                    path,
+                    before_track,
+                    start,
+                } => match import_to_new_track(
+                    &mut session,
+                    path,
+                    before_track,
+                    start,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio imported to new track".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::ImportToSession { path, track, scene } => match import_to_session(
+                    &mut session,
+                    path,
+                    track,
+                    scene,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio source imported to session".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::Open(path) => {
+                    open_complete = true;
+                    match open_project(&session, history_capacity, &path) {
+                        Ok((candidate, candidate_base, candidate_path, candidate_token)) => {
+                            match compile(
+                                &candidate,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok(prepared) => {
+                                    session = candidate;
+                                    media_base = Some(candidate_base);
+                                    document = Some(DocumentHandle {
+                                        path: candidate_path,
+                                        token: candidate_token,
+                                    });
+                                    unsaved = false;
+                                    project_replaced = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some("project opened".into());
+                                }
+                                Err(reason) => error = Some(reason),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::CopyTimeRange(range) => match session.project().capture_time_range(&range)
+                {
+                    Ok(captured) => {
+                        range_clipboard = Some(Arc::new(captured));
+                        status = Some("time selection copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::CutTimeRange(range) => {
+                    match session.project().capture_time_range(&range) {
+                        Ok(captured) => {
+                            match session.command_prepared_revision(
+                                Command::DeleteTimeRange { range },
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) => {
+                                    range_clipboard = Some(Arc::new(captured));
+                                    if session.project() != state.project.as_ref() {
+                                        unsaved = true;
+                                        replacement_revision = Some(prepared);
+                                    }
+                                    status = Some("time selection cut".into());
+                                }
+                                Err(reason) => error = Some(reason.to_string()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Request::PasteTimeRange { track, frame } => {
+                    if let Some(clipboard) = &range_clipboard {
+                        match session.command_prepared_revision(
+                            Command::PasteTimeRangeOnSourceTracks {
+                                clipboard: Arc::clone(clipboard),
+                                track,
+                                frame,
+                            },
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((_, prepared)) => {
+                                if session.project() != state.project.as_ref() {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
+                                status = Some("time selection pasted".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    } else {
+                        error = Some("time clipboard is empty · copy a selection first".into());
+                    }
+                }
+                Request::InsertTimeRange { track, frame } => {
+                    if let Some(clipboard) = &range_clipboard {
+                        match session.command_prepared_revision(
+                            Command::InsertTimeRangeOnSourceTracks {
+                                clipboard: Arc::clone(clipboard),
+                                track,
+                                frame,
+                            },
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((_, prepared)) => {
+                                if session.project() != state.project.as_ref() {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
+                                status = Some("time selection inserted".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    } else {
+                        error = Some("time clipboard is empty · copy a selection first".into());
+                    }
+                }
+                Request::AddNativeDevice {
+                    track,
+                    type_id,
+                    before,
+                } => match hex_engine::default_native_device_state(*type_id) {
+                    Ok(state) => {
+                        let before_project = session.project().clone();
+                        match session.command_prepared_revision(
+                            Command::InsertDevice {
+                                track,
+                                before,
+                                state,
+                            },
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((result, prepared)) if session.project() != &before_project => {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                                created = Some(result);
+                                status = Some("device added".into());
+                            }
+                            Ok(_) => status = Some("no change".into()),
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                },
+                Request::SetDeviceParameter {
+                    device,
+                    parameter,
+                    value,
+                } => {
+                    let patched = session
+                        .project()
+                        .device(device)
+                        .ok_or_else(|| "device is missing".to_owned())
+                        .and_then(|entry| {
+                            hex_engine::patch_native_device_parameter(
+                                entry.state(),
+                                parameter,
+                                value,
+                            )
+                            .map_err(|reason| reason.to_string().to_lowercase())
+                        });
+                    match patched {
+                        Ok(state) => {
+                            let before_project = session.project().clone();
+                            match session.command_prepared_revision(
+                                Command::ReplaceDeviceState { device, state },
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before_project => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some("device parameter changed".into());
+                                }
+                                Ok(_) => status = Some("no change".into()),
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::Edit(command) => {
+                    duplicate_complete = matches!(&command, Command::DuplicateClip(_));
+                    let before = session.project().clone();
+                    match session.command_prepared_revision(
+                        command,
+                        compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    ) {
+                        Ok((result, prepared)) if session.project() != &before => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some("edit committed".into());
+                        }
+                        Ok(_) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                Request::Undo => match session.undo_prepared_revision(
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                ) {
+                    Ok(Some(prepared)) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("undo committed".into());
+                    }
+                    Ok(None) => status = Some("nothing to undo".into()),
+                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                },
+                Request::Redo => match session.redo_prepared_revision(
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                ) {
+                    Ok(Some(prepared)) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("redo committed".into());
+                    }
+                    Ok(None) => status = Some("nothing to redo".into()),
+                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                },
+                Request::SaveNew(path) => {
+                    save_complete = true;
+                    match project_for_save(&session, media_base.as_deref()) {
+                        Ok(project) => match absolute_document_path(&path) {
+                            Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
+                                Ok(token) => {
+                                    document = Some(DocumentHandle { path, token });
+                                    unsaved = false;
+                                    state = view_state(
+                                        &session,
+                                        Arc::clone(&midi_preview),
+                                        revision,
+                                        unsaved,
+                                        document.as_ref().map(|handle| handle.path.as_path()),
+                                    );
+                                    status = Some("project saved".into());
+                                }
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            },
+                            Err(reason) => error = Some(reason),
+                        },
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SaveCurrent => {
+                    save_complete = true;
+                    match (
+                        document.as_mut(),
+                        project_for_save(&session, media_base.as_deref()),
+                    ) {
+                        (None, _) => {
+                            error =
+                                Some("cannot save current project before it has a file path".into())
+                        }
+                        (_, Err(reason)) => error = Some(reason),
+                        (Some(handle), Ok(project)) => {
+                            match hex_storage::replace_existing(
+                                &handle.path,
+                                &handle.token,
+                                &project,
+                            ) {
+                                Ok(outcome) => {
+                                    let commit = apply_current_save_outcome(handle, outcome);
+                                    unsaved = commit.dirty;
+                                    status = Some(commit.status.into());
+                                    error = commit.error;
+                                    state = view_state(
+                                        &session,
+                                        Arc::clone(&midi_preview),
+                                        revision,
+                                        unsaved,
+                                        document.as_ref().map(|current| current.path.as_path()),
+                                    );
+                                }
+                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                        }
+                    }
+                }
+                Request::Export(path) => {
+                    status = Some("export queued".into());
+                    let clip_end = compiled
+                        .as_ref()
+                        .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
+                        .unwrap_or(0);
+                    let job = match (compiled.as_ref(), clip_end) {
+                        (_, 0) => Err("nothing to export".to_owned()),
+                        (Some((compiled_revision, prepared)), frames)
+                            if *compiled_revision == revision =>
+                        {
+                            Ok(ExportJob {
+                                revision,
+                                path: path.clone(),
+                                project: Arc::clone(prepared.arrangement()),
+                                frames,
+                            })
+                        }
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    };
+                    match job {
+                        Ok(job) => export_job = Some(job),
+                        Err(reason) => {
+                            export_completion = Some(ExportEvent {
+                                revision,
+                                path,
+                                result: Err(reason),
+                            });
+                        }
+                    }
+                }
+                Request::RestorePlayback { generation } => {
+                    restore_complete = Some(generation);
+                    match compiled.as_ref() {
+                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
+                            restore_prepared = Some(Arc::clone(prepared));
+                        }
+                        _ => match compile(
+                            &session,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok(prepared) => {
+                                compiled = Some((revision, Arc::clone(&prepared)));
+                                midi_preview = Arc::clone(prepared.midi_preview());
+                                state = view_state(
+                                    &session,
+                                    Arc::clone(&midi_preview),
+                                    revision,
+                                    unsaved,
+                                    document.as_ref().map(|handle| handle.path.as_path()),
+                                );
+                                restore_prepared = Some(prepared);
+                            }
+                            Err(reason) => {
+                                compiled = None;
+                                error = Some(reason);
+                            }
+                        },
+                    }
                 }
             }
         }
 
         if project_replaced {
             range_clipboard = None;
+            device_gesture.reset();
+            project_generation = project_generation.saturating_add(1);
         }
-        let playback = if let Some(prepared) = replacement_revision {
+        let canonical_changed = replacement_revision.is_some();
+        let canonical_prepared = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
             state = view_state(
@@ -884,6 +1047,44 @@ fn run_worker(
                 document.as_ref().map(|handle| handle.path.as_path()),
             );
             compiled = Some((revision, Arc::clone(&prepared)));
+            Some(prepared)
+        } else {
+            None
+        };
+        if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
+            if let Some(outcome) = device_gesture.rebase(
+                &mut session,
+                compiled.as_ref().map(|(_, artifact)| artifact),
+                project_generation,
+            ) {
+                gesture_ack = Some(outcome.ack);
+                preview_prepared = outcome.playback;
+                preview_project = outcome.preview_project;
+                restore_prepared = preview_prepared
+                    .is_none()
+                    .then_some(restore_prepared)
+                    .flatten();
+            }
+        }
+        let device_preview = match (
+            device_gesture.snapshot(),
+            preview_project,
+            preview_prepared.as_ref(),
+        ) {
+            (Some(snapshot), Some(project), Some(prepared)) => Some(DevicePreview {
+                identity: DevicePreviewIdentity {
+                    project_generation,
+                    key: snapshot.key,
+                    sequence: snapshot.sequence,
+                    canonical_revision: revision,
+                },
+                state: preview_view_state(&state, project, Arc::clone(prepared)),
+            }),
+            _ => None,
+        };
+        let playback = if let Some(prepared) = canonical_prepared {
+            Some(native_playback(prepared))
+        } else if let Some(prepared) = preview_prepared {
             Some(native_playback(prepared))
         } else {
             restore_prepared.map(native_playback)
@@ -902,6 +1103,11 @@ fn run_worker(
                 created,
                 duplicate_complete,
                 restore_complete,
+                device_preview,
+                gesture_ack,
+                gesture_protocol_ack,
+                gesture_request,
+                active_device_gesture: device_gesture.snapshot(),
             },
         ) {
             return;
@@ -1850,6 +2056,544 @@ mod service_tests {
             Some("device parameter is unknown")
         );
         assert_eq!(rejected.state.revision, revision);
+    }
+
+    #[test]
+    fn device_gesture_preview_is_noncanonical_and_commit_is_one_undo_step() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "gesture".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let before = next_event(&service);
+        let device = before.state.project.tracks()[0].devices()[0].id();
+        let gain = ParameterId::new(1).unwrap();
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin gesture");
+        let begun = next_event(&service);
+        assert!(begun.gesture_request);
+        assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+        assert_eq!(begun.state.revision, before.state.revision);
+
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(2.25),
+            }))
+            .expect("preview value");
+        let preview = next_event(&service);
+        assert!(preview.gesture_request);
+        assert_eq!(preview.state.revision, before.state.revision);
+        assert_eq!(preview.state.unsaved, before.state.unsaved);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                preview.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+        let device_preview = preview.device_preview.as_ref().expect("preview view");
+        assert_eq!(
+            device_preview.identity.canonical_revision,
+            before.state.revision
+        );
+        assert_eq!(device_preview.identity.key, key);
+        assert_eq!(device_preview.identity.sequence, 1);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                device_preview.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.25)
+        );
+
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Commit {
+                key,
+                sequence: 2,
+                value: ParameterValue::Float(3.5),
+            }))
+            .expect("commit final value");
+        let committed = next_event(&service);
+        assert!(committed.error.is_none());
+        assert!(committed.state.unsaved);
+        assert_eq!(committed.state.revision, before.state.revision + 1);
+        assert!(committed.device_preview.is_none());
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                committed.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(3.5)
+        );
+        service.submit(Request::Undo).expect("undo gesture once");
+        let undone = next_event(&service);
+        assert_eq!(undone.state.revision, committed.state.revision + 1);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+        service.submit(Request::Redo).expect("redo gesture once");
+        let redone = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                redone.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(3.5)
+        );
+    }
+
+    #[test]
+    fn undo_barrier_finishes_active_gesture_before_undoing_it() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "gesture barrier".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let before = next_event(&service);
+        let device = before.state.project.tracks()[0].devices()[0].id();
+        let gain = ParameterId::new(1).unwrap();
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin gesture");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(2.0),
+            }))
+            .expect("preview value");
+        next_event(&service);
+        service.submit(Request::Undo).expect("undo barrier");
+        let undone = next_event(&service);
+        assert!(undone.gesture_protocol_ack);
+        assert!(!undone.gesture_request);
+        assert!(undone.gesture_ack.as_ref().is_some_and(|ack| {
+            ack.phase == crate::device_gesture::GesturePhase::Commit && ack.accepted
+        }));
+        assert_eq!(
+            undone.state.revision,
+            before.state.revision + 2,
+            "one commit and one undo each advance canonical revision"
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+    }
+
+    #[test]
+    fn cancel_restores_latest_state_after_same_and_independent_parameter_edits() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "gesture rebase".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let before = next_event(&service);
+        let device = before.state.project.tracks()[0].devices()[0].id();
+        let gain = ParameterId::new(1).unwrap();
+        let width = ParameterId::new(3).unwrap();
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin gesture");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(2.0),
+            }))
+            .expect("preview gain");
+        next_event(&service);
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: gain,
+                value: ParameterValue::Float(2.5),
+            })
+            .expect("same-parameter edit");
+        let same_parameter_edit = next_event(&service);
+        assert!(same_parameter_edit.device_preview.is_some());
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: width,
+                value: ParameterValue::Float(2.5),
+            })
+            .expect("independent width edit");
+        let rebased = next_event(&service);
+        assert!(rebased.error.is_none());
+        assert_eq!(rebased.state.revision, before.state.revision + 2);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                rebased.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        let preview = rebased.device_preview.as_ref().expect("rebased preview");
+        assert_eq!(preview.identity.canonical_revision, rebased.state.revision);
+        let preview_device = preview.state.project.device(device).unwrap();
+        assert_eq!(
+            hex_engine::native_device_parameter(preview_device.state(), gain).unwrap(),
+            ParameterValue::Float(2.0)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(preview_device.state(), width).unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Cancel { key }))
+            .expect("cancel gesture");
+        let canceled = next_event(&service);
+        assert!(canceled.device_preview.is_none());
+        assert_eq!(canceled.state.revision, rebased.state.revision);
+        let canonical = canceled.state.project.device(device).unwrap().state();
+        assert_eq!(
+            hex_engine::native_device_parameter(canonical, gain).unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        assert_eq!(
+            hex_engine::native_device_parameter(canonical, width).unwrap(),
+            ParameterValue::Float(2.5)
+        );
+        service
+            .submit(Request::Undo)
+            .expect("undo only independent edit");
+        let undone = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                width,
+            )
+            .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+        service
+            .submit(Request::Undo)
+            .expect("undo same-parameter edit");
+        let undone_gain = next_event(&service);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                undone_gain.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+    }
+
+    #[test]
+    fn save_and_export_barriers_finalize_latest_parameter_value() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        let directory = TestDir::new();
+        let path = directory.0.join("gesture.hex");
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "gesture save".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let added = next_event(&service);
+        let device = added.state.project.tracks()[0].devices()[0].id();
+        let gain = ParameterId::new(1).unwrap();
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save baseline");
+        let saved = next_event(&service);
+        assert!(saved.error.is_none());
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin parameter edit");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(2.75),
+            }))
+            .expect("preview parameter edit");
+        next_event(&service);
+        service.submit(Request::SaveCurrent).expect("save barrier");
+        let saved_gesture = next_event(&service);
+        assert!(saved_gesture.error.is_none());
+        assert!(saved_gesture.save_complete);
+        assert!(saved_gesture.gesture_protocol_ack);
+        assert_eq!(saved_gesture.state.revision, saved.state.revision + 1);
+        assert!(!saved_gesture.state.unsaved);
+        service
+            .submit(Request::Open(path.clone()))
+            .expect("reopen saved gesture");
+        let reopened = next_event(&service);
+        assert!(reopened.project_replaced);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                reopened.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.75)
+        );
+
+        let next_key = GestureKey {
+            generation: 1,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key: next_key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin export parameter edit");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key: next_key,
+                sequence: 1,
+                value: ParameterValue::Float(4.0),
+            }))
+            .expect("preview export parameter edit");
+        next_event(&service);
+        service
+            .submit(Request::Export(directory.0.join("empty.wav")))
+            .expect("export barrier");
+        let export_barrier = next_event(&service);
+        assert!(export_barrier.gesture_protocol_ack);
+        assert_eq!(export_barrier.state.revision, reopened.state.revision + 1);
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                export_barrier.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(4.0)
+        );
+        assert_eq!(
+            next_export_event(&service).result.unwrap_err(),
+            "nothing to export"
+        );
+        let replace_key = GestureKey {
+            generation: 1,
+            token: 2,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key: replace_key,
+                target: GestureTarget {
+                    device,
+                    parameter: gain,
+                },
+            }))
+            .expect("begin before replacement");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key: replace_key,
+                sequence: 1,
+                value: ParameterValue::Float(5.0),
+            }))
+            .expect("preview before replacement");
+        next_event(&service);
+        service.submit(Request::Open(path)).expect("open barrier");
+        let replaced = next_event(&service);
+        assert!(replaced.project_replaced);
+        assert!(replaced.active_device_gesture.is_none());
+        assert_eq!(
+            hex_engine::native_device_parameter(
+                replaced.state.project.device(device).unwrap().state(),
+                gain,
+            )
+            .unwrap(),
+            ParameterValue::Float(2.75)
+        );
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Cancel {
+                key: replace_key,
+            }))
+            .expect("stale project gesture");
+        let stale = next_event(&service);
+        assert!(
+            stale
+                .gesture_ack
+                .as_ref()
+                .is_some_and(|ack| ack.reason.is_some())
+        );
+        assert!(stale.active_device_gesture.is_none());
+    }
+
+    #[test]
+    fn removing_gesture_target_cancels_only_its_preview_and_keeps_the_edit() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "removed device".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let type_id = hex_lattice_contract::DeviceTypeId::new("hex.utility").unwrap();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .expect("add utility");
+        let added = next_event(&service);
+        let device = added.state.project.tracks()[0].devices()[0].id();
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget {
+                    device,
+                    parameter: ParameterId::new(1).unwrap(),
+                },
+            }))
+            .expect("begin");
+        next_event(&service);
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(2.0),
+            }))
+            .expect("preview");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::RemoveDevice(device)))
+            .expect("remove target");
+        let removed = next_event(&service);
+        assert!(removed.error.is_none());
+        assert!(removed.active_device_gesture.is_none());
+        assert!(removed.device_preview.is_none());
+        assert!(removed.gesture_ack.as_ref().is_some_and(|ack| {
+            ack.reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("removed or replaced"))
+        }));
+        assert!(removed.state.project.device(device).is_none());
+        assert!(removed.state.unsaved);
     }
 
     #[test]
