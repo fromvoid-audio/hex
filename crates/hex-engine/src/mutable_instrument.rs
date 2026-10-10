@@ -120,6 +120,13 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     next_id_scratch: u64,
 }
 
+/// A moved mutable instrument owner and its captured route identity. Tail
+/// owners remain allocated in their graph until control-side retirement.
+pub(crate) struct MutableInstrumentTail {
+    pub(crate) track_id: TrackId,
+    pub(crate) runtime: MutableInstrumentTrackRuntime,
+}
+
 impl MutableInstrumentTrackRuntime {
     pub(crate) fn new(
         prepared: &dyn PreparedMutableInstrumentRuntime,
@@ -192,6 +199,26 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn speculative_is_quiescent(&self) -> bool {
         self.scratch.is_empty() && self.pair.speculative_is_quiescent()
+    }
+
+    pub(crate) fn declared_pair_bytes(&self) -> usize {
+        self.pair.declared_pair_bytes()
+    }
+
+    pub(crate) fn max_active_occurrences(&self) -> usize {
+        self.pair.max_active_occurrences()
+    }
+
+    /// Cut still-gated occurrences at a publication boundary when the
+    /// candidate has no enabled instrument. The runtime receives the matching
+    /// frame-zero NoteOff in its next segment; feedback and release state stay
+    /// owned and are not reset.
+    pub(crate) fn cut_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.primary {
+            if occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+            }
+        }
     }
 
     pub(crate) fn process_segment(
@@ -351,24 +378,35 @@ impl MutableInstrumentTrackRuntime {
 }
 
 /// Maximum fixed host-side storage attributable to mutable instrument
-/// ownership for a graph with `track_count` routes. Runtime pair payloads are
-/// separately checked against the lattice DSP budget.
+/// ownership for a graph with `track_count` routes, including the complete
+/// tail bank and two ledgers per active or retained owner. Runtime pair
+/// payloads are separately checked against the lattice DSP budget.
 pub(crate) fn host_storage_upper_bound(track_count: usize) -> Option<usize> {
     if track_count > hex_project::MAX_TRACKS {
         return None;
     }
     let runtime_slots =
         track_count.checked_mul(std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>())?;
-    let ledger_entries = track_count
+    let active_ledger_entries = track_count
+        .checked_mul(2)?
+        .checked_mul(MAX_SIMULTANEOUS_VOICES_PER_TRACK)?
+        .checked_mul(std::mem::size_of::<MutableOccurrence>())?;
+    let tail_slots = hex_lattice::MAX_STATEFUL_PROCESSORS;
+    let tail_owner_slots =
+        tail_slots.checked_mul(std::mem::size_of::<Option<MutableInstrumentTail>>())?;
+    let tail_ledger_entries = tail_slots
         .checked_mul(2)?
         .checked_mul(MAX_SIMULTANEOUS_VOICES_PER_TRACK)?
         .checked_mul(std::mem::size_of::<MutableOccurrence>())?;
     let events =
         MAX_MUTABLE_EVENTS_PER_QUERY.checked_mul(std::mem::size_of::<NativeInstrumentEvent>())?;
     let vector_headers = std::mem::size_of::<Vec<Option<MutableInstrumentTrackRuntime>>>()
-        .checked_add(std::mem::size_of::<Vec<NativeInstrumentEvent>>())?;
+        .checked_add(std::mem::size_of::<Vec<NativeInstrumentEvent>>())?
+        .checked_add(std::mem::size_of::<Vec<Option<MutableInstrumentTail>>>())?;
     runtime_slots
-        .checked_add(ledger_entries)?
+        .checked_add(active_ledger_entries)?
+        .checked_add(tail_owner_slots)?
+        .checked_add(tail_ledger_entries)?
         .checked_add(std::mem::size_of::<MutableOnsetBuffer>())?
         .checked_add(events)?
         .checked_add(vector_headers)

@@ -1,5 +1,46 @@
 # Performance requirements and baseline — 8 October 2026
 
+## Mutable tail ownership checkpoint — 10 October 2026
+
+The retained mutable-owner bank and selective suffix-history handoff were
+checked against the accepted analytic baseline with three interleaved release
+runs per workload. Apple M5 Pro arm64, macOS 26.6.2, 48 kHz, 100 tracks,
+100 warm-up blocks and 500 measured blocks at each size; two Utility effects
+at gain 0.999 follow the instrument. Dense notes start together and remain
+held throughout measurement. No concurrent Cargo checks ran during capture;
+machine scheduling and power behavior remain uncontrolled.
+
+| Workload | Frames/block | Before median render sum | After median render sum |
+| --- | ---: | ---: | ---: |
+| Sine, 16 notes/track | 128 | 0.281 s | 0.282 s |
+| Sine, 16 notes/track | 512 | 1.102 s | 1.106 s |
+| Default FM4, 1 note/track | 128 | 0.031 s | 0.031 s |
+| Default FM4, 1 note/track | 512 | 0.119 s | 0.119 s |
+| Default FM4, 16 notes/track | 128 | 0.474 s | 0.472 s |
+| Default FM4, 16 notes/track | 512 | 1.873 s | 1.866 s |
+
+These short measurements show changes below 0.5% in rounded median summed
+render time, without establishing statistical equivalence or physical device
+deadlines. Whole-run PCM hashes match exactly in every paired run. The fixture
+exercises ordinary prepared playback with the existing analytic instruments;
+mutable tail processing is covered by independent headless PCM and callback
+allocation fixtures, not by this timing workload.
+
+Retained binaries, all individual sums/maxima/hashes and source identities are
+in `artifacts/profiles/mutable-tail-20261010/paired-results.json` and
+`paired-{before,after}-{sine16,fm4-one,fm4-16}-{1,2,3}.log`. Baseline source is
+`120df01b61c7f3150b875192e4fb921d39c768c5`, binary SHA-256
+`3033652892e28e441292b942424fcdf786f8eef1ffdb01c95be6f33b8c5d6684`.
+The candidate was captured at base `9bcd17d36bf68f380f9fb4a7a1043265052ac199`
+with source-diff SHA-256
+`bf8bbab488cf7373a75505ff3d6637572e22dcf1564c16407b5c77309688beb9`,
+binary SHA-256
+`da948fe977a6c75d6f6db04324f9ca9a15ddc2fd598a72c4cf42aa82e93b9ce1`.
+Only this documentation changed after capture. Reproduce with either saved
+`{before,after}-profile-instrument` binary and
+`--prepared-runtime --dense-sustain --warmup-blocks=100 --measured-blocks=500`;
+add `--fm4`, and `--one-note` for the one-note FM4 workload.
+
 ## Registered analytic instrument timing — 9 October 2026
 
 Baseline06b7ae4 versus the instrument-slot source uses existing release

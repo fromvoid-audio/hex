@@ -27,7 +27,7 @@ ALLOWED = {
 }
 # Canonical publication fixtures need the authored model only in audio tests.
 # This does not grant the production device/callback crate ownership of editing.
-DEV_ALLOWED = {'hex-audio': {'hex-project', 'hex-lattice-contract'}}
+DEV_ALLOWED = {'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice'}}
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},

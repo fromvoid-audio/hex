@@ -51,6 +51,9 @@ impl SessionPlayback {
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.reset();
         }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.reset();
+        }
         for route in &mut self.routes {
             changed |= route.pending.take().is_some();
             if let RouteOwner::Session { clip, launch } = route.owner {
@@ -72,6 +75,14 @@ impl SessionPlayback {
     }
 
     fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .any(|tail| !tail.runtime.committed_is_quiescent())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
         for index in 0..self.mutable_instruments.len() {
             let Some(runtime) = self.mutable_instruments[index].as_ref() else {
                 continue;
@@ -118,6 +129,9 @@ impl SessionPlayback {
         }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.reset();
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.reset();
         }
         for route in &mut self.routes {
             route.pending = None;
