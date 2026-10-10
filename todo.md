@@ -1151,3 +1151,15 @@ semantics have focused coverage. Engine181pass/3ignored,12added tests, strict
 engineClippy, formatting, architecture and the actual Return callback allocation
 probe pass. Full exact-head local CI, PR publication and native listening remain
 pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).
+
+## 10 October2026 — Pulse2195 playback stack evidence
+
+An opt-in isolated subprocess probe measures constructor/preroll completion
+thresholds for stateful Utility and100-track mutable/Return fixtures. Debug
+passes at2MiB and overflows at1MiB; release passes at the512KiB probe floor.
+Passing held/released PCM digests match across stack sizes and profiles. The8MiB
+production worker reservation is unchanged. Requested-stack completion is not
+peak/high-water stack measurement. Commands, raw logs, toolchain and executable
+hashes are in[the evidence](docs/playback-stack.md). Affected debug/release
+probes, strict feature-enabled engineClippy, formatting and architecture guards
+pass. No production storage/DSP/schema change.
