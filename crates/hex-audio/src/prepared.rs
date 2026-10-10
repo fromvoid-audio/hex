@@ -153,6 +153,32 @@ pub enum PublicationPolicy {
     /// Install a caller-prepared fresh runtime without inheriting from the active one.
     /// The policy does not sanitize a pre-mutated candidate itself.
     InstallFreshRuntime,
+    /// Install only if the active runtime, route generation, and command prefix
+    /// still match the caller's control-side capture.
+    InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
+}
+
+/// Control-side freshness proof for a candidate prepared from an observed
+/// runtime state. Revision zero represents an empty audio owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreshRuntimeFence {
+    expected_active_revision: u64,
+    route_state_generation: u64,
+    admitted_command_ticket: u64,
+}
+
+impl FreshRuntimeFence {
+    pub const fn expected_active_revision(self) -> u64 {
+        self.expected_active_revision
+    }
+
+    pub const fn route_state_generation(self) -> u64 {
+        self.route_state_generation
+    }
+
+    pub const fn admitted_command_ticket(self) -> u64 {
+        self.admitted_command_ticket
+    }
 }
 
 pub struct Status {
@@ -472,6 +498,15 @@ pub struct PublishError {
     pub playback: Playback,
 }
 
+impl std::fmt::Debug for PublishError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PublishError")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct Control {
     publications: Producer<Publication>,
     retired: Consumer<Publication>,
@@ -504,6 +539,8 @@ pub struct Callback {
     route_slot_visits: usize,
     #[cfg(test)]
     test_transient_handoff_refusals: usize,
+    #[cfg(test)]
+    test_after_fresh_fence_validation: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
@@ -551,11 +588,26 @@ pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
             route_slot_visits: 0,
             #[cfg(test)]
             test_transient_handoff_refusals: 0,
+            #[cfg(test)]
+            test_after_fresh_fence_validation: None,
         },
     ))
 }
 
 impl Control {
+    /// Capture the current route header under its sequence lock, then acquire
+    /// the admitted-command high-water mark. Returns `None` on a contended or
+    /// invalid route snapshot so callers can retry before preparing a graph.
+    pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
+        let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
+        let snapshot = self.status.session_routes(&mut routes)?;
+        Some(FreshRuntimeFence {
+            expected_active_revision: snapshot.audio_revision,
+            route_state_generation: snapshot.route_state_generation,
+            admitted_command_ticket: self.admitted_ticket.load(Acquire),
+        })
+    }
+
     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
         self.publish_with_policy(playback, PublicationPolicy::InheritRuntime)
     }
@@ -773,11 +825,45 @@ impl Callback {
             }
             #[cfg(not(test))]
             let forced_refusal = false;
+            let stale_fence = match next.policy {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence) => {
+                    let active_revision = self.active.as_ref().map_or(0, |active| active.revision);
+                    let active_route_generation = self
+                        .active
+                        .as_ref()
+                        .map_or(0, |active| active.playback.session_route_state_generation());
+                    let admitted_ticket = self.admitted_ticket.load(Acquire);
+                    let stop_pending = self.pending_stop_marker.load(Acquire) != 0;
+                    (active_revision != fence.expected_active_revision
+                        || active_route_generation != fence.route_state_generation
+                        || admitted_ticket != fence.admitted_command_ticket
+                        || stop_pending)
+                        .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
+                PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
+            };
+            #[cfg(test)]
+            if stale_fence.is_none()
+                && matches!(
+                    next.policy,
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                )
+                && let Some(barrier) = self.test_after_fresh_fence_validation.take()
+            {
+                barrier.wait();
+                barrier.wait();
+            }
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
                     hex_engine::SessionPlaybackError::ReleaseBankFull,
                 )))
-            } else if next.policy == PublicationPolicy::InstallFreshRuntime {
+            } else if let Some(error) = stale_fence {
+                Some(Err(error))
+            } else if matches!(
+                next.policy,
+                PublicationPolicy::InstallFreshRuntime
+                    | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+            ) {
                 None
             } else {
                 self.active.as_mut().map(|previous| {
@@ -943,7 +1029,378 @@ impl Callback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Weak;
+    use std::sync::{Barrier, Weak};
+
+    fn assert_fresh_fence_rejection(control: &mut Control, expected_revision: u64) {
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((
+                expected_revision,
+                PlaybackHandoffRejection::RuntimeFenceChanged
+            ))
+        );
+        assert!(!control.publication_pending.load(Acquire));
+    }
+
+    #[test]
+    fn fresh_runtime_fence_accepts_empty_and_exact_active_snapshots() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let empty = control.capture_fresh_runtime_fence().unwrap();
+        assert_eq!(empty.expected_active_revision(), 0);
+        assert_eq!(empty.route_state_generation(), 0);
+        assert_eq!(empty.admitted_command_ticket(), 0);
+        let first_revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(empty),
+            )
+            .unwrap();
+        assert_eq!(control.admitted_ticket.load(Acquire), 0);
+        callback.begin_block();
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            first_revision
+        );
+
+        let current = control.capture_fresh_runtime_fence().unwrap();
+        let second_revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(current),
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            second_revision
+        );
+        assert_eq!(control.status.rejected_revision(), None);
+        assert!(!control.publication_pending.load(Acquire));
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_runtime_fence_rejects_stale_active_revision() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish(graph().0)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        let stale = control.capture_fresh_runtime_fence().unwrap();
+        let intervening = control
+            .publish_with_policy(graph().0, PublicationPolicy::InstallFreshRuntime)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), intervening);
+
+        let rejected = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+            )
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), intervening);
+        assert_fresh_fence_rejection(&mut control, rejected);
+        assert_eq!(control.reclaim(), 2);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_runtime_fence_rejects_stale_route_generation_independently() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (old, _, clip, _) = session_audio_graph();
+        let (mut oracle, _, oracle_clip, _) = session_audio_graph();
+        assert_eq!(clip, oracle_clip);
+        control
+            .publish(old)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        callback.begin_block();
+        oracle
+            .try_apply_action(hex_engine::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: hex_engine::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        oracle.apply(PlaybackCommand::Play);
+
+        let stale = control.capture_fresh_runtime_fence().unwrap();
+        let ticket_before = control.admitted_ticket.load(Acquire);
+        callback
+            .active
+            .as_mut()
+            .unwrap()
+            .playback
+            .try_apply_action(hex_engine::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Seek(1),
+            ))
+            .unwrap();
+        oracle
+            .try_apply_action(hex_engine::PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Seek(1),
+            ))
+            .unwrap();
+        callback.publish_active_routes(true);
+        assert_eq!(control.admitted_ticket.load(Acquire), ticket_before);
+        assert_ne!(
+            callback
+                .active
+                .as_ref()
+                .unwrap()
+                .playback
+                .session_route_state_generation(),
+            stale.route_state_generation()
+        );
+
+        let (candidate, _) = graph_with_frame([0.91, -0.83]);
+        let rejected = control
+            .publish_with_policy(
+                candidate,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        assert_fresh_fence_rejection(&mut control, rejected);
+        let mut actual = [[0.0; 2]; 2];
+        let mut expected = [[0.0; 2]; 2];
+        callback.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "stale fresh candidate replaced active PCM"
+        );
+        assert_ne!(actual[0], [0.91, -0.83]);
+        let mut routes = [SessionRouteEntry::default(); 1];
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(
+            routes[0].owner,
+            SessionRouteOwner::Session {
+                clip_id: clip.value()
+            },
+            "stale rejection must preserve the active Session route owner"
+        );
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_runtime_fence_rejects_stale_command_ticket_and_applies_prefix_to_old_graph() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish(graph().0)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        let stale = control.capture_fresh_runtime_fence().unwrap();
+        let ticket = control
+            .command_with_ticket(PlaybackCommand::Seek(19))
+            .unwrap();
+        let rejected = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        assert_eq!(control.status.position.load(Acquire), 19);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_fresh_fence_rejection(&mut control, rejected);
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_runtime_fence_rejects_pending_stop_and_stops_the_old_graph() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish(graph().0)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        assert!(control.status.playing.load(Acquire));
+        let stale = control.capture_fresh_runtime_fence().unwrap();
+        control.stop();
+        let rejected = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+            )
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.pending_stop_marker.load(Acquire), 0);
+        assert_fresh_fence_rejection(&mut control, rejected);
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn command_admitted_after_fresh_fence_validation_applies_to_new_runtime() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control
+            .publish(graph().0)
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        callback.begin_block();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+        callback.test_after_fresh_fence_validation = Some(Arc::clone(&barrier));
+        std::thread::scope(|scope| {
+            let callback_thread = scope.spawn(|| callback.begin_block());
+            barrier.wait();
+            let ticket = control
+                .command_with_ticket(PlaybackCommand::Seek(47))
+                .unwrap();
+            barrier.wait();
+            callback_thread.join().unwrap();
+            assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        });
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(control.status.position.load(Acquire), 47);
+        assert_eq!(control.status.rejected_revision(), None);
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn stop_admitted_after_fresh_fence_validation_stops_new_runtime() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+        callback.test_after_fresh_fence_validation = Some(Arc::clone(&barrier));
+        std::thread::scope(|scope| {
+            let callback_thread = scope.spawn(|| callback.begin_block());
+            barrier.wait();
+            control.stop();
+            barrier.wait();
+            callback_thread.join().unwrap();
+        });
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.pending_stop_marker.load(Acquire), 0);
+        assert_eq!(control.status.rejected_revision(), None);
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn stale_fresh_runtime_fence_is_rechecked_after_retirement_backpressure() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        for _ in 0..RETIRED {
+            control
+                .publish_with_policy(graph().0, PublicationPolicy::InstallFreshRuntime)
+                .unwrap();
+            callback.begin_block();
+        }
+        assert!(callback.retired.is_full());
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let ticket = control
+            .command_with_ticket(PlaybackCommand::Seek(13))
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert!(control.publication_pending.load(Acquire));
+        assert_eq!(control.reclaim(), RETIRED);
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
+        assert_fresh_fence_rejection(&mut control, revision);
+        assert_eq!(control.reclaim(), 1);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn rejected_candidate_is_held_until_control_reclaims_retirement_space() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        for revision in 10..10 + RETIRED as u64 {
+            callback
+                .retired
+                .push(Publication {
+                    revision,
+                    policy: PublicationPolicy::InstallFreshRuntime,
+                    playback: Box::new(graph().0),
+                })
+                .unwrap();
+        }
+        assert!(callback.retired.is_full());
+
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let (candidate, weak_candidate, _, _) = session_audio_graph();
+        let rejected = control
+            .publish_with_policy(
+                candidate,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        control.stop();
+        callback.begin_block();
+
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+        assert_fresh_fence_rejection(&mut control, rejected);
+        assert!(callback.held_retirement.is_some());
+        assert!(weak_candidate.upgrade().is_some());
+
+        assert_eq!(control.reclaim(), RETIRED);
+        callback.begin_block();
+        assert!(callback.held_retirement.is_none());
+        assert!(weak_candidate.upgrade().is_some());
+        assert_eq!(control.reclaim(), 1);
+        assert!(weak_candidate.upgrade().is_none());
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
 
     #[test]
     fn command_cut_distinguishes_captured_prefix_and_stop_boundary() {
@@ -1082,7 +1539,11 @@ mod tests {
     }
 
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
-        let audio = hex_engine::Audio::new(48_000, vec![[0.25; 2]]).unwrap();
+        graph_with_frame([0.25; 2])
+    }
+
+    fn graph_with_frame(frame: hex_engine::Frame) -> (Playback, Weak<hex_engine::Project>) {
+        let audio = hex_engine::Audio::new(48_000, vec![frame]).unwrap();
         let clip = hex_engine::Clip::new(audio, 0, 100, true).unwrap();
         let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
         let project = Arc::new(hex_engine::Project::new(48_000, vec![track]).unwrap());

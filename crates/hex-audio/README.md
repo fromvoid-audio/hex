@@ -32,6 +32,22 @@ reason and ticket/revision remain paired. Session capability status is reported
 separately from render faults. Graph construction and final destruction remain
 off the callback.
 
+`Control::capture_fresh_runtime_fence` returns a control-side snapshot of the
+coherent Session route header followed by an Acquire read of the admitted-command
+high-water mark. A caller may publish a separately prepared candidate with
+`InstallFreshRuntimeIfUnchanged(fence)`. Immediately before transfer, the callback
+compares the fence with its actual active revision (zero when empty), active route
+generation, current admitted ticket, and pending priority Stop marker. A mismatch
+rejects and returns the candidate, reports `RuntimeFenceChanged`, and releases
+the publication gate. The callback does not clear or consume Stop on rejection;
+the ordinary command cut applies Stop to the previous graph. Commands admitted
+after validation linearize after installation and are consumed by the new graph.
+If retirement storage is full, the old graph continues rendering/consuming bounded
+controls; the fence is checked only after capacity returns. Unconditional fresh
+installation and inherited-runtime publication retain their existing policies.
+The fence is audio-runtime freshness only; it does not establish caller project
+identity, compilation provenance, or active UI/session-route admission.
+
 `Status::session_routes` copies one coherent route snapshot into caller-owned
 storage with at most three reader attempts. A short buffer or concurrent writer
 returns `None`; callers must ignore the whole output buffer on `None`. Allocate
