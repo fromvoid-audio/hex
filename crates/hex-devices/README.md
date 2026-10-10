@@ -8,7 +8,9 @@ fixed-state DC/bass-mono filters registered through the stateful lattice contrac
 Own the original four-operator phase-modulation kernel and its versioned,
 registered analytic instrument definition. FM4 is selectable as a bounded
 acyclic native instrument; mutable feedback and full Operator behavior remain
-outside this crate's current runtime contract.
+outside this crate's current runtime contract. The standalone original
+[oscillator envelope kernel](../../docs/operator-envelopes.md) prepares four
+independent finite amplitude laws; it is not connected to the registered FM4.
 
 ## Dependencies
 
