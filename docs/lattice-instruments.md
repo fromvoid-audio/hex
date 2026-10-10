@@ -322,9 +322,11 @@ mutable scratch ledger and runtime history with the rest of the candidate block.
 The feedback test covers Arrangement and Session scheduling, block partitioning,
 short in-query notes, event limits and hybrid additive prefix/instrument/suffix
 rendering. Legacy finite Arrangement renderers refuse an enabled mutable track
-before advancing time or emitting audio. Mutable Arrangement loops, Session
-source loops, live-state seeks and quantized mutable route changes are explicitly
-refused; Stop is the hard reset. Live mutable state can cross a revision handoff
+before advancing time or emitting audio. The shared SessionPlayback path admits
+finite Arrangement source loops and Session source loops with distinct occurrence
+iterations; enabled Arrangement transport-loop wrapping, live-state seeks and
+quantized mutable route changes remain explicitly refused. Stop is the hard
+reset. Live mutable state can cross a revision handoff
 when the bounded tail preflight succeeds. A
 candidate mutable Arrangement owner also refuses a pre-cut sounding note,
 including a newly added track. Route commands check the actual candidate

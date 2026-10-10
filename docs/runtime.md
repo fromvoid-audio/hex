@@ -611,3 +611,15 @@ Those PRs are merged. This records acceptance of the reviewed editing/menu
 behavior, not physical timing measurements or exhaustive listening. Dragging time
 selections beyond visible lanes/window edges is a separately reported defect and
 the active follow-up.
+
+## mutable source-loop admission — 10 October 2026
+
+Interactive SessionPlayback admits prepared mutable Session source loops and
+finite Arrangement source loops through the existing bounded template queries
+and occurrence ledger. Source iteration and transport pass remain separate;
+authored notes before source start are not chased, intro-only notes do not repeat,
+and held gates end at the exclusive source loop boundary. Source-loop counter
+exhaustion and query failures retain transactional DSP/ledger/clock rollback.
+Enabled Arrangement transport loops and mutable Arrangement source-loop linear
+export remain refused. See [mutable-source-loops.md](mutable-source-loops.md) for
+the acceptance evidence and remaining native validation.

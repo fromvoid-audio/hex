@@ -4779,7 +4779,7 @@ fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail
 }
 
 #[test]
-fn mutable_prepared_playback_refuses_arrangement_and_session_loops() {
+fn mutable_prepared_playback_refuses_arrangement_transport_loops() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -4816,10 +4816,7 @@ fn mutable_prepared_playback_refuses_arrangement_and_session_loops() {
     clip.source.looping = true;
     let session_loop = legacy_project_from_snapshot(session_loop).unwrap();
     let prepared = revision_with_instrument_registry(&session_loop, table, &registry);
-    assert!(matches!(
-        SessionPlayback::new(prepared),
-        Err(SessionPlaybackError::MutableInstrumentLoopUnsupported)
-    ));
+    assert!(SessionPlayback::new(prepared).is_ok());
 }
 
 #[test]
@@ -9656,3 +9653,6 @@ mod effect_tail_budget_tests;
 
 #[path = "silence_effect_tests.rs"]
 mod silence_effect_tests;
+
+#[path = "source_loop_tests.rs"]
+mod source_loop_tests;

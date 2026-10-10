@@ -259,7 +259,6 @@ pub struct PreparedSessionInventory {
     tracks: Vec<PreparedSessionTrack>,
     midi_clips: Vec<PreparedSessionMidiClip>,
     mutable_instruments: Vec<PreparedMutableTrackInstrument>,
-    has_mutable_looping_source: bool,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -726,7 +725,6 @@ impl PreparedSessionInventory {
             .map_err(|_| crate::Invalid("could not reserve Session audio inventory"))?;
 
         let mut contains_streamed_sources = false;
-        let mut has_mutable_looping_source = false;
         for cell in project.session_cells() {
             let content = match cell.content() {
                 SessionCellContent::Stop => PreparedSessionCellContent::Stop,
@@ -779,9 +777,6 @@ impl PreparedSessionInventory {
                     };
                     let bank = instrument_bank
                         .ok_or(crate::Invalid("Session MIDI note bank is missing"))?;
-                    if mutable_tail_frames.is_some() && clip.source().looping() {
-                        has_mutable_looping_source = true;
-                    }
                     let instrument = if let Some(old) = cached.filter(|old| {
                         Arc::ptr_eq(old.instrument.note_bank(), bank)
                             && old.instrument.is_event_source() == mutable_tail_frames.is_some()
@@ -983,7 +978,6 @@ impl PreparedSessionInventory {
             tracks,
             midi_clips,
             mutable_instruments,
-            has_mutable_looping_source,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1104,10 +1098,6 @@ impl PreparedSessionInventory {
 
     pub(crate) fn has_mutable_instruments(&self) -> bool {
         !self.mutable_instruments.is_empty()
-    }
-
-    pub(crate) fn has_mutable_looping_source(&self) -> bool {
-        self.has_mutable_looping_source
     }
 }
 
