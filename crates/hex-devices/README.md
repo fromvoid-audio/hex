@@ -7,8 +7,7 @@ prepare Hex's stateless sine instrument voice for MIDI playback, and own origina
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
 Own the original four-operator phase-modulation kernel and its versioned,
 registered analytic instrument definition. FM4 is selectable as a bounded
-acyclic native instrument; mutable feedback and full Operator behavior remain
-outside this crate's current runtime contract. The standalone original
+acyclic native instrument. The standalone original
 [oscillator envelope kernel](../../docs/operator-envelopes.md) prepares four
 independent finite amplitude laws. A separate
 [standalone enveloped FM composition](../../docs/operator-fm.md) shares the
@@ -16,16 +15,19 @@ oscillator core; neither changes the registered FM4 envelope or state.
 The [Operator control codec](../../docs/operator-state.md) owns a distinct
 versioned opaque state and reusable metadata for those four envelopes. The
 metadata registers the original acyclic waveform-aware Operator as a shared-context
-analytic instrument; this does not admit feedback or full Live Operator behavior.
+analytic instrument when effective self-feedback is zero, and selects a bounded
+native mutable runtime when it is nonzero. This is an original feedback law, not
+full Live Operator behavior.
 The [compact Operator kernel](../../docs/operator-context.md) prepares one
 immutable DSP configuration and64-byte notes without duplicating envelopes or
 the routing graph into each note. Registered playback uses a bounded borrowed
 shared context and that compact note representation. The
 [fixed tuning contract](../../docs/operator-fixed-tuning.md) adds per-oscillator
 pitch-independent tuning through generic versioned state and metadata.
-The [standalone feedback kernel](../../docs/operator-feedback.md) adds a compact
-sequential per-note recurrence; registered playback still does not admit
-feedback controls or feedback state.
+The [standalone and registered feedback contract](../../docs/operator-feedback.md)
+defines the per-note recurrence, fixed 16-voice runtime, and current class-change
+handoff limits. Larger native polyphony and broader seek/loop/export proof remain
+separate work.
 
 ## Dependencies
 

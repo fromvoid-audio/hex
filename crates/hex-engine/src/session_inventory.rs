@@ -239,6 +239,10 @@ impl PreparedSessionMidiClip {
             && self.mutable_limits == other.mutable_limits
     }
 
+    pub(crate) fn instrument_identity_matches(&self, other: &Self) -> bool {
+        self.instrument_id == other.instrument_id
+    }
+
     pub(crate) fn occurrence(
         &self,
         note: hex_project::NoteId,

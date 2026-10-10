@@ -1376,3 +1376,25 @@ Next2225 preparation found a native memory budget decision: a152-byte voice
 with64slots exceeds the existing4096-byte mutable twin cap even before IDs.
 Astra is reviewing a narrow capacity/budget choice before implementation; no
 silent global budget expansion or64-voice/scalability claim.
+
+## 10 October 2026 — registered Operator feedback admission
+
+Pulse2225 adds version5 state with four persistent authored feedback amounts.
+Unavailable incoming-FM controls retain their values and use effective zero;
+all-zero effective feedback retains analytic rendering. Nonzero feedback selects
+a fixed 16-voice, 256-event mutable runtime with a 3,640-byte twin on arm64.
+Higher polyphony and continuous active-voice parameter changes remain separate
+Pulse2226/2229 follow-ups.
+
+Actual Operator tests cover both active class-switch directions on Arrangement
+and Session, exact-cut attacks, exclusive release quiescence, removed-source
+tails, bounded worker seek, transport loops and prepared export. A concrete
+Session mutable-to-analytic lost-note bug is prevented by pre-mutation refusal
+for a retained same-device source; removed sources remain eligible for tails.
+Refusal preserves applied playback; canonical desired-state history may already
+be committed under Pulse2180. Callback allocation probes cover onset, held notes,
+NoteOff, release and shutdown with construction/reclamation outside measurement.
+
+Targeted checks passed; exact-head full local CI, focused PR publication and
+combined native review build follow. Native UI/listening, physical deadlines,
+full Operator parity and general live parameter update behavior remain open.
