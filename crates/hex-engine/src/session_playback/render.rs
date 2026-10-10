@@ -78,6 +78,8 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
         }
+        self.tail_output_scratch
+            .copy_from_slice(&self.tail_output_active);
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
@@ -182,6 +184,8 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();
         }
+        self.tail_output_active
+            .copy_from_slice(&self.tail_output_scratch);
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
@@ -467,6 +471,7 @@ impl SessionPlayback {
         // Removed stateless tracks retain their copied linear mix. Stateful
         // tails are grouped by their captured old runtime chain and old mix.
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
+        let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut tail_cursor = release_cursor;
         while tail_cursor < self.release_scratch.len() {
             let release = self
@@ -540,7 +545,15 @@ impl SessionPlayback {
                 chain
                     .process_range(suffix_start..effect_count, tail_output)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
+                *self
+                    .tail_output_scratch
+                    .get_mut(group_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)? = active;
             }
+            *rendered_tail_suffixes
+                .get_mut(group_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
             if let Some(matrix) = self
                 .tail_suffix_matrices
                 .get(group_index)
@@ -600,7 +613,72 @@ impl SessionPlayback {
                 chain
                     .process_range(suffix_start..effect_count, tail_output)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
+                *self
+                    .tail_output_scratch
+                    .get_mut(group_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)? = active;
+                *rendered_tail_suffixes
+                    .get_mut(group_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
             }
+            if let Some(matrix) = self
+                .tail_suffix_matrices
+                .get(group_index)
+                .copied()
+                .flatten()
+            {
+                matrix.apply_block(tail_output);
+            }
+            let mix = self
+                .tail_mixes
+                .get(group_index)
+                .copied()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
+                mix.add_frame(destination, source);
+            }
+        }
+        // Once an old source has stopped, its committed effect history still
+        // owns output. Advance that suffix exactly once per render chunk using
+        // real zero input, then keep its captured matrix and mix in the path.
+        for group_index in 0..self.tail_groups.len() {
+            if rendered_tail_suffixes
+                .get(group_index)
+                .copied()
+                .unwrap_or(true)
+                || !self
+                    .tail_output_scratch
+                    .get(group_index)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            let chain = self
+                .tail_groups
+                .get_mut(group_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let suffix_start = self
+                .tail_suffix_starts
+                .get(group_index)
+                .copied()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let effect_count = chain.len();
+            if suffix_start > effect_count {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            let mut tail_buffer = [[0.0; 2]; 256];
+            let tail_output = &mut tail_buffer[..output.len()];
+            chain
+                .process_range(suffix_start..effect_count, tail_output)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
+            *self
+                .tail_output_scratch
+                .get_mut(group_index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)? = active;
             if let Some(matrix) = self
                 .tail_suffix_matrices
                 .get(group_index)

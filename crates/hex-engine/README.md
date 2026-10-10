@@ -25,6 +25,17 @@ preparation even when bypassed. The default registry admits linear Utility;
 definitions. Stateful devices and instrument replacement remain separate work.
 See [lattice](../../docs/lattice.md).
 
+SessionPlayback preserves detached Arrangement track effect suffixes while their
+committed state can still produce output. It feeds them zero input, keeps the
+captured old matrix and track mix, and retires them only after a committed
+successful block reports quiescence. Unchanged prepared chains transfer their
+history once instead of spawning a duplicate suffix. Finite tail bounds above
+ten seconds at the prepared rate and aggregate retention beyond 4,096 suffix
+entries are refused before runtime ownership moves; unbounded processors are
+retained until observed quiescence. Return-bus tail retention and native
+publication/deadline acceptance remain open. See
+[native effect tails](../../docs/native-effect-tails.md).
+
 The control-side compiler resolves canonical metadata through a prepared media
 bank and creates immutable playback snapshots. The explicit
 `compile::project_with_prepared_audio_sources` entry accepts one mixed bank of
