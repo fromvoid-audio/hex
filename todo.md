@@ -927,3 +927,13 @@ zero signed-net callback allocation counts/bytes. Control-side retirement is
 measured separately. Targeted export tests (2), storage persistence (19) and the
 mixed-wave callback probe pass. Full local CI, clean release performance and
 native UI/listening remain the next gates; no full Operator parity claim.
+
+2026-10-10 combined review53 source milestone: Operator periodic waveform
+choices (Pulse2183) and bounded headless Arrangement preroll (Pulse2182/PR84)
+supplement review52. Both focused clean heads pass all16 local CI checks; source
+reports are20261010T060551Z-824befe4 and20261010T055902Z-f0e1f590. Release
+profiles and their limits are recorded in docs/performance.md. The previous
+source-checkpoint notes above are historical; combined exact-head CI and fresh
+signed build are next. Native seek integration/fresh-publication fences remain
+2164/2186, and native waveform UI/listening remain for user acceptance. No
+review PR has been merged into main automatically.

@@ -1,3 +1,39 @@
+## native Operator periodic waveforms — 10 October 2026
+
+Pulse2183 uses one control-prepared immutable bank and compact notes. Three
+release process runs on Apple M5 Pro/macOS26.6.2 measure100 held voices at48kHz,
+a four-stage FM graph,128-frame blocks,100 warmups and2000 measured blocks.
+Mixed-waveform p50 ranges268.6–296.8 us and p99 ranges384.3–742.7 us; sine p50
+ranges264.9–299.5 us and p99 ranges455.9–765.0 us. Initial bank/configuration
+preparation takes14.595–16.571 ms. Independent exact sine/mixed standalone versus
+compact PCM comparisons run outside timing. No concurrent Cargo ran; other
+desktop load was uncontrolled. These are short headless microbenchmarks,
+not sustained native deadlines, 100-track usability or before/after speed claims.
+
+Clean source991bdc968e3401cef2fe9e5a7edb3ff9012d2312. Three raw logs,
+hardware/source/hash manifest and preserved profiling binary:
+`artifacts/profiles/operator-waveforms-20261010/991bdc9/`.
+Generic project save/export and callback allocation probes also pass; native
+listening and full Operator parity remain open.
+
+## bounded Arrangement preroll — 10 October 2026
+
+Pulse2182/PR84 prepares a fresh candidate on control, including mutable
+instrument history and track/return effects. Its first reproducible release
+fixture uses100 mutable stateful tracks at48kHz and advances16,384 frames in64
+blocks. Accounted candidate plus discard-buffer storage is22,209,656 bytes;
+shared immutable graph data and allocator bookkeeping are excluded. Nine
+candidate-construction plus preroll samples in three process runs took
+63.551–70.868 ms on Apple M5 Pro/macOS26.6.2. Setup and candidate destruction
+are outside timing. No concurrent Cargo ran; other desktop load was uncontrolled.
+This is control preparation evidence, not callback or instant-seek acceptance.
+
+Clean source cfc6f3673a953eb22a055feaea8e8003a9d5e006. Raw logs, source/hardware
+manifest and binary hashes are in
+`artifacts/profiles/arrangement-preroll-20261010/cfc6f36/`.
+Native request supersession, Stop/project/route fences, fresh publication and
+listening remain Pulse2164; no whole native seek claim.
+
 ## mixed Session profiler oracle repair — 10 October 2026
 
 Pulse2113 fixes the independent profiling fixture, without changing runtime DSP,
