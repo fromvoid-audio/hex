@@ -16,3 +16,7 @@ hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+
+[[example]]
+name = "profile_shared_context"
+required-features = ["instrument-test-support"]

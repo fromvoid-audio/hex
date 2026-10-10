@@ -1368,6 +1368,8 @@ impl SessionPlayback {
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
 
+        self.preflight_shared_context_leases(previous)?;
+
         let inherited_floor = if source_changed {
             Some(old_beat)
         } else {
@@ -1434,6 +1436,10 @@ impl SessionPlayback {
                 }
             }
         }
+        // Last fallible phase: retain one strong reference per needed immutable
+        // context while the previous playback keeps every owner. A refusal
+        // cannot invalidate its releases. No owner move below can fail.
+        self.stage_shared_context_leases(previous)?;
         for slot in 0..previous.tail_groups.len() {
             if active_tail_groups.get(slot).copied().unwrap_or(false)
                 && previous.tail_groups[slot].is_some()
@@ -1552,6 +1558,136 @@ impl SessionPlayback {
             previous.route_state_generation
         };
         Ok(report)
+    }
+
+    fn preflight_shared_context_leases(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), SessionPlaybackError> {
+        use crate::midi_note_bank::SharedContextRef;
+        use crate::shared_analytic::{ContextLeasePlan, ContextLeaseSource};
+
+        self.context_lease_plan.clear();
+        let old_contexts = previous.revision.arrangement().shared_contexts();
+        let new_contexts = self.revision.arrangement().shared_contexts();
+        for release in &self.release_scratch {
+            let Some(context_ref) = release.voice.context_ref() else {
+                continue;
+            };
+            let (id, source, bytes) = match context_ref {
+                SharedContextRef::Revision(index) => {
+                    let owner = old_contexts
+                        .owner(index)
+                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                    (
+                        owner.id(),
+                        ContextLeaseSource::Revision(index),
+                        owner.declared_bytes(),
+                    )
+                }
+                SharedContextRef::Retained(index) => {
+                    let owner = previous
+                        .retained_contexts
+                        .get(usize::from(index))
+                        .and_then(Option::as_deref)
+                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                    (
+                        owner.id(),
+                        ContextLeaseSource::Retained(index),
+                        owner.declared_bytes(),
+                    )
+                }
+            };
+            if new_contexts.index_for_id(id).is_some() {
+                continue;
+            }
+            if self.context_lease_plan.len() >= self.context_lease_plan.capacity() {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            self.context_lease_plan.push(ContextLeasePlan {
+                id,
+                source,
+                target: 0,
+                bytes,
+            });
+        }
+        crate::shared_analytic::preflight_context_lease_plan(
+            &mut self.context_lease_plan,
+            &self.retained_contexts,
+        )
+        .map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
+
+        for release in &mut self.release_scratch {
+            let Some(context_ref) = release.voice.context_ref() else {
+                continue;
+            };
+            let id = match context_ref {
+                SharedContextRef::Revision(index) => {
+                    old_contexts.owner(index).map(|owner| owner.id())
+                }
+                SharedContextRef::Retained(index) => previous
+                    .retained_contexts
+                    .get(usize::from(index))
+                    .and_then(Option::as_deref)
+                    .map(|owner| owner.id()),
+            }
+            .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+            if let Some(index) = new_contexts.index_for_id(id) {
+                release
+                    .voice
+                    .set_context_ref(SharedContextRef::Revision(index));
+                continue;
+            }
+            let plan = self
+                .context_lease_plan
+                .binary_search_by_key(&id, |plan| plan.id)
+                .ok()
+                .and_then(|index| self.context_lease_plan.get(index))
+                .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+            release
+                .voice
+                .set_context_ref(SharedContextRef::Retained(plan.target));
+        }
+        Ok(())
+    }
+
+    fn stage_shared_context_leases(&mut self, previous: &Self) -> Result<(), SessionPlaybackError> {
+        use crate::shared_analytic::ContextLeaseSource;
+
+        // Source roots remain in the previous playback throughout staging and
+        // retirement. Even an invariant refusal can only drop non-final clones.
+        for (staged, plan) in self.context_lease_plan.iter().enumerate() {
+            let source = match plan.source {
+                ContextLeaseSource::Revision(index) => previous
+                    .revision
+                    .arrangement()
+                    .shared_contexts()
+                    .clone_owner(index),
+                ContextLeaseSource::Retained(index) => previous
+                    .retained_contexts
+                    .get(usize::from(index))
+                    .and_then(Option::as_ref)
+                    .map(Arc::clone),
+            };
+            let destination = self.retained_contexts.get_mut(usize::from(plan.target));
+            match (source, destination) {
+                (Some(owner), Some(destination)) if destination.is_none() => {
+                    *destination = Some(owner);
+                }
+                _ => {
+                    for plan in &self.context_lease_plan[..staged] {
+                        if let Some(slot) = self.retained_contexts.get_mut(usize::from(plan.target))
+                        {
+                            // Previous still owns the same context, so this
+                            // release of a staged handle cannot destroy storage.
+                            slot.take();
+                        }
+                    }
+                    return Err(SessionPlaybackError::SharedAnalyticContext);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -123,6 +123,18 @@ pause, stop, graph replacement, and global-loop repetition do not need mutable
 voice state. `Project::audible_end_frame()` reports the exclusive maximum across
 audio clips, MIDI clip timeline ends (including empty clips), and release tails.
 
+For immutable instruments with configuration-heavy sampling, `PreparedRevision`
+may also own one shared analytic context table used by both Arrangement and
+Session note banks. Compact per-note payloads resolve a checked table index at
+sampling; copied old-law releases either remap to a compatible candidate owner
+or use a bounded retained-context lease. Revisions reuse an owner only when
+stable device identity, complete state, instrument type and sample rate match.
+Lease admission is preflighted before graph handoff, and final context drops
+remain attached to graphs for control-side reclamation. The built-in Sine and
+FM4 samplers keep their existing inline representation. See
+[`docs/lattice-instruments.md`](../../docs/lattice-instruments.md) for bounds
+and the specific callback allocation/destructor evidence.
+
 `examples/profile_instrument.rs` measures the shared renderer in release mode
 with 100 tracks, 16 notes per track, and 128/512-frame blocks. It is a CPU
 microbenchmark, not device-deadline, audible, or DAW-compatibility evidence.
@@ -389,3 +401,9 @@ The callback integration uses bounded action/publication queues and returns
 retired graphs for control-side destruction. It does not establish device
 deadline performance or Live parity. Arrangement export remains finite and does
 not activate Session routes.
+
+For the additive shared-context sampling comparison, run
+`cargo run --release -p hex-engine --features instrument-test-support --example profile_shared_context`.
+It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
+outside timing, and reports render versus control construction separately.
+It is a headless benchmark, not a native callback deadline test.

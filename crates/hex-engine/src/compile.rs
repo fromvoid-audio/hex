@@ -41,6 +41,7 @@ pub fn project_with_registry(
         None,
         registry,
         &instruments,
+        None,
     )
     .map(|(project, _)| project)
 }
@@ -61,6 +62,7 @@ pub fn project_with_instrument_registry(
         None,
         &effects,
         instruments,
+        None,
     )
     .map(|(project, _)| project)
 }
@@ -89,6 +91,7 @@ pub fn project_with_prepared_audio_sources(
         None,
         &registry,
         &instruments,
+        None,
     )
     .map(|(project, _)| project)
 }
@@ -100,6 +103,18 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     sources: &BTreeMap<AssetId, PreparedAudioSource>,
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+        snapshot, sources, generation, sine_table, None,
+    )
+}
+
+pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
@@ -114,6 +129,7 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
         sine_table,
         &registry,
         &instruments,
+        shared_contexts,
     )
 }
 
@@ -155,12 +171,31 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    project_with_midi_preview_and_table_and_instrument_contexts(
+        snapshot,
+        media,
+        sine_table,
+        registry,
+        instruments,
+        None,
+    )
+}
+
+pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
+    snapshot: &hex_project::Project,
+    media: &BTreeMap<AssetId, Audio>,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview(
         snapshot,
         |asset, project_rate| resolve_resident(asset, project_rate, media),
         sine_table,
         registry,
         instruments,
+        shared_contexts,
     )
 }
 
@@ -170,6 +205,7 @@ fn compile_with_midi_preview<'a>(
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -191,6 +227,7 @@ fn compile_with_midi_preview<'a>(
         sine_table,
         registry,
         instrument_registry,
+        shared_contexts,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -206,8 +243,17 @@ fn compile_project<'a>(
     _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     crate::midi_compile::count_project_occurrences(snapshot)?;
+    let shared_contexts = match shared_contexts {
+        Some(contexts) => contexts,
+        None => crate::shared_analytic::SharedAnalyticContextTable::prepare(
+            snapshot,
+            instrument_registry,
+            None,
+        )?,
+    };
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
     let mut tracks = Vec::new();
     tracks
@@ -289,6 +335,11 @@ fn compile_project<'a>(
                     snapshot,
                     track,
                     prepared_instrument,
+                    track
+                        .instrument()
+                        .and_then(|device| shared_contexts.index_for_device(device.id()))
+                        .and_then(|index| shared_contexts.owner(index).map(|owner| (index, owner))),
+                    Arc::clone(&shared_contexts),
                     previews.as_deref_mut(),
                 )?
                 .ok_or(Invalid("instrument content missing after compile"))?,
@@ -351,6 +402,7 @@ fn compile_project<'a>(
         tracks,
         snapshot.loop_region(),
         snapshot.master_gain(),
+        shared_contexts,
     )?;
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }

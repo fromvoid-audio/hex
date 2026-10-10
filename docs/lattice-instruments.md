@@ -157,11 +157,12 @@ full prepared revision therefore accounts at most 131,072 bank entries,
 Session template handles. With the 344-byte sampler, `BankEntry` is 352 bytes
 on 64-bit targets. Checked byte limits include entry keys, owner/handle overhead
 and all indices; `try_reserve_exact` refuses allocation failure before
-publication. The derived component ceiling is 47,079,424 bytes: 46,137,344
-bytes for entries, 24,576 for track-bank owners, 524,288 for Session template
-handles and 393,216 for indices. This keeps the existing count limits rather
-than adding a narrower byte cap. Active and candidate prepared revisions can
-overlap, so their corresponding bank/index component bound is 94,158,848 bytes.
+publication. The derived component ceiling is 47,091,712 bytes: 46,137,344
+bytes for entries, 36,864 for track-bank owner headers/handles, 524,288 for
+Session template handles and 393,216 for indices. This keeps the existing
+count limits rather than adding a narrower byte cap. Active and candidate
+prepared revisions can overlap, so their corresponding bank/index component
+bound is 94,183,424 bytes.
 The checked test exercises one revision at the derived limit, refusal above it
 and the doubled active/candidate calculation. Queued, retired or otherwise
 retained owners are outside that pair accounting; this is not a whole-process
@@ -177,7 +178,7 @@ while repeated Session intro/repeat occurrences share one bank sampler.
 Each `SessionPlayback` retains two preallocated release buffers of 16,384
 entries and a 192-slot MIDI span buffer. On 64-bit targets, the current layout
 accounts 15,990,784 bytes for both release buffers (`16,384 × 488 × 2`) and
-81,416 bytes for spans, 16,072,200 bytes total. Relative to the prior 40-byte
+82,952 bytes for spans, 16,073,736 bytes total. Relative to the prior 40-byte
 sampler, growth is 10,019,840 bytes (9.56 MiB): 9,961,472 bytes across the
 paired release buffers plus 58,368 bytes in span slots. The test checks these
 layout sizes and the combined ceiling below 16 MiB. This is the changed fixed
@@ -424,3 +425,69 @@ transport loop continuity, seek/chase, effect residual-tail quiescence, or
 mutable built-in admission; see Pulses 2166, 2165, 2164, 2162 and the later
 Operator gates. The continuity fixtures use the injected proof instrument and
 do not claim production mutable-device availability.
+
+## Shared analytic contexts
+
+Pulse 2169 adds an optional immutable shared-context path beside the existing
+41-word `PreparedAnalyticNote`; that existing public representation and its
+sine/FM4 PCM law remain unchanged. A prepared context validates and prepares
+pitch/velocity note payloads on the control side, then samples a compact
+eight-word `PreparedSharedAnalyticNote` by borrowed reference using authored age
+and gate frames. Implementations must be deterministic for fixed prepared
+configuration, sample rate, pitch and velocity, and `sample` must not allocate,
+mutate state or wait. Context preparation is not a callback operation.
+
+One `PreparedRevision` creates a single sorted context table shared by its
+Arrangement and Session banks. The table is keyed by stable instrument
+DeviceId; exact track ID, instrument type/state and sample-rate identity permits the
+immutable context owner to be reused across compatible prepared revisions.
+Each process-local context ID is checked for exhaustion and is never saved or
+derived from a provider pointer. Source notes hold only a checked table index
+and compact Copy payload. If the candidate configuration changes, copied old
+releases retain their old context law through the shared playback lease table;
+references are remapped before handoff commit. The callback resolves the
+context by a bounded index and does not clone or drop an Arc per note or frame.
+
+Preflight bounds one context's declared owned payload at 4,096 bytes and unique
+prepared context payload at 2 MiB per revision, with at most 256 context owners
+(one per project track). The current track ceiling and per-context ceiling make
+the largest presently reachable prepared payload 1 MiB; the 2 MiB aggregate
+check remains a defensive bound if either constituent limit changes. The
+control-side table also stores one owner `Arc` handle and one sorted ID/index
+entry per context. At the 256-entry limit, their 64-bit layouts are 2,048 bytes
+of owner handles, 4,096 bytes of ID/index entries, and a 56-byte table header
+(6,200 bytes total, before allocator rounding and separately allocated owner
+objects). These allocations are separate from declared payload and from the
+per-playback callback scratch accounting below. A playback may retain
+at most 16,384 distinct old
+context leases and 2 MiB of declared retained payload. Its preallocated
+lease/remap plan uses 393,216 bytes and optional owner slots use 131,072 bytes
+on this 64-bit target. Including the existing paired release and span storage,
+the checked scoped shared-analytic playback component is 16,598,024 bytes per
+playback; an active/candidate pair is 33,196,048 bytes, below the 18/36 MiB
+scoped limits. These figures exclude effect and mutable runtime storage,
+prepared source/context metadata, allocator overhead, and additional queued,
+retired or externally retained graphs. They are not a whole-process memory
+bound. Context payload declarations are implementer-provided, checked on the
+control side, and do not count the separate owner/table handles.
+
+Handoff preflights release references, lease deduplication, slot count and
+declared bytes before changing either graph. The last fallible phase stages one
+owner Arc clone per unique needed context in the candidate, including already
+retained contexts. The previous playback keeps its strong roots, so a refusal
+cannot invalidate its releases or final-drop context storage. Only then does
+the no-fail phase move bounded release values and runtime owners. There is no
+Arc clone per voice/frame; overlapping handle slots are included in the paired
+scratch accounting, and shared payload is not duplicated. Expired lease slots stay
+owned until their graph is retired and reclaimed on the control side. The audio
+allocation probe verifies zero total and signed-net allocation/deallocation
+for callback processing, a changed-context handoff and retirement; a destructor
+probe verifies that a retained context's final drop occurs on control. This is
+instrumented evidence for that fixture, not a claim about every provider or
+physical callback deadline.
+
+The original Sine and FM4 built-ins still use their compact analytic note
+samplers. Shared contexts are a generic extension point for future immutable
+configuration-heavy analytic instruments; this work does not register the
+Operator context or add mutable voice continuity, seek/chase, loop handling or
+effect residual-tail ownership.

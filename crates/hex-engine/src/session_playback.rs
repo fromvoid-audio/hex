@@ -108,6 +108,7 @@ pub enum SessionPlaybackError {
     MutableInstrumentActive,
     MutableInstrumentRouteBoundary,
     MutableInstrumentChase,
+    SharedAnalyticContext,
     MediaPagesUnavailable,
     Midi(crate::MidiTemplateError),
     Arrangement(&'static str),
@@ -149,6 +150,9 @@ impl fmt::Display for SessionPlaybackError {
                 }
                 Self::MutableInstrumentChase => {
                     "mutable instrument seek or revision requires unsupported note history"
+                }
+                Self::SharedAnalyticContext => {
+                    "shared analytic instrument context lease is unavailable"
                 }
                 Self::MediaPagesUnavailable => {
                     "streamed session playback requires a media page provider"
@@ -270,6 +274,8 @@ pub struct SessionPlayback {
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
+    retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
+    context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
@@ -511,6 +517,17 @@ impl SessionPlayback {
         release_scratch
             .try_reserve_exact(release_capacity)
             .map_err(|_| SessionPlaybackError::Allocation)?;
+        let mut retained_contexts = Vec::new();
+        retained_contexts
+            .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        retained_contexts.resize_with(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS, || {
+            None
+        });
+        let mut context_lease_plan = Vec::new();
+        context_lease_plan
+            .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
 
         let mut suppressions = Vec::new();
         suppressions
@@ -540,6 +557,8 @@ impl SessionPlayback {
             tail_suffix_matrices,
             releases,
             release_scratch,
+            retained_contexts,
+            context_lease_plan,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
