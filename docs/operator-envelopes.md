@@ -2,8 +2,9 @@
 
 Pulse2167 is the standalone mathematical prerequisite of per-operator envelopes
 2161 and native Operator19. `hex-devices::operator_envelope` prepares four
-independent amplitude envelopes. It is not registered, connected to FM routing,
-or exposed as a playable device. Existing FM4's global linear ADSR, persisted
+independent amplitude envelopes. It is not registered or exposed as a playable device. Its separate
+[standalone FM composition](operator-fm.md) applies these amplitudes before
+oscillator routing. Existing FM4's global linear ADSR, persisted
 state and analytic note payload remain unchanged.
 
 The [reference inventory](../research/observations/operator-contract-001.md)
@@ -59,8 +60,8 @@ Each queried exponential stage evaluates an exponential. No SIMD, recurrence,
 CPU throughput or real-device deadline improvement is claimed. Any later curve
 optimization must preserve independent output oracles and measure its workload.
 
-Pulse2161 remains open for applying these four levels before FM routing and
-connecting bounded voice events/rollback. Runtime revision continuity2163,
+Pulse2168 applies these levels before routing in the standalone FM composition;
+Pulse2161 remains open for connecting bounded native voice events/rollback. Runtime revision continuity2163,
 seek/chase2164 and loop wraps2165 remain separate gates before a mutable native
 Operator can be exposed. Envelope looping, beat/sync/trigger modes, scaling,
 retrigger/free-running phase, Live algorithms, feedback and numerical reference

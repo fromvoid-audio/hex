@@ -604,5 +604,15 @@ bank are implemented in hex-devices, with linear attack, exponential decay and
 instantaneous-value release, explicit finite cutoff and frame units. Independent
 curve/boundary/zero-stage/malformed/rate/partition oracles pass with all45 device
 tests. Existing registered FM4 state/output is unchanged. Strict Clippy and source
-guards pass; full local checks remain pending. Parent2161 stays open for FM routing/event binding,
+guards and all16 clean local checks pass (PR65). Parent2161 stays open for FM routing/event binding,
 rollback and native device integration. See [envelope contract](docs/operator-envelopes.md).
+
+
+Pulse2168: original standalone PreparedOperatorFm4 applies four independent
+envelopes before modulation/carrier routing through one private oscillator core.
+All49 device tests and strict Clippy pass, including independent full-output
+serial/additive FM oracles and exact legacy PCM. Initial helper overhead was
+repaired with inlining/static shaping; final short paired median0.349→0.352s,
+not native deadline evidence. Full local CI remains pending. No device registry,
+state, UI or mutable voice admission changed; parent2161 native integration is
+open. See [original enveloped FM contract](docs/operator-fm.md).
