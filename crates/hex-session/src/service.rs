@@ -394,6 +394,33 @@ impl Service {
         self.arrangement_seek.as_ref()?.try_result()
     }
 
+    /// Return a stale result for control-side destruction on the seek worker.
+    /// On backpressure, ownership is returned unchanged for a later retry.
+    #[allow(clippy::result_large_err)] // Preserve the candidate intact on backpressure.
+    pub fn retire_arrangement_seek_result(
+        &self,
+        result: ArrangementSeekResult,
+    ) -> Result<(), ArrangementSeekResult> {
+        match self.arrangement_seek.as_ref() {
+            Some(worker) => worker.retire_result(result),
+            None => Err(result),
+        }
+    }
+
+    /// Return a UI-held seek result immediately before this service is dropped.
+    /// The worker drains it during shutdown, avoiding final graph destruction
+    /// on the UI thread.
+    #[allow(clippy::result_large_err)] // Preserve the candidate if worker handback is full.
+    pub fn retire_arrangement_seek_result_for_shutdown(
+        &self,
+        result: ArrangementSeekResult,
+    ) -> Result<(), ArrangementSeekResult> {
+        match self.arrangement_seek.as_ref() {
+            Some(worker) => worker.retire_result_for_shutdown(result),
+            None => Err(result),
+        }
+    }
+
     /// Cancel admitted seek preparation and discard its ready candidate.
     pub fn invalidate_arrangement_seek(&self) {
         if let Some(worker) = &self.arrangement_seek {

@@ -1030,3 +1030,25 @@ crate tests/Clippy pass. An ignored release profile now reuses the 100-track
 mutable fixture for both linear and interactive preroll; the interactive profile
 uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Root has not yet captured
 its release timing evidence.
+
+2026-10-10 Pulse2192 stateful Arrangement seek UI integration is implemented in
+source on a focused branch. Pointer seek and Spacebar PlayFrom retain the exact
+prepared revision, require an already-applied canonical Arrangement graph with
+coherent Arrangement-owned routes, and publish through the admission-time fresh
+runtime fence. A bounded latest intent waits behind a candidate whose publication
+is unresolved; a second Spacebar during pending PlayFrom resolves to Pause even
+while audio still reports stopped. Worker results that cannot be returned
+immediately stay in one UI-owned retry slot; teardown hands that result to the
+seek worker's existing retirement or empty ready slot. The bounded defensive
+peak is up to two worker candidates plus one UI-held candidate, each within the
+32 MiB ceiling. Existing `Control::reclaim` still runs on its caller, currently
+the editor tick, so general callback-returned graph retirement is not claimed to
+be off the UI thread. Focused session and UI seek tests pass; strict Clippy,
+architecture/style guards, full local CI, exact-head review and native
+output/listening acceptance remain pending. Enabled transport loops and measured
+100-track seek readiness remain unsupported/open.
+
+Root acceptance adds fault/shutdown admission gates and verifies all8 prepared
+seek UI tests. After publication, cancellation suppresses UI completion but
+cannot withdraw the accepted audio owner; canonical edits alone are not an audio
+fence. A stronger cancellation barrier remains follow-up work.
