@@ -616,3 +616,11 @@ repaired with inlining/static shaping; final short paired median0.349→0.352s,
 not native deadline evidence. Full local CI remains pending. No device registry,
 state, UI or mutable voice admission changed; parent2161 native integration is
 open. See [original enveloped FM contract](docs/operator-fm.md).
+
+Pulse2170: distinct version1 Operator control codec and52 reusable parameter
+descriptors are implemented, with strict224-byte round trips, finite/domain and
+acyclic graph validation, immutable patches and original per-operator defaults.
+All54 device tests pass, including independent PCM field-binding/routing oracles.
+Native registration/UI waits for Pulse2169; existing FM4 state/output stays
+unchanged. Full local CI evidence is tracked in its PR and Pulse ticket.
+See [control contract](docs/operator-state.md).

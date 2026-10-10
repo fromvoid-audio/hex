@@ -1,6 +1,7 @@
 //! Original native DSP: registered sine/FM4 instruments and Utility effects.
 pub mod fm4;
 pub mod operator_envelope;
+pub mod operator_state;
 pub mod utility;
 pub mod utility_filters;
 
