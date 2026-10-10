@@ -40,6 +40,59 @@ fn version_two_migration_preserves_waveform_prefix_and_legacy_pcm() {
 }
 
 #[test]
+fn version_three_migration_preserves_fixed_tuning_and_defaults_velocity_neutral() {
+    let mut current = OPERATOR_METADATA.default_state().expect("default");
+    current = patch(
+        &current,
+        parameter::fixed_frequency(3),
+        ParameterValue::Float(231.5),
+    );
+    current = patch(
+        &current,
+        parameter::fixed_multiplier(3),
+        ParameterValue::Float(2.25),
+    );
+    current = patch(&current, parameter::fixed(3), ParameterValue::Bool(true));
+    let legacy = NativeDeviceState::new(
+        OPERATOR_TYPE_ID,
+        TUNING_STATE_VERSION,
+        current.payload()[..TUNING_PAYLOAD_BYTES].to_vec(),
+    )
+    .expect("version three state");
+    let migrated = OPERATOR_METADATA.migrate_state(&legacy).expect("migration");
+    assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
+    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(
+        &migrated.payload()[..TUNING_PAYLOAD_BYTES],
+        legacy.payload()
+    );
+    for operator in 1..=4 {
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&migrated, parameter::amplitude_velocity(operator))
+                .expect("neutral velocity amount"),
+            ParameterValue::Float(0.0)
+        );
+    }
+
+    let table = SineTable::new();
+    let old = OperatorSettings::from_state(&legacy)
+        .expect("old settings")
+        .prepare_note(48_000, 60, 100)
+        .expect("old note");
+    let new = OperatorSettings::from_state(&migrated)
+        .expect("migrated settings")
+        .prepare_note(48_000, 60, 100)
+        .expect("new note");
+    for age in [0, 1, 97, 1024, 4096, 8192] {
+        assert_eq!(
+            old.sample(&table, age, 6000).to_bits(),
+            new.sample(&table, age, 6000).to_bits()
+        );
+    }
+}
+
+#[test]
 fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
     let mut state = OPERATOR_METADATA.default_state().expect("default");
     for operator in 1..=4 {
