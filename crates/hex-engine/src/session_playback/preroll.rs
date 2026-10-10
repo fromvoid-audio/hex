@@ -49,7 +49,8 @@ impl SessionPlayback {
         start_playing: bool,
         cancelled: &AtomicBool,
     ) -> Result<Self, ArrangementPrerollError> {
-        self.prepare_arrangement_preroll_checked(
+        Self::prepare_arrangement_preroll_from_revision_checked(
+            Arc::clone(&self.revision),
             destination_frame,
             work_budget_frames,
             start_playing,
@@ -58,8 +59,47 @@ impl SessionPlayback {
         )
     }
 
+    /// Prepare a fresh linear Arrangement runtime directly from its immutable
+    /// revision. This avoids allocating a throwaway source runtime when the
+    /// caller only has a prepared graph on a control worker.
+    pub fn prepare_arrangement_preroll_from_revision(
+        revision: Arc<PreparedRevision>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_checked(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            || cancelled.load(Ordering::Acquire),
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn prepare_arrangement_preroll_checked(
         &self,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        storage_budget_bytes: usize,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_checked(
+            Arc::clone(&self.revision),
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            storage_budget_bytes,
+            is_cancelled,
+        )
+    }
+
+    pub(super) fn prepare_arrangement_preroll_from_revision_checked(
+        revision: Arc<PreparedRevision>,
         destination_frame: u64,
         work_budget_frames: u64,
         start_playing: bool,
@@ -81,15 +121,14 @@ impl SessionPlayback {
         if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
             return Err(ArrangementPrerollError::WorkBudgetExceeded);
         }
-        if self
-            .revision
+        if revision
             .arrangement()
             .loop_region()
             .is_some_and(|region| region.enabled())
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
-        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&self.revision)
+        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
@@ -98,7 +137,7 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::Cancelled);
         }
 
-        let mut candidate = Self::new_linear_arrangement_export(Arc::clone(&self.revision))?;
+        let mut candidate = Self::new_linear_arrangement_export(Arc::clone(&revision))?;
         let actual_storage = candidate
             .accounted_runtime_storage_bytes()
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
@@ -136,7 +175,7 @@ impl SessionPlayback {
         if !start_playing {
             candidate.apply(SessionPlaybackCommand::Pause)?;
         }
-        if !Arc::ptr_eq(&candidate.revision, &self.revision) {
+        if !Arc::ptr_eq(&candidate.revision, &revision) {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
         }
         Ok(candidate)

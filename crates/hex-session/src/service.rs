@@ -1,4 +1,7 @@
 //! Bounded control worker for decoding, project edits, saves, and graph compilation.
+use crate::arrangement_seek::{
+    ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
+};
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, playback::Playback};
@@ -251,6 +254,7 @@ pub struct Service {
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
+    arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
     _export_worker: JoinHandle<()>,
 }
@@ -295,6 +299,7 @@ impl Service {
     ) -> Result<Self, ServiceError> {
         let session = Session::new(sample_rate, history_capacity, max_resident_frames)
             .map_err(ServiceError::Session)?;
+        let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
@@ -323,6 +328,7 @@ impl Service {
             events: event_rx,
             export_events: export_event_rx,
             export_busy,
+            arrangement_seek: Some(arrangement_seek),
             _worker: worker,
             _export_worker: export_worker,
         })
@@ -368,6 +374,30 @@ impl Service {
                 Err(TryRecvError::Disconnected)
             }
             Err(TryRecvError::Empty) => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Prepare an independent Arrangement candidate on its dedicated worker.
+    /// This does not perform live route/Stop admission or publish to audio.
+    pub fn request_arrangement_seek(
+        &self,
+        spec: ArrangementSeekSpec,
+    ) -> Result<u64, ArrangementSeekSubmitError> {
+        self.arrangement_seek
+            .as_ref()
+            .ok_or(ArrangementSeekSubmitError::Closed)?
+            .submit(spec)
+    }
+
+    /// Consume a completed candidate without waiting.
+    pub fn try_arrangement_seek_result(&self) -> Option<ArrangementSeekResult> {
+        self.arrangement_seek.as_ref()?.try_result()
+    }
+
+    /// Cancel admitted seek preparation and discard its ready candidate.
+    pub fn invalidate_arrangement_seek(&self) {
+        if let Some(worker) = &self.arrangement_seek {
+            worker.invalidate();
         }
     }
 }
@@ -1667,6 +1697,52 @@ mod service_tests {
 
     struct TestDir(PathBuf);
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn service_seek_worker_returns_exact_prepared_revision_and_destination() {
+        let service = Service::new(48_000, 4, 0).expect("service");
+        let initial = next_event(&service);
+        let prepared = Arc::clone(
+            initial
+                .playback
+                .as_ref()
+                .and_then(Playback::prepared_revision)
+                .expect("prepared startup playback"),
+        );
+        let request_id = service
+            .request_arrangement_seek(ArrangementSeekSpec {
+                generation: 9,
+                revision: 4,
+                prepared_revision: Arc::clone(&prepared),
+                destination_frame: 0,
+                work_budget_frames: 0,
+                start_playing: true,
+            })
+            .expect("admit seek");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            if let Some(result) = service.try_arrangement_seek_result() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "seek result did not arrive");
+            thread::yield_now();
+        };
+        assert_eq!(result.request_id, request_id);
+        assert_eq!(result.generation, 9);
+        assert_eq!(result.revision, 4);
+        assert_eq!(result.destination_frame, 0);
+        assert_eq!(result.work_budget_frames, 0);
+        assert!(result.start_playing);
+        assert!(Arc::ptr_eq(&result.prepared_revision, &prepared));
+        let playback = result.result.expect("candidate");
+        assert!(Arc::ptr_eq(
+            playback.prepared_revision().expect("playback revision"),
+            &prepared
+        ));
+        assert_eq!(playback.position(), 0);
+        assert_eq!(playback.performance_frame(), 0);
+        assert!(playback.playing());
+    }
 
     impl TestDir {
         fn new() -> Self {
@@ -3839,6 +3915,7 @@ mod service_tests {
             events,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
+            arrangement_seek: None,
             _worker: thread::spawn(|| {}),
             _export_worker: thread::spawn(|| {}),
         };
