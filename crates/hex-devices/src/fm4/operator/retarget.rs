@@ -84,6 +84,35 @@ impl PreparedOperatorFeedbackRetarget {
         })
     }
 
+    /// Prepare a fixed ramp from an actual shared runtime boundary without
+    /// requiring a live voice. The caller must first select the source values
+    /// from the committed runtime (authored values when idle, or the current
+    /// ramp value). This control/graph-boundary helper preserves the source and
+    /// target configuration identities while allocating no per-voice state.
+    pub(crate) fn prepare_from_shared_parameters(
+        current: &PreparedOperatorConfiguration,
+        target: &PreparedOperatorConfiguration,
+        start: OperatorFeedbackParameters,
+        target_feedback_turns: [f64; OPERATORS],
+        ramp_frames: u32,
+    ) -> Result<Self, Invalid> {
+        validate_frame_count(ramp_frames)?;
+        if !current.retarget_compatible_with(target) {
+            return Err(Invalid(
+                "Operator retarget changes unsupported immutable configuration",
+            ));
+        }
+        let target_parameters = target.feedback_parameters(target_feedback_turns)?;
+        ensure_mutable_class(start, target_parameters)?;
+        Ok(Self {
+            start,
+            target: target_parameters,
+            frames: ramp_frames,
+            source_configuration_id: current.configuration_id(),
+            target_configuration_id: target.configuration_id(),
+        })
+    }
+
     /// Retarget an in-progress ramp from its actual current interpolated
     /// values. `elapsed_frames` is the number of samples already rendered from
     /// the prior ramp, so zero means its first sample has not yet been used.

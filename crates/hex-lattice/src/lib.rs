@@ -43,8 +43,9 @@ pub use instrument::{
     PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_runtime::{
-    MutableInstrumentRuntime, NativeInstrumentEvent, NativeInstrumentRuntimeError,
-    NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, PreparedMutableInstrumentRuntime,
+    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentEvent,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.

@@ -2,11 +2,12 @@
 use super::{FEEDBACK_COUNT, OperatorSettings, PAYLOAD_BYTES};
 use crate::{SineTable, fm4::OPERATORS, fm4::PreparedOperatorConfiguration};
 use hex_lattice::{
-    MutableInstrumentRuntime, NativeInstrumentEvent, NativeInstrumentRuntimeError,
+    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentEvent,
+    NativeInstrumentRuntimeError, PreparedInstrumentHistoryRetarget,
     PreparedMutableInstrumentRuntime, StereoFrame,
 };
 use hex_lattice_contract::DeviceContractError;
-use std::mem::size_of;
+use std::{any::Any, mem::size_of};
 
 const MAX_VOICES: usize = 16;
 const MAX_EVENTS: usize = 256;
@@ -78,7 +79,48 @@ impl PreparedMutableInstrumentRuntime for OperatorFeedbackFactory {
             sample_rate: self.sample_rate,
             release_frames: self.release_frames,
             voices: [VoiceSlot::EMPTY; MAX_VOICES],
+            retarget: None,
+            retarget_elapsed: 0,
         })
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn prepare_history_retarget_target(
+        &self,
+    ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+        let frames = crate::fm4::PreparedOperatorFeedbackRetarget::default_frames(self.sample_rate)
+            .map_err(|_| DeviceContractError::MalformedState)?;
+        let target = self
+            .configuration
+            .feedback_parameters(self.feedback_turns)
+            .map_err(|_| DeviceContractError::MalformedState)?;
+        Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
+            OperatorFeedbackHistoryRetarget {
+                target_configuration_id: self.configuration.configuration_id(),
+                target,
+                frames,
+            },
+        )))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OperatorFeedbackHistoryRetarget {
+    target_configuration_id: u64,
+    target: crate::fm4::OperatorFeedbackParameters,
+    frames: u32,
+}
+
+impl PreparedInstrumentHistoryRetarget for OperatorFeedbackHistoryRetarget {
+    fn declared_fixed_storage_bytes(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -103,6 +145,8 @@ struct OperatorFeedbackRuntime {
     sample_rate: u32,
     release_frames: u64,
     voices: [VoiceSlot; MAX_VOICES],
+    retarget: Option<crate::fm4::PreparedOperatorFeedbackRetarget>,
+    retarget_elapsed: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -183,6 +227,14 @@ impl OperatorFeedbackRuntime {
                         self.feedback_turns,
                     )
                 {
+                    let mut voice = voice;
+                    if let Some(ramp) = self.retarget
+                        && voice
+                            .enroll_in_retarget(&self.configuration, &ramp, self.retarget_elapsed)
+                            .is_err()
+                    {
+                        return;
+                    }
                     *slot = VoiceSlot {
                         occurrence_id,
                         voice: Some(voice),
@@ -207,14 +259,133 @@ impl OperatorFeedbackRuntime {
 
     fn process_voice_sample(&mut self, frame: &mut StereoFrame) {
         for slot in &mut self.voices {
-            if let Some(voice) = slot.voice.as_mut()
-                && let Ok(sample) = voice.process_frame(&self.configuration, self.sine_table)
-            {
-                frame[0] += sample;
-                frame[1] += sample;
+            if let Some(voice) = slot.voice.as_mut() {
+                let sample = if let Some(ramp) = self.retarget {
+                    if self.retarget_elapsed < ramp.frames() {
+                        voice.process_frame_with_retarget(
+                            &self.configuration,
+                            self.sine_table,
+                            &ramp,
+                            self.retarget_elapsed,
+                        )
+                    } else {
+                        voice.process_frame(&self.configuration, self.sine_table)
+                    }
+                } else {
+                    voice.process_frame(&self.configuration, self.sine_table)
+                };
+                if let Ok(sample) = sample {
+                    frame[0] += sample;
+                    frame[1] += sample;
+                }
+            }
+        }
+        if let Some(ramp) = self.retarget {
+            self.retarget_elapsed = self.retarget_elapsed.saturating_add(1);
+            if self.retarget_elapsed >= ramp.frames() {
+                self.retarget = None;
+                self.retarget_elapsed = 0;
             }
         }
         self.expire_finished();
+    }
+
+    fn proposed_retarget(
+        &self,
+        previous: &Self,
+        proof: &OperatorFeedbackHistoryRetarget,
+    ) -> Option<crate::fm4::PreparedOperatorFeedbackRetarget> {
+        if self.configuration.configuration_id() != proof.target_configuration_id
+            || self
+                .configuration
+                .feedback_parameters(self.feedback_turns)
+                .ok()?
+                != proof.target
+            || !previous
+                .configuration
+                .retarget_compatible_with(&self.configuration)
+        {
+            return None;
+        }
+        if let Some(ramp) = previous.retarget {
+            ramp.continue_from_shared_ramp(
+                &previous.configuration,
+                &self.configuration,
+                self.feedback_turns,
+                previous.retarget_elapsed,
+                proof.frames,
+            )
+            .ok()
+        } else {
+            let start = previous
+                .configuration
+                .feedback_parameters(previous.feedback_turns)
+                .ok()?;
+            crate::fm4::PreparedOperatorFeedbackRetarget::prepare_from_shared_parameters(
+                &previous.configuration,
+                &self.configuration,
+                start,
+                self.feedback_turns,
+                proof.frames,
+            )
+            .ok()
+        }
+    }
+
+    fn can_retarget_from(&self, previous: &Self, proof: &OperatorFeedbackHistoryRetarget) -> bool {
+        if previous.sample_rate != self.sample_rate
+            || previous.release_frames != self.release_frames
+            || !std::ptr::eq(previous.sine_table, self.sine_table)
+        {
+            return false;
+        }
+        let Some(ramp) = self.proposed_retarget(previous, proof) else {
+            return false;
+        };
+        previous.voices.iter().all(|slot| {
+            let Some(mut voice) = slot.voice else {
+                return true;
+            };
+            voice
+                .process_frame_with_retarget(&self.configuration, self.sine_table, &ramp, 0)
+                .is_ok()
+        })
+    }
+
+    fn apply_retarget_from(&mut self, previous: &Self, proof: &OperatorFeedbackHistoryRetarget) {
+        let Some(ramp) = self.proposed_retarget(previous, proof) else {
+            return;
+        };
+        self.voices = previous.voices;
+        self.retarget = Some(ramp);
+        self.retarget_elapsed = 0;
+    }
+
+    fn can_copy_history_from_runtime(&self, previous: &Self) -> bool {
+        let rebound = match previous.retarget {
+            Some(ramp) => match ramp.rebind_target_after_exact_history_copy(
+                &previous.configuration,
+                &self.configuration,
+                previous.retarget_elapsed,
+            ) {
+                Ok(rebound) => Some(rebound),
+                Err(_) => return false,
+            },
+            None => None,
+        };
+        previous.voices.iter().all(|slot| {
+            slot.voice.is_none_or(|voice| {
+                voice.can_rebind_after_exact_history_copy(
+                    &previous.configuration,
+                    &self.configuration,
+                    previous
+                        .retarget
+                        .as_ref()
+                        .zip(rebound.as_ref())
+                        .map(|(original, rebound)| (original, rebound, previous.retarget_elapsed)),
+                )
+            })
+        })
     }
 }
 
@@ -255,6 +426,31 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
                             .is_err()
                     {
                         return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                    let elapsed_at_event = if self.retarget.is_some() {
+                        self.retarget_elapsed
+                            .checked_add(
+                                u32::try_from(offset)
+                                    .map_err(|_| NativeInstrumentRuntimeError::InvalidEventBatch)?,
+                            )
+                            .ok_or(NativeInstrumentRuntimeError::InvalidEventBatch)?
+                    } else {
+                        0
+                    };
+                    if let Some(ramp) = self.retarget
+                        && elapsed_at_event < ramp.frames()
+                    {
+                        self.configuration
+                            .prepare_feedback_voice(pitch, velocity, self.feedback_turns)
+                            .and_then(|mut voice| {
+                                voice.enroll_in_retarget(
+                                    &self.configuration,
+                                    &ramp,
+                                    elapsed_at_event,
+                                )?;
+                                Ok(voice)
+                            })
+                            .map_err(|_| NativeInstrumentRuntimeError::InvalidEventBatch)?;
                     }
                     let slot = proof
                         .iter_mut()
@@ -315,6 +511,8 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
 
     fn reset(&mut self) {
         self.voices = [VoiceSlot::EMPTY; MAX_VOICES];
+        self.retarget = None;
+        self.retarget_elapsed = 0;
     }
 
     fn is_quiescent(&self) -> bool {
@@ -330,6 +528,8 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
                     && self.sample_rate == previous.sample_rate
                     && self.feedback_turns == previous.feedback_turns
                     && self.release_frames == previous.release_frames
+                    && std::ptr::eq(self.sine_table, previous.sine_table)
+                    && self.can_copy_history_from_runtime(previous)
             })
     }
 
@@ -337,7 +537,75 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>()
             && self.can_copy_history_from(previous)
         {
+            let rebound = match previous.retarget {
+                Some(ramp) => match ramp.rebind_target_after_exact_history_copy(
+                    &previous.configuration,
+                    &self.configuration,
+                    previous.retarget_elapsed,
+                ) {
+                    Ok(rebound) => Some(rebound),
+                    Err(_) => return,
+                },
+                None => None,
+            };
             self.voices = previous.voices;
+            if let (Some(original), Some(rebound)) = (previous.retarget, rebound) {
+                for slot in &mut self.voices {
+                    if let Some(voice) = slot.voice.as_mut() {
+                        let _ = voice.rebind_after_exact_history_copy_with_ramp(
+                            &previous.configuration,
+                            &self.configuration,
+                            Some((&original, &rebound, previous.retarget_elapsed)),
+                        );
+                    }
+                }
+                self.retarget = Some(rebound);
+                self.retarget_elapsed = previous.retarget_elapsed;
+            } else {
+                for slot in &mut self.voices {
+                    if let Some(voice) = slot.voice.as_mut() {
+                        let _ = voice.rebind_after_exact_history_copy_with_ramp(
+                            &previous.configuration,
+                            &self.configuration,
+                            None,
+                        );
+                    }
+                }
+                self.retarget = None;
+                self.retarget_elapsed = 0;
+            }
+        }
+    }
+
+    fn can_retarget_history_from(
+        &self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        let (Some(previous), Some(proof)) = (
+            previous.as_any().downcast_ref::<Self>(),
+            proof
+                .as_any()
+                .downcast_ref::<OperatorFeedbackHistoryRetarget>(),
+        ) else {
+            return false;
+        };
+        self.can_retarget_from(previous, proof)
+    }
+
+    fn retarget_history_from(
+        &mut self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) {
+        if let (Some(previous), Some(proof)) = (
+            previous.as_any().downcast_ref::<Self>(),
+            proof
+                .as_any()
+                .downcast_ref::<OperatorFeedbackHistoryRetarget>(),
+        ) && self.can_retarget_from(previous, proof)
+        {
+            self.apply_retarget_from(previous, proof);
         }
     }
 
@@ -355,16 +623,35 @@ mod tests {
     use super::*;
     use crate::operator_state::{OPERATOR_METADATA, parameter};
     use crate::{fm4::PreparedOperatorFeedbackVoice, operator_state::OperatorSettings};
+    use hex_lattice::{NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
     const RATE: u32 = 48_000;
 
     fn factory(amount: f32) -> OperatorFeedbackFactory {
+        factory_with_parameters(amount, 1.0, 1.0)
+    }
+
+    fn factory_with_parameters(feedback: f32, level: f32, carrier: f32) -> OperatorFeedbackFactory {
         let state = OPERATOR_METADATA
             .patch_parameter(
                 &OPERATOR_METADATA.default_state().expect("defaults"),
+                parameter::oscillator_level(1),
+                ParameterValue::Float(level),
+            )
+            .expect("oscillator level state");
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &state,
+                parameter::carrier(1),
+                ParameterValue::Float(carrier),
+            )
+            .expect("carrier state");
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &state,
                 parameter::feedback(1),
-                ParameterValue::Float(amount),
+                ParameterValue::Float(feedback),
             )
             .expect("feedback state");
         let settings = OperatorSettings::from_state(&state).expect("settings");
@@ -440,12 +727,24 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert_eq!(declared, 3_808, "actual twin storage {declared}");
+        assert_eq!(declared, 4_032, "actual twin storage {declared}");
         assert!(
             2 * declared <= 8_192,
             "paired runtime storage {}",
             2 * declared
         );
+        assert_eq!(2 * declared, 8_064, "actual paired runtime storage");
+        let pair = NativeInstrumentRuntimePair::new(
+            &factory,
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 8_192,
+                max_events_per_block: MAX_EVENTS,
+                max_active_occurrences: MAX_VOICES,
+                max_tail_frames: factory.release_frames,
+            },
+        )
+        .expect("actual prepared pair remains within the fixed ceiling");
+        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_064));
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {
@@ -469,6 +768,156 @@ mod tests {
         runtime
             .preflight_events(&one, 1)
             .expect("failed preflight leaves every slot available");
+    }
+
+    #[test]
+    fn retarget_handles_held_released_new_notes_rapid_edits_and_exact_copy() {
+        let old = factory_with_parameters(0.15, 0.4, 0.25);
+        let middle = factory_with_parameters(0.35, 0.7, 0.5);
+        let target = factory_with_parameters(0.6, 0.9, 0.8);
+        let InstrumentHistoryRetargetPreparation::Prepared(proof) = middle
+            .prepare_history_retarget_target()
+            .expect("prepare supported edit")
+        else {
+            panic!("supported edit produces a retarget proof");
+        };
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            proof.declared_fixed_storage_bytes(),
+            112,
+            "the target-bound control proof has a fixed, accounted layout"
+        );
+        let wrong_target = target.create_runtime();
+        assert!(
+            !wrong_target.can_retarget_history_from(old.create_runtime().as_ref(), proof.as_ref()),
+            "a proof for the exact middle target cannot authorize another configuration"
+        );
+        let mut source = old.create_runtime();
+        let initial_events = [
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 60,
+                velocity: 103,
+            },
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 2,
+                pitch: 67,
+                velocity: 91,
+            },
+        ];
+        let mut initial = [[0.0; 2]; 17];
+        source
+            .preflight_events(&initial_events, initial.len())
+            .expect("initial notes fit");
+        source.process_block(&initial_events, &mut initial);
+        let note_off = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        }];
+        let mut release = [[0.0; 2]; 9];
+        source
+            .preflight_events(&note_off, release.len())
+            .expect("note off accepted");
+        source.process_block(&note_off, &mut release);
+
+        let mut ramped = middle.create_runtime();
+        assert!(ramped.can_retarget_history_from(source.as_ref(), proof.as_ref()));
+        ramped.retarget_history_from(source.as_ref(), proof.as_ref());
+        let mut first_ramp = [[0.0; 2]; 31];
+        ramped
+            .preflight_events(&[], first_ramp.len())
+            .expect("empty events");
+        ramped.process_block(&[], &mut first_ramp);
+
+        let InstrumentHistoryRetargetPreparation::Prepared(second_proof) = target
+            .prepare_history_retarget_target()
+            .expect("prepare rapid supported edit")
+        else {
+            panic!("rapid supported edit produces a retarget proof");
+        };
+        let mut retargeted = target.create_runtime();
+        assert!(retargeted.can_retarget_history_from(ramped.as_ref(), second_proof.as_ref()));
+        retargeted.retarget_history_from(ramped.as_ref(), second_proof.as_ref());
+
+        // Same-offset NoteOff follows NoteOn: state-only enrollment keeps its
+        // fresh age at zero, so its release begins at this exact boundary.
+        let same_offset = [
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 3,
+                pitch: 72,
+                velocity: 85,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 3,
+            },
+        ];
+        let mut joined = [[0.0; 2]; 13];
+        retargeted
+            .preflight_events(&same_offset, joined.len())
+            .expect("same-offset note joins shared ramp before note-off");
+        retargeted.process_block(&same_offset, &mut joined);
+
+        let mut exact_copy = target.create_runtime();
+        assert!(exact_copy.can_copy_history_from(retargeted.as_ref()));
+        exact_copy.copy_history_from(retargeted.as_ref());
+        let mut continued = [[0.0; 2]; 97];
+        let mut copied = continued;
+        retargeted
+            .preflight_events(&[], continued.len())
+            .expect("continuation");
+        exact_copy
+            .preflight_events(&[], copied.len())
+            .expect("copied continuation");
+        retargeted.process_block(&[], &mut continued);
+        exact_copy.process_block(&[], &mut copied);
+        assert_eq!(
+            continued, copied,
+            "active-ramp exact copy must preserve future PCM"
+        );
+
+        let unsupported_state = OPERATOR_METADATA
+            .patch_parameter(
+                &OPERATOR_METADATA.default_state().expect("defaults"),
+                parameter::waveform(1),
+                ParameterValue::Choice(1),
+            )
+            .expect("waveform state");
+        let unsupported_state = OPERATOR_METADATA
+            .patch_parameter(
+                &unsupported_state,
+                parameter::feedback(1),
+                ParameterValue::Float(0.5),
+            )
+            .expect("mutable feedback state");
+        let unsupported_settings =
+            OperatorSettings::from_state(&unsupported_state).expect("unsupported settings");
+        let unsupported_configuration = unsupported_settings
+            .prepare_configuration(RATE)
+            .expect("supported waveform configuration");
+        let unsupported = prepare_factory(
+            &unsupported_settings,
+            unsupported_configuration,
+            RATE,
+            crate::shared_sine_table(),
+        )
+        .expect("factory preparation")
+        .expect("mutable feedback factory");
+        let InstrumentHistoryRetargetPreparation::Prepared(proof) = target
+            .prepare_history_retarget_target()
+            .expect("target proof is source-independent")
+        else {
+            panic!("mutable Operator target has a retarget proof");
+        };
+        let unsupported_runtime = unsupported.create_runtime();
+        let target_runtime = target.create_runtime();
+        assert!(
+            !target_runtime
+                .can_retarget_history_from(unsupported_runtime.as_ref(), proof.as_ref(),)
+        );
     }
 
     #[cfg(target_pointer_width = "64")]

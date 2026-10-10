@@ -154,6 +154,9 @@ impl PreparedMutableInstrumentRuntime for FixtureFactory {
             voices: [Voice::default(); 64],
         })
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl MutableInstrumentRuntime for Runtime {

@@ -1660,3 +1660,23 @@ native visual acceptance remain pending. See [Operator shell context contract]
 - Exact final-tree local CI and focused PR evidence are recorded in Pulse.
   Actual accepted post-node capture, retirement/freshness validation, UI trace
   and release callback overhead remain Pulse2250.
+
+
+## 10 October 2026 — live Operator parameter handoff (Pulse2229)
+
+- A target-bound proof lets supported level/carrier/effective-feedback edits
+  preserve held and releasing mutable Operator voices in Arrangement and Session.
+  Adoption derives its ramp from the actual audible state, including a running
+  ramp, rather than assuming the previous canonical revision reached audio.
+- Source, device, owner, topology and both runtime twins are checked before
+  mutation. Incompatible active laws refuse; quiescent runtimes can install the
+  fresh candidate. Exact-copy and generic detached-tail behavior remain distinct.
+- Actual fixed storage is 4,032 bytes per twin / 8,064 bytes per pair on this
+  arm64 build, under the unchanged 8,192-byte ceiling. Target proofs are 112 bytes
+  and have separate bounded aggregate accounting; polyphony remains 16.
+- Targeted lattice/device/engine/export checks and both actual Operator callback
+  allocation probes passed (zero total allocations and zero signed-net count and
+  bytes). Coverage includes skipped revisions, in-flight rapid edits, new notes,
+  partitioned PCM, wrong-target and incompatible-law refusal, and twin atomicity.
+- Full final-tree local CI is the PR merge gate. Native listening, physical
+  callback deadlines and manual control acceptance remain open in Pulse2229.

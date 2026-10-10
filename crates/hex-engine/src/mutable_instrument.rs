@@ -344,6 +344,42 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
+    /// Read-only preflight for a prepared instrument-state retarget. The
+    /// candidate inventory owns `proof` until control retires this graph.
+    pub(crate) fn can_retarget_from(
+        &self,
+        previous: &Self,
+        proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        self.primary.capacity() >= previous.primary.len()
+            && self.scratch.capacity() >= previous.primary.len()
+            && self.pair.can_retarget_from(&previous.pair, proof)
+    }
+
+    /// Apply a retarget only after every affected runtime and both of its
+    /// lattice twins have passed preflight.
+    pub(crate) fn retarget_from(
+        &mut self,
+        previous: &Self,
+        proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if !self.can_retarget_from(previous, proof) {
+            return Err(MutableInstrumentRuntimeError::Runtime(
+                NativeInstrumentRuntimeError::IncompatibleHistory,
+            ));
+        }
+        self.pair
+            .retarget_from(&previous.pair, proof)
+            .map_err(map_runtime_error)?;
+        self.primary.clear();
+        self.primary.extend_from_slice(&previous.primary);
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&previous.primary);
+        self.next_id = previous.next_id;
+        self.next_id_scratch = previous.next_id;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn ledger_capacity_bytes(&self) -> Option<usize> {
         self.primary
@@ -729,6 +765,12 @@ pub(crate) fn validate_prepared_graph_budget(
     arrangement: &crate::Project,
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
+    let max_retarget_bytes = hex_project::MAX_TRACKS
+        .checked_mul(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES)
+        .ok_or(MutableInstrumentRuntimeError::Budget)?;
+    if session.mutable_history_retarget_storage_bytes() > max_retarget_bytes {
+        return Err(MutableInstrumentRuntimeError::Budget);
+    }
     let mut effect_count = 0_usize;
     let mut effect_bytes = 0_usize;
     for track in arrangement.tracks() {

@@ -49,7 +49,11 @@ NoteOff, waveform, tuning, envelopes, modulation, velocity and oscillator
 history remain unchanged.
 
 Preparation refuses unsupported configuration edits and changes into or out of
-the mutable-feedback processing class before altering voice state. Retargeting
+the mutable-feedback processing class before altering voice state. For the
+registered host runtime, unsupported same-device edits carry an explicit
+quiescence requirement: a held voice or released feedback tail refuses graph
+admission, while an idle committed runtime may be replaced with a fresh law.
+Ordinary source replacement keeps its existing detached-tail policy. Retargeting
 an active ramp starts from its interpolated value at the caller-provided sample
 boundary. `continue_from_shared_ramp` prepares this continuation without a live
 voice, so the shared parameter trajectory remains defined even if all voices
@@ -79,13 +83,11 @@ and refuses a voice while its ramp is active.
 On this 64-bit arm64 build, the standalone configuration is 744 bytes (40 bytes
 larger for retarget preparation data and identity), a feedback voice is 160
 bytes (8 bytes for its configuration/active-ramp token), and one shared ramp is
-216 bytes. Sixteen voices plus one shared ramp occupy 2,776 bytes. The existing
-registered runtime without an integrated ramp declares a measured 3,808-byte
-twin and 7,616 bytes for its pair. One shared ramp per twin would add 216 bytes,
-for 4,024 bytes per twin and 8,048 bytes per pair under the established 8,192-
-byte ceiling. The runtime continues to admit sixteen voices. These are storage
-measurements, not callback allocation or deadline claims. The standalone
-kernel is not yet wired to live registered parameter edits.
+216 bytes. Sixteen voices plus one shared ramp occupy 2,776 bytes. The
+registered runtime with its integrated ramp and clock measures 4,032 bytes per
+twin and 8,064 bytes for the actual pair, under the established 8,192-byte
+ceiling. The runtime continues to admit sixteen voices. These are storage
+measurements, not callback deadline claims.
 
 NoteOff latches at the next frame to render. The envelope is evaluated at that
 same age, so it begins release from its instantaneous attack/decay/sustain
@@ -163,8 +165,8 @@ removing the edge reactivates the saved value. If every effective amount is
 zero, the existing shared analytic path remains selected.
 
 Any nonzero effective amount selects a fixed-array mutable runtime. It declares
-16 active occurrences, 256 events per block, and a measured 3,808-byte twin on
-the current 64-bit arm64 build. The paired runtime uses 7,616 declared bytes,
+16 active occurrences, 256 events per block, and a measured 4,032-byte twin on
+the current 64-bit arm64 build. The paired runtime uses 8,064 declared bytes,
 within the existing 8,192-byte pair ceiling. Before the standalone retarget
 kernel's identity and voice state, the baseline was 3,640 bytes per twin and
 7,280 bytes paired. It does not claim 64-voice Operator support.
@@ -174,8 +176,23 @@ callback allocation, lazy table initialization, device construction, locking or
 logging. NoteOn preflight verifies finite note setup and release-end arithmetic;
 admitted callback events then initialize their bounded pitch/phase data and use
 the fixed voice slots. NoteOff occurs at its exclusive event offset before an
-equal-offset NoteOn. History transfer requires exact versioned Operator state,
-sample rate, feedback amounts and release configuration.
+equal-offset NoteOn. Exact history copy still requires exact versioned Operator
+state, sample rate, feedback amounts and release configuration. The separate
+retarget path is explicitly opted into by a control-prepared proof bound to the
+exact candidate target configuration. At adoption, the runtime checks the actual
+source's immutable law and derives the ramp start from its current shared
+boundary; proof validity does not depend on an intermediate canonical revision
+having reached audio. The target proof occupies 112 bytes on the current 64-bit
+build and is accounted separately from the unchanged 8,064-byte runtime pair,
+within the existing `MAX_TRACKS * 4,096` aggregate control-proof budget. It
+permits only oscillator-level, carrier and
+effective-feedback changes while preserving waveform, tuning, envelopes,
+modulation, rate and velocity laws. One shared ramp and clock cover every
+carried voice and any NoteOn admitted during the ramp; same-offset NoteOff
+follows state-only enrollment at age zero. Rapid edits continue from the actual
+interpolated boundary. Exact copy during an active ramp rebinds configuration
+identities while preserving future PCM. Unsupported or stale proofs refuse
+before changing either twin or the owning track.
 
 An active same-device transition between analytic and mutable classes is
 conservatively refused on Arrangement and retained Session MIDI routes. The
@@ -196,8 +213,11 @@ exercise the explicitly admitted paths; they do not establish native-device
 listening, physical callback deadlines, Session-loop behavior, or every
 generic pause/stop and seek edge case. The actual registered Operator callback
 allocation probe covers onset, held processing, exclusive NoteOff, release and
-shutdown, with all construction and reclamation outside measurement.
-Parameter edits prepare a candidate configuration; the shared ramp/join/rebind
-helpers are kernel prerequisites and are not yet wired into live registered
-parameter edits. Continuous live updates to supported Operator parameters
-remain a separate acceptance item (Pulse2229).
+shutdown, with all construction and reclamation outside measurement. Source
+tests cover supported Arrangement handoff, later NoteOn during the shared ramp,
+block partition invariance, held/released voices, rapid edits, same-offset
+NoteOn/NoteOff, exact copy during an active ramp and unsupported waveform
+refusal. The local audio allocation probe also exercises live Operator parameter
+handoff and graph retirement with zero total and net callback-thread allocation.
+Native listening and physical device deadline acceptance remain open
+(Pulse2229).

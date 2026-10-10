@@ -29,18 +29,22 @@ update the existing routing parameters through the ordinary immutable device
 patch contract. See the [routing preset contract](operator-routing-presets.md).
 
 Nonzero effective feedback selects the registered bounded mutable runtime with
-16 simultaneous voices, 256 events per block and a measured 3,808-byte twin
-(7,616 bytes paired). Authored
+16 simultaneous voices, 256 events per block and a measured 4,032-byte twin
+(8,064 bytes paired). Authored
 amounts remain stored when incoming FM makes a control unavailable; effective
 zero retains analytic playback. The analytic API does not expose a context for
 mutable feedback state, preventing a silent wrong-law fallback. See the
 [feedback contract](operator-feedback.md) for the original recurrence,
-capability limits, storage accounting and validation. Active class-changing
-handoffs can refuse audio admission while desired project edits remain canonical;
-this does not establish live parameter updates on held feedback voices. The
-standalone bounded retarget kernel currently has no registered runtime wiring;
-one shared 216-byte ramp per twin would bring the pair to 8,048 bytes, below the
-existing 8,192-byte ceiling.
+capability limits, storage accounting and validation. Active transitions into or
+out of the mutable-feedback processing class can still refuse audio admission
+while desired project edits remain canonical. The bounded retarget path supports
+live oscillator-level, carrier and effective
+feedback changes through the registered runtime, with one shared five-millisecond
+ramp per twin. It remains below the existing 8,192-byte pair ceiling; unsupported
+waveform, tuning, envelope, modulation, sample-rate and velocity-law edits are
+refused while history is active and may use a fresh runtime only after
+committed voices and feedback tails are quiescent. See [the feedback contract](operator-feedback.md)
+for the exact transfer and acceptance limits.
 
 Filters, additional waveforms beyond these four, unbounded routing, remaining
 Operator controls and Live numerical parity remain open. Native listening and

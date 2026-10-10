@@ -52,6 +52,19 @@ impl PreparedMutableTrackRevision {
             && self.effects == other.effects
     }
 
+    /// Retargeting may change authored instrument state, but it may not alter
+    /// the instrument identity, bypass/slot, position, effects, or track.
+    fn retarget_topology_matches(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self
+                .instrument
+                .as_ref()
+                .zip(other.instrument.as_ref())
+                .is_some_and(|(old, new)| old.id == new.id && old.bypassed == new.bypassed)
+            && self.instrument_position == other.instrument_position
+            && self.effects == other.effects
+    }
+
     fn arrangement_sources_match(&self, other: &Self) -> bool {
         self.arrangement_midi_sources == other.arrangement_midi_sources
     }
@@ -299,6 +312,20 @@ impl PreparedRevision {
         old.topology_matches(new)
     }
 
+    pub(crate) fn mutable_track_retarget_topology_matches(
+        &self,
+        other: &Self,
+        track: TrackId,
+    ) -> bool {
+        let Some(old) = self.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new) = other.mutable_track_revision(track) else {
+            return false;
+        };
+        old.retarget_topology_matches(new)
+    }
+
     pub(crate) fn mutable_arrangement_track_matches(&self, other: &Self, track: TrackId) -> bool {
         let Some(old) = self.mutable_track_revision(track) else {
             return false;
@@ -307,6 +334,20 @@ impl PreparedRevision {
             return false;
         };
         old.topology_matches(new) && old.arrangement_sources_match(new)
+    }
+
+    pub(crate) fn mutable_arrangement_retarget_matches(
+        &self,
+        other: &Self,
+        track: TrackId,
+    ) -> bool {
+        let Some(old) = self.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new) = other.mutable_track_revision(track) else {
+            return false;
+        };
+        old.retarget_topology_matches(new) && old.arrangement_sources_match(new)
     }
 
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
