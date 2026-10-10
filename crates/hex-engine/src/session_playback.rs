@@ -275,6 +275,7 @@ pub struct SessionPlayback {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_scratch: Vec<[Frame; 256]>,
+    return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
@@ -498,6 +499,7 @@ impl SessionPlayback {
             );
             return_scratch.push([[0.0; 2]; 256]);
         }
+        let return_effect_tails = ReturnEffectTailBank::new()?;
         let mut tail_groups = Vec::new();
         tail_groups
             .try_reserve_exact(SESSION_TAIL_GROUP_CAPACITY)
@@ -567,6 +569,7 @@ impl SessionPlayback {
             device_chains,
             return_chains,
             return_scratch,
+            return_effect_tails,
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
@@ -847,9 +850,11 @@ mod commands;
 mod handoff;
 mod preroll;
 mod render;
+mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
 };
+use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]
 mod tests;
 

@@ -1020,3 +1020,15 @@ crate tests/Clippy pass. An ignored release profile now reuses the 100-track
 mutable fixture for both linear and interactive preroll; the interactive profile
 uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Root has not yet captured
 its release timing evidence.
+
+## 10 October2026 — Pulse2204 Return revision residuals
+
+Whole old Return chains now retain residual output across removal, device
+configuration/bypass/order changes, feeding the current Main under old bus
+controls and current master gain. A separate64-slot bank shares bounded
+track-tail accounting. Transfer validation precedes owner movement; exhausted
+budgets preserve old PCM for retry. Stop/Seek, rollback and unchanged-history
+semantics have focused coverage. Engine181pass/3ignored,12added tests, strict
+engineClippy, formatting, architecture and the actual Return callback allocation
+probe pass. Full exact-head local CI, PR publication and native listening remain
+pending. No UI/schema/plugin/PDC expansion. See[the contract](docs/return-effect-tails.md).

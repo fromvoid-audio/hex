@@ -32,8 +32,14 @@ successful block reports quiescence. Unchanged prepared chains transfer their
 history once instead of spawning a duplicate suffix. Finite tail bounds above
 ten seconds at the prepared rate and aggregate retention beyond 4,096 suffix
 entries are refused before runtime ownership moves; unbounded processors are
-retained until observed quiescence. Return-bus tail retention and native
-publication/deadline acceptance remain open. See
+retained until observed quiescence. Return-bus changes retain the whole old
+chain while its committed state can still produce audible output. The old bus
+is zero-fed once per render chunk and contributes through its captured matrix,
+gain and mute state to the candidate's current Main before the current master
+stage. It does not receive old sends or feed another Return. Exact unchanged
+chains inherit history once; changed candidate chains start fresh. The
+preallocated 64-slot Return tail bank shares the bounded Arrangement release
+budget. Native publication/deadline acceptance remain open. See
 [native effect tails](../../docs/native-effect-tails.md).
 
 The control-side compiler resolves canonical metadata through a prepared media
