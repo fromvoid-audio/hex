@@ -373,11 +373,11 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "operator");
-        assert_eq!(operator_view.parameters.len(), 57);
+        assert_eq!(operator_view.parameters.len(), 69);
         for parameter in operator_view
             .parameters
             .iter()
-            .filter(|parameter| parameter.descriptor.id.value() >= 57)
+            .filter(|parameter| (57..=61).contains(&parameter.descriptor.id.value()))
         {
             assert_eq!(parameter.value, ParameterValue::Choice(0));
         }
