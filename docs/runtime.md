@@ -636,6 +636,28 @@ and occurrence ledger. Source iteration and transport pass remain separate;
 authored notes before source start are not chased, intro-only notes do not repeat,
 and held gates end at the exclusive source loop boundary. Source-loop counter
 exhaustion and query failures retain transactional DSP/ledger/clock rollback.
-Enabled Arrangement transport loops and mutable Arrangement source-loop linear
-export remain refused. See [mutable-source-loops.md](mutable-source-loops.md) for
-the acceptance evidence and remaining native validation.
+Enabled Arrangement transport loops use a separate control-side density and
+wrap-chase admission path; see [mutable-transport-loops.md](mutable-transport-loops.md).
+Mutable Arrangement source-loop linear export remains refused. See
+[mutable-source-loops.md](mutable-source-loops.md) for source-loop evidence and
+remaining native validation.
+
+
+## mutable transport-loop admission — 10 October 2026
+
+Interactive Arrangement playback proves bounded onset, event-edge and voice
+density before admitting a mutable instrument to an enabled transport loop.
+The first traversal continues authored gates without a second attack at loop
+start. Actual wraps create distinct checked occurrences; pre-loop notes whose
+gates cross loop start receive a fresh attack with the remaining authored gate,
+clamped to the exclusive loop end. Device feedback and effect history continue
+across wraps. The loop pass, mutable state and occurrence ledger commit with the
+whole render block; failed blocks are silent and preserve the prior state.
+
+Changing loop bounds during an active Arrangement mutable gate is refused at
+handoff. Prepared seek/preroll still refuses enabled loops because it models a
+monotonic traversal; transport-loop admission does not change that policy.
+See [the focused contract](mutable-transport-loops.md). The144 SessionPlayback tests (3 ignored), strict engine/audio Clippy and actual
+wrap callback allocation probe pass. Full local CI and native acceptance remain
+pending at this checkpoint. Pulse2215 owns this work. Pulse2220 separately tracks
+the pre-existing finite/source-loop aggregate event and device-capacity proof.

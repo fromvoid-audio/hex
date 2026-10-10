@@ -1207,3 +1207,19 @@ Utility/Operator behavior and save/reopen remain user acceptance. Transport wrap
 Arrangement source-loop linear export remains refused. No PR is auto-merged.
 Codex attachment registration reached100 identities; verified PR links remain
 in Pulse and this ledger. Performance comparison measurement is separate2218.
+
+## 10 October 2026 — Pulse2215 transport-loop implementation
+
+A separate focused change adds bounded mutable Arrangement transport wrapping.
+Pass zero keeps authored gate continuity; actual wraps attack active pre-loop
+gates with fresh identities and the remaining gate duration. Admission proves
+first-traversal, periodic and first-seam density against host and declared device
+capacities. Loop-bound changes with active gates remain conservative refusals.
+The144 SessionPlayback tests (3 ignored), strict engine/audio Clippy and the
+wrap callback allocation probe pass with zero allocation/deallocation counts.
+Full local CI, publication and native listening remain pending. This is not yet in the
+delivered cd71021 app. See [the contract](docs/mutable-transport-loops.md).
+
+Pulse2220 tracks a pre-existing aggregate event-capacity gap for finite
+Arrangement and Session/source-loop admission. That reliability fix remains a
+separate PR from transport2215. No hosted CI or automatic merge is used.

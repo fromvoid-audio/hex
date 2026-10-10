@@ -76,8 +76,24 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
                 let mut overflow = false;
                 let mut arithmetic_failure = false;
+                let wrapped_loop_start = self
+                    .revision
+                    .arrangement()
+                    .loop_region()
+                    .filter(|region| region.enabled())
+                    .filter(|_| previous.arrangement_loop_pass > 0)
+                    .map(|region| region.start());
                 track
                     .for_each_mutable_midi_span(frame, end, |span| {
+                        // A pre-loop gate that ended before loop_start is not
+                        // chased on later passes. It may still be releasing in
+                        // the old runtime; preserve that owned tail, but do not
+                        // manufacture a candidate note onset for the new graph.
+                        if wrapped_loop_start.is_some_and(|loop_start| {
+                            span.start < loop_start && span.gate_end <= loop_start
+                        }) {
+                            return;
+                        }
                         let Some(elapsed) = span.end.checked_sub(frame) else {
                             arithmetic_failure = true;
                             return;
@@ -179,6 +195,28 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
+        let old_loop = previous
+            .revision
+            .arrangement()
+            .loop_region()
+            .filter(|region| region.enabled());
+        let new_loop = self
+            .revision
+            .arrangement()
+            .loop_region()
+            .filter(|region| region.enabled());
+        if old_loop != new_loop
+            && previous.routes.iter().enumerate().any(|(index, route)| {
+                matches!(route.owner, RouteOwner::Arrangement)
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| runtime.proofs().any(|proof| !proof.note_off_sent))
+            })
+        {
+            return Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive);
+        }
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
@@ -192,6 +230,22 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        if timing_changed
+            && old_loop.is_some()
+            && previous.routes.iter().enumerate().any(|(index, route)| {
+                matches!(route.owner, RouteOwner::Arrangement)
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| runtime.proofs().any(|proof| !proof.note_off_sent))
+            })
+        {
+            // A tempo-map edit changes the frame deadline represented by an
+            // active loop gate. Keep the old graph audible until a later
+            // handoff can prove its remaining gate under the new timing map.
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
         let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
         if !timing_changed {
             for (old_index, old_route) in previous.routes.iter().enumerate() {
