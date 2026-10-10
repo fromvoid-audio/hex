@@ -923,3 +923,34 @@ zero signed-net callback allocation counts/bytes. Control-side retirement is
 measured separately. Targeted export tests (2), storage persistence (19) and the
 mixed-wave callback probe pass. Full local CI, clean release performance and
 native UI/listening remain the next gates; no full Operator parity claim.
+
+2026-10-10 combined review53 source milestone: Operator periodic waveform
+choices (Pulse2183) and bounded headless Arrangement preroll (Pulse2182/PR84)
+supplement review52. Both focused clean heads pass all16 local CI checks; source
+reports are20261010T060551Z-824befe4 and20261010T055902Z-f0e1f590. Release
+profiles and their limits are recorded in docs/performance.md. The previous
+source-checkpoint notes above are historical; combined exact-head CI and fresh
+signed build are next. Native seek integration/fresh-publication fences remain
+2164/2186, and native waveform UI/listening remain for user acceptance. No
+review PR has been merged into main automatically.
+
+2026-10-10 Pulse2186 fresh-runtime publication fence: source adds a conditional
+fresh-install policy tied to a control-captured route snapshot and admitted
+command ticket. The callback validates active revision, active route-state
+generation, Acquire-loaded command ticket and pending Stop immediately before
+swap. Stale candidates receive a typed `runtime-fence-changed` rejection and
+retire through the existing control-owned queue; Stop remains pending and affects
+the old graph. Commands/Stop admitted after successful validation act on the new
+graph. Retirement backpressure leaves the old graph operational and rechecks the
+fence once a slot is reclaimed. Tests cover empty revision zero, exact match,
+independent stale revision/route/ticket/Stop, both command/Stop linearization sides
+and delayed stale rejection. A distinguishable candidate regression compares
+exact old Session PCM and verifies its route owner survives a stale rejection.
+A full retirement-ring refusal verifies the rejected candidate stays owned by
+`held_retirement` until control reclaims space. A callback allocation-probe covers
+accepted, rejected and backpressured paths. Audio unit tests (31), callback
+allocation probes (19), strict audio Clippy, formatting and architecture, GPUI-patch
+and UI-style guards pass. This does not supersede session-worker project identity/
+admission checks or change unconditional fresh/inherited publication. Full local
+CI, exact-head review and native integration remain pending; do not mark Pulse2186
+done before those gates.

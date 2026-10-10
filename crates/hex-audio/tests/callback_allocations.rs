@@ -492,6 +492,113 @@ fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
     Ok(())
 }
 
+#[test]
+fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let project = Project::new(RATE)?;
+    let revision = Arc::new(PreparedRevision::prepare(
+        &project,
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let playback = || {
+        Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .map_err(|error| -> Box<dyn Error> { Box::new(error) })
+    };
+    let mut output = [[0.0; 2]; BLOCK];
+
+    // Exact match, including the empty audio owner revision-zero case.
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    let fence = control
+        .capture_fresh_runtime_fence()
+        .ok_or("empty route snapshot unavailable")?;
+    let accepted = control
+        .publish_with_policy(
+            playback()?,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .map_err(|_| "conditional fresh publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        accepted
+    );
+    assert_eq!(control.status.rejected_revision(), None);
+    assert_eq!(control.reclaim(), 0);
+
+    // A command admitted after capture permanently rejects the candidate.
+    let stale = control
+        .capture_fresh_runtime_fence()
+        .ok_or("active route snapshot unavailable")?;
+    control
+        .command_with_ticket(PlaybackCommand::Seek(29))
+        .map_err(|_| "stale-fence command admission failed")?;
+    let rejected = control
+        .publish_with_policy(
+            playback()?,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+        )
+        .map_err(|_| "stale conditional fresh publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        accepted
+    );
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            rejected,
+            hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged
+        ))
+    );
+    assert_eq!(control.reclaim(), 1);
+    control.request_shutdown();
+    measured_block(&mut callback, &mut output);
+    assert_eq!(control.reclaim(), 1);
+
+    // Retirement backpressure leaves the candidate queued; the same stale
+    // ticket is rechecked once the control owner frees a slot.
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback()?)
+        .map_err(|_| "backpressure fixture publication failed")?;
+    measured_block(&mut callback, &mut output);
+    for _ in 0..2 {
+        control
+            .publish_with_policy(playback()?, PublicationPolicy::InstallFreshRuntime)
+            .map_err(|_| "backpressure fill publication failed")?;
+        measured_block(&mut callback, &mut output);
+    }
+    let stale = control
+        .capture_fresh_runtime_fence()
+        .ok_or("backpressure route snapshot unavailable")?;
+    let rejected = control
+        .publish_with_policy(
+            playback()?,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(stale),
+        )
+        .map_err(|_| "backpressured conditional publication failed")?;
+    control
+        .command_with_ticket(PlaybackCommand::Seek(31))
+        .map_err(|_| "backpressure stale command admission failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(control.reclaim(), 2);
+    measured_block(&mut callback, &mut output);
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            rejected,
+            hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged
+        ))
+    );
+    assert_eq!(control.reclaim(), 1);
+    control.request_shutdown();
+    measured_block(&mut callback, &mut output);
+    assert_eq!(control.reclaim(), 1);
+    Ok(())
+}
+
 fn compare_output(actual: &[Frame], expected: &[Frame]) {
     assert_eq!(actual, expected);
 }
