@@ -148,6 +148,15 @@ pub(super) struct BrowserState {
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
     preview_in_flight: Option<PreviewRequest>,
     preview_pending: Option<PreviewRequest>,
+    device_catalog: Option<
+        Result<
+            Vec<(
+                hex_engine::NativeDeviceClass,
+                hex_engine::NativeDeviceCatalogEntry,
+            )>,
+            String,
+        >,
+    >,
 }
 
 impl BrowserState {
@@ -195,6 +204,7 @@ impl BrowserState {
             preview_cache: HashMap::new(),
             preview_in_flight: None,
             preview_pending: None,
+            device_catalog: None,
         }
     }
 
@@ -1039,7 +1049,7 @@ impl EditorView {
                         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                         .child(theme::text(match section {
                             BrowserSection::Samples => "browser · samples",
-                            BrowserSection::Instruments => "browser · instruments",
+                            BrowserSection::Instruments => "browser · devices",
                             BrowserSection::Projects => "browser · projects",
                         })),
                 )
@@ -1057,6 +1067,24 @@ impl EditorView {
                 )),
         );
         panel = panel.child(self.browser_sections(cx));
+        if section == BrowserSection::Instruments && self.browser.device_catalog.is_none() {
+            let catalog = (|| {
+                let mut entries = Vec::new();
+                for class in [
+                    hex_engine::NativeDeviceClass::Instrument,
+                    hex_engine::NativeDeviceClass::Effect,
+                ] {
+                    entries.extend(
+                        hex_engine::native_device_catalog_for_class(class)
+                            .map_err(|error| error.to_string().to_lowercase())?
+                            .into_iter()
+                            .map(|entry| (class, entry)),
+                    );
+                }
+                Ok(entries)
+            })();
+            self.browser.device_catalog = Some(catalog);
+        }
         if section == BrowserSection::Samples || section == BrowserSection::Projects {
             panel = panel.child(self.browser_places(cx));
             panel = panel.child(
@@ -1096,8 +1124,77 @@ impl EditorView {
         }
         match section {
             BrowserSection::Instruments => {
-                panel = panel.child(self.browser_instrument_row(cx));
-                panel = panel.child(div().flex_1().min_h_0());
+                panel = panel.child(div().px_1().pb_1().child(self.browser.search.clone()));
+                match self
+                    .browser
+                    .device_catalog
+                    .clone()
+                    .unwrap_or_else(|| Ok(Vec::new()))
+                {
+                    Ok(entries) => {
+                        let query = self.browser.search.read(cx).content.to_lowercase();
+                        let entries: Vec<_> = entries
+                            .into_iter()
+                            .filter(|(_, entry)| {
+                                query.is_empty() || entry.name.to_lowercase().contains(&query)
+                            })
+                            .collect();
+                        if entries.is_empty() {
+                            panel = panel.child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .px_2()
+                                    .pt_2()
+                                    .text_xs()
+                                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                    .child(theme::text("no matching devices")),
+                            );
+                        } else {
+                            let count = entries.len();
+                            panel = panel.child(
+                                uniform_list(
+                                    "native-device-browser-entries",
+                                    count,
+                                    cx.processor(
+                                        move |view, range: std::ops::Range<usize>, _window, cx| {
+                                            range
+                                                .filter_map(|index| {
+                                                    entries.get(index).cloned().map(
+                                                        |(class, entry)| {
+                                                            view.browser_device_row(
+                                                                index, class, entry, cx,
+                                                            )
+                                                        },
+                                                    )
+                                                })
+                                                .collect()
+                                        },
+                                    ),
+                                )
+                                .h_full()
+                                .min_h_0()
+                                .w_full()
+                                .track_scroll(self.browser.scroll.clone())
+                                .flex_1(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        panel = panel.child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .px_2()
+                                .pt_2()
+                                .text_xs()
+                                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                                .child(theme::text(format!(
+                                    "device catalog unavailable · {error}"
+                                ))),
+                        );
+                    }
+                }
             }
             _ if self.browser.loading
                 && self
@@ -1446,7 +1543,7 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         for (index, (section, label, icon)) in [
             (BrowserSection::Samples, "samples", "♫"),
-            (BrowserSection::Instruments, "instruments", "⌘"),
+            (BrowserSection::Instruments, "devices", "⌘"),
             (BrowserSection::Projects, "projects", "▤"),
         ]
         .into_iter()
@@ -1554,51 +1651,88 @@ impl EditorView {
         content
     }
 
-    fn browser_instrument_row(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .h(px(30.0))
-            .flex_shrink_0()
-            .mx_1()
-            .mt_1()
+    fn browser_device_row(
+        &mut self,
+        index: usize,
+        class: hex_engine::NativeDeviceClass,
+        entry: hex_engine::NativeDeviceCatalogEntry,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let class_label = match class {
+            hex_engine::NativeDeviceClass::Instrument => "instrument",
+            hex_engine::NativeDeviceClass::Effect => "effect",
+        };
+        let type_id = entry.type_id;
+        let name = entry.name.to_lowercase();
+        let payload = self.state.as_ref().map(|state| drag::NativeDeviceDrag {
+            project_generation: self.project_generation,
+            revision: state.revision,
+            source: drag::NativeDeviceDragSource::Browser { class, type_id },
+            destination: Rc::new(Cell::new(None)),
+        });
+        let row = div()
+            .id(("browser-device", index))
+            .debug_selector(move || format!("browser-device-{class_label}-{index}"))
+            .h(px(ROW_HEIGHT))
             .px_1()
             .flex()
             .items_center()
             .gap_1()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .cursor_pointer()
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| {
-                    let count = view
-                        .state
-                        .as_ref()
-                        .map_or(0, |state| state.project.tracks().len());
-                    view.enqueue(Request::Edit(Command::AddMidiTrack {
-                        name: format!("track {}", count + 1),
-                    }));
+                cx.listener(move |view, _, _, cx| {
+                    view.browser.selected_index = index;
+                    view.browser.results_focused = true;
                     cx.notify();
                 }),
             )
             .child(
                 div()
-                    .w(px(18.0))
+                    .w(px(16.0))
+                    .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                    .child(theme::text("⌘")),
+                    .child(theme::text(
+                        if class == hex_engine::NativeDeviceClass::Instrument {
+                            "⌘"
+                        } else {
+                            "◈"
+                        },
+                    )),
             )
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .line_clamp(1)
+                    .text_ellipsis()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text("midi track · sine")),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("+")),
-            )
+                    .child(theme::text(name)),
+            );
+        let Some(payload) = payload else {
+            return row;
+        };
+        let drag_entity = cx.entity();
+        let release_entity = drag_entity.clone();
+        row.on_drag(payload.clone(), move |payload, _, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
+            drag_entity.update(cx, |view, cx| {
+                view.begin_native_device_drag(payload);
+                cx.notify();
+            });
+            cx.new(|_| BrowserAudioDragGhost)
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+            release_entity.update(cx, |view, cx| {
+                view.clear_native_device_drag(&payload);
+                cx.notify();
+            });
+        })
     }
 
     fn browser_icon(

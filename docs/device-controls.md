@@ -152,3 +152,24 @@ changes while playing an original asymmetric stereo source.
 Full Utility dB controls, DC/bass mono and Operator remain separate source and
 reference acceptance gates. Record each actual result in Pulse instead of
 inferring native correctness from source test counts.
+
+### Browser insertion and ordered-chain drag
+
+The left browser's devices category lists only registered native definitions and
+starts metadata-only drags; it does not construct DSP. Dropping an effect on a
+card's left or right half inserts before that stable device ID, while the empty
+chain tail appends. A browser instrument drop always targets the front position
+and is refused when the focused track already has an instrument; replacement
+remains an explicit menu action. Dragging an existing card by its header grip
+moves that stable device identity to the indicated position, including across
+tracks. The rail renders the project's canonical ordered chain, and drop hit
+regions do not add spacing or resize the fixed-height panel.
+
+Drops are bound to the source project generation and revision. The controller
+resolves the currently focused track, validates class, source identity and
+insertion anchor, and refuses while a parameter edit is pending or active; the
+user can retry after the edit settles. Stale, canceled and outside drops clear
+the preview without publishing history. The Session actor repeats the generation,
+revision, active-gesture, target and anchor checks before applying the typed add
+or move command. These contracts are source-tested; native pointer feel and
+cross-track behavior remain on the user review checklist.

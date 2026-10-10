@@ -351,6 +351,11 @@ impl Render for EditorView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
+                    let device_drag_canceled = view.cancel_active_native_device_drag();
+                    if device_drag_canceled {
+                        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                        cx.notify();
+                    }
                     if view.active_clip_drag.take().is_some() {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
@@ -365,6 +370,23 @@ impl Render for EditorView {
                     }
                 }),
             )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    if view.cancel_active_native_device_drag() {
+                        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
+                    cx.stop_active_drag(window);
+                    cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
@@ -381,7 +403,15 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
-                view.browser_escape(window, cx);
+                if view.active_native_device_drag.is_some() {
+                    cx.stop_active_drag(window);
+                    view.cancel_active_native_device_drag();
+                    cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else {
+                    view.browser_escape(window, cx);
+                }
             }))
             .on_action(
                 cx.listener(|view, action: &super::ThemeSettingsEscape, window, cx| {
@@ -403,6 +433,7 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &Stop, window, cx| {
                 cx.stop_active_drag(window);
                 view.active_clip_drag = None;
+                view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
                 view.stop();
                 cx.notify();
@@ -417,6 +448,7 @@ impl Render for EditorView {
                     false
                 };
                 let drag_stopped = cx.stop_active_drag(window);
+                let device_drag_stopped = view.cancel_active_native_device_drag();
                 let pan_canceled = view.cancel_arrangement_pan();
                 if drag_stopped {
                     view.active_clip_drag = None;
@@ -425,6 +457,7 @@ impl Render for EditorView {
                     && !selection_cleared
                     && !time_selection_canceled
                     && !drag_stopped
+                    && !device_drag_stopped
                     && !pan_canceled
                 {
                     view.stop();

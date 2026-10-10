@@ -1,14 +1,15 @@
 //! Compact descriptor-driven native device chain in the shared detail pane.
-use super::EditorView;
+use super::{EditorView, drag};
 use crate::theme;
 use gpui::{
-    App, Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb,
+    App, Bounds, Context, Div, ElementId, Entity, MouseButton, Pixels, Stateful, Subscription,
+    Window, div, prelude::*, px, rgb,
 };
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterDescriptor, ParameterKind, ParameterValue};
 use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
-use hex_session::service::{Request, ViewState};
+use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
     ControlStyle, NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericEventPhase, NumericScale, NumericSpec, Selector, SelectorChanged, SelectorConfig,
@@ -301,10 +302,12 @@ fn render_track(
     };
     let devices = track.devices().to_vec();
     let instrument = track.instrument().cloned();
-    let alive: HashSet<_> = devices
-        .iter()
-        .map(|device| device.id())
-        .chain(instrument.iter().map(|device| device.id()))
+    let alive: HashSet<_> = track
+        .ordered_device_chain()
+        .map(|node| match node {
+            hex_project::TrackDeviceRef::Instrument(device)
+            | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+        })
         .collect();
     let stale_keys: Vec<_> = view
         .device_panel
@@ -395,109 +398,73 @@ fn render_track(
         .p(px(DEVICE_CHAIN_PADDING))
         .overflow_x_scroll()
         .overflow_y_hidden();
+    let chain_entity = cx.entity();
+    let visible_chain_bounds = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let chain_visible_bounds = visible_chain_bounds.clone();
+    chain = chain.on_drag_move::<drag::NativeDeviceDrag>(move |event, _, cx| {
+        let Some(payload) = event
+            .dragged_item()
+            .downcast_ref::<drag::NativeDeviceDrag>()
+        else {
+            return;
+        };
+        let pointer = event.event.position;
+        let bounds = event.bounds;
+        *chain_visible_bounds.borrow_mut() = Some(bounds);
+        let inside = bounds.contains(&pointer);
+        if !inside && payload.destination.take().is_some() {
+            chain_entity.update(cx, |_, cx| cx.notify());
+        }
+    });
 
-    if let Some(device) = instrument.as_ref() {
-        let rendered = render_instrument(view, cx, track_id, device);
-        chain = chain.child(rendered);
-    }
-
-    for (index, device) in devices.iter().enumerate() {
-        let device_id = device.id();
-        let cached = view
-            .device_panel
-            .views
-            .remove(&device_id)
-            .filter(|(class, cached, _)| {
-                *class == NativeDeviceClass::Effect && cached == device.state()
-            })
-            .map(|(_, _, result)| result);
-        let device_view = cached.unwrap_or_else(|| {
-            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
-        });
-        let rendered = match &device_view {
-            Ok(device_view) => {
-                let mut body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
-                        view,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    ));
-                }
-                let header_actions = device_actions(track_id, &devices, index, cx);
-                device_frame(
-                    theme::text(device_view.name.clone()),
-                    control_style(),
-                    header_actions,
-                    body,
-                )
+    let nodes: Vec<_> = track.ordered_device_chain().collect();
+    let device_ids: Vec<_> = nodes
+        .iter()
+        .map(|node| match node {
+            hex_project::TrackDeviceRef::Instrument(device)
+            | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+        })
+        .collect();
+    let first_device = device_ids.first().copied();
+    let mut effect_index = 0;
+    for (index, node) in nodes.into_iter().enumerate() {
+        let (device, class) = match node {
+            hex_project::TrackDeviceRef::Instrument(device) => {
+                (device, NativeDeviceClass::Instrument)
             }
-            Err(error) => {
-                let body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p(px(5.0))
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .child(theme::text(format!("unsupported device state · {error}")));
-                device_frame(
-                    theme::text(
-                        device
-                            .state()
-                            .type_id()
-                            .as_str()
-                            .unwrap_or("unknown device"),
-                    ),
-                    control_style(),
-                    div(),
-                    body,
-                )
+            hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
+        };
+        let rendered = match class {
+            NativeDeviceClass::Instrument => render_instrument(view, cx, track_id, device),
+            NativeDeviceClass::Effect => {
+                let rendered = render_effect(view, cx, track_id, &devices, effect_index, device);
+                effect_index = effect_index.saturating_add(1);
+                rendered
             }
         };
-        view.device_panel.views.insert(
-            device_id,
-            (
-                NativeDeviceClass::Effect,
-                device.state().clone(),
-                device_view,
-            ),
-        );
-        let selector = format!("effect-device-{}", device_id.value());
-        chain = chain.child(
-            div()
-                .id(ElementId::Name(selector.clone().into()))
-                .debug_selector(move || selector.clone())
-                .w(px(DEVICE_FRAME_WIDTH))
-                .h(px(DEVICE_FRAME_HEIGHT))
-                .flex_shrink_0()
-                .child(rendered),
-        );
+        chain = chain.child(render_device_card_target(
+            view,
+            cx,
+            DeviceCardDropGeometry {
+                track: track_id,
+                device: device.id(),
+                next: device_ids.get(index + 1).copied(),
+                first: first_device,
+                visible_chain_bounds: visible_chain_bounds.clone(),
+            },
+            rendered,
+        ));
     }
+    chain = chain.child(render_device_end_target(
+        view,
+        cx,
+        drag::NativeDeviceDropTarget {
+            track: track_id,
+            before: None,
+        },
+        first_device,
+        visible_chain_bounds,
+    ));
 
     let add_open = view.device_panel.add_menu_open;
     let add_button = div()
@@ -565,6 +532,615 @@ fn render_track(
     root
 }
 
+#[derive(Clone)]
+struct DeviceCardDropGeometry {
+    track: TrackId,
+    device: DeviceId,
+    next: Option<DeviceId>,
+    first: Option<DeviceId>,
+    visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+}
+
+fn pointer_within_visible_device_drop_bounds(
+    pointer: &gpui::Point<Pixels>,
+    target: &Bounds<Pixels>,
+    visible_chain: Option<&Bounds<Pixels>>,
+) -> bool {
+    target.contains(pointer) && visible_chain.is_some_and(|bounds| bounds.contains(pointer))
+}
+
+fn render_device_card_target(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    geometry: DeviceCardDropGeometry,
+    rendered: Stateful<Div>,
+) -> Stateful<Div> {
+    let DeviceCardDropGeometry {
+        track,
+        device,
+        next,
+        first,
+        visible_chain_bounds,
+    } = geometry;
+    let active = view
+        .active_native_device_drag
+        .as_ref()
+        .and_then(|drag| drag.destination.get());
+    let active_left =
+        active.is_some_and(|target| target.track == track && target.before == Some(device));
+    let active_right = active.is_some_and(|target| target.track == track && target.before == next);
+    let left_target = drag::NativeDeviceDropTarget {
+        track,
+        before: Some(device),
+    };
+    let right_target = drag::NativeDeviceDropTarget {
+        track,
+        before: next,
+    };
+    let front_target = drag::NativeDeviceDropTarget {
+        track,
+        before: first,
+    };
+    let selector = format!("device-drop-card-{}", device.value());
+    let entity = cx.entity();
+    let target_visible_bounds = visible_chain_bounds.clone();
+    let mut wrapper = div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .relative()
+        .w(px(DEVICE_FRAME_WIDTH))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex_shrink_0()
+        .drag_over::<drag::NativeDeviceDrag>(move |style, _, _, _| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
+        })
+        .on_drag_move::<drag::NativeDeviceDrag>(move |event, _, cx| {
+            let Some(payload) = event
+                .dragged_item()
+                .downcast_ref::<drag::NativeDeviceDrag>()
+            else {
+                return;
+            };
+            let pointer = f32::from(event.event.position.x);
+            let left = f32::from(event.bounds.origin.x);
+            let right = left + f32::from(event.bounds.size.width);
+            let pointer_y = f32::from(event.event.position.y);
+            let top = f32::from(event.bounds.origin.y);
+            let bottom = top + f32::from(event.bounds.size.height);
+            let target_bounds = event.bounds;
+            let inside = pointer >= left
+                && pointer <= right
+                && pointer_y >= top
+                && pointer_y <= bottom
+                && pointer_within_visible_device_drop_bounds(
+                    &event.event.position,
+                    &target_bounds,
+                    target_visible_bounds.borrow().as_ref(),
+                );
+            let target = match payload.source {
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                } => Some(front_target),
+                _ if inside && pointer < left + (right - left) / 2.0 => Some(left_target),
+                _ if inside => Some(right_target),
+                _ => None,
+            };
+            let previous = payload.destination.get();
+            if let Some(target) = target.filter(|_| inside) {
+                if previous != Some(target) {
+                    payload.destination.set(Some(target));
+                    entity.update(cx, |_, cx| cx.notify());
+                }
+            }
+        })
+        .on_drop(
+            cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
+                let target = payload.destination.get().unwrap_or(left_target);
+                view.drop_native_device(payload, target, window, cx);
+            }),
+        )
+        .child(rendered);
+    if active_left {
+        wrapper = wrapper.child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .w(px(2.0))
+                .h(px(DEVICE_FRAME_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
+    if active_right {
+        wrapper = wrapper.child(
+            div()
+                .absolute()
+                .right_0()
+                .top_0()
+                .w(px(2.0))
+                .h(px(DEVICE_FRAME_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
+    wrapper
+}
+
+fn render_device_end_target(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    target: drag::NativeDeviceDropTarget,
+    first: Option<DeviceId>,
+    visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+) -> Stateful<Div> {
+    let instrument_target = drag::NativeDeviceDropTarget {
+        track: target.track,
+        before: first,
+    };
+    let active = view.active_native_device_drag.as_ref().is_some_and(|drag| {
+        let expected = match drag.source {
+            drag::NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                ..
+            } => instrument_target,
+            _ => target,
+        };
+        drag.destination.get() == Some(expected)
+    });
+    let entity = cx.entity();
+    let target_visible_bounds = visible_chain_bounds.clone();
+    let selector = format!("device-drop-end-{}", target.track.value());
+    let mut receiver = div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .relative()
+        .flex_1()
+        .min_w(px(40.0))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex_shrink_0()
+        .bg(rgb(if active {
+            theme::color(theme::PaletteRole::Hover)
+        } else {
+            theme::color(theme::PaletteRole::Surface)
+        }))
+        .drag_over::<drag::NativeDeviceDrag>(move |style, _, _, _| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
+        })
+        .on_drag_move::<drag::NativeDeviceDrag>(move |event, _, cx| {
+            let Some(payload) = event
+                .dragged_item()
+                .downcast_ref::<drag::NativeDeviceDrag>()
+            else {
+                return;
+            };
+            let pointer = f32::from(event.event.position.x);
+            let left = f32::from(event.bounds.origin.x);
+            let right = left + f32::from(event.bounds.size.width);
+            let pointer_y = f32::from(event.event.position.y);
+            let top = f32::from(event.bounds.origin.y);
+            let bottom = top + f32::from(event.bounds.size.height);
+            let target_bounds = event.bounds;
+            let inside = pointer >= left
+                && pointer <= right
+                && pointer_y >= top
+                && pointer_y <= bottom
+                && pointer_within_visible_device_drop_bounds(
+                    &event.event.position,
+                    &target_bounds,
+                    target_visible_bounds.borrow().as_ref(),
+                );
+            let destination = match payload.source {
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                } => Some(instrument_target),
+                _ if inside => Some(target),
+                _ => None,
+            };
+            let previous = payload.destination.get();
+            if inside && previous != destination {
+                payload.destination.set(destination);
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .on_drop(
+            cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
+                let target = payload.destination.get().unwrap_or(target);
+                view.drop_native_device(payload, target, window, cx);
+            }),
+        );
+    if active {
+        receiver = receiver.child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .w(px(2.0))
+                .h(px(DEVICE_FRAME_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
+    receiver
+}
+
+fn device_drag_grip(
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+    project_generation: u64,
+    revision: u64,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let id = device.id();
+    let payload = drag::NativeDeviceDrag {
+        project_generation,
+        revision,
+        source: drag::NativeDeviceDragSource::Existing {
+            device: id,
+            class,
+            type_id: device.state().type_id(),
+        },
+        destination: std::rc::Rc::new(std::cell::Cell::new(None)),
+    };
+    let entity = cx.entity();
+    let release_entity = entity.clone();
+    div()
+        .id(("device-drag-grip", id.value()))
+        .debug_selector(move || format!("device-drag-grip-{}", id.value()))
+        .w(px(14.0))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_move()
+        .text_xs()
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .hover(|style| style.text_color(rgb(theme::color(theme::PaletteRole::Text))))
+        .tooltip(|_, cx| {
+            cx.new(|_| super::transport::MiniTooltip {
+                description: "drag to reorder device".into(),
+            })
+            .into()
+        })
+        .child(theme::text("⠿"))
+        .on_drag(payload.clone(), move |payload, _, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
+            entity.update(cx, |view, cx| {
+                view.begin_native_device_drag(payload);
+                cx.notify();
+            });
+            cx.new(|_| NativeDeviceDragGhost)
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+            release_entity.update(cx, |view, cx| {
+                view.clear_native_device_drag(&payload);
+                cx.notify();
+            });
+        })
+}
+
+struct NativeDeviceDragGhost;
+
+impl gpui::Render for NativeDeviceDragGhost {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut Context<'_, Self>,
+    ) -> impl gpui::IntoElement {
+        div().w(px(0.0)).h(px(0.0))
+    }
+}
+
+fn render_effect(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    track: TrackId,
+    effects: &[hex_project::Device],
+    index: usize,
+    device: &hex_project::Device,
+) -> Stateful<Div> {
+    let device_id = device.id();
+    let device_view = view
+        .device_panel
+        .views
+        .remove(&device_id)
+        .filter(|(class, cached, _)| {
+            *class == NativeDeviceClass::Effect && cached == device.state()
+        })
+        .map(|(_, _, result)| result)
+        .unwrap_or_else(|| {
+            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
+                .map_err(|error| error.to_string().to_lowercase())
+        });
+    let mut header_actions = device_actions(track, effects, index, cx);
+    header_actions = header_actions.child(device_drag_grip(
+        device,
+        NativeDeviceClass::Effect,
+        view.project_generation,
+        view.state.as_ref().map_or(0, |state| state.revision),
+        cx,
+    ));
+    let rendered = match &device_view {
+        Ok(device_view) => {
+            let mut body = div()
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .w_full()
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_wrap()
+                .content_start()
+                .gap(px(2.0))
+                .p(px(3.0));
+            for parameter in &device_view.parameters {
+                body = body.child(parameter_control(
+                    view,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    parameter,
+                ));
+            }
+            device_frame(
+                theme::text(device_view.name.clone()),
+                control_style(),
+                header_actions,
+                body,
+            )
+        }
+        Err(error) => {
+            let body = div()
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()))
+                .w_full()
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(5.0))
+                .text_xs()
+                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .child(theme::text(format!("unsupported device state · {error}")));
+            device_frame(
+                theme::text(
+                    device
+                        .state()
+                        .type_id()
+                        .as_str()
+                        .unwrap_or("unknown device"),
+                ),
+                control_style(),
+                header_actions,
+                body,
+            )
+        }
+    };
+    view.device_panel.views.insert(
+        device_id,
+        (
+            NativeDeviceClass::Effect,
+            device.state().clone(),
+            device_view,
+        ),
+    );
+    let selector = format!("effect-device-{}", device_id.value());
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w(px(DEVICE_FRAME_WIDTH))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex_shrink_0()
+        .child(rendered)
+}
+
+impl EditorView {
+    pub(super) fn drop_native_device(
+        &mut self,
+        drag: &drag::NativeDeviceDrag,
+        drop_target: drag::NativeDeviceDropTarget,
+        window: &mut Window,
+        cx: &mut Context<EditorView>,
+    ) {
+        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+        let owns_drag = self
+            .active_native_device_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == drag.project_generation
+                    && active.revision == drag.revision
+                    && active.source == drag.source
+                    && std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
+            });
+        let stale = !owns_drag || !self.native_device_drag_is_current(drag);
+        if stale {
+            self.error = Some("device drag canceled · project or source changed".into());
+            self.device_panel.message =
+                Some("device drag canceled · project or source changed".into());
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+
+        let pending_edit = self.opening_project
+            || self.close_prompt_open
+            || self.export_pending
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+            || !self.device_gesture_barriers.is_empty()
+            || self.device_gesture.snapshot().is_some()
+            || self.device_panel.has_pending_draft(cx);
+        if pending_edit {
+            let _ = finalize_controls(self, cx);
+            let message = "device edit is still applying; drag again";
+            self.error = Some(message.into());
+            self.device_panel.message = Some(message.into());
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if !finalize_controls(self, cx) {
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+
+        let still_current = self.native_device_drag_is_current(drag)
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == drag.revision && state.project.track(drop_target.track).is_some()
+            });
+        if !still_current {
+            self.error = Some("device drag canceled · project or source changed".into());
+            self.device_panel.message =
+                Some("device drag canceled · project or source changed".into());
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+
+        let Some(track) = self.selected_track else {
+            self.error = Some("select a track before dropping a device".into());
+            self.device_panel.message = self.error.clone();
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            self.clear_native_device_drag(drag);
+            return;
+        };
+        let Some(target_track) = state.project.track(track) else {
+            self.error = Some("device drop target is no longer available".into());
+            self.device_panel.message = self.error.clone();
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        };
+        if let Some(anchor) = drop_target.before
+            && !target_track.ordered_device_chain().any(|node| match node {
+                hex_project::TrackDeviceRef::Instrument(device)
+                | hex_project::TrackDeviceRef::Effect(device) => device.id() == anchor,
+            })
+        {
+            self.error = Some("device drop target changed; drag again".into());
+            self.device_panel.message = self.error.clone();
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+
+        let before = match drag.source {
+            drag::NativeDeviceDragSource::Browser {
+                class: NativeDeviceClass::Instrument,
+                ..
+            } => target_track
+                .ordered_device_chain()
+                .next()
+                .map(|node| match node {
+                    hex_project::TrackDeviceRef::Instrument(device)
+                    | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+                }),
+            _ => drop_target.before,
+        };
+        if let drag::NativeDeviceDragSource::Browser {
+            class: NativeDeviceClass::Instrument,
+            ..
+        } = drag.source
+            && target_track.instrument().is_some()
+        {
+            self.error = Some("instrument slot is already occupied".into());
+            self.device_panel.message = self.error.clone();
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
+            && device_move_would_be_noop(&state.project, device, track, before)
+        {
+            self.status = "device order unchanged".into();
+            self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+
+        let source = match drag.source {
+            drag::NativeDeviceDragSource::Browser { class, type_id } => {
+                NativeDeviceDropSource::Browser { class, type_id }
+            }
+            drag::NativeDeviceDragSource::Existing {
+                device,
+                class,
+                type_id,
+            } => NativeDeviceDropSource::Existing {
+                device,
+                class,
+                type_id,
+            },
+        };
+        let request = Request::DropNativeDevice {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            source,
+            track,
+            before,
+        };
+        self.clear_native_device_drag(drag);
+        if self.enqueue_device_barrier(request) {
+            self.error = None;
+            self.device_panel.message = None;
+            self.status = match source {
+                NativeDeviceDropSource::Browser { .. } => "adding device".into(),
+                NativeDeviceDropSource::Existing { .. } => "moving device".into(),
+            };
+        }
+        cx.notify();
+    }
+}
+
+fn device_move_would_be_noop(
+    project: &hex_project::Project,
+    device: DeviceId,
+    target_track: TrackId,
+    before: Option<DeviceId>,
+) -> bool {
+    let Some(source_track) = project.tracks().iter().find(|track| {
+        track.ordered_device_chain().any(|node| match node {
+            hex_project::TrackDeviceRef::Instrument(candidate)
+            | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id() == device,
+        })
+    }) else {
+        return false;
+    };
+    if source_track.id() != target_track {
+        return false;
+    }
+    let current: Vec<_> = source_track
+        .ordered_device_chain()
+        .map(|node| match node {
+            hex_project::TrackDeviceRef::Instrument(candidate)
+            | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id(),
+        })
+        .collect();
+    let mut moved: Vec<_> = current
+        .iter()
+        .copied()
+        .filter(|candidate| *candidate != device)
+        .collect();
+    let destination = before
+        .and_then(|anchor| moved.iter().position(|candidate| *candidate == anchor))
+        .unwrap_or(moved.len());
+    moved.insert(destination, device);
+    moved == current
+}
+
 fn render_instrument(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -584,7 +1160,13 @@ fn render_instrument(
         hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
             .map_err(|error| error.to_string().to_lowercase())
     });
-    let header_actions = instrument_actions(track, device, cx);
+    let header_actions = instrument_actions(track, device, cx).child(device_drag_grip(
+        device,
+        NativeDeviceClass::Instrument,
+        view.project_generation,
+        view.state.as_ref().map_or(0, |state| state.revision),
+        cx,
+    ));
     let rendered = match &device_view {
         Ok(device_view) => {
             let mut body = div()
