@@ -440,7 +440,12 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert!(declared <= 4096, "actual twin storage {declared}");
+        assert_eq!(declared, 3_808, "actual twin storage {declared}");
+        assert!(
+            2 * declared <= 8_192,
+            "paired runtime storage {}",
+            2 * declared
+        );
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {

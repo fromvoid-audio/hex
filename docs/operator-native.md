@@ -29,14 +29,18 @@ update the existing routing parameters through the ordinary immutable device
 patch contract. See the [routing preset contract](operator-routing-presets.md).
 
 Nonzero effective feedback selects the registered bounded mutable runtime with
-16 simultaneous voices, 256 events per block and a 3,640-byte twin. Authored
+16 simultaneous voices, 256 events per block and a measured 3,808-byte twin
+(7,616 bytes paired). Authored
 amounts remain stored when incoming FM makes a control unavailable; effective
 zero retains analytic playback. The analytic API does not expose a context for
 mutable feedback state, preventing a silent wrong-law fallback. See the
 [feedback contract](operator-feedback.md) for the original recurrence,
 capability limits, storage accounting and validation. Active class-changing
 handoffs can refuse audio admission while desired project edits remain canonical;
-this does not establish live parameter updates on held feedback voices.
+this does not establish live parameter updates on held feedback voices. The
+standalone bounded retarget kernel currently has no registered runtime wiring;
+one shared 216-byte ramp per twin would bring the pair to 8,048 bytes, below the
+existing 8,192-byte ceiling.
 
 Filters, additional waveforms beyond these four, unbounded routing, remaining
 Operator controls and Live numerical parity remain open. Native listening and
