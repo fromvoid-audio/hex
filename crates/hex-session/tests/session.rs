@@ -812,7 +812,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
 }
 
 #[test]
-fn unsupported_chain_order_rejects_prepared_candidate_without_history_change() {
+fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (track, _) = match session
         .command(Command::AddTrack {
@@ -857,23 +857,44 @@ fn unsupported_chain_order_rejects_prepared_candidate_without_history_change() {
     assert!(session.project().device(effect).is_some());
     assert!(session.project().device(second_effect).is_none());
     let before = session.project().snapshot();
-    let can_undo = session.can_undo();
-    let rejected = session.command_prepared_revision(
-        Command::MoveTrackDevice {
-            device: session
-                .project()
-                .track(track)
-                .expect("track remains")
-                .instrument()
-                .expect("instrument")
-                .id(),
-            track,
-            before: None,
-        },
-        Some(&prepared),
+    let (_, ordered) = session
+        .command_prepared_revision(
+            Command::MoveTrackDevice {
+                device: session
+                    .project()
+                    .track(track)
+                    .expect("track remains")
+                    .instrument()
+                    .expect("instrument")
+                    .id(),
+                track,
+                before: None,
+            },
+            Some(&prepared),
+        )
+        .expect("ordered candidate prepares before history commits");
+    assert_eq!(
+        session
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument_position(),
+        Some(1)
     );
-    assert!(rejected.is_err());
+    assert!(
+        !session.can_redo(),
+        "accepted edit retires the old redo branch"
+    );
+    let moved = session.project().snapshot();
+    let restored = session
+        .undo_prepared_revision(Some(&ordered))
+        .expect("ordered undo prepares")
+        .expect("ordered undo exists");
     assert_eq!(session.project().snapshot(), before);
-    assert_eq!(session.can_undo(), can_undo);
     assert!(session.can_redo());
+    session
+        .redo_prepared_revision(Some(&restored))
+        .expect("ordered redo prepares")
+        .expect("ordered redo exists");
+    assert_eq!(session.project().snapshot(), moved);
 }

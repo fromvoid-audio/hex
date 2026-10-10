@@ -218,6 +218,7 @@ impl SessionPlayback {
                 .device_chains
                 .get(index)
                 .is_some_and(|chain| !chain.is_empty());
+            let ordered = track.requires_ordered_processing();
             while self
                 .release_scratch
                 .get(release_cursor)
@@ -237,35 +238,97 @@ impl SessionPlayback {
                 .iter()
                 .any(|entry| entry.tail_group.is_none());
             let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence);
-            if stateful && (has_current_route || has_current_release) {
+            if (stateful || ordered) && (has_current_route || has_current_release) {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
-                for release in &self.release_scratch[first_release..release_cursor] {
-                    if release.tail_group.is_none() {
-                        render_release_raw(release, table, performance_frame, render_output)?;
+                if ordered {
+                    render_route_source_chunk(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            route: self.route_scratch[index],
+                            historical_floor: self.historical_floor,
+                            suppressions: &self.suppression_scratch,
+                            index,
+                            timing: &timing,
+                            table,
+                        },
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        render_output,
+                        pages.as_deref_mut(),
+                        SourceStage::Audio,
+                    )?;
+                    if stateful {
+                        self.device_chains[index]
+                            .process_range(0..track.instrument_position(), render_output)
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    } else {
+                        track.apply_ordered_prefix(render_output);
                     }
+                    for release in &self.release_scratch[first_release..release_cursor] {
+                        if release.tail_group.is_none() {
+                            render_release_raw(release, table, performance_frame, render_output)?;
+                        }
+                    }
+                    render_route_source_chunk(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            route: self.route_scratch[index],
+                            historical_floor: self.historical_floor,
+                            suppressions: &self.suppression_scratch,
+                            index,
+                            timing: &timing,
+                            table,
+                        },
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        render_output,
+                        pages.as_deref_mut(),
+                        SourceStage::Instrument,
+                    )?;
+                    if stateful {
+                        let chain = self
+                            .device_chains
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::UnknownTrack)?;
+                        let effect_count = chain.len();
+                        chain
+                            .process_range(track.instrument_position()..effect_count, render_output)
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    } else {
+                        track.apply_ordered_suffix(render_output);
+                    }
+                } else {
+                    for release in &self.release_scratch[first_release..release_cursor] {
+                        if release.tail_group.is_none() {
+                            render_release_raw(release, table, performance_frame, render_output)?;
+                        }
+                    }
+                    render_route_source_chunk(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            route: self.route_scratch[index],
+                            historical_floor: self.historical_floor,
+                            suppressions: &self.suppression_scratch,
+                            index,
+                            timing: &timing,
+                            table,
+                        },
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        render_output,
+                        pages.as_deref_mut(),
+                        SourceStage::Whole,
+                    )?;
+                    let chain = self
+                        .device_chains
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    chain.process_block(render_output);
                 }
-                render_route_source_chunk(
-                    RouteSourceContext {
-                        revision: &self.revision,
-                        route: self.route_scratch[index],
-                        historical_floor: self.historical_floor,
-                        suppressions: &self.suppression_scratch,
-                        index,
-                        timing: &timing,
-                        table,
-                    },
-                    &mut self.spans,
-                    performance_frame,
-                    arrangement_frame,
-                    render_output,
-                    pages.as_deref_mut(),
-                )?;
-                let chain = self
-                    .device_chains
-                    .get_mut(index)
-                    .ok_or(SessionPlaybackError::UnknownTrack)?;
-                chain.process_block(render_output);
                 for (destination, source) in output.iter_mut().zip(render_output.iter().copied()) {
                     mix.add_frame(destination, source);
                 }
@@ -290,6 +353,7 @@ impl SessionPlayback {
                     arrangement_frame,
                     output,
                     pages.as_deref_mut(),
+                    SourceStage::Whole,
                 )?;
             }
         }
@@ -325,7 +389,25 @@ impl SessionPlayback {
             for release in &self.release_scratch[group_start..tail_cursor] {
                 render_release_raw(release, table, performance_frame, tail_output)?;
             }
-            chain.process_block(tail_output);
+            if !chain.is_empty() {
+                let suffix_start = self
+                    .tail_suffix_starts
+                    .get(group_index)
+                    .copied()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let effect_count = chain.len();
+                chain
+                    .process_range(suffix_start..effect_count, tail_output)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+            if let Some(matrix) = self
+                .tail_suffix_matrices
+                .get(group_index)
+                .copied()
+                .flatten()
+            {
+                matrix.apply_block(tail_output);
+            }
             let mix = self
                 .tail_mixes
                 .get(group_index)
@@ -349,6 +431,13 @@ struct RouteSourceContext<'a, T> {
     table: &'a hex_devices::SineTable,
 }
 
+#[derive(Clone, Copy)]
+enum SourceStage {
+    Whole,
+    Audio,
+    Instrument,
+}
+
 fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
     context: RouteSourceContext<'_, T>,
     spans: &mut MidiSpanBuffer,
@@ -356,6 +445,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
     arrangement_frame: u64,
     output: &mut [Frame],
     mut pages: Option<&mut P>,
+    stage: SourceStage,
 ) -> Result<(), SessionPlaybackError> {
     let RouteSourceContext {
         revision,
@@ -374,15 +464,36 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
     let source_mix = track.source_mix();
     match route.owner {
         RouteOwner::Arrangement => {
-            if let Some(page_provider) = pages.as_deref_mut() {
-                track.render_additive_with_pages(arrangement_frame, output, page_provider)
-            } else {
-                track.render_additive(arrangement_frame, output)
+            match stage {
+                SourceStage::Whole => {
+                    if let Some(page_provider) = pages.as_deref_mut() {
+                        track.render_additive_with_pages(arrangement_frame, output, page_provider)
+                    } else {
+                        track.render_additive(arrangement_frame, output)
+                    }
+                }
+                SourceStage::Audio => {
+                    if let Some(page_provider) = pages.as_deref_mut() {
+                        track.render_audio_additive_with_pages(
+                            arrangement_frame,
+                            output,
+                            page_provider,
+                        )
+                    } else {
+                        track.render_audio_additive(arrangement_frame, output)
+                    }
+                }
+                SourceStage::Instrument => {
+                    track.render_instrument_additive(arrangement_frame, output)
+                }
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         }
         RouteOwner::Silence => {}
         RouteOwner::Session { clip, launch } => {
+            if matches!(stage, SourceStage::Audio) {
+                return Ok(());
+            }
             let prepared = revision
                 .session()
                 .midi_clip(clip)
@@ -401,6 +512,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             }
         }
         RouteOwner::SessionAudio { clip, launch_frame } => {
+            if matches!(stage, SourceStage::Instrument) {
+                return Ok(());
+            }
             let prepared = revision
                 .session()
                 .audio_clip(clip)

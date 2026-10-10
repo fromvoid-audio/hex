@@ -19,7 +19,54 @@ regression; control initialization plus noninitializing callback lookup repaired
 that path. No established speedup/no-regression claim, sustained stress or
 instrument preparation-time budget follows from these short render measurements.
 
+## Ordered instrument gap render profile — 10 October 2026
+
+On Apple M5 Pro arm64, the release `profile_instrument` fixture is 100 tracks ×
+16 notes, 48 kHz, 100 warm-up blocks and 3,000 measured blocks at 128 and 512
+frames. Every profile uses the same two Utility effects at gain 0.999; their
+non-identity matrices make gaps 1 and 2 exercise the segmented path. For a
+before/after comparison, only gap 0 is equivalent: baseline source d88f880 and
+the current source both apply both effects after the instrument. The baseline
+worktree received only the identical profile example (SHA-256
+`f3e0baa5c27f4721613fd382e988e1f50e069b81270bb34921efa33dd0c66ffe`); no engine
+or lattice source was copied. The formatted final profile example is
+`fb8dabbed486376903640d72c3d8beee6742149b632fe0b52a7af78486525db6`; it differs
+from the profiled file only in rustfmt's line wrapping of the Utility type ID
+call. Three samples per build were:
+
+| Gap 0 build | 128-frame totals | 512-frame totals |
+| --- | --- | --- |
+| Baseline d88f880 | 0.078s, 0.080s, 0.093s | 0.265s, 0.274s, 0.256s |
+| Current ordered renderer | 0.070s, 0.072s, 0.082s | 0.244s, 0.248s, 0.263s |
+
+Gaps 1 and 2 are feature workloads; the instrument is injected between the
+effects or after both, so their output is intentionally different from gap 0.
+Their total times were 0.128s, 0.127s, 0.145s at 128 frames and 0.490s, 0.471s,
+0.518s at 512 frames for gap 1; gap 2 measured 0.113s, 0.127s, 0.128s and
+0.423s, 0.435s, 0.442s. These higher totals show the cost of the additional
+ordered render path in this dense synthetic workload. They are not a matched
+before/after regression measure. All logs hash only the last measured output
+block: baseline and current gap 0 agree at `c469948f0bee4ead` /
+`51d88627df287325`; gap 1 yields `8806dc577ea89e3f` / `51d88627df287325`, and
+gap 2 yields `cb8b29be4520a141` / `51d88627df287325`.
+
+Timings varied, and one baseline 128-frame sample observed a 2.924 ms block
+against the nominal 2.667 ms interval. Offline renders have uncontrolled
+background load and do not establish physical callback behavior or a deadline
+guarantee. Exact commands were the release `profile_instrument` example with no
+arguments, `--ordered-gap`, and `--gap-end`. Logs are retained as
+`artifacts/profiles/ordered-position-final-{baseline,front,gap1,gap2}-*.log`.
+The ordered renderer production diff SHA-256 is
+`78de561c23cfd15d135ade84573e745dd38d968eafc08be6d0bfc749e5fe438b`, computed
+against d88f880 over `crates/hex-engine/src/{lib.rs,compile.rs,session_inventory.rs,session_playback.rs,session_playback/{handoff,render}.rs}` and
+`crates/hex-lattice/src/lib.rs`. The profile-example source hash is recorded above;
+tests and documentation are outside the renderer digest.
+
 ## Indexed analytic note banks — 9 October 2026
+
+The profile logs and numbers in this section predate the ordered-render fixture
+change and contain no Utility effects. They remain bank-specific historical
+evidence; compare ordered-render timings only within the preceding section.
 
 Before/after measurements use `profile_instrument` and
 `profile_session_inventory` on the same Apple M5 Pro arm64 machine and isolated
