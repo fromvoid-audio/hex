@@ -9,6 +9,7 @@ pub mod device;
 mod operator;
 pub use operator::{PreparedOperatorConfiguration, PreparedOperatorFm4, PreparedOperatorNote};
 
+use crate::operator_waveform::{OperatorWaveform, OperatorWaveformBank};
 use crate::{Invalid, PHASE_SCALE, SineTable};
 use hex_lattice::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, StereoFrame};
 
@@ -208,6 +209,25 @@ impl PreparedFmCore {
             operator_amplitudes,
         )
     }
+
+    #[inline]
+    fn routed_output_with_waveforms(
+        &self,
+        sine_table: &SineTable,
+        waveform_bank: &OperatorWaveformBank,
+        age_frames: u64,
+        operator_amplitudes: [f64; OPERATORS],
+        waveform_data: (&[OperatorWaveform; OPERATORS], &[u8; OPERATORS]),
+    ) -> f64 {
+        self.configuration.routed_output_with_waveforms(
+            sine_table,
+            waveform_bank,
+            age_frames,
+            &self.steps,
+            operator_amplitudes,
+            waveform_data,
+        )
+    }
 }
 
 fn prepared_steps(
@@ -282,6 +302,45 @@ impl PreparedFmConfiguration {
             } else {
                 signal
             };
+        }
+        signals
+            .iter()
+            .zip(self.routing.carriers)
+            .map(|(signal, weight)| signal * weight)
+            .sum()
+    }
+
+    #[inline]
+    fn routed_output_with_waveforms(
+        &self,
+        sine_table: &SineTable,
+        waveform_bank: &OperatorWaveformBank,
+        age_frames: u64,
+        steps: &[u64; OPERATORS],
+        operator_amplitudes: [f64; OPERATORS],
+        waveform_data: (&[OperatorWaveform; OPERATORS], &[u8; OPERATORS]),
+    ) -> f64 {
+        let (waveforms, harmonic_caps) = waveform_data;
+        let mut signals = [0.0; OPERATORS];
+        for &target in &self.routing.order {
+            if self.levels[target] == 0.0 {
+                continue;
+            }
+            let modulation: f64 = signals
+                .iter()
+                .enumerate()
+                .map(|(source, signal)| signal * self.routing.modulation[source][target])
+                .sum();
+            let phase = steps[target]
+                .wrapping_mul(age_frames)
+                .wrapping_add(self.phases[target])
+                .wrapping_add(phase_from_turns(modulation));
+            let oscillator = match waveforms[target] {
+                OperatorWaveform::Sine => sine_table.sample_phase(phase),
+                waveform => waveform_bank.sample_phase(waveform, harmonic_caps[target], phase),
+            };
+            let signal = f64::from(oscillator) * self.levels[target];
+            signals[target] = signal * operator_amplitudes[target];
         }
         signals
             .iter()

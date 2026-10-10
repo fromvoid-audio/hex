@@ -741,6 +741,21 @@ publication, and control retirement. Strict package checks and full local CI are
 pending review. This is not mutable feedback, full Operator, Live parity, or
 native listening acceptance. See [registered instrument contract](docs/operator-native.md).
 
+Pulse2183 adds independent sine/saw/square/triangle selectors for all four
+Operator oscillators through generic Choice metadata and version2 native state.
+The first224 version1 bytes migrate bit-for-bit, including signed zero, with
+all-sine defaults; legacy sine PCM remains exact. Non-sine shapes use a bounded
+control-prepared process-wide harmonic bank, strict per-note Nyquist caps and
+four inline cap indices. Targeted hex-devices tests pass (65), including an
+independent Fourier/DFT oracle, malformed payload refusal, generic registry mixed
+rendering and100 distinct contexts each under the4 KiB admission ceiling. Context
+size is592 bytes and notes are48 bytes. Table data is245,880 bytes plus40 bytes
+of fixed Box/OnceLock headers before allocator bookkeeping. A reproducible
+release headless profile is added but has not yet been run; project-level mixed
+render/persistence, callback allocation-probe and native listening remain open.
+Full local CI and review remain with the integration owner. See
+[waveform contract](docs/operator-waveforms.md).
+
 Pulse2173: current architecture orientation now documents one freely positioned
 instrument, actual prefix/instrument/suffix rendering and the canonical prepared
 editor path separately from the fixed generated demo. Source was checked against
@@ -873,3 +888,13 @@ edits/history and separates transient preview failures from canonical audio
 status. PR83 provides instrument/ledger state copies at an exact capture frame;
 whole-Arrangement replay and native seek remain Pulse2182/2164. Native UI/listening
 acceptance is still required, and no new PR has been merged into main.
+
+2026-10-10 Pulse2183 integration checks: mixed-waveform Operator state now
+round-trips through generic storage alongside the retained version1 fixture.
+Prepared export matches partitioned prepared playback sample-for-sample after
+PCM16 conversion. The actual headless audio callback renders, admits a waveform
+change, retires old contexts and shuts down with zero total allocations and
+zero signed-net callback allocation counts/bytes. Control-side retirement is
+measured separately. Targeted export tests (2), storage persistence (19) and the
+mixed-wave callback probe pass. Full local CI, clean release performance and
+native UI/listening remain the next gates; no full Operator parity claim.

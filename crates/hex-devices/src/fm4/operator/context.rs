@@ -1,6 +1,10 @@
 //! Shared original DSP configuration with compact, independently prepared notes.
 use super::*;
 use crate::fm4::{PreparedFmConfiguration, prepared_steps};
+use crate::operator_waveform::{
+    OperatorWaveform, OperatorWaveformBank, harmonic_cap_index, is_canonical_harmonic_cap,
+    prepared_bank,
+};
 
 /// Immutable rate-specific original Operator configuration, with no heap owners.
 /// The caller keeps it alive for every note prepared against it. Native host
@@ -11,6 +15,8 @@ pub struct PreparedOperatorConfiguration {
     ratios: [f64; OPERATORS],
     configuration: PreparedFmConfiguration,
     envelopes: PreparedOperatorEnvelopes,
+    waveforms: [OperatorWaveform; OPERATORS],
+    waveform_bank: Option<&'static OperatorWaveformBank>,
 }
 
 /// Compact pitch/velocity data. Sample only against its preparing configuration.
@@ -19,6 +25,7 @@ pub struct PreparedOperatorConfiguration {
 pub struct PreparedOperatorNote {
     steps: [u64; OPERATORS],
     velocity: f64,
+    harmonic_caps: u32,
 }
 
 impl PreparedOperatorConfiguration {
@@ -28,12 +35,43 @@ impl PreparedOperatorConfiguration {
         routing: Routing,
         envelopes: [OperatorEnvelope; OPERATORS],
     ) -> Result<Self, Invalid> {
+        Self::new_with_waveforms(
+            sample_rate,
+            oscillators,
+            routing,
+            envelopes,
+            [OperatorWaveform::Sine; OPERATORS],
+        )
+    }
+
+    /// Prepare a waveform-aware configuration. Any shared table-bank
+    /// initialization occurs here on the caller's control thread.
+    pub fn new_with_waveforms(
+        sample_rate: u32,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelopes: [OperatorEnvelope; OPERATORS],
+        waveforms: [OperatorWaveform; OPERATORS],
+    ) -> Result<Self, Invalid> {
         let envelopes = PreparedOperatorEnvelopes::new(sample_rate, envelopes)?;
+        let waveform_bank = if waveforms
+            .iter()
+            .any(|waveform| *waveform != OperatorWaveform::Sine)
+        {
+            Some(
+                prepared_bank()
+                    .map_err(|_| Invalid("periodic waveform table allocation failed"))?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             sample_rate,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             envelopes,
+            waveforms,
+            waveform_bank,
         })
     }
 
@@ -42,9 +80,19 @@ impl PreparedOperatorConfiguration {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
         }
+        let steps = prepared_steps(self.sample_rate, pitch, &self.ratios)?;
+        let mut caps = [0_u8; OPERATORS];
+        for index in 0..OPERATORS {
+            if self.waveforms[index] != OperatorWaveform::Sine {
+                caps[index] = harmonic_cap_index(steps[index]).ok_or(Invalid(
+                    "quantized operator phase step has no below-nyquist table",
+                ))?;
+            }
+        }
         Ok(PreparedOperatorNote {
-            steps: prepared_steps(self.sample_rate, pitch, &self.ratios)?,
+            steps,
             velocity: f64::from(velocity) / 127.0,
+            harmonic_caps: pack_caps(caps),
         })
     }
 
@@ -64,10 +112,38 @@ impl PreparedOperatorConfiguration {
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return 0.0;
         }
-        (self
-            .configuration
-            .routed_output::<true>(table, age_frames, &note.steps, amplitudes)
-            * note.velocity) as f32
+        let routed = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
+            // Preserve the previous arithmetic and lookup path bit-for-bit.
+            self.configuration
+                .routed_output::<true>(table, age_frames, &note.steps, amplitudes)
+        } else if let Some(bank) = self.waveform_bank {
+            let harmonic_caps = unpack_caps(note.harmonic_caps);
+            self.configuration.routed_output_with_waveforms(
+                table,
+                bank,
+                age_frames,
+                &note.steps,
+                amplitudes,
+                (&self.waveforms, &harmonic_caps),
+            )
+        } else {
+            return 0.0;
+        };
+        (routed * note.velocity) as f32
+    }
+
+    pub(crate) fn note_matches_configuration(&self, note: &PreparedOperatorNote) -> bool {
+        if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
+            return note.harmonic_caps == 0;
+        }
+        let caps = unpack_caps(note.harmonic_caps);
+        (0..OPERATORS).all(|index| {
+            if self.waveforms[index] == OperatorWaveform::Sine {
+                caps[index] == 0
+            } else {
+                is_canonical_harmonic_cap(note.steps[index], caps[index])
+            }
+        })
     }
 }
 
@@ -80,6 +156,7 @@ impl PreparedOperatorNote {
         let mut payload = [0; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS];
         payload[..OPERATORS].copy_from_slice(&self.steps);
         payload[OPERATORS] = self.velocity.to_bits();
+        payload[5] = u64::from(self.harmonic_caps);
         payload
     }
 
@@ -89,19 +166,32 @@ impl PreparedOperatorNote {
     pub(crate) fn from_shared_payload(
         payload: &[u64; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
     ) -> Option<Self> {
-        if payload[OPERATORS + 1..].iter().any(|word| *word != 0) {
+        if payload[6..].iter().any(|word| *word != 0) {
             return None;
         }
         let steps = std::array::from_fn(|index| payload[index]);
-        if steps.contains(&0) {
+        let harmonic_caps = u32::try_from(payload[5]).ok()?;
+        if steps.contains(&0) || unpack_caps(harmonic_caps).iter().any(|cap| *cap >= 10) {
             return None;
         }
         let velocity = f64::from_bits(payload[OPERATORS]);
         if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return None;
         }
-        Some(Self { steps, velocity })
+        Some(Self {
+            steps,
+            velocity,
+            harmonic_caps,
+        })
     }
+}
+
+const fn pack_caps(caps: [u8; OPERATORS]) -> u32 {
+    u32::from_le_bytes(caps)
+}
+
+const fn unpack_caps(packed: u32) -> [u8; OPERATORS] {
+    packed.to_le_bytes()
 }
 
 #[cfg(test)]

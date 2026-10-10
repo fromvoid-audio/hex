@@ -192,7 +192,7 @@ Callback sampling uses the noninitializing OnceLock::get path. No lookup table
 is rebuilt per track or sample. Existing SineTable APIs remain compatibility and
 oracle inputs; they do not override a canonical slot's registered instrument.
 General mutable instruments need a separately accepted voice/event/chase/runtime
-contract; this analytic stage does not provide it or implement Operator.
+contract; this analytic stage does not provide mutable Operator voices.
 
 ## Evidence and remaining gates
 
@@ -544,10 +544,11 @@ instrumented evidence for that fixture, not a claim about every provider or
 physical callback deadline.
 
 The original Sine and FM4 built-ins still use their compact analytic note
-samplers. Shared contexts are a generic extension point for future immutable
-configuration-heavy analytic instruments; this work does not register the
-Operator context or add mutable voice continuity, seek/chase, loop handling or
-effect residual-tail ownership.
+samplers. Operator is registered through the shared analytic context API and
+supports the four native periodic waveform choices; see the
+[Operator waveform contract](operator-waveforms.md). Mutable voice continuity,
+seek/chase, loop handling and effect residual-tail ownership remain separate
+work.
 
 ## Control-owned runtime checkpoints — Pulse2181
 

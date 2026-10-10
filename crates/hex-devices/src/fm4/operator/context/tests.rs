@@ -76,7 +76,7 @@ fn all_frequencies_are_validated_even_when_an_operator_is_inaudible() {
 
 #[test]
 fn configuration_and_note_fit_the_shared_contract_without_heap_owners() {
-    assert_eq!(size_of::<PreparedOperatorNote>(), 40);
+    assert_eq!(size_of::<PreparedOperatorNote>(), 48);
     assert!(size_of::<PreparedOperatorConfiguration>() <= 4096);
     assert!(!std::mem::needs_drop::<PreparedOperatorNote>());
     assert!(!std::mem::needs_drop::<PreparedOperatorConfiguration>());
