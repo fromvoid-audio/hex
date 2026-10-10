@@ -7,6 +7,13 @@ sliders, toggles, selectors, color pickers, and device frames. Numeric controls
 and the color picker expose typed change events; callers own canonical state,
 audio commands, persistence, and undo policy.
 
+Utility is the current visual testbed for the shared Lattice device interface.
+Frames, knobs, sliders, value fields, switches, selectors and popup behavior are
+library controls, not Utility-specific implementations. Device panels compose
+these controls and bind their descriptors; changes to shared controls propagate
+to every device using them. Presentation variants describe reusable density or
+control purpose, never a device identity.
+
 ## Dependencies
 
 Depends only on GPUI. Control colors, labels, values, units, and callbacks are

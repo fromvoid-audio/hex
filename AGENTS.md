@@ -550,3 +550,14 @@ Preserve frame-anchored audio and beat-anchored MIDI, current overlap policies,
 combined ID/count/admission limits, source-specific editing and safe release tails.
 Version persistence changes and migrate legacy typed tracks without losing IDs,
 source data or mixer state. Read docs/hybrid-tracks.md before extending this model.
+
+## Shared Lattice device interface
+
+Utility is the visual testbed for the shared native Lattice UI, not a special
+appearance implementation. Frames, knobs, sliders, numeric readouts, toggles,
+selectors, popup layering and common interaction contracts belong to
+`hex-widgets`. Native device panels compose these controls and bind descriptors
+and canonical commands. Shared styling changes must propagate to every device
+using the control; do not fork appearance by device identity. Reusable density
+variants may serve different layouts. Keep device-specific DSP and parameter
+semantics outside the widget library.
