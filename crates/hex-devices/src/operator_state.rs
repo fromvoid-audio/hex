@@ -3,7 +3,7 @@
 //! Generic opaque version-1 data holds 56 little-endian finite f32 fields.
 //! The old FM4 device keeps its separate type, state layout and global ADSR.
 use crate::{
-    fm4::{OPERATORS, Oscillator, PreparedOperatorFm4, Routing},
+    fm4::{OPERATORS, Oscillator, PreparedOperatorConfiguration, PreparedOperatorFm4, Routing},
     operator_envelope::OperatorEnvelope,
 };
 use hex_lattice_contract::{
@@ -211,6 +211,16 @@ impl OperatorSettings {
         });
         let [ea, eb, ec, ed] = envelopes;
         Ok(([a?, b?, c?, d?], routing, [ea?, eb?, ec?, ed?]))
+    }
+
+    /// Standalone control preparation only; no native sampler/registry admission.
+    pub fn prepare_configuration(
+        &self,
+        sample_rate: u32,
+    ) -> Result<PreparedOperatorConfiguration, DeviceContractError> {
+        let (oscillators, routing, envelopes) = self.kernel_parts()?;
+        PreparedOperatorConfiguration::new(sample_rate, oscillators, routing, envelopes)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
 
     /// Standalone control preparation only; no native sampler/registry admission.

@@ -138,7 +138,7 @@ fn assert_matches_previous_full_evaluation(
         let prepared =
             PreparedFm4::new(sample_rate, pitch, velocity, oscillators, routing, envelope).unwrap();
         assert_eq!(
-            prepared.core.levels.map(|level| level != 0.0),
+            prepared.core.configuration.levels.map(|level| level != 0.0),
             expected_audible
         );
         let packed = prepared.into_analytic_note();

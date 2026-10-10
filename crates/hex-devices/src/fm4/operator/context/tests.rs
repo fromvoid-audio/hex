@@ -1,0 +1,88 @@
+use super::*;
+
+#[test]
+fn compact_notes_match_standalone_pcm_across_routes_gates_and_query_order() {
+    let table = SineTable::new();
+    let oscillators = [
+        Oscillator::new(0.5, 0.7, 0.125).expect("oscillator"),
+        Oscillator::new(1.5, 0.4, 0.25).expect("oscillator"),
+        Oscillator::new(2.0, 0.8, 0.5).expect("oscillator"),
+        Oscillator::new(3.0, 0.2, 0.75).expect("oscillator"),
+    ];
+    let envelopes = [
+        OperatorEnvelope::new(0.2, 0.9, 0.4, 0.001, 0.003, 0.005).expect("envelope"),
+        OperatorEnvelope::new(0.1, 0.7, 0.2, 0.0, 0.002, 0.007).expect("envelope"),
+        OperatorEnvelope::new(0.5, 0.3, 0.6, 0.002, 0.0, 0.001).expect("envelope"),
+        OperatorEnvelope::new(0.0, 1.0, 0.8, 0.001, 0.005, 0.0).expect("envelope"),
+    ];
+    for order in [[0, 1, 2, 3], [3, 1, 0, 2], [2, 0, 3, 1]] {
+        let mut depths = [[0.0; 4]; 4];
+        for index in 0..3 {
+            depths[order[index]][order[index + 1]] = -0.17 * (index + 1) as f64;
+        }
+        let routing = Routing::new(depths, [0.3, -0.2, 0.1, 0.4]).expect("routing");
+        for rate in [8000, 48000, 192000] {
+            let context = PreparedOperatorConfiguration::new(rate, oscillators, routing, envelopes)
+                .expect("context");
+            for (pitch, velocity) in [(0, 1), (60, 100), (69, 127)] {
+                let compact = context.prepare_note(pitch, velocity).expect("note");
+                let standalone = PreparedOperatorFm4::new(
+                    rate,
+                    pitch,
+                    velocity,
+                    oscillators,
+                    routing,
+                    envelopes,
+                )
+                .expect("standalone");
+                assert_eq!(context.release_frames(), standalone.release_frames());
+                for gate in [0, 1, 16, 64, 1000, u64::MAX / 2] {
+                    let mut ages: Vec<u64> = (0..256).collect();
+                    ages.extend([
+                        gate,
+                        gate.saturating_add(context.release_frames()),
+                        u64::MAX - 1,
+                    ]);
+                    for age in ages.into_iter().rev() {
+                        assert_eq!(
+                            context.sample(&table, &compact, age, gate).to_bits(),
+                            standalone.sample(&table, age, gate).to_bits(),
+                            "rate {rate}, pitch {pitch}, age {age}, gate {gate}, order {order:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn all_frequencies_are_validated_even_when_an_operator_is_inaudible() {
+    let mut oscillators = [Oscillator::new(1.0, 1.0, 0.0).expect("oscillator"); 4];
+    oscillators[3] = Oscillator::new(128.0, 0.0, 0.0).expect("inaudible oscillator");
+    let routing = Routing::new([[0.0; 4]; 4], [1.0, 0.0, 0.0, 0.0]).expect("routing");
+    let envelopes = [OperatorEnvelope::new(0.0, 1.0, 0.7, 0.0, 0.0, 0.0).expect("envelope"); 4];
+    for rate in [0, 7999, 192001] {
+        assert!(PreparedOperatorConfiguration::new(rate, oscillators, routing, envelopes).is_err());
+    }
+    let context =
+        PreparedOperatorConfiguration::new(8000, oscillators, routing, envelopes).expect("context");
+    assert!(context.prepare_note(0, 100).is_ok());
+    assert!(context.prepare_note(60, 100).is_err());
+    assert!(context.prepare_note(128, 100).is_err());
+    assert!(context.prepare_note(0, 0).is_err());
+    assert!(context.prepare_note(0, 128).is_err());
+}
+
+#[test]
+fn configuration_and_note_fit_the_shared_contract_without_heap_owners() {
+    assert_eq!(size_of::<PreparedOperatorNote>(), 40);
+    assert!(size_of::<PreparedOperatorConfiguration>() <= 4096);
+    assert!(!std::mem::needs_drop::<PreparedOperatorNote>());
+    assert!(!std::mem::needs_drop::<PreparedOperatorConfiguration>());
+    println!(
+        "operator context {} bytes, note {} bytes",
+        size_of::<PreparedOperatorConfiguration>(),
+        size_of::<PreparedOperatorNote>()
+    );
+}

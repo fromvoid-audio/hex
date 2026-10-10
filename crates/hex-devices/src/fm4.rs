@@ -7,7 +7,7 @@
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
-pub use operator::PreparedOperatorFm4;
+pub use operator::{PreparedOperatorConfiguration, PreparedOperatorFm4, PreparedOperatorNote};
 
 use crate::{Invalid, PHASE_SCALE, SineTable};
 use hex_lattice::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, StereoFrame};
@@ -166,6 +166,11 @@ impl PreparedEnvelope {
 #[derive(Debug, Clone, Copy)]
 struct PreparedFmCore {
     steps: [u64; OPERATORS],
+    configuration: PreparedFmConfiguration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedFmConfiguration {
     phases: [u64; OPERATORS],
     levels: [f64; OPERATORS],
     routing: Routing,
@@ -178,37 +183,14 @@ impl PreparedFmCore {
         oscillators: [Oscillator; OPERATORS],
         routing: Routing,
     ) -> Result<Self, Invalid> {
-        if !(8_000..=192_000).contains(&sample_rate) || pitch > 127 {
-            return Err(Invalid("invalid fm sample rate or pitch"));
-        }
-        let frequency = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
-        let mut steps = [0; OPERATORS];
-        let mut phases = [0; OPERATORS];
-        let mut levels = [0.0; OPERATORS];
-        for (index, oscillator) in oscillators.iter().enumerate() {
-            let frequency = frequency * oscillator.ratio;
-            if frequency >= f64::from(sample_rate) * 0.5 {
-                return Err(Invalid("fm oscillator frequency must be below nyquist"));
-            }
-            steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
-            phases[index] = phase_from_turns(oscillator.phase_turns);
-            levels[index] = oscillator.level;
-        }
-        // All oscillator frequencies and the complete authored graph are
-        // validated above/before construction. Only now remove operators that
-        // cannot contribute to a nonzero carrier. The existing prepared level
-        // slots encode the result, so the note ABI and PreparedFm4 stay fixed.
-        let audible = audible_operator_ancestors(&levels, &routing);
-        for (index, is_audible) in audible.into_iter().enumerate() {
-            if !is_audible {
-                levels[index] = 0.0;
-            }
-        }
+        let steps = prepared_steps(
+            sample_rate,
+            pitch,
+            &oscillators.map(|oscillator| oscillator.ratio),
+        )?;
         Ok(Self {
             steps,
-            phases,
-            levels,
-            routing,
+            configuration: PreparedFmConfiguration::new(oscillators, routing),
         })
     }
 
@@ -217,6 +199,67 @@ impl PreparedFmCore {
         &self,
         table: &SineTable,
         age_frames: u64,
+        operator_amplitudes: [f64; OPERATORS],
+    ) -> f64 {
+        self.configuration.routed_output::<SHAPE_OPERATORS>(
+            table,
+            age_frames,
+            &self.steps,
+            operator_amplitudes,
+        )
+    }
+}
+
+fn prepared_steps(
+    sample_rate: u32,
+    pitch: u8,
+    ratios: &[f64; OPERATORS],
+) -> Result<[u64; OPERATORS], Invalid> {
+    if !(8_000..=192_000).contains(&sample_rate) || pitch > 127 {
+        return Err(Invalid("invalid fm sample rate or pitch"));
+    }
+    let frequency = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+    let mut steps = [0; OPERATORS];
+    for (index, ratio) in ratios.iter().enumerate() {
+        let frequency = frequency * ratio;
+        if frequency >= f64::from(sample_rate) * 0.5 {
+            return Err(Invalid("fm oscillator frequency must be below nyquist"));
+        }
+        steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
+    }
+    Ok(steps)
+}
+
+impl PreparedFmConfiguration {
+    fn new(oscillators: [Oscillator; OPERATORS], routing: Routing) -> Self {
+        let mut phases = [0; OPERATORS];
+        let mut levels = [0.0; OPERATORS];
+        for (index, oscillator) in oscillators.iter().enumerate() {
+            phases[index] = phase_from_turns(oscillator.phase_turns);
+            levels[index] = oscillator.level;
+        }
+        // Pruning does not skip validation: note preparation checks every
+        // oscillator's frequency, including inaudible operators. Existing
+        // level slots encode the result, preserving the inline note ABI.
+        let audible = audible_operator_ancestors(&levels, &routing);
+        for (index, is_audible) in audible.into_iter().enumerate() {
+            if !is_audible {
+                levels[index] = 0.0;
+            }
+        }
+        Self {
+            phases,
+            levels,
+            routing,
+        }
+    }
+
+    #[inline]
+    fn routed_output<const SHAPE_OPERATORS: bool>(
+        &self,
+        table: &SineTable,
+        age_frames: u64,
+        steps: &[u64; OPERATORS],
         operator_amplitudes: [f64; OPERATORS],
     ) -> f64 {
         let mut signals = [0.0; OPERATORS];
@@ -229,7 +272,7 @@ impl PreparedFmCore {
                 .enumerate()
                 .map(|(source, signal)| signal * self.routing.modulation[source][target])
                 .sum();
-            let phase = self.steps[target]
+            let phase = steps[target]
                 .wrapping_mul(age_frames)
                 .wrapping_add(self.phases[target])
                 .wrapping_add(phase_from_turns(modulation));
@@ -304,20 +347,29 @@ impl PreparedFm4 {
         let _ = crate::shared_sine_table();
         let mut payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
         payload[0..4].copy_from_slice(&self.core.steps);
-        payload[4..8].copy_from_slice(&self.core.phases);
-        for (target, level) in payload[8..12].iter_mut().zip(self.core.levels) {
+        payload[4..8].copy_from_slice(&self.core.configuration.phases);
+        for (target, level) in payload[8..12]
+            .iter_mut()
+            .zip(self.core.configuration.levels)
+        {
             *target = level.to_bits();
         }
         for source in 0..OPERATORS {
             for target in 0..OPERATORS {
                 payload[12 + source * OPERATORS + target] =
-                    self.core.routing.modulation[source][target].to_bits();
+                    self.core.configuration.routing.modulation[source][target].to_bits();
             }
         }
-        for (target, carrier) in payload[28..32].iter_mut().zip(self.core.routing.carriers) {
+        for (target, carrier) in payload[28..32]
+            .iter_mut()
+            .zip(self.core.configuration.routing.carriers)
+        {
             *target = carrier.to_bits();
         }
-        for (target, order) in payload[32..36].iter_mut().zip(self.core.routing.order) {
+        for (target, order) in payload[32..36]
+            .iter_mut()
+            .zip(self.core.configuration.routing.order)
+        {
             *target = order as u64;
         }
         payload[36] = self.envelope.attack;
