@@ -3,7 +3,8 @@
 ## Purpose
 
 Provide validated stereo transforms and registered, bounded stateful effect
-definition/runtime contracts.
+definition/runtime contracts, plus registered immutable analytic instrument preparation.
+See [instrument slots](../../docs/lattice-instruments.md) for the separate note seam.
 
 ## Dependencies
 

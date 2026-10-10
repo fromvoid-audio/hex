@@ -35,7 +35,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
     for index in 0..TRACKS {
         let track = next;
         let clip = next + 1;
-        next += 2;
+        let instrument = next + 2;
+        next += 3;
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
             id: track,
@@ -45,6 +46,11 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: Some(hex_project::DeviceSnapshot {
+                id: instrument,
+                bypassed: false,
+                state: hex_project::default_instrument_state()?,
+            }),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip,
                 start_raw: 0,

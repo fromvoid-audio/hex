@@ -151,7 +151,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 14);
+    assert_eq!(json["version"], 15);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -186,12 +186,76 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
 }
 
 #[test]
+fn schema_fourteen_migrates_instrument_slot_and_schema_fifteen_preserves_unknown_state() {
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+    let old_highwater = legacy["next_id"].as_u64().unwrap();
+    legacy["version"] = 14.into();
+    for track in legacy["tracks"].as_array_mut().unwrap() {
+        track.as_object_mut().unwrap().remove("instrument");
+    }
+    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    for track in migrated.tracks() {
+        let instrument = track.instrument().expect("legacy default instrument");
+        assert_eq!(
+            instrument.state(),
+            &hex_project::default_instrument_state().unwrap()
+        );
+        assert!(instrument.id().value() >= old_highwater);
+    }
+
+    let mut current = Project::new(48_000).unwrap();
+    let mut editor = Editor::new(current.clone(), 8).unwrap();
+    let track = match editor
+        .execute(Command::AddTrack {
+            name: "opaque".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    current = editor.project().clone();
+    let instrument = current.track(track).unwrap().instrument().unwrap().id();
+    let opaque = NativeDeviceState::new(
+        DeviceTypeId::new("future.instrument").unwrap(),
+        27,
+        vec![9, 0, 255, 17],
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: instrument,
+            state: opaque.clone(),
+        })
+        .unwrap();
+    let bytes = encode(editor.project()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["version"], 15);
+    assert_eq!(
+        json["tracks"][0]["instrument"]["type_id"],
+        "future.instrument"
+    );
+    assert_eq!(
+        decode(&bytes).unwrap().device(instrument).unwrap().state(),
+        &opaque
+    );
+    let mut missing = json;
+    missing["tracks"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("instrument");
+    assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+}
+
+#[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 14);
+    assert_eq!(json["version"], 15);
     json["version"] = 13.into();
     for track in json["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("devices");
+        track.as_object_mut().unwrap().remove("instrument");
     }
     let migrated = decode(&serde_json::to_vec(&json).unwrap()).unwrap();
     assert!(
@@ -329,7 +393,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 14);
+    assert_eq!(json["version"], 15);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -456,10 +520,10 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 14);
-    json["version"] = 15.into();
+    assert_eq!(json["version"], 15);
+    json["version"] = 16.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    json["version"] = 14.into();
+    json["version"] = 15.into();
     json["unrecognized"] = true.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json.as_object_mut().unwrap().remove("unrecognized");
@@ -578,13 +642,14 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 14);
+    assert_eq!(current_json["version"], 15);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
     json["version"] = 8.into();
     for track in json["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("devices");
+        track.as_object_mut().unwrap().remove("instrument");
         let clips = track["audio_clips"].take();
         let object = track.as_object_mut().unwrap();
         object.remove("audio_clips");
@@ -895,13 +960,19 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
     track_object.remove("audio_clips");
     track_object.remove("midi_clips");
     track_object.remove("devices");
+    track_object.remove("instrument");
     value["tracks"][0]["content"] = serde_json::json!({
         "kind": "instrument",
         "clips": midi_clips,
     });
     value["version"] = 11.into();
     let migrated = decode(&serde_json::to_vec(&value).unwrap()).expect("schema eleven migrates");
-    assert_eq!(migrated, expected);
+    assert_eq!(migrated.sample_rate(), expected.sample_rate());
+    assert_eq!(migrated.tracks()[0].name(), expected.tracks()[0].name());
+    assert_eq!(
+        migrated.tracks()[0].instrument().unwrap().state(),
+        &hex_project::default_instrument_state().unwrap()
+    );
     assert_eq!(
         migrated
             .session_midi_clip(clip)

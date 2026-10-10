@@ -802,14 +802,10 @@ impl Track {
                         let end = span.end.min(chunk_end);
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            let sample = instrument.table.sample(
-                                span.voice,
-                                relative,
-                                span.gate_end - span.start,
-                            );
+                            let sample = span.voice.sample(relative, span.gate_end - span.start);
                             self.source_mix.add_unmuted(
                                 &mut target[(frame_position - chunk_start) as usize],
-                                [sample; 2],
+                                sample,
                             );
                         }
                     },
@@ -832,7 +828,6 @@ pub(crate) struct InstrumentTrack {
     pub(crate) spans: Vec<midi_compile::CompiledNoteSpan>,
     pub(crate) nodes: Vec<midi_compile::SpanNode>,
     pub(crate) root: Option<usize>,
-    pub(crate) table: Arc<SineTable>,
     pub(crate) timeline_end: Option<u64>,
 }
 

@@ -13,6 +13,14 @@ pub enum Command {
         before: Option<DeviceId>,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Fill a removed native instrument slot with a new stable device identity.
+    InsertInstrument {
+        track: TrackId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    RemoveInstrument {
+        track: TrackId,
+    },
     RemoveDevice(DeviceId),
     MoveDevice {
         device: DeviceId,
@@ -546,7 +554,9 @@ pub(crate) fn insert_track_before(
             .ok_or(Invalid("track insertion anchor no longer exists"))?,
         None => project.tracks.len(),
     };
-    let id = TrackId(project.allocate_id()?);
+    let instrument_state = crate::default_instrument_state()?;
+    let (first_id, instrument_id) = project.allocate_id_range(2)?;
+    let id = TrackId(first_id);
     project.tracks.insert(
         index,
         Track {
@@ -557,6 +567,11 @@ pub(crate) fn insert_track_before(
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: Some(crate::Device {
+                id: DeviceId(instrument_id),
+                state: instrument_state,
+                bypassed: false,
+            }),
             content: TrackContent::default(),
         },
     );
@@ -947,6 +962,8 @@ impl Project {
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
             device_command @ (Command::InsertDevice { .. }
+            | Command::InsertInstrument { .. }
+            | Command::RemoveInstrument { .. }
             | Command::RemoveDevice(_)
             | Command::MoveDevice { .. }
             | Command::ReplaceDeviceState { .. }

@@ -1,3 +1,4 @@
+use hex_devices::SineTable;
 use hex_engine::{
     Invalid, Renderer, compile,
     midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
@@ -409,13 +410,23 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
 
     let mut whole_playback = Playback::new(project.clone());
     whole_playback.apply(PlaybackCommand::Play);
-    let mut whole = [[0.0; 2]; 6_000];
+    let mut whole = [[0.0; 2]; 14_400];
     whole_playback.render(&mut whole).unwrap();
     assert!(whole.iter().any(|frame| frame[0].abs() > 0.05));
 
+    let original_table = SineTable::new();
+    let original_voice = original_table.prepare_voice(48_000, 69, 127).unwrap();
+    let exact_original: Vec<[f32; 2]> = (0..whole.len())
+        .map(|age| {
+            let sample = original_table.sample(original_voice, age as u64, 12_000);
+            [sample, sample]
+        })
+        .collect();
+    assert_eq!(whole.as_slice(), exact_original.as_slice());
+
     let mut split_playback = Playback::new(project.clone());
     split_playback.apply(PlaybackCommand::Play);
-    let mut split = [[0.0; 2]; 6_000];
+    let mut split = [[0.0; 2]; 14_400];
     for chunk in split.chunks_mut(127) {
         split_playback.render(chunk).unwrap();
     }
@@ -618,8 +629,122 @@ fn compile_refuses_pitch_at_or_above_project_nyquist() {
         .unwrap();
     assert_eq!(
         compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
-        Invalid("midi pitch cannot be rendered at project sample rate")
+        Invalid("midi note cannot be prepared by its instrument")
     );
+}
+
+#[test]
+fn removed_instrument_is_explicit_silence_and_unknown_bypassed_instrument_refuses_compile() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    let compiled = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    renderer.play();
+    let mut output = [[1.0, -1.0]; 8];
+    renderer.render(&mut output).unwrap();
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+
+    let device = match editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::new("future.instrument").unwrap(),
+                19,
+                vec![1, 2, 3],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    {
+        Created::Device(device) => device,
+        _ => panic!("instrument device"),
+    };
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    assert_eq!(
+        compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
+        Invalid("track instrument state is unsupported")
+    );
+}
+
+#[test]
+fn absent_and_bypassed_instruments_keep_midi_extent_and_preview() {
+    for hybrid_track in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = match editor
+            .execute(if hybrid_track {
+                Command::AddTrack {
+                    name: "hybrid".into(),
+                }
+            } else {
+                Command::AddMidiTrack {
+                    name: "midi".into(),
+                }
+            })
+            .unwrap()
+        {
+            Created::Track(track) => track,
+            _ => panic!("track"),
+        };
+        let clip = add_clip(&mut editor, track, beat(1, 4), beat(3, 4));
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(1, 8),
+                duration: beat(1, 4),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+
+        let (audible, audible_preview) =
+            compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+        let expected_end = audible.audible_end_frame();
+        let expected_preview = audible_preview.get(clip).unwrap().clone();
+        if hybrid_track {
+            let device = editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+        } else {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+
+        let (silent, silent_preview) =
+            compile::project_with_midi_preview(editor.project(), &BTreeMap::new()).unwrap();
+        assert_eq!(silent.audible_end_frame(), expected_end);
+        assert_eq!(silent_preview.get(clip), Some(&expected_preview));
+        let mut renderer = Renderer::new(&silent);
+        renderer.play();
+        let mut output = [[1.0, -1.0]; 64];
+        renderer.render(&mut output).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    }
 }
 
 #[test]
@@ -636,7 +761,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     };
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
-            id: 3 + index as u64,
+            id: 4 + index as u64,
             start_raw: 0,
             duration_raw: BeatTime::ONE.raw(),
             pitch: 60,
@@ -644,7 +769,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
             velocity: 100,
         })
         .collect();
-    snapshot.next_id = 3 + hex_project::MAX_NOTES as u64;
+    snapshot.next_id = 4 + hex_project::MAX_NOTES as u64;
     let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
     let events = midi_events(&project).expect("exact maximum event count");
     assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);

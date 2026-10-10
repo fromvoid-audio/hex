@@ -53,6 +53,22 @@ sequence within that scope. Deliver separate focused PRs, retain unfinished
 acceptance gates, and assemble a combined test build after implementation;
 the lattice foundation alone does not complete the request.
 
+## active prerequisite — registered instrument slots
+
+Stateful effect sourcePR36 passed all14 clean local CI steps on06b7ae4 in226.285s.
+ThemePR35 passed all14 on7bec4c9 in62.075s and the user accepted theming. The native
+settings-menu follow-upPR37 passed all14 on e388613 in77.449s; user accepted it
+and manually merged it into the stacked branch as fb4ec3a. This does not merge
+or accept earlier PRs into main. Larger swatches/XY HSB-RGB picker is future
+Pulse2116; persistent panel visibility plus automatic user-focus-based clip/device
+mode switching is separate2117.
+
+Pulse2114 now implements canonical schema15 instrument slots and a registered
+analytic processing class before Operator19. See [instrument contract](lattice-instruments.md).
+Targeted source checks and the missing/bypassed slot MIDI extent/preview
+regression pass; full cleanCI and a focused PR follow integration. Mutable
+FM/chase/event contracts, instrument UI and Operator are still dependencies.
+
 ## source-complete work unit — custom traffic lights, 9 October 2026
 
 Pulse ticket 11: replace canonical macOS native window buttons with compact

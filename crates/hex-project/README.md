@@ -40,7 +40,11 @@ history. No PCM or OS clipboard is owned here. See [time selection](../../docs/t
 Depends on the standard library and `hex-lattice-contract` for opaque, bounded
 native-device state envelopes. The engine consumes read-only snapshots to
 compile playback; storage owns the versioned native metadata file. Device
-payloads remain opaque here; the model does not depend on DSP or UI.
+payloads remain opaque here; the model does not depend on DSP or UI. Hybrid tracks
+also own one optional generic instrument slot with globally unique device ID,
+bypass/state edits and history. New/imported tracks receive the explicit neutral
+sine envelope; removing the slot means MIDI silence. See
+[instrument slots](../../docs/lattice-instruments.md).
 
 Prepared browser imports can atomically insert a default hybrid track before a
 stable `TrackId` or append at the end, then create its audio asset and clip at a

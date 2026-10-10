@@ -6,12 +6,21 @@ use crate::{
     midi_template::MIDI_SPAN_BUFFER_CAPACITY,
 };
 use hex_devices::SineTable;
+use hex_lattice::PreparedNativeInstrument;
 use hex_project::{
-    AssetId, ClipId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
+    AssetId, ClipId, DeviceId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::compile::{PreparedAudioSourceRef, resolve_prepared, resolve_resident};
+
+struct PreparedTrackInstrumentConfig {
+    track: TrackId,
+    config: Option<Box<dyn PreparedNativeInstrument>>,
+    device_id: Option<DeviceId>,
+    state: Option<hex_lattice_contract::NativeDeviceState>,
+    bypassed: bool,
+}
 
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,6 +116,9 @@ pub struct PreparedSessionMidiClip {
     source_identity: MidiSourceIdentity,
     source: Arc<PreparedMidiSourceTemplate>,
     instrument: Arc<PreparedMidiInstrumentTemplate>,
+    instrument_id: Option<DeviceId>,
+    instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    instrument_enabled: bool,
     pub work: SessionWorkEnvelope,
 }
 
@@ -201,6 +213,10 @@ impl PreparedSessionMidiClip {
         &self.instrument
     }
 
+    pub(crate) fn instrument_enabled(&self) -> bool {
+        self.instrument_enabled
+    }
+
     pub(crate) fn source_matches(&self, other: &Self) -> bool {
         self.source_identity == other.source_identity
     }
@@ -263,9 +279,33 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
     ) -> Result<Self, crate::Invalid> {
-        Self::prepare_with_resolver(project, sine_table, previous, |asset, project_rate| {
-            resolve_resident(asset, project_rate, media)
-        })
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| crate::Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_resolver(
+            project,
+            sine_table,
+            previous,
+            &instruments,
+            |asset, project_rate| resolve_resident(asset, project_rate, media),
+        )
+    }
+
+    /// Prepare Session inventory through a caller-provided analytic instrument
+    /// catalog. This shares the same registry boundary as Arrangement compile.
+    pub fn prepare_with_media_and_instrument_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, Audio>,
+        sine_table: Arc<SineTable>,
+        previous: Option<&Self>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, crate::Invalid> {
+        Self::prepare_with_resolver(
+            project,
+            sine_table,
+            previous,
+            instruments,
+            |asset, project_rate| resolve_resident(asset, project_rate, media),
+        )
     }
 
     pub fn prepare_with_prepared_audio_sources(
@@ -278,15 +318,24 @@ impl PreparedSessionInventory {
         if expected_generation == 0 {
             return Err(crate::Invalid("stream source generation must be positive"));
         }
-        Self::prepare_with_resolver(project, sine_table, previous, |asset, project_rate| {
-            resolve_prepared(asset, project_rate, sources, expected_generation)
-        })
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| crate::Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_resolver(
+            project,
+            sine_table,
+            previous,
+            &instruments,
+            |asset, project_rate| {
+                resolve_prepared(asset, project_rate, sources, expected_generation)
+            },
+        )
     }
 
     fn prepare_with_resolver<'a>(
         project: &'a Project,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
+        instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
         mut resolve_source: impl FnMut(
             &'a hex_project::Asset,
             u32,
@@ -305,6 +354,27 @@ impl PreparedSessionInventory {
                 SessionTimingView::Periodic(periodic.view(&timing))
             });
         let source_admission_max_micro_bpm = source_timing.max_micro_bpm();
+        let mut instrument_configs: Vec<PreparedTrackInstrumentConfig> = Vec::new();
+        instrument_configs
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| crate::Invalid("could not reserve Session instrument configuration"))?;
+        for track in project.tracks() {
+            let slot = track.instrument();
+            let config = slot
+                .map(|device| {
+                    instrument_registry
+                        .prepare_instrument(device.state(), project.sample_rate())
+                        .map_err(|_| crate::Invalid("track instrument state is unsupported"))
+                })
+                .transpose()?;
+            instrument_configs.push(PreparedTrackInstrumentConfig {
+                track: track.id(),
+                config,
+                device_id: slot.map(|device| device.id()),
+                state: slot.map(|device| device.state().clone()),
+                bypassed: slot.is_some_and(hex_project::Device::bypassed),
+            });
+        }
         let can_reuse = previous.is_some_and(|old| {
             Arc::ptr_eq(&old.sine_table, &sine_table)
                 && old.timing.matches_canonical(project.tempo_map())
@@ -374,11 +444,28 @@ impl PreparedSessionInventory {
                 SessionCellContent::Stop => PreparedSessionCellContent::Stop,
                 SessionCellContent::Midi(clip) => {
                     let source_identity = clip.source_identity();
+                    let (instrument_id, instrument_state, instrument_enabled, instrument_config) =
+                        instrument_configs
+                            .iter()
+                            .find(|config| config.track == cell.track())
+                            .map(|config| {
+                                (
+                                    config.device_id,
+                                    config.state.clone(),
+                                    config.config.is_some() && !config.bypassed,
+                                    config.config.as_deref(),
+                                )
+                            })
+                            .ok_or(crate::Invalid("Session cell track is missing"))?;
                     let cached = can_reuse
                         .then(|| previous.and_then(|old| old.midi_clip(clip.id())))
                         .flatten()
                         .filter(|old| {
-                            old.track == cell.track() && old.source_identity == source_identity
+                            old.track == cell.track()
+                                && old.source_identity == source_identity
+                                && old.instrument_id == instrument_id
+                                && old.instrument_state == instrument_state
+                                && old.instrument_enabled == instrument_enabled
                         });
                     let (source, instrument, work) = if let Some(old) = cached {
                         (
@@ -396,10 +483,18 @@ impl PreparedSessionInventory {
                             )
                             .map_err(template_error)?,
                         );
-                        let instrument = Arc::new(
-                            PreparedMidiInstrumentTemplate::prepare(&source, &sine_table)
-                                .map_err(template_error)?,
-                        );
+                        let instrument = Arc::new(if instrument_enabled {
+                            PreparedMidiInstrumentTemplate::prepare_with_instrument(
+                                &source,
+                                instrument_config.ok_or(crate::Invalid(
+                                    "Session instrument configuration is missing",
+                                ))?,
+                            )
+                            .map_err(template_error)?
+                        } else {
+                            PreparedMidiInstrumentTemplate::prepare_silent(&source)
+                                .map_err(template_error)?
+                        });
                         let work = work_for(&source, &instrument)?;
                         (source, instrument, work)
                     };
@@ -420,6 +515,9 @@ impl PreparedSessionInventory {
                         source_identity,
                         source,
                         instrument,
+                        instrument_id,
+                        instrument_state,
+                        instrument_enabled,
                         work,
                     });
                     PreparedSessionCellContent::Midi(clip.id())

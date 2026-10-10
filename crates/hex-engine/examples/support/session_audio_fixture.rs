@@ -78,6 +78,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                 id: arrangement_clip,
                 asset,

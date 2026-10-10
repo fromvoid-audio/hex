@@ -4,19 +4,47 @@ use crate::compile::PreparedAudioSource;
 use crate::{BorrowedMediaPage, MediaPages, StreamSourceKey, StreamedSourceMetadata};
 use crate::{PreparedRevision, PreparedSessionInventory};
 use hex_project::{
-    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, LoopRegion, Meter, MeterPoint,
+    AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, LoopRegion, Meter, MeterPoint,
     MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project, SceneSnapshot,
     SessionCellContentSnapshot, SessionCellSnapshot, SessionMidiClipSnapshot, SessionSnapshot,
     Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+/// These hand-authored fixtures predate schema 15 and model the schema 1–14
+/// migration that installs a default sine slot on every track carrying MIDI.
+fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_project::Invalid> {
+    let state = hex_project::default_instrument_state()?;
+    for track in &mut snapshot.tracks {
+        let has_midi = match &track.content {
+            TrackContentSnapshot::Instrument(clips) => !clips.is_empty(),
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => !midi_clips.is_empty(),
+            TrackContentSnapshot::Audio(_) => false,
+        } || snapshot.session.cells.iter().any(|cell| {
+            cell.track == track.id && matches!(cell.content, SessionCellContentSnapshot::Midi(_))
+        });
+        if has_midi && track.instrument.is_none() {
+            let id = snapshot.next_id;
+            snapshot.next_id = snapshot
+                .next_id
+                .checked_add(1)
+                .ok_or(hex_project::Invalid("fixture id capacity"))?;
+            track.instrument = Some(DeviceSnapshot {
+                id,
+                bypassed: false,
+                state: state.clone(),
+            });
+        }
+    }
+    Project::from_snapshot(snapshot)
+}
+
 fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
     project_at_tempo(gain, note_start, note_duration, Tempo::DEFAULT)
 }
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
-    Project::from_snapshot(Snapshot {
+    legacy_project_from_snapshot(Snapshot {
         sample_rate: 48_000,
         next_id: 7,
         assets: vec![
@@ -45,6 +73,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: None,
             content: TrackContentSnapshot::Audio(Vec::new()),
         }],
         session: SessionSnapshot {
@@ -103,6 +132,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         muted: false,
         soloed: false,
         devices: Vec::new(),
+        instrument: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
             id: 8,
             start_raw: 0,
@@ -148,12 +178,12 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         scene: 7,
         content: SessionCellContentSnapshot::Stop,
     });
-    Project::from_snapshot(snapshot).expect("mixed audio and midi project")
+    legacy_project_from_snapshot(snapshot).expect("mixed audio and midi project")
 }
 
 fn session_audio_midi_arrangement_mix_project() -> Project {
     let mut snapshot = mixed_audio_midi_project(5, 18).snapshot();
-    snapshot.next_id = 14;
+    snapshot.next_id = 16;
     let Some(SessionCellContentSnapshot::Midi(clip)) = snapshot
         .session
         .cells
@@ -172,15 +202,16 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         velocity: 100,
     });
     snapshot.tracks.push(TrackSnapshot {
-        id: 12,
+        id: 14,
         name: "arrangement bed".into(),
         gain: 1.0,
         balance: 0.0,
         muted: false,
         soloed: false,
         devices: Vec::new(),
+        instrument: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
-            id: 13,
+            id: 15,
             asset: 4,
             start: 0,
             duration: 32,
@@ -191,11 +222,12 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
             fade: ClipFade::neutral(32).unwrap(),
         }]),
     });
-    Project::from_snapshot(snapshot).expect("mixed Session and Arrangement audio/MIDI project")
+    legacy_project_from_snapshot(snapshot)
+        .expect("mixed Session and Arrangement audio/MIDI project")
 }
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
-    Project::from_snapshot(Snapshot {
+    legacy_project_from_snapshot(Snapshot {
         sample_rate: 48_000,
         next_id: 8,
         assets: Vec::new(),
@@ -207,6 +239,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: 2,
                 start_raw: 0,
@@ -282,12 +315,12 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
-        id: 8,
+        id: 9,
         bypassed: false,
         state,
     });
-    snapshot.next_id = 9;
-    let old_project = Project::from_snapshot(snapshot).unwrap();
+    snapshot.next_id = 10;
+    let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -329,12 +362,12 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
-        id: 8,
+        id: 9,
         bypassed: false,
         state,
     });
-    old_snapshot.next_id = 9;
-    let old_project = Project::from_snapshot(old_snapshot).unwrap();
+    old_snapshot.next_id = 10;
+    let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -355,7 +388,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
             ParameterValue::Bool(false),
         )
         .unwrap();
-    let new_project = Project::from_snapshot(new_snapshot).unwrap();
+    let new_project = legacy_project_from_snapshot(new_snapshot).unwrap();
     let mut next = SessionPlayback::new(revision(&new_project, Arc::clone(&table))).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
     let mut tail = [[0.0; 2]; 64];
@@ -387,7 +420,7 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
             state,
         });
     snapshot.next_id += 1;
-    let old_project = Project::from_snapshot(snapshot).unwrap();
+    let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let old_revision = revision(&old_project, Arc::clone(&table));
     let clip = old_revision.session().midi_clips()[0].id;
 
@@ -539,8 +572,11 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
     let table = Arc::new(hex_devices::SineTable::new());
     let mut base_snapshot = project(0.5, 0, 8 << 32).snapshot();
     base_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
-    let base =
-        with_utility_filter_state(&Project::from_snapshot(base_snapshot).unwrap(), true, false);
+    let base = with_utility_filter_state(
+        &legacy_project_from_snapshot(base_snapshot).unwrap(),
+        true,
+        false,
+    );
 
     let start = |revision: Arc<PreparedRevision>, clip: hex_project::ClipId| {
         let mut playback = SessionPlayback::new(revision).unwrap();
@@ -605,7 +641,7 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
 
     let mut loop_snapshot = base.snapshot();
     loop_snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
-    let looped = Project::from_snapshot(loop_snapshot).unwrap();
+    let looped = legacy_project_from_snapshot(loop_snapshot).unwrap();
     let mut with_loop = start(revision(&looped, Arc::clone(&table)), clip);
     let mut without_loop = start(prepared, clip);
     let mut looped_output = [[0.0; 2]; 512];
@@ -678,7 +714,7 @@ fn with_session_note_id(project: &Project, note_id: u64) -> Project {
         clip.source.notes[0].id = note_id;
     }
     snapshot.next_id = note_id + 1;
-    Project::from_snapshot(snapshot).unwrap()
+    legacy_project_from_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -718,13 +754,13 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
             });
         snapshot.next_id += 1;
     }
-    Project::from_snapshot(snapshot).unwrap()
+    legacy_project_from_snapshot(snapshot).unwrap()
 }
 
 fn without_session_cells(project: &Project) -> Project {
     let mut snapshot = project.snapshot();
     snapshot.session.cells.clear();
-    Project::from_snapshot(snapshot).unwrap()
+    legacy_project_from_snapshot(snapshot).unwrap()
 }
 
 #[test]
@@ -815,8 +851,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
             velocity: 90,
         }];
     }
-    snapshot.next_id = 8;
-    let original = Project::from_snapshot(snapshot).unwrap();
+    snapshot.next_id = 9;
+    let original = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -852,7 +888,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut slower_snapshot = slower.snapshot();
     slower_snapshot.session = original.snapshot().session;
-    let slower = Project::from_snapshot(slower_snapshot).unwrap();
+    let slower = legacy_project_from_snapshot(slower_snapshot).unwrap();
     let next_revision = revision(&slower, Arc::clone(&table));
     let mut whole = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
     let mut split = SessionPlayback::new(next_revision).unwrap();
@@ -1381,7 +1417,7 @@ fn handoff_remaps_pending_quantized_target_by_beat_and_cancels_missing_clip() {
     .unwrap();
     let mut snapshot = original.snapshot();
     snapshot.session.cells.clear();
-    let deleted = Project::from_snapshot(snapshot).unwrap();
+    let deleted = legacy_project_from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&deleted, table)).unwrap();
     let report = candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(report.cancelled_pending_tracks(), &[Some(track)]);
@@ -1422,7 +1458,7 @@ fn pending_scene_launch_keeps_its_resolved_clip_when_scene_contents_change() {
         scene: 4,
         content: SessionCellContentSnapshot::Stop,
     });
-    let edited = Project::from_snapshot(snapshot).unwrap();
+    let edited = legacy_project_from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&edited, table)).unwrap();
     let report = candidate.try_inherit_state_from(&mut old).unwrap();
     assert!(report.cancelled_pending_tracks().is_empty());
@@ -1448,7 +1484,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
             Tempo::new(60_000_000).unwrap(),
         ),
     ];
-    let old_project = Project::from_snapshot(old_snapshot).unwrap();
+    let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
@@ -1477,7 +1513,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         BeatTime::ZERO,
         Tempo::new(60_000_000).unwrap(),
     )];
-    let new_project = Project::from_snapshot(new_snapshot).unwrap();
+    let new_project = legacy_project_from_snapshot(new_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&new_project, table)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.routes[0].pending.unwrap().frame, 96_000);
@@ -1528,7 +1564,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
         clips[0].notes[0].start_raw = 8 << 32;
     }
     snapshot.next_id = 14;
-    let old_project = Project::from_snapshot(snapshot).unwrap();
+    let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
@@ -1544,7 +1580,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
         BeatTime::ZERO,
         Tempo::new(500_000_000).unwrap(),
     )];
-    let changed = Project::from_snapshot(changed_snapshot).unwrap();
+    let changed = legacy_project_from_snapshot(changed_snapshot).unwrap();
     let candidate_revision = revision(&changed, Arc::clone(&table));
     let mut failed = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     failed.release_capacity = 1;
@@ -1639,7 +1675,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     {
         clips[0].notes.clear();
     }
-    let original = Project::from_snapshot(original_snapshot).unwrap();
+    let original = legacy_project_from_snapshot(original_snapshot).unwrap();
     let stream_asset = original
         .assets()
         .find(|asset| asset.id().value() == 4)
@@ -1724,7 +1760,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         BeatTime::ZERO,
         Tempo::new(500_000_000).unwrap(),
     )];
-    let changed = Project::from_snapshot(changed_snapshot).unwrap();
+    let changed = legacy_project_from_snapshot(changed_snapshot).unwrap();
     let candidate_revision = Arc::new(
         PreparedRevision::prepare_with_prepared_audio_sources(
             &changed,
@@ -1803,7 +1839,7 @@ fn deleting_the_last_track_keeps_its_copied_session_voice_tail() {
     let mut snapshot = original.snapshot();
     snapshot.tracks.clear();
     snapshot.session.cells.clear();
-    let deleted = Project::from_snapshot(snapshot).unwrap();
+    let deleted = legacy_project_from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&deleted, table)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(candidate.release_voice_count(), 2);
@@ -1830,8 +1866,8 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     let table = Arc::new(hex_devices::SineTable::new());
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
-    snapshot.next_id = 13;
-    for (track_id, clip_id, note_id, gain) in [(7, 8, 9, 0.25), (10, 11, 12, 0.75)] {
+    snapshot.next_id = 15;
+    for (track_id, clip_id, note_id, gain) in [(7, 9, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
             id: track_id,
             name: format!("track {track_id}"),
@@ -1840,6 +1876,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
@@ -1860,7 +1897,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             }]),
         });
     }
-    let original = Project::from_snapshot(snapshot).unwrap();
+    let original = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let mut before = [[0.0; 2]; 64];
@@ -1868,7 +1905,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
 
     let mut edited = original.snapshot();
     edited.tracks = vec![edited.tracks[1].clone(), edited.tracks[0].clone()];
-    let candidate_project = Project::from_snapshot(edited).unwrap();
+    let candidate_project = legacy_project_from_snapshot(edited).unwrap();
     let candidate_revision = revision(&candidate_project, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
@@ -1891,8 +1928,8 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     }
     for (offset, frame) in expected.iter_mut().enumerate() {
         let absolute = candidate.performance_frame - 64 + offset as u64;
-        if let Some(sample) = deleted_tail.voice.sample_at(&table, absolute) {
-            deleted_tail.mix.add_frame(frame, [sample; 2]);
+        if let Some(sample) = deleted_tail.voice.sample_at(absolute) {
+            deleted_tail.mix.add_frame(frame, sample);
         }
     }
     candidate_revision
@@ -1960,7 +1997,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         ];
     }
     snapshot.next_id = 16;
-    let original = Project::from_snapshot(snapshot).unwrap();
+    let original = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
     old.apply(SessionPlaybackCommand::LaunchClip {
@@ -1986,7 +2023,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         clip.source.loop_start_raw = 2 << 32;
         clip.source.loop_end_raw = 5 << 32;
     }
-    let edited = Project::from_snapshot(edited_snapshot).unwrap();
+    let edited = legacy_project_from_snapshot(edited_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&edited, table)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(
@@ -2026,10 +2063,11 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
         muted: false,
         soloed: false,
         devices: Vec::new(),
+        instrument: None,
         content: TrackContentSnapshot::Instrument(Vec::new()),
     });
     snapshot.session.cells[0].track = 7;
-    let moved = Project::from_snapshot(snapshot).unwrap();
+    let moved = legacy_project_from_snapshot(snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&moved, table)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(
@@ -2058,7 +2096,7 @@ fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
         clip.source.loop_end_raw = u64::MAX;
         clip.source.notes[0].duration_raw = u64::MAX;
     }
-    let long = Project::from_snapshot(snapshot).unwrap();
+    let long = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&long, Arc::clone(&table))).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
@@ -2082,7 +2120,7 @@ fn unrepresentable_matching_gate_remap_refuses_without_candidate_commit() {
         BeatTime::ZERO,
         Tempo::new(240_000_000).unwrap(),
     )];
-    let faster = Project::from_snapshot(faster_snapshot).unwrap();
+    let faster = legacy_project_from_snapshot(faster_snapshot).unwrap();
     let mut candidate = SessionPlayback::new(revision(&faster, table)).unwrap();
     assert_eq!(
         candidate.try_inherit_state_from(&mut old),
@@ -2520,7 +2558,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
     audio_clip.asset = 5;
     audio_clip.source_start = 2;
     audio_clip.source_end = 20;
-    let replacement = Project::from_snapshot(replacement_snapshot).unwrap();
+    let replacement = legacy_project_from_snapshot(replacement_snapshot).unwrap();
     let replacement_media = audio_media(&replacement, &audio_a, &audio_b);
     let candidate_revision = Arc::new(
         PreparedRevision::prepare(
@@ -2550,7 +2588,7 @@ fn session_audio_quantization_cancel_and_tempo_handoff_keep_frame_domain() {
     };
     audio_clip.source_start = 2;
     audio_clip.source_end = 4;
-    let short = Project::from_snapshot(short_snapshot).unwrap();
+    let short = legacy_project_from_snapshot(short_snapshot).unwrap();
     let short_media = audio_media(&short, &audio_a, &audio_b);
     let short_revision = Arc::new(
         PreparedRevision::prepare(

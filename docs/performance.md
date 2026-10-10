@@ -1,5 +1,30 @@
 # Performance requirements and baseline — 8 October 2026
 
+## Registered analytic instrument timing — 9 October 2026
+
+Baseline06b7ae4 versus the instrument-slot source uses existing release
+profile_instrument on Apple M5 Pro arm64,48kHz,100 MIDI tracks ×16 notes,
+100 warmup blocks then3000 measured blocks per block size. No device or UI runs;
+background load/power scheduling are uncontrolled. One before/after run gives:
+
+| Frames/block | Baseline total/max | Registered total/max |
+| --- | --- | --- |
+|128|0.058s /148.2µs|0.062s /114.2µs|
+|512|0.163s /332.0µs|0.177s /279.0µs|
+
+Total render time is provisionally +7%/+9%; maximum differences from one run are
+inconclusive. Nominal periods are2.667ms and10.667ms, not physical-device deadline
+acceptance. An earlier per-sample initializing lookup produced a much larger
+regression; control initialization plus noninitializing callback lookup repaired
+that path. No established speedup/no-regression claim, sustained stress or
+instrument preparation-time budget follows from these short render measurements.
+
+The existing profile_session_playback aborts its independent mixed Session/finite
+PCM oracle comparison on the unchanged baseline, before timing in both direct
+and wrapper modes. Pulse2113 tracks diagnosis separately; do not weaken the
+comparison or claim usable timings from that example. Source/contract:
+[lattice instruments](lattice-instruments.md), Pulse2114.
+
 ## Lattice chain integration baseline — 9 October 2026
 
 The exact parent `0a2d70b` active Arrangement profile on Apple M5 Pro uses

@@ -24,6 +24,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
     for index in 0..TRACKS {
         let track = next_id;
         next_id += 1;
+        let instrument_id = next_id;
+        next_id += 1;
         tracks.push(TrackSnapshot {
             id: track,
             name: format!("instrument {index:03}"),
@@ -32,6 +34,11 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: Some(hex_project::DeviceSnapshot {
+                id: instrument_id,
+                bypassed: false,
+                state: hex_project::default_instrument_state()?,
+            }),
             content: TrackContentSnapshot::Instrument(Vec::new()),
         });
         for scene in 1..=2 {

@@ -357,6 +357,7 @@ mod tests {
             panic!("clip result")
         };
         let mut snapshot = editor.project().snapshot();
+        let first_note_id = snapshot.next_id;
         let track = snapshot
             .tracks
             .iter_mut()
@@ -370,7 +371,7 @@ mod tests {
         let midi_clip = clips.first_mut().expect("clip snapshot");
         midi_clip.notes = (0..count)
             .map(|index| MidiNoteSnapshot {
-                id: 3 + index as u64,
+                id: first_note_id + index as u64,
                 start_raw: if stagger {
                     ((index
                         % if count > 600 {
@@ -393,7 +394,7 @@ mod tests {
                 velocity: 100,
             })
             .collect();
-        snapshot.next_id = 3 + count as u64;
+        snapshot.next_id = first_note_id + count as u64;
         (
             Project::from_snapshot(snapshot).expect("project snapshot"),
             clip,

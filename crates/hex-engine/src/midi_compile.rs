@@ -1,5 +1,6 @@
 //! Bounded control-side compilation of MIDI edges and stateless note spans.
 use crate::Invalid;
+use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
@@ -177,7 +178,7 @@ pub(crate) struct CompiledNoteSpan {
     pub(crate) start: u64,
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
-    pub(crate) voice: hex_devices::PreparedVoice,
+    pub(crate) voice: PreparedAnalyticNote,
     pub(crate) clip: ClipId,
     pub(crate) note: hex_project::NoteId,
     pub(crate) iteration: u64,
@@ -195,13 +196,14 @@ pub(crate) struct SpanNode {
 pub(crate) fn compile_instrument_track(
     project: &Project,
     track: &Track,
-    table: std::sync::Arc<hex_devices::SineTable>,
+    instrument: Option<&dyn PreparedNativeInstrument>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    // MIDI clip timing and editor previews are project data even when the
+    // selected instrument is absent or bypassed; only note sampling is silent.
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
-    let sample_rate = project.sample_rate();
     let mut clip_counts = Vec::new();
     clip_counts
         .try_reserve_exact(track.midi_clips().len())
@@ -228,7 +230,7 @@ pub(crate) fn compile_instrument_track(
     }
     let mut spans = Vec::new();
     spans
-        .try_reserve_exact(span_count)
+        .try_reserve_exact(if instrument.is_some() { span_count } else { 0 })
         .map_err(|_| Invalid("could not reserve instrument note storage"))?;
     let mut timeline_end = None;
     for (clip, occurrence_count) in track.midi_clips().iter().zip(clip_counts) {
@@ -271,21 +273,23 @@ pub(crate) fn compile_instrument_track(
             emitted = emitted
                 .checked_add(1)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-            let voice = table
-                .prepare_voice(sample_rate, note.pitch(), note.velocity())
-                .map_err(|_| Invalid("midi pitch cannot be rendered at project sample rate"))?;
-            let end = gate_end
-                .checked_add(voice.release_frames())
-                .ok_or(Invalid("midi release end frame overflow"))?;
-            spans.push(CompiledNoteSpan {
-                start,
-                gate_end,
-                end,
-                voice,
-                clip: clip.id(),
-                note: note.id(),
-                iteration,
-            });
+            if let Some(instrument) = instrument {
+                let voice = instrument
+                    .prepare_note(note.pitch(), note.velocity())
+                    .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?;
+                let end = gate_end
+                    .checked_add(voice.release_frames())
+                    .ok_or(Invalid("midi release end frame overflow"))?;
+                spans.push(CompiledNoteSpan {
+                    start,
+                    gate_end,
+                    end,
+                    voice,
+                    clip: clip.id(),
+                    note: note.id(),
+                    iteration,
+                });
+            }
             Ok(())
         })?;
         if emitted != occurrence_count {
@@ -319,7 +323,6 @@ pub(crate) fn compile_instrument_track(
         spans,
         nodes,
         root,
-        table,
         timeline_end,
     }))
 }

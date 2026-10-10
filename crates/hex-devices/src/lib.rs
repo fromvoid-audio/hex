@@ -2,13 +2,159 @@
 pub mod utility;
 pub mod utility_filters;
 
+use hex_lattice::{
+    NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
+};
+use hex_lattice_contract::{
+    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    ParameterDescriptor, ParameterId, ParameterValue,
+};
+use std::sync::OnceLock;
+
 static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 1] =
     [&utility::UTILITY_DEFINITION];
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 1] = [&SINE_INSTRUMENT];
+
+pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 
 /// The immutable catalog of original built-in linear effects.
 pub fn native_registry()
 -> Result<hex_lattice::NativeDeviceRegistry<'static>, hex_lattice_contract::DeviceContractError> {
     hex_lattice::NativeDeviceRegistry::new(&BUILTIN_NATIVE_DEVICES)
+}
+
+/// The immutable catalog of original analytic native instruments.
+pub fn native_instrument_registry()
+-> Result<hex_lattice::NativeInstrumentRegistry<'static>, DeviceContractError> {
+    hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
+}
+
+/// Prepare the original sine configuration for callers that still use the
+/// narrow legacy MIDI-template helper. New runtime compilation resolves the
+/// track's generic instrument state through `native_instrument_registry`.
+pub fn prepare_legacy_sine_instrument(
+    sample_rate: u32,
+) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+    let registry = native_instrument_registry()?;
+    let state = registry.default_state(SINE_INSTRUMENT_TYPE_ID)?;
+    registry.prepare_instrument(&state, sample_rate)
+}
+
+static SINE_INSTRUMENT: SineInstrumentDefinition = SineInstrumentDefinition;
+struct SineInstrumentDefinition;
+struct PreparedSineInstrument {
+    sample_rate: u32,
+}
+
+impl NativeDeviceMetadata for SineInstrumentDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        SINE_INSTRUMENT_TYPE_ID
+    }
+    fn display_name(&self) -> Option<&'static str> {
+        Some("sine")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &[]
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(self.type_id(), 1, Vec::new())
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() != self.type_id()
+            || state.state_version() != 1
+            || !state.payload().is_empty()
+        {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok(state.clone())
+    }
+    fn read_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+    fn patch_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+        _value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::UnknownParameter)
+    }
+}
+
+impl NativeInstrumentDefinition for SineInstrumentDefinition {
+    fn prepare_instrument(
+        &self,
+        _state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        // Materialize the immutable lookup table on the control side before
+        // any callback can invoke the sampler's function pointer.
+        let _ = shared_sine_table();
+        Ok(Box::new(PreparedSineInstrument { sample_rate }))
+    }
+}
+
+impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn prepare_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<PreparedAnalyticNote, DeviceContractError> {
+        let voice = shared_sine_table()
+            .prepare_voice(self.sample_rate, pitch, velocity)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        Ok(PreparedAnalyticNote::new(
+            [
+                voice.phase_step,
+                u64::from(voice.amplitude.to_bits()),
+                voice.attack_frames,
+            ],
+            voice.release_frames,
+            sample_sine_note,
+        ))
+    }
+}
+
+fn sample_sine_note(
+    payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age_frames: u64,
+    gate_frames: u64,
+    release_frames: u64,
+) -> StereoFrame {
+    let voice = PreparedVoice {
+        phase_step: payload[0],
+        amplitude: f32::from_bits(payload[1] as u32),
+        attack_frames: payload[2],
+        release_frames,
+    };
+    let Some(table) = shared_sine_table_if_prepared() else {
+        return [0.0; 2];
+    };
+    let sample = table.sample(voice, age_frames, gate_frames);
+    [sample, sample]
+}
+
+static SHARED_SINE_TABLE: OnceLock<SineTable> = OnceLock::new();
+
+fn shared_sine_table_if_prepared() -> Option<&'static SineTable> {
+    SHARED_SINE_TABLE.get()
+}
+
+fn shared_sine_table() -> &'static SineTable {
+    SHARED_SINE_TABLE.get_or_init(SineTable::new)
 }
 
 use std::fmt;

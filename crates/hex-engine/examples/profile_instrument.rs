@@ -23,6 +23,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
     for track_index in 0..TRACKS {
         let track_id = next_id;
         next_id += 1;
+        let instrument_id = next_id;
+        next_id += 1;
         let clip_id = next_id;
         next_id += 1;
         let notes = (0..NOTES_PER_TRACK)
@@ -47,6 +49,11 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             muted: false,
             soloed: false,
             devices: Vec::new(),
+            instrument: Some(hex_project::DeviceSnapshot {
+                id: instrument_id,
+                bypassed: false,
+                state: hex_project::default_instrument_state()?,
+            }),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 id: clip_id,
                 start_raw: 0,
