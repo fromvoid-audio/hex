@@ -160,6 +160,13 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         DeviceTypeId::from_static("hex.instrument.operator"),
     )
     .expect("operator defaults");
+    let original = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &original,
+        ParameterId::from_static(75),
+        ParameterValue::Float(0.75),
+    )
+    .expect("nonneutral velocity setting");
     let (_, prepared) = session
         .command_prepared_revision(
             Command::ReplaceDeviceState {
@@ -180,7 +187,8 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.payload().len(), 288);
+    assert_eq!(selected.payload().len(), 304);
+    assert_eq!(&selected.payload()[288..], &original.payload()[288..]);
     let undone = session
         .undo_prepared_revision(Some(&changed))
         .expect("undo")
