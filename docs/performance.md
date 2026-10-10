@@ -59,6 +59,48 @@ and wrapper modes. Pulse2113 tracks diagnosis separately; do not weaken the
 comparison or claim usable timings from that example. Source/contract:
 [lattice instruments](lattice-instruments.md), Pulse2114.
 
+## Wide analytic payload profiles — 9 October 2026
+
+The baseline was captured on commit `67f7fc2` before the payload change; the
+after profiles use the 41-word sampler source. Both use rustc1.98.1 / cargo
+1.98.1, Apple M5 Pro arm64, release mode and the same isolated target. The
+`profile_instrument` render workload is100 tracks ×16 notes at48kHz, 100 warmup
+blocks and3000 measured blocks for128/512 frames. The baseline totals were
+0.068s /0.207s; the first after run was0.069s /0.217s and the second after run
+was0.089s /0.250s. The second run had large individual block outliers, and this
+small before/after sample is too noisy to establish a rendering regression or
+improvement. Nominal intervals remain2.667ms /10.667ms; no device callback or
+physical deadline is measured.
+
+`profile_session_inventory` uses100 tracks,200 MIDI cells,2,000 authored notes
+and100 timed samples per operation class. Baseline p50 values were282,542ns
+cold inventory,44,333ns gain edit/reused inventory,46,209ns note edit/inventory
+and53,000ns gain edit/full revision. The first after run measured312,917ns,
+44,042ns,47,541ns and53,458ns; the second after run measured421,625ns,
+55,792ns,53,792ns and60,750ns. That spread is too large for a speed claim.
+Preparation and render fixtures report accounted sampler storage separately:
+the Arrangement profile reports571,200 indexed bytes versus64,000 bytes for
+the prior40-byte inline samplers; Session reports472,000 versus160,000. These
+are fixture-specific components, not whole-graph memory totals. The checked
+maximum bank/index component and widened fixed Session scratch are in
+[lattice instruments](lattice-instruments.md).
+
+Baseline and after logs are retained locally as
+`artifacts/profiles/wide-analytic-before-{instrument,session-inventory}.log`,
+`wide-analytic-after-{instrument,session-inventory}.log` and the `-2` after
+reruns. Provenance: baseline commit
+`67f7fc29c60238789518557c0b04190f4da5ad46`, after-source diff digest
+`303b08f2b9a4ced987f91239c8f55fdea232d50d17f4d690cb5b1829c4582030`,
+Cargo.lock SHA-256
+`2382c39a294ba53e108c72f34b10766a09796c1400fa2299c1c63edb4ec5647a`,
+baseline instrument/session binary SHA-256
+`b84e75ea4754691e60eb8b5d01b87281b118ef473924ee71b0451c108d4fa3de` /
+`381d6af114edf1c3d1689fcd4cd3cadcdbf8cbd089c9de1deed864552cf11779`, after
+binary SHA-256
+`a1c70a5364f825d26fe3c4955bf83467d5d1003f6f6ee24f3d06dfda731c9f77` /
+`6c90338d0464d8c82b22790fa70371da7b967e01b9ce08fc46e8ea33581bbf1b`. No
+instrument-device or native UI timing is included.
+
 ## Lattice chain integration baseline — 9 October 2026
 
 The exact parent `0a2d70b` active Arrangement profile on Apple M5 Pro uses

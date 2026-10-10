@@ -41,22 +41,32 @@ by source inspection. This is not a callback allocation instrumentation claim.
 Lookup interpolation and the legacy sine multiplication order are unchanged.
 Direct age sampling supports this standalone kernel's seeks without replay.
 
-The existing registered analytic note is40bytes with three payload words. Do not
-force this328byte configuration into it through raw pointers, heap owners or
-unmeasured bank growth. Configuration lifetime across copied release tails,
-bounded voice/event identity, transactional processing and feedback chase/replay
-need a separate accepted runtime PR. Feedback, fixed tuning, additional waveforms
-and partials, filters/LFO/modulation, polyphony/stealing, spread/glide, antialiasing,
-native controls and measured reference parity are not supplied here. Below-Nyquist
+The bounded analytic sampler payload now has41 `u64` words and is344bytes on
+64-bit targets. `PreparedFm4::into_analytic_note` packs this validated standalone
+note into that owned, copyable representation without raw pointers or heap
+owners. Its sampler reads the packed fields by reference, rather than rebuilding
+the328byte `PreparedFm4` value on every frame. The call initializes the shared
+sine table on the control side; sampling only uses its already-prepared lookup.
+The adapter does not register FM4 or make it selectable in a project. The wider
+sampler grows `BankEntry` to352bytes and increases each fixed SessionPlayback
+release/span scratch by10,019,840bytes relative to the prior40byte sampler; see
+[lattice instruments](lattice-instruments.md) for checked ceilings and scope.
+Configuration lifetime across copied release tails, bounded voice/event
+identity, transactional processing and feedback chase/replay need separate
+accepted runtime work. Feedback, fixed tuning, additional waveforms and partials,
+filters/LFO/modulation, polyphony/stealing, spread/glide, antialiasing, native
+controls and measured reference parity are not supplied here. Below-Nyquist
 base oscillators do not imply band-limited FM sidebands.
 
 ## Source and performance evidence
 
-Eight FM4 tests compare isolated carrier frequencies/levels/phases, additive
+Nine FM4 tests compare isolated carrier frequencies/levels/phases, additive
 output, two- and four-stage graphs against independently calculated sine formulas.
 They cover arbitrary routing order, cycles and malformed numbers, envelope
 boundaries/early releases, zero stages, velocity, overflow-safe large ages and
-sample-identical block partitions1/64/128/256/513. All28devices tests and strict
+sample-identical block partitions1/64/128/256/513. The packed sampler is compared
+sample-exactly with the standalone kernel across its attack, gate and release
+boundaries. All30devices tests and strict
 device all-target Clippy pass; full local integration checks are recorded in the
 PR and Pulse. Native listening remains future work after registry admission.
 

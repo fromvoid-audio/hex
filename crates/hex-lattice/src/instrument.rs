@@ -6,13 +6,14 @@ use hex_lattice_contract::{
 use std::fmt;
 
 /// Maximum storage carried by one immutable analytic note sampler. The sampler
-/// plus its release count and function pointer occupies 40 bytes on 64-bit
-/// targets; existing note-span/release banks grow by eight bytes per voice.
-pub const ANALYTIC_NOTE_PAYLOAD_WORDS: usize = 3;
+/// plus its release count and function pointer occupies 344 bytes on 64-bit
+/// targets. The fixed payload can hold the validated standalone FM4 kernel.
+pub const ANALYTIC_NOTE_PAYLOAD_WORDS: usize = 41;
 
 /// Type-erased immutable analytic note data. The safe function pointer is
 /// prepared on the control side and receives authored age and gate duration;
-/// `sample` performs no allocation or state mutation.
+/// `sample` borrows this value to avoid copying its bounded payload per frame;
+/// it performs no allocation or state mutation.
 #[derive(Clone, Copy)]
 pub struct PreparedAnalyticNote {
     payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
@@ -44,13 +45,13 @@ impl PreparedAnalyticNote {
         }
     }
 
-    pub const fn release_frames(self) -> u64 {
+    pub const fn release_frames(&self) -> u64 {
         self.release_frames
     }
 
     /// Sample one stereo frame by authored age and gate duration, both in
     /// frames. The instrument definition owns the deterministic transfer law.
-    pub fn sample(self, age_frames: u64, gate_frames: u64) -> StereoFrame {
+    pub fn sample(&self, age_frames: u64, gate_frames: u64) -> StereoFrame {
         (self.sample_fn)(&self.payload, age_frames, gate_frames, self.release_frames)
     }
 }
@@ -289,7 +290,9 @@ mod tests {
             _pitch: u8,
             _velocity: u8,
         ) -> Result<PreparedAnalyticNote, DeviceContractError> {
-            Ok(PreparedAnalyticNote::new(self.payload, 8, self.sampler))
+            let mut payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
+            payload[..self.payload.len()].copy_from_slice(&self.payload);
+            Ok(PreparedAnalyticNote::new(payload, 8, self.sampler))
         }
     }
 
@@ -320,15 +323,19 @@ mod tests {
 
     #[test]
     fn two_independent_instrument_definitions_prepare_and_sample_without_type_switches() {
+        let mut left_payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
+        left_payload[0] = u64::from(0.25_f32.to_bits());
         let left = TestToneDefinition {
             id: "test.instrument.left",
             sampler: constant_left,
-            payload: [0.25_f32.to_bits() as u64, 0, 0],
+            payload: left_payload,
         };
+        let mut right_payload = [0; ANALYTIC_NOTE_PAYLOAD_WORDS];
+        right_payload[0] = u64::from(0.75_f32.to_bits());
         let right = TestToneDefinition {
             id: "test.instrument.right",
             sampler: constant_right,
-            payload: [0.75_f32.to_bits() as u64, 0, 0],
+            payload: right_payload,
         };
         let definitions: [&dyn NativeInstrumentDefinition; 2] = [&left, &right];
         let registry = NativeInstrumentRegistry::new(&definitions).unwrap();
