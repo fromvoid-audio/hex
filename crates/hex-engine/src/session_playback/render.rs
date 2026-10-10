@@ -7,7 +7,12 @@ impl SessionPlayback {
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {
-        if self.playing && !output.is_empty() && self.revision.contains_streamed_sources() {
+        let contains_streamed_sources = if self.linear_arrangement_export {
+            self.revision.arrangement().contains_streamed_sources()
+        } else {
+            self.revision.contains_streamed_sources()
+        };
+        if self.playing && !output.is_empty() && contains_streamed_sources {
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
         self.render_internal::<dyn MediaPages>(output, None)
@@ -84,10 +89,9 @@ impl SessionPlayback {
         let mut arrangement_frame = self.arrangement_frame;
         let mut output_offset = 0;
         let mut route_changed = false;
-        let region = self
-            .revision
-            .arrangement()
-            .loop_region()
+        let region = (!self.linear_arrangement_export)
+            .then(|| self.revision.arrangement().loop_region())
+            .flatten()
             .filter(|loop_region| loop_region.enabled());
 
         while output_offset < output.len() {

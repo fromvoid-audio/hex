@@ -293,9 +293,9 @@ compatibility, actual twin storage, additive output over nonzero caller PCM, and
 quiescence within its declared release/output-tail bound. The proof feedback law
 uses a finite tail counter to clear residual output. These tests inspect the
 bounded proof runtime but do not instrument production engine callbacks. No
-built-in instrument uses this runtime yet. Old-runtime suffix-tail ownership and
-the prepared shared-playback export adapter remain separate prerequisites
-(Pulse 2160 and 2159).
+built-in instrument uses this runtime yet. Old-runtime suffix-tail ownership
+(Pulse 2160) and the prepared shared-playback export adapter are described
+below; built-in mutable admission remains deferred.
 
 ## Test-only shared engine integration (Pulse 2158)
 
@@ -365,6 +365,11 @@ candidate and retired publication owners can coexist, so these figures are not
 a process-wide peak bound and omit allocator overhead and other graph assets.
 
 This is still a proof-only path. Mutable chase, seek/chase and loop behavior,
-effect residual-tail quiescence, built-in mutable admission and prepared export
-remain deferred to Pulses 2163, 2164, 2165, 2162, later Operator work and 2159.
-Do not claim general mutable instrument or export support from these tests.
+effect residual-tail quiescence and built-in mutable admission remain deferred
+to Pulses 2163, 2164, 2165, 2162 and later Operator work. Pulse 2159 adds
+prepared linear Arrangement WAV export through shared SessionPlayback, but
+nonzero range starts are refused whenever the compiled Arrangement contains an
+enabled mutable instrument; those ranges could require mutable history/chase.
+Mutable Arrangement source loops are refused, while unused Session loops and
+the global transport loop do not wrap this linear export. This does not admit a
+built-in mutable instrument or establish general mutable export support.
