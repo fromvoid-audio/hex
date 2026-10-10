@@ -1502,3 +1502,17 @@ Adjacent manifest retains68 integrated PR links. Pulse2232 is ready for review;
 compare sizing/corners with Live and exercise gain/width/mode editing. Native
 acceptance stays open. No app launch or automatic merge; Operator2233 follows
 separately. Previous review apps remain unchanged.
+
+## 10 October 2026 — shared device presentation follow-ups
+
+Pulse2242 centralizes native frame rounding in hex-widgets: every regular
+instrument/effect and Return frame inherits the4px library default, compact
+headers share the renderer, and numeric readouts share a3px token. Device
+composition modules no longer choose per-device outline radii. Preserve the
+accepted fixed rail and Utility proportions. Targeted Utility/Return geometry
+and parameter tests pass; full local validation and native review remain open.
+
+Pulse2243 fixes selector choices painting behind/clipped by device bodies. Move
+them to an anchored foreground overlay, preserving constant field bounds and
+choice/history/focus/keyboard contracts. Separate focused PRs and a combined
+signed test app follow; Pulse owns authoritative acceptance state.

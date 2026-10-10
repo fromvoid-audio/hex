@@ -16,7 +16,7 @@ use hex_widgets::{
     ControlStyle, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
-    compact_rounded_device_frame, device_frame,
+    compact_device_frame, device_frame,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -990,12 +990,11 @@ fn render_effect(
                 body
             };
             if device_view.type_id.as_str() == Ok("hex.utility") {
-                compact_rounded_device_frame(
+                compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
                     header_actions,
                     body,
-                    2.0,
                 )
             } else {
                 device_frame(
@@ -1034,7 +1033,7 @@ fn render_effect(
                     .unwrap_or("unknown device"),
             );
             if device.state().type_id().as_str() == Ok("hex.utility") {
-                compact_rounded_device_frame(title, control_style(), header_actions, body, 2.0)
+                compact_device_frame(title, control_style(), header_actions, body)
             } else {
                 device_frame(title, control_style(), header_actions, body)
             }
