@@ -420,11 +420,63 @@ these bounds are not a process-wide memory maximum.
 Changed instrument state/type/identity, enablement, position, effect topology or
 configuration, Arrangement source identity/placement, Session launch/source,
 timing, or pending route continues through the existing conservative refusal or
-old-law tail path. This slice does not add changed-note suppression, source or
-transport loop continuity, seek/chase, effect residual-tail quiescence, or
-mutable built-in admission; see Pulses 2166, 2165, 2164, 2162 and the later
-Operator gates. The continuity fixtures use the injected proof instrument and
-do not claim production mutable-device availability.
+old-law tail path. This continuity slice does not add source or transport loop
+continuity, seek/chase, effect residual-tail quiescence, or mutable built-in
+admission; see Pulses 2165, 2164, 2162 and the later Operator gates. The
+continuity fixtures use the injected proof instrument and do not claim
+production mutable-device availability.
+
+## Mutable occurrence suppression — Pulse2166
+
+Pulse2166 keeps an owned dispatch proof after NoteOff, including onsets whose
+NoteOn and NoteOff occur in one render block. Each fixed ledger entry records
+stable track/clip/note IDs, source iteration and Arrangement loop pass, exact
+authored onset/gate beats and pitch/channel/velocity, plus the runtime
+occurrence ID, actual performance onset/gate and old-law quiet deadline. The
+device configuration is deliberately excluded: the same stable authored
+occurrence can be proven to have played under the outgoing configuration. No
+source Arc or revision pointer survives in the proof.
+
+The proof ledger has 64 preallocated slots per runtime twin. That bound follows
+the compiler's maximum of 64 simultaneously intersecting `[start, end)` spans,
+including each declared release tail. It is independent of the runtime's
+`max_active_occurrences`, which describes gated voices and was not tightened.
+Proofs expire at `actual gate end + outgoing declared tail`, or at the cut plus
+that old tail when bypass/removal sends an early NoteOff. A whole-runtime quiet
+commit may clear proofs sooner. The unchanged host-storage accounting formula
+uses `size_of::<MutableOccurrence>()` for both twins on every active and retained
+owner; on this 64-bit arm64 build, that component is 6,910,544 bytes at 256
+tracks, up from 3,761,744 bytes (an increase of 3,148,800 bytes). Device-declared
+DSP payload limits remain separate.
+
+At a changed mutable handoff, candidate spans intersecting the cut are matched
+against the previous active owner and every retained mutable tail for the same
+TrackId. Exact signatures receive a suppression through the later of the
+original old-law quiet deadline and candidate gate end plus candidate declared
+tail. Carried suppressions extend to the new candidate end without copying the
+already-carried owner into another tail. A same-key but changed historical
+signature still refuses with `MutableInstrumentChase`; no proof is fabricated
+for an occurrence that was never dispatched. Future onsets remain eligible.
+Suppression tokens are sorted by stable occurrence key and full authored
+signature; callback lookup uses bounded binary searches instead of scanning all
+same-key revisions. The compiler bounds source queries to 192 spans and mutable
+dispatches to 256 events; handoff proof scans are bounded by 64 proofs per
+runtime and the fixed 256-slot retained-tail bank.
+
+The authored signature cannot distinguish an intentionally deleted and then
+recreated event when the project reuses the same stable IDs and reproduces the
+same onset, gate and payload. Such a byte-for-byte semantic recreation is
+treated as the same occurrence while its old tail is alive.
+
+Preflight accounts for inherited and newly created suppressions against the
+existing 16,384-entry release capacity, and validates release voices, tail
+groups, processor count, declared bytes and mutable history capacity before the
+no-fail ownership phase. A failed engine handoff leaves the previous runtime,
+PCM and transport clock unchanged and permits a fresh candidate retry. This
+establishes engine-level runtime admission atomicity only. Whether a prepared
+candidate already committed to canonical editor history while audio admission
+is pending is separately tracked by Pulse2180; this change does not claim
+history rollback or redesign the controller/audio acknowledgment protocol.
 
 ## Shared analytic contexts
 

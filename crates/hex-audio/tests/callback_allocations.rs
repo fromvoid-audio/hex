@@ -589,7 +589,7 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
         Created::SessionClip(clip) => clip,
         _ => return Err("expected MIDI clip".into()),
     };
-    let note = match editor.execute(Command::AddMidiNote {
+    let _note = match editor.execute(Command::AddMidiNote {
         clip,
         start: BeatTime::ZERO,
         duration: BeatTime::from_quarters(1)?,
@@ -639,7 +639,6 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
         device: instrument,
         state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![2])?,
     })?;
-    editor.execute(Command::RemoveMidiNote(note))?;
     let second = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
@@ -655,7 +654,8 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
 
     // At 120 bpm the one-quarter note ends after 24,000 performance frames.
-    // Continue through the gate and the declared eight-frame release tail.
+    // Continue through the gate and declared release tail after suppressing
+    // the exact candidate occurrence during the changed-configuration handoff.
     for _ in 0..190 {
         measured_block(&mut callback, &mut output);
     }

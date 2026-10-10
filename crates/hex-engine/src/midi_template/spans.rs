@@ -122,7 +122,11 @@ pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) clip: hex_project::ClipId,
     pub(crate) note: hex_project::NoteId,
     pub(crate) iteration: u64,
+    pub(crate) loop_pass: u64,
     pub(crate) until_frame: u64,
+    /// Present only for mutable event dispatch. The stable IDs alone are not
+    /// enough to suppress a source note that has changed since the old event.
+    pub(crate) mutable_signature: Option<crate::mutable_instrument::MutableOccurrenceSignature>,
 }
 
 /// Opaque copied analytic voice retained after a route is replaced.

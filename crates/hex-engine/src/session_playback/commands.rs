@@ -50,6 +50,7 @@ impl SessionPlayback {
         self.playing = false;
         self.performance_frame = 0;
         self.arrangement_frame = 0;
+        self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
@@ -132,6 +133,7 @@ impl SessionPlayback {
         }
         self.performance_frame = frame;
         self.arrangement_frame = frame;
+        self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.releases.clear();
         self.suppressions.clear();
@@ -678,18 +680,28 @@ fn is_suppressed_in(
     key: ContinuationKey,
     frame: u64,
 ) -> bool {
-    suppressions
-        .binary_search_by(|entry| {
-            (entry.track, entry.clip, entry.note, entry.iteration).cmp(&(
-                track,
-                key.clip,
-                key.note,
-                key.iteration,
-            ))
+    let target = (track, key.clip, key.note, key.iteration, 0);
+    let start = suppressions.partition_point(|entry| {
+        (
+            entry.track,
+            entry.clip,
+            entry.note,
+            entry.iteration,
+            entry.loop_pass,
+        ) < target
+    });
+    suppressions[start..]
+        .iter()
+        .take_while(|entry| {
+            (
+                entry.track,
+                entry.clip,
+                entry.note,
+                entry.iteration,
+                entry.loop_pass,
+            ) == target
         })
-        .ok()
-        .and_then(|index| suppressions.get(index))
-        .is_some_and(|entry| entry.until_frame > frame)
+        .any(|entry| entry.mutable_signature.is_none() && entry.until_frame > frame)
 }
 
 pub(super) fn transition_captures(owner: RouteOwner, target: RouteTarget) -> bool {
