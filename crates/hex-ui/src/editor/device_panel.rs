@@ -20,6 +20,8 @@ use hex_widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod numeric_display;
+mod operator_panel;
 mod send_controls;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
@@ -108,6 +110,7 @@ pub(super) struct DevicePanelState {
     effect_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
+    operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -286,6 +289,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.controls.clear();
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
+        view.device_panel.operator_pages.clear();
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
@@ -326,6 +330,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.controls.clear();
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
+        view.device_panel.operator_pages.clear();
         view.device_panel.owner = desired_owner;
         view.device_panel.message = None;
     }
@@ -443,6 +448,9 @@ fn render_track(
     view.device_panel
         .pending_values
         .retain(|key, _| alive.contains(&key.device));
+    view.device_panel
+        .operator_pages
+        .retain(|device, _| alive.contains(device));
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
@@ -1369,51 +1377,62 @@ fn render_instrument(
         hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
             .map_err(|error| error.to_string().to_lowercase())
     });
+    let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let header_actions = instrument_actions(track, device, cx).child(device_drag_grip(
         device,
         NativeDeviceClass::Instrument,
         view.project_generation,
         view.state.as_ref().map_or(0, |state| state.revision),
-        false,
+        is_operator,
         cx,
     ));
     let rendered = match &device_view {
         Ok(device_view) => {
-            let mut body = div()
-                .id(ElementId::Name(
-                    format!("device-body-{}", device_id.value()).into(),
-                ))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .w_full()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_wrap()
-                .content_start()
-                .gap(px(2.0))
-                .p(px(3.0));
-            if device_view.parameters.is_empty() {
-                body = body.child(menu_message("no parameters"));
+            if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
+                let body = operator_panel::render_body(view, cx, device_id, device_view);
+                compact_device_frame(
+                    theme::text(device_view.name.clone()),
+                    control_style(),
+                    header_actions,
+                    body,
+                )
+            } else {
+                let mut body = div()
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .w_full()
+                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap(px(2.0))
+                    .p(px(3.0));
+                if device_view.parameters.is_empty() {
+                    body = body.child(menu_message("no parameters"));
+                }
+                for parameter in &device_view.parameters {
+                    body = body.child(parameter_control(
+                        view,
+                        cx,
+                        device_id,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Instrument,
+                            type_id: device_view.type_id,
+                        },
+                        parameter,
+                    ));
+                }
+                device_frame(
+                    theme::text(device_view.name.clone()),
+                    control_style(),
+                    header_actions,
+                    body,
+                )
             }
-            for parameter in &device_view.parameters {
-                body = body.child(parameter_control(
-                    view,
-                    cx,
-                    device_id,
-                    DeviceControlIdentity {
-                        class: NativeDeviceClass::Instrument,
-                        type_id: device_view.type_id,
-                    },
-                    parameter,
-                ));
-            }
-            device_frame(
-                theme::text(device_view.name.clone()),
-                control_style(),
-                header_actions,
-                body,
-            )
         }
         Err(error) => {
             let body = div()
@@ -1454,10 +1473,15 @@ fn render_instrument(
         ),
     );
     let selector = format!("instrument-device-{}", device_id.value());
+    let frame_width = if is_operator {
+        operator_panel::OPERATOR_FRAME_WIDTH
+    } else {
+        DEVICE_FRAME_WIDTH
+    };
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(DEVICE_FRAME_WIDTH))
+        .w(px(frame_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
         .child(rendered)
@@ -1766,6 +1790,7 @@ fn parameter_control(
 enum ControlPresentation {
     Standard,
     CompactDial,
+    MiniDial,
     InlineValue,
     CompactButton,
     CompactSelector,
@@ -1774,7 +1799,7 @@ enum ControlPresentation {
 #[derive(Clone, Copy, Default)]
 struct ControlText {
     label: Option<&'static str>,
-    codec: Option<utility_panel::NumericDisplayCodec>,
+    codec: Option<numeric_display::NumericDisplayCodec>,
 }
 
 pub(super) fn effective_parameter_value(
@@ -1902,6 +1927,7 @@ fn parameter_control_with_presentation(
             }
             let (width, height) = match presentation {
                 ControlPresentation::CompactDial => (64.0, 52.0),
+                ControlPresentation::MiniDial => (46.0, 40.0),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 _ => (136.0, 26.0),
             };
@@ -2004,11 +2030,14 @@ fn create_parameter_control(
                 spec = codec.apply(spec);
             }
             let kind = match presentation {
-                ControlPresentation::CompactDial => NumericControlKind::Knob,
+                ControlPresentation::CompactDial | ControlPresentation::MiniDial => {
+                    NumericControlKind::Knob
+                }
                 _ => NumericControlKind::HorizontalSlider,
             };
             let appearance = match presentation {
                 ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
+                ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
                 _ => NumericControlAppearance::Standard,
             };
@@ -2070,6 +2099,38 @@ fn create_parameter_control(
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
+                // A discrete control may hide a numeric field (for example,
+                // switching Operator tuning to fixed frequency). Do not let
+                // that transition strand an invalid draft offscreen.
+                if !finalize_controls(view, cx) {
+                    let previous = view
+                        .device_panel
+                        .pending_values
+                        .get(&target)
+                        .copied()
+                        .or_else(|| {
+                            view.device_panel
+                                .views
+                                .get(&target.device)
+                                .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+                                .and_then(|device_view| {
+                                    device_view.parameters.iter().find(|parameter| {
+                                        parameter.descriptor.id == target.parameter
+                                    })
+                                })
+                                .map(|parameter| parameter.value)
+                        })
+                        .unwrap_or(ParameterValue::Bool(!event.checked));
+                    if let (
+                        ParameterValue::Bool(previous),
+                        Some(ParameterControl::Bool { entity, .. }),
+                    ) = (previous, view.device_panel.controls.get(&target))
+                    {
+                        let entity = entity.clone();
+                        entity.update(cx, |control, cx| control.set_checked(previous, cx));
+                    }
+                    return;
+                }
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
                 if !view.enqueue_device_barrier(Request::SetDeviceParameter {

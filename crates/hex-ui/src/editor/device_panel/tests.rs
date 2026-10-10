@@ -486,6 +486,404 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_pages(
+    cx: &mut TestAppContext,
+) {
+    let (service, _state, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("remove default instrument");
+    let _empty = receive_service_event(&service);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+            before: None,
+        })
+        .expect("add native Operator");
+    let added = receive_service_event(&service);
+    let state = added.state;
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("Operator instrument");
+    assert_eq!(
+        instrument.state().type_id().as_str(),
+        Ok("hex.instrument.operator")
+    );
+    let instrument_id = instrument.id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let frame_selector =
+        Box::leak(format!("instrument-device-{}", instrument_id.value()).into_boxed_str());
+    let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
+    assert_eq!(frame.size.width, px(580.0));
+    assert_eq!(frame.size.height, px(184.0));
+    let body_selector =
+        Box::leak(format!("operator-body-{}", instrument_id.value()).into_boxed_str());
+    let body = visual.debug_bounds(body_selector).expect("Operator body");
+    assert_eq!(body.size.height, px(168.0));
+    let shell_selector =
+        Box::leak(format!("operator-shell-{}", instrument_id.value()).into_boxed_str());
+    let shell = visual.debug_bounds(shell_selector).expect("operator shell");
+    assert_eq!(shell.size.width, px(210.0));
+    let waveform_preview = visual
+        .debug_bounds("operator-waveform-cycle")
+        .expect("selected oscillator cycle preview");
+    assert!(waveform_preview.size.width > px(300.0));
+    assert_eq!(waveform_preview.size.height, px(76.0));
+    for operator in 0..4 {
+        let row = Box::leak(
+            format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
+        );
+        let bounds = visual.debug_bounds(row).expect("operator row");
+        assert_eq!(bounds.size.height, px(40.0));
+        let level_id = operator * 3 + 2;
+        let knob = Box::leak(
+            format!("device-{}-parameter-{level_id}-knob", instrument_id.value()).into_boxed_str(),
+        );
+        let bounds = visual.debug_bounds(knob).expect("shell MiniDial");
+        assert!(
+            bounds.size.width >= px(18.0),
+            "MiniDial ring width: {:?}",
+            bounds.size
+        );
+        assert!(
+            bounds.size.height >= px(18.0),
+            "MiniDial ring height: {:?}",
+            bounds.size
+        );
+    }
+    for parameter in [1, 2, 4, 5, 7, 8, 10, 11] {
+        let readout = Box::leak(
+            format!(
+                "device-{}-parameter-{parameter}-value",
+                instrument_id.value()
+            )
+            .into_boxed_str(),
+        );
+        assert!(
+            visual.debug_bounds(readout).is_some(),
+            "shell parameter {parameter}"
+        );
+    }
+
+    let envelope_tab =
+        Box::leak(format!("operator-page-{}-env", instrument_id.value()).into_boxed_str());
+    let ratio = hex_lattice_contract::ParameterId::from_static(1);
+    enter_typed_value(&mut visual, instrument_id, ratio, "invalid");
+    let fix_selector =
+        Box::leak(format!("device-{}-parameter-62", instrument_id.value()).into_boxed_str());
+    let fix_bounds = visual
+        .debug_bounds(fix_selector)
+        .expect("operator fixed toggle");
+    visual.simulate_click(fix_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let Some(ParameterControl::Bool { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: instrument_id,
+                parameter: hex_lattice_contract::ParameterId::from_static(62),
+            })
+        else {
+            panic!("operator fixed toggle remains cached")
+        };
+        entity.read_with(cx, |toggle, _| {
+            assert!(
+                !toggle.checked(),
+                "hidden invalid ratio blocks fixed-mode switch"
+            )
+        });
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: instrument_id,
+                parameter: ratio,
+            })
+        else {
+            panic!("ratio field remains cached")
+        };
+        entity.read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+    enter_typed_value(&mut visual, instrument_id, ratio, "1");
+
+    let phase = hex_lattice_contract::ParameterId::from_static(3);
+    enter_typed_value(&mut visual, instrument_id, phase, "invalid");
+    let tab_bounds = visual.debug_bounds(envelope_tab).expect("envelope tab");
+    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.device_panel.operator_pages[&instrument_id].page,
+            operator_panel::OperatorPage::Oscillator,
+            "invalid numeric drafts block page navigation"
+        );
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: instrument_id,
+                parameter: phase,
+            })
+        else {
+            panic!("phase field remains cached")
+        };
+        entity.read_with(cx, |control, _| assert!(control.is_editing()));
+    });
+    enter_typed_value(&mut visual, instrument_id, phase, "0");
+
+    let waveform_parameter = ParameterKey {
+        device: instrument_id,
+        parameter: hex_lattice_contract::ParameterId::from_static(57),
+    };
+    let waveform_selector = editor.read_with(cx, |view, _| {
+        let Some(ParameterControl::Choice { entity, .. }) =
+            view.device_panel.controls.get(&waveform_parameter)
+        else {
+            panic!("operator waveform selector should be shared and cached")
+        };
+        entity.clone()
+    });
+    let waveform_bounds = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-57", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("waveform selector bounds");
+    visual.simulate_click(waveform_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    waveform_selector.read_with(cx, |selector, _| {
+        assert!(
+            selector.is_open(),
+            "waveform selector opens before navigation"
+        )
+    });
+
+    let tab_bounds = visual.debug_bounds(envelope_tab).expect("envelope tab");
+    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    waveform_selector.read_with(cx, |selector, _| {
+        assert!(
+            !selector.is_open(),
+            "page navigation dismisses selector popup"
+        )
+    });
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
+    for parameter in 33..=38 {
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{parameter}-value",
+                instrument_id.value()
+            )
+            .into_boxed_str(),
+        );
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "envelope {parameter}"
+        );
+    }
+
+    let routing_tab =
+        Box::leak(format!("operator-page-{}-routing", instrument_id.value()).into_boxed_str());
+    let tab_bounds = visual.debug_bounds(routing_tab).expect("routing tab");
+    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("operator-routing-{}", instrument_id.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    for target in 0..4 {
+        let header = Box::leak(format!("operator-routing-target-{target}").into_boxed_str());
+        assert!(
+            visual.debug_bounds(header).is_some(),
+            "target {target} header"
+        );
+    }
+    assert!(visual.debug_bounds("operator-routing-out-header").is_some());
+    for source in 0..4_u32 {
+        let source_bounds = visual
+            .debug_bounds(Box::leak(
+                format!("operator-routing-source-{source}").into_boxed_str(),
+            ))
+            .expect("source row label");
+        assert!(source_bounds.size.width >= px(11.0));
+        for target in 0..4_u32 {
+            if source == target {
+                continue;
+            }
+            let parameter = 12 + source * 4 + target + 1;
+            let field = Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            );
+            let field_bounds = visual.debug_bounds(field).expect("routing field bounds");
+            let header = Box::leak(format!("operator-routing-target-{target}").into_boxed_str());
+            let header_bounds = visual.debug_bounds(header).expect("target heading");
+            assert_eq!(field_bounds.origin.x, header_bounds.origin.x);
+            assert_eq!(field_bounds.size.width, px(46.0));
+        }
+        let carrier = Box::leak(
+            format!("device-{}-parameter-{}", instrument_id.value(), 29 + source).into_boxed_str(),
+        );
+        let carrier_bounds = visual.debug_bounds(carrier).expect("output field bounds");
+        let output_header = visual
+            .debug_bounds("operator-routing-out-header")
+            .expect("output heading");
+        assert_eq!(carrier_bounds.origin.x, output_header.origin.x);
+        assert_eq!(carrier_bounds.size.width, px(46.0));
+    }
+    for parameter in [
+        14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 29, 30, 31, 32, 61,
+    ] {
+        let selector = Box::leak(
+            format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+        );
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "routing parameter {parameter}"
+        );
+    }
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&instrument_id].page,
+            operator_panel::OperatorPage::Routing
+        );
+    });
+
+    let operator_b =
+        Box::leak(format!("operator-select-{}-1", instrument_id.value()).into_boxed_str());
+    let bounds = visual
+        .debug_bounds(operator_b)
+        .expect("operator b row selector");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    let waveform_b = ParameterKey {
+        device: instrument_id,
+        parameter: hex_lattice_contract::ParameterId::from_static(58),
+    };
+    let waveform_selector = editor.read_with(cx, |view, _| {
+        let Some(ParameterControl::Choice { entity, .. }) =
+            view.device_panel.controls.get(&waveform_b)
+        else {
+            panic!("operator b waveform selector should be shared and cached")
+        };
+        entity.clone()
+    });
+    let waveform_bounds = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-58", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("operator b waveform selector bounds");
+    visual.simulate_click(waveform_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    waveform_selector.read_with(cx, |selector, _| assert!(selector.is_open()));
+    let tab_bounds = visual.debug_bounds(envelope_tab).expect("envelope tab");
+    visual.simulate_click(tab_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    waveform_selector.read_with(cx, |selector, _| {
+        assert!(
+            !selector.is_open(),
+            "page navigation dismisses selector popup"
+        )
+    });
+    let bounds = visual
+        .debug_bounds(operator_b)
+        .expect("operator b row selector");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-58", instrument_id.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "selecting oscillator b reveals its own waveform control"
+    );
+    editor.read_with(cx, |view, _| {
+        let page = view.device_panel.operator_pages[&instrument_id];
+        assert_eq!(page.selected_operator, 1);
+        assert_eq!(page.page, operator_panel::OperatorPage::Oscillator);
+    });
+}
+
+#[gpui::test]
+fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppContext) {
+    let (service, _state, track, _, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::RemoveInstrument { track }))
+        .expect("remove default instrument");
+    let _empty = receive_service_event(&service);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+            before: None,
+        })
+        .expect("add native Operator");
+    let mut state = receive_service_event(&service).state;
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("Operator instrument");
+    let instrument_id = instrument.id();
+    for operator in 0..4_u32 {
+        service
+            .submit(Request::SetDeviceParameter {
+                device: instrument_id,
+                parameter: hex_lattice_contract::ParameterId::from_static(62 + operator * 3),
+                value: ParameterValue::Bool(true),
+            })
+            .expect("enable fixed frequency");
+        state = receive_service_event(&service).state;
+    }
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let shell = visual
+        .debug_bounds(Box::leak(
+            format!("operator-shell-{}", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("Operator shell");
+    assert_eq!(shell.size.width, px(210.0));
+    for operator in 0..4 {
+        let row = Box::leak(
+            format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
+        );
+        let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
+        assert_eq!(row_bounds.size.height, px(40.0));
+        let fixed_id = 62 + operator * 3;
+        for parameter in [fixed_id + 1, fixed_id + 2] {
+            let field = Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            );
+            let bounds = visual.debug_bounds(field).expect("fixed-mode control");
+            assert_eq!(bounds.size.width, px(46.0));
+            assert!(
+                bounds.origin.x + bounds.size.width <= row_bounds.origin.x + row_bounds.size.width
+            );
+        }
+        let toggle = Box::leak(
+            format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
+        );
+        let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
+        assert!(
+            toggle_bounds.origin.x + toggle_bounds.size.width
+                <= row_bounds.origin.x + row_bounds.size.width
+        );
+    }
+}
+
+#[gpui::test]
 fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut TestAppContext) {
     let (service, mut state, track, device, _, _) = actor_utility_fixture();
     let descriptors = hex_engine::native_device_descriptors_for_class(
@@ -1975,10 +2373,23 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         );
     });
     editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            device,
+            super::operator_panel::OperatorPanelState {
+                selected_operator: 2,
+                page: super::operator_panel::OperatorPage::Routing,
+            },
+        );
         view.project_generation = view.project_generation.saturating_add(1);
         cx.notify();
     });
     visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.device_panel.operator_pages.contains_key(&device),
+            "project replacement drops device-specific page state"
+        );
+    });
     old_control.read_with(cx, |control, _| {
         assert!(!control.is_editing(), "replacement cancels the old draft");
     });
@@ -2012,6 +2423,13 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         .expect("remove target");
     let next_project = without_device.project().clone();
     editor.update(cx, |view, cx| {
+        view.device_panel.operator_pages.insert(
+            device,
+            super::operator_panel::OperatorPanelState {
+                selected_operator: 3,
+                page: super::operator_panel::OperatorPage::Envelope,
+            },
+        );
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(next_project.clone()),
@@ -2032,6 +2450,10 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
     });
     editor.read_with(cx, |view, _| {
         assert!(view.device_panel.controls.is_empty());
+        assert!(
+            !view.device_panel.operator_pages.contains_key(&device),
+            "removed device drops its page state"
+        );
         assert_eq!(
             view.device_panel.message.as_deref(),
             Some("device target is no longer available")

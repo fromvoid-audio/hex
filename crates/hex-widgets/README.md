@@ -7,6 +7,10 @@ sliders, toggles, selectors, color pickers, and device frames. Numeric controls
 and the color picker expose typed change events; callers own canonical state,
 audio commands, persistence, and undo policy.
 
+`MiniDial` and `CompactDial` share the same numeric entity and gesture path at
+different reusable densities. `curve_plot` renders a bounded, read-only curve
+from normalized points without assigning device-specific meaning to them.
+
 Utility is the current visual testbed for the shared Lattice device interface.
 Frames, knobs, sliders, value fields, switches, selectors and popup behavior are
 library controls, not Utility-specific implementations. Device panels compose
