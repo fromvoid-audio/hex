@@ -26,21 +26,26 @@ Completed chronology and superseded work orders are preserved in the
 
 ### latest source checkpoint
 
-The current user test app remains `hex-lattice-return-review-20261010-006866f.app`
-(PR38–87); it has not been replaced or launched by the agent. PR88–90 each passed
-all16 exact-head local checks. Native stateful seek is now
-[PR91](https://github.com/PORTALSURFER/hex/pull/91), sourcea46c968 and local CI
-`20261010T073917Z-696fac11`. Operator fixed tuning is
-[PR92](https://github.com/PORTALSURFER/hex/pull/92), sourcedc3da29 and local CI
-`20261010T074621Z-ab12cc35`. Captured track-effect tail retention (Pulse2203)
-passes all16 exact-head checks at52d6f56 (`20261010T074857Z-5b258f72`), including
-finite/work boundary refusal and retry tests. Combined source is on
-`codex/lattice-review-57`; exact combined checks and a fresh bundle remain pending.
+The fresh user test app is `hex-lattice-return-review-20261010-e2b92a6.app`,
+combining the preceding PR38–87 integration and verified source heads PR88–95.
+Exact combined local CI passed all16 checks at
+`e2b92a6d12ac9995051a6f419a1c8c0e93d2a774`
+(`20261010T080125Z-acc79727`, stale=false). The optimized desktop build and
+strict ad-hoc signature passed; independent binary SHA256 is
+`5df5e92ee9cacbd63937b0ea7801748cb0906067d37974d2a6131692547253fc`.
+Its manifest preserves58 PR links and unsupported scope. Earlier bundles remain
+unchanged. The agent has not launched this app; native review/listening is open.
 
-Pulse2208 is fixing cancellation between conditional seek queue admission and
-callback installation, in its own focused change. Pulse2204 is implementing
-separate detached Return-chain residual ownership. Source-derived Session Silence
-live-effect drain risk is recorded separately as Pulse2211. Constructor stack
+Native stateful seek is [PR91](https://github.com/PORTALSURFER/hex/pull/91);
+Operator fixed tuning is [PR92](https://github.com/PORTALSURFER/hex/pull/92);
+captured track-effect tails are [PR93](https://github.com/PORTALSURFER/hex/pull/93).
+Session live-effect draining after source stop is
+[PR94](https://github.com/PORTALSURFER/hex/pull/94), and conditional seek
+cancellation before callback installation is
+[PR95](https://github.com/PORTALSURFER/hex/pull/95). Pulse2208 and2211 are ready
+for review with native acceptance open. Pulse2204 detached Return-chain residual
+ownership remains a separate active change and is not included in this bundle.
+Constructor stack
 measurements (2195), mutable loop boundaries (2165), sustained performance (2108),
 complete Operator parity and plugin hosting remain open. One freely positioned
 instrument per track is confirmed. The interactive100-track preparation profile
