@@ -1,6 +1,6 @@
 //! One worker-owned, typed native parameter overlay. No callback ownership.
 use crate::{Session, SessionError};
-use hex_engine::PreparedRevision;
+use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_project::{DeviceId, Project};
 use std::sync::Arc;
 
@@ -384,6 +384,7 @@ pub(crate) struct GestureOutcome {
 
 struct Active {
     snapshot: GestureSnapshot,
+    class: NativeDeviceClass,
     type_id: DeviceTypeId,
 }
 
@@ -493,11 +494,16 @@ impl GestureMachine {
                 {
                     return Err(SessionError::Invalid("device gesture token is stale"));
                 }
+                let class = session.native_device_class(target.device)?;
                 let device = session
                     .project()
                     .device(target.device)
                     .ok_or(SessionError::Invalid("device no longer exists"))?;
-                let value = hex_engine::native_device_parameter(device.state(), target.parameter)?;
+                let value = hex_engine::native_device_parameter_for_class(
+                    class,
+                    device.state(),
+                    target.parameter,
+                )?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
                         key,
@@ -505,6 +511,7 @@ impl GestureMachine {
                         sequence: 0,
                         value,
                     },
+                    class,
                     type_id: device.state().type_id(),
                 });
                 self.last_key = Some(key);
@@ -567,19 +574,27 @@ impl GestureMachine {
         key: GestureKey,
     ) -> Result<GestureSnapshot, SessionError> {
         let snapshot = self.checked_key(key)?;
-        let type_id = self
+        let active = self
             .active
             .as_ref()
-            .map(|active| active.type_id)
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         let device = session
             .project()
             .device(snapshot.target.device)
-            .filter(|device| device.state().type_id() == type_id)
+            .filter(|device| device.state().type_id() == active.type_id)
             .ok_or(SessionError::Invalid(
                 "device gesture target was removed or replaced",
             ))?;
-        hex_engine::native_device_parameter(device.state(), snapshot.target.parameter)?;
+        if session.native_device_class(snapshot.target.device)? != active.class {
+            return Err(SessionError::Invalid(
+                "device gesture target changed native class",
+            ));
+        }
+        hex_engine::native_device_parameter_for_class(
+            active.class,
+            device.state(),
+            snapshot.target.parameter,
+        )?;
         Ok(snapshot)
     }
 

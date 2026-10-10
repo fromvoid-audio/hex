@@ -393,3 +393,10 @@ Accounted repeated-note sampler/index storage falls in the Session fixture, whil
 unique-heavy Arrangement storage rises; noisy timings establish no speedup.
 FM4 registration/payload expansion2124 and native instrument panel2127 remain
 separate open work, with Pulse authoritative for review and acceptance.
+
+Instrument panel2127: canonical instrument slot now renders before effects, with
+registered add/replace/remove/bypass and no reorder controls. Session routes
+parameters and gestures by canonical slot ownership; UI caches class/type identity.
+Sine exposes no fabricated parameters. Full Session tests, rendered panel actions,
+nine gesture tests, strict affected Clippy and source guards pass. Full local CI
+and user native acceptance follow; FM4 admission and full Operator remain open.
