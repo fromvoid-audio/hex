@@ -88,7 +88,7 @@ in production audio.
 
 ## Does not own
 
-GPUI views, project editing/history, file parsing, or DSP algorithms.
+GPUI views, project editing/history, file parsing, or musical device DSP algorithms.
 
 Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
 
@@ -104,3 +104,11 @@ callback checks require zero total allocation count/bytes and zero signed net
 count/bytes. Construction, control admission, independent PCM oracles and control
 reclamation remain outside callback scopes. This is allocator evidence, not timing,
 other-thread/native-API allocation, locking, CPAL or physical deadline acceptance.
+
+## Observational spectrum kernel
+
+`spectrum::SpectrumKernel` owns reusable fixed-window stereo analysis for
+backend telemetry. This observational FFT is separate from musical device DSP
+in `hex-devices`; construction and analysis belong on control/worker threads.
+It does not capture audio, own a rolling stream window, schedule a worker or
+render a UI. See [spectrum analysis](../../docs/spectrum-analysis.md).

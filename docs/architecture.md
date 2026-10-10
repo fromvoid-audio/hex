@@ -63,6 +63,13 @@ Retirement backpressure delays installation without delaying priority Stop;
 graph and shared-media destruction remain on the control side. The policy itself
 does not sanitize an arbitrarily pre-mutated candidate.
 
+`hex-audio` also owns bounded observational spectrum analysis for backend
+telemetry. Its fixed-window FFT runs on control/worker threads and does not
+process the audible device chain. Native musical DSP stays in `hex-devices`;
+the kernel alone does not install live capture or an analyzer UI. See
+[spectrum analysis](spectrum-analysis.md) for the finite boundary and pending
+integration gates.
+
 ## Further boundaries, not implemented APIs
 
 - General musical scheduler: automation, external MIDI, broader launch modes and follow actions.

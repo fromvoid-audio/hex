@@ -2,6 +2,7 @@ mod device;
 pub use device::PreparedOutput;
 pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
 mod lifecycle;
+pub mod spectrum;
 use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},
