@@ -1,5 +1,5 @@
 //! Original, immutable, zero-latency stereo Utility processing.
-use hex_lattice::{InvalidMatrix, StereoFrame, StereoMatrix};
+use hex_lattice::{InvalidMatrix, OutputTail, StereoFrame, StereoMatrix};
 use hex_lattice::{NativeDeviceDefinition, NativeProcessorRuntime, PreparedNativeProcessor};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -641,6 +641,10 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(self.0.algorithmic_latency_frames())
     }
+
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Unbounded
+    }
 }
 
 pub static UTILITY_DEFINITION: UtilityDefinition = UtilityDefinition;
@@ -840,6 +844,8 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
+            assert_eq!(prepared.output_tail(), OutputTail::Unbounded);
+            assert!(prepared.create_runtime().is_quiescent());
         }
     }
 

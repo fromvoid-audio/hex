@@ -32,10 +32,13 @@ without allocation. Standalone stateful filters have validated control-prepared
 coefficients and fixed audio-owned histories. Utility version 2 exposes these
 through generic descriptors and runtime preparation; version 1 receives neutral
 filter defaults. Its prepared filter processors declare zero algorithmic
-buffering/lookahead delay; filter phase/group delay is separate. The original
-sine instrument is registered through the separate
-Lattice analytic contract; its table initializes on control and copied note
-samplers preserve authored age/gate semantics. See [the filter contract](../../docs/utility-filters.md).
+buffering/lookahead delay; filter phase/group delay is separate. Their output
+tail remains conservatively unbounded while the runtime reports exact current
+quiescence from enabled filter histories. See the [native effect-tail
+contract](../../docs/native-effect-tails.md). The original sine instrument is
+registered through the separate Lattice analytic contract; its table
+initializes on control and copied note samplers preserve authored age/gate
+semantics. See [the filter contract](../../docs/utility-filters.md).
 
 ## Does not own
 
