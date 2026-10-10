@@ -1,6 +1,6 @@
 //! Original Operator control state and registered shared-context instrument.
 //!
-//! Version-3 data preserves the version-2 prefix and appends fixed tuning.
+//! Versioned state preserves every earlier prefix and appends fixed controls.
 //! The old FM4 device keeps its separate type, state layout and global ADSR.
 use crate::operator_waveform::OperatorWaveform;
 use crate::{
@@ -21,9 +21,11 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 4;
+pub const OPERATOR_STATE_VERSION: u32 = 5;
+const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
+mod feedback_runtime;
 mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;
@@ -32,12 +34,19 @@ const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
 const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
 const WAVEFORM_COUNT: usize = OPERATORS;
 const VELOCITY_SENSITIVITY_COUNT: usize = OPERATORS;
-const PARAMETER_COUNT: usize =
-    FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1 + OPERATORS * 3 + VELOCITY_SENSITIVITY_COUNT;
+const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
+    + WAVEFORM_COUNT
+    + 1
+    + OPERATORS * 3
+    + VELOCITY_SENSITIVITY_COUNT
+    + FEEDBACK_COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
-const PAYLOAD_BYTES: usize = TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
+const VELOCITY_PAYLOAD_BYTES: usize =
+    TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
+const FEEDBACK_COUNT: usize = OPERATORS;
+const PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -90,6 +99,13 @@ pub mod parameter {
             return ParameterId::from_static(0);
         }
         ParameterId::from_static(73 + operator)
+    }
+    /// Operator numbers are one-based. Zero denotes an invalid endpoint.
+    pub const fn feedback(operator: u32) -> ParameterId {
+        if operator == 0 || operator > 4 {
+            return ParameterId::from_static(0);
+        }
+        ParameterId::from_static(77 + operator)
     }
     const fn tuning_parameter(operator: u32, field: u32) -> ParameterId {
         if operator == 0 || operator > 4 {
@@ -273,6 +289,27 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         };
         operator += 1;
     }
+    let feedback_labels = [
+        "op1 feedback",
+        "op2 feedback",
+        "op3 feedback",
+        "op4 feedback",
+    ];
+    operator = 0;
+    while operator < OPERATORS {
+        result[index + OPERATORS + operator] = ParameterDescriptor {
+            id: ParameterId::from_static(78 + operator as u32),
+            label: feedback_labels[operator],
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        };
+        operator += 1;
+    }
     result
 }
 
@@ -285,6 +322,7 @@ pub struct OperatorSettings {
     waveforms: [OperatorWaveform; OPERATORS],
     tuning: tuning::TuningState,
     amplitude_velocity: [f32; OPERATORS],
+    feedback: [f32; OPERATORS],
 }
 
 impl OperatorSettings {
@@ -301,6 +339,7 @@ impl OperatorSettings {
             waveforms: [OperatorWaveform::Sine; OPERATORS],
             tuning: tuning::TuningState::default(),
             amplitude_velocity: [0.0; OPERATORS],
+            feedback: [0.0; OPERATORS],
         }
     }
 
@@ -312,7 +351,8 @@ impl OperatorSettings {
             LEGACY_STATE_VERSION => LEGACY_PAYLOAD_BYTES,
             WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
-            OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
+            4 => VELOCITY_PAYLOAD_BYTES,
+            FEEDBACK_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
         if state.payload().len() != expected_len {
@@ -353,8 +393,8 @@ impl OperatorSettings {
             tuning::TuningState::default()
         };
         let mut amplitude_velocity = [0.0; OPERATORS];
-        if state.state_version() == OPERATOR_STATE_VERSION {
-            for (index, bytes) in state.payload()[TUNING_PAYLOAD_BYTES..]
+        if state.state_version() >= 4 {
+            for (index, bytes) in state.payload()[TUNING_PAYLOAD_BYTES..VELOCITY_PAYLOAD_BYTES]
                 .chunks_exact(size_of::<f32>())
                 .enumerate()
             {
@@ -364,11 +404,24 @@ impl OperatorSettings {
                 amplitude_velocity[index] = f32::from_le_bytes(bytes);
             }
         }
+        let mut feedback = [0.0; OPERATORS];
+        if state.state_version() == FEEDBACK_STATE_VERSION {
+            for (index, bytes) in state.payload()[VELOCITY_PAYLOAD_BYTES..]
+                .chunks_exact(size_of::<f32>())
+                .enumerate()
+            {
+                let bytes: [u8; 4] = bytes
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?;
+                feedback[index] = f32::from_le_bytes(bytes);
+            }
+        }
         let result = Self {
             fields,
             waveforms,
             tuning,
             amplitude_velocity,
+            feedback,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -388,6 +441,9 @@ impl OperatorSettings {
         }
         self.tuning.append(&mut payload);
         for amount in self.amplitude_velocity {
+            payload.extend_from_slice(&amount.to_le_bytes());
+        }
+        for amount in self.feedback {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
@@ -411,7 +467,11 @@ impl OperatorSettings {
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - OPERATORS + index]
+            PARAMETERS[PARAMETER_COUNT - OPERATORS - FEEDBACK_COUNT + index]
+                .validate(ParameterValue::Float(*amount))?;
+        }
+        for (index, amount) in self.feedback.iter().enumerate() {
+            PARAMETERS[PARAMETER_COUNT - FEEDBACK_COUNT + index]
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -476,6 +536,28 @@ impl OperatorSettings {
     fn amplitude_velocity_index(parameter: ParameterId) -> Option<usize> {
         let index = parameter.value().checked_sub(74)? as usize;
         (index < OPERATORS).then_some(index)
+    }
+
+    fn feedback_index(parameter: ParameterId) -> Option<usize> {
+        let index = parameter.value().checked_sub(78)? as usize;
+        (index < FEEDBACK_COUNT).then_some(index)
+    }
+
+    fn feedback_enabled(&self, operator: usize) -> bool {
+        operator < OPERATORS
+            && (0..OPERATORS).all(|source| {
+                source == operator || self.fields[12 + source * OPERATORS + operator] == 0.0
+            })
+    }
+
+    fn effective_feedback(&self) -> [f32; OPERATORS] {
+        std::array::from_fn(|operator| {
+            if self.feedback_enabled(operator) {
+                self.feedback[operator]
+            } else {
+                0.0
+            }
+        })
     }
 
     /// Standalone control preparation only; no native sampler/registry admission.
@@ -567,6 +649,14 @@ impl NativeDeviceMetadata for OperatorMetadata {
                 .map(ParameterValue::Float)
                 .ok_or(DeviceContractError::UnknownParameter);
         }
+        if let Some(index) = OperatorSettings::feedback_index(parameter) {
+            return settings
+                .feedback
+                .get(index)
+                .copied()
+                .map(ParameterValue::Float)
+                .ok_or(DeviceContractError::UnknownParameter);
+        }
         if let Some(index) = waveform_index(parameter) {
             return settings
                 .waveforms
@@ -582,6 +672,22 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .map(ParameterValue::Float)
             .ok_or(DeviceContractError::UnknownParameter)
     }
+    fn parameter_enabled(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        let settings = OperatorSettings::from_state(state)?;
+        if let Some(index) = OperatorSettings::feedback_index(parameter) {
+            return Ok(settings.feedback_enabled(index));
+        }
+        let descriptor = PARAMETERS
+            .iter()
+            .find(|descriptor| descriptor.id == parameter)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        descriptor.validate(self.read_parameter(state, parameter)?)?;
+        Ok(true)
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -594,6 +700,17 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if let Some(index) = OperatorSettings::feedback_index(parameter) {
+            let ParameterValue::Float(amount) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            let field = settings
+                .feedback
+                .get_mut(index)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            *field = amount;
+            return settings.to_state();
+        }
         if settings.tuning.patch(parameter, value)? {
             return settings.to_state();
         }
@@ -648,9 +765,16 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
+        let feedback_runtime = feedback_runtime::prepare_factory(
+            &settings,
+            configuration.clone(),
+            sample_rate,
+            sine_table,
+        )?;
         Ok(Box::new(PreparedOperatorInstrument {
             configuration,
             sine_table,
+            feedback_runtime,
         }))
     }
 }
@@ -658,6 +782,7 @@ impl NativeInstrumentDefinition for OperatorMetadata {
 struct PreparedOperatorInstrument {
     configuration: PreparedOperatorConfiguration,
     sine_table: &'static SineTable,
+    feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
@@ -668,10 +793,25 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prepare_shared_analytic_context(
         &self,
     ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
+        if self.feedback_runtime.is_some() {
+            // Mutable feedback must never be silently rendered through the
+            // legacy analytic sampler. Event-source compilation owns this
+            // instrument through `prepare_mutable_runtime` instead.
+            return Ok(None);
+        }
         Ok(Some(Box::new(PreparedOperatorContext {
             configuration: self.configuration.clone(),
             sine_table: self.sine_table,
         })))
+    }
+
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(self.feedback_runtime.as_ref().map(|factory| {
+            Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
+        }))
     }
 }
 

@@ -351,6 +351,51 @@ impl SessionPlayback {
             },
         );
 
+        // A retained Session source may already be sounding through a mutable
+        // instrument. If the same instrument identity changes to the analytic
+        // class, the candidate has no mutable runtime to inherit and an
+        // analytic source query cannot reconstruct the old feedback state.
+        // Keep the prior graph audible until that occurrence is quiescent.
+        // Removed/replaced sources still use the detached-tail path below.
+        for (new_index, new_route) in self.routes.iter().enumerate() {
+            let Some(old_index) = previous
+                .routes
+                .iter()
+                .position(|route| route.id == new_route.id)
+            else {
+                continue;
+            };
+            let old_runtime_active = previous
+                .mutable_instruments
+                .get(old_index)
+                .and_then(Option::as_ref)
+                .is_some_and(|runtime| !runtime.committed_is_quiescent());
+            if !old_runtime_active
+                || self
+                    .mutable_instruments
+                    .get(new_index)
+                    .is_some_and(Option::is_some)
+            {
+                continue;
+            }
+            let RouteOwner::Session { clip, .. } = previous.routes[old_index].owner else {
+                continue;
+            };
+            let Some(old_clip) = previous.revision.session().midi_clip(clip) else {
+                continue;
+            };
+            let Some(candidate_clip) = self.revision.session().midi_clip(clip) else {
+                continue;
+            };
+            if candidate_clip.track == new_route.id
+                && candidate_clip.instrument_enabled()
+                && !old_clip.instrument_config_matches(candidate_clip)
+                && old_clip.instrument_identity_matches(candidate_clip)
+            {
+                return Err(SessionPlaybackError::MutableInstrumentChase);
+            }
+        }
+
         // Analytic candidates retain their existing no-chase rule. Mutable
         // candidates are checked against owned dispatch proofs below.
         for (new_index, new_route) in self.routes.iter().enumerate() {

@@ -301,6 +301,11 @@ fn registered_operator_velocity_sensitivities_roundtrip_as_opaque_state() {
     check_operator_opaque_roundtrip(4);
 }
 
+#[test]
+fn registered_operator_authored_feedback_roundtrips_as_opaque_state() {
+    check_operator_opaque_roundtrip(5);
+}
+
 fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
@@ -325,6 +330,11 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
     fields[9] = 4.0;
     fields[10] = 1.0;
     fields[28] = 0.5;
+    if state_version >= 5 {
+        // Incoming op1 modulation disables op2 feedback but must not erase
+        // its authored value from this generic persistence boundary.
+        fields[13] = 0.375;
+    }
     for operator in 0..4 {
         let offset = 32 + operator * 6;
         fields[offset..offset + 6].copy_from_slice(&[0.0, 1.0, 0.7, 0.005, 0.1, 0.1]);
@@ -344,6 +354,11 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
     }
     if state_version >= 4 {
         for amount in [0.0_f32, 0.25, 0.75, 1.0] {
+            payload.extend_from_slice(&amount.to_le_bytes());
+        }
+    }
+    if state_version >= 5 {
+        for amount in [0.4_f32, 0.8, 0.2, 0.0] {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
     }

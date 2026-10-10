@@ -93,6 +93,41 @@ fn version_three_migration_preserves_fixed_tuning_and_defaults_velocity_neutral(
 }
 
 #[test]
+fn version_four_migration_preserves_exact_prefix_and_defaults_feedback_neutral() {
+    let mut current = OPERATOR_METADATA.default_state().expect("default");
+    current = patch(
+        &current,
+        parameter::amplitude_velocity(4),
+        ParameterValue::Float(0.625),
+    );
+    let v4 = NativeDeviceState::new(
+        OPERATOR_TYPE_ID,
+        4,
+        current.payload()[..VELOCITY_PAYLOAD_BYTES].to_vec(),
+    )
+    .expect("version four state");
+    let migrated = OPERATOR_METADATA.migrate_state(&v4).expect("migration");
+    assert_eq!(v4.payload().len(), 304);
+    assert_eq!(migrated.payload().len(), 320);
+    assert_eq!(&migrated.payload()[..304], v4.payload());
+    assert_eq!(migrated.state_version(), 5);
+    for operator in 1..=4 {
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&migrated, parameter::feedback(operator))
+                .expect("neutral feedback"),
+            ParameterValue::Float(0.0)
+        );
+    }
+    assert_eq!(
+        OPERATOR_METADATA
+            .read_parameter(&migrated, parameter::amplitude_velocity(4))
+            .expect("preserved v4 control"),
+        ParameterValue::Float(0.625)
+    );
+}
+
+#[test]
 fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
     let mut state = OPERATOR_METADATA.default_state().expect("default");
     for operator in 1..=4 {

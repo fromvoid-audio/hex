@@ -561,11 +561,13 @@ instrumented evidence for that fixture, not a claim about every provider or
 physical callback deadline.
 
 The original Sine and FM4 built-ins still use their compact analytic note
-samplers. Operator is registered through the shared analytic context API and
-supports the four native periodic waveform choices; see the
-[Operator waveform contract](operator-waveforms.md). Mutable voice continuity,
-seek/chase, loop handling and effect residual-tail ownership remain separate
-work.
+samplers. Operator uses the shared analytic path when effective self-feedback is
+zero and its bounded mutable runtime when any effective feedback amount is
+nonzero. It supports the four native periodic waveform choices; see the
+[Operator waveform contract](operator-waveforms.md) and the
+[Operator feedback runtime contract](operator-feedback.md). Operator-specific
+seek/chase, transport-loop and export continuity remain unclaimed and follow the
+generic mutable-runtime limits described in that contract.
 
 ## Control-owned runtime checkpoints — Pulse2181
 

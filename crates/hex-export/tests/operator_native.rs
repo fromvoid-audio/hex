@@ -195,3 +195,43 @@ fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
         }
     }
 }
+
+#[test]
+fn feedback_operator_full_prepared_export_matches_registered_playback() {
+    let state = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &operator_state(),
+        ParameterId::from_static(78),
+        ParameterValue::Float(0.4),
+    )
+    .expect("enable first oscillator feedback");
+    let revision = operator_revision(state);
+    assert!(revision.has_arrangement_mutable_instruments());
+    assert!(revision.arrangement_seek_requires_preroll());
+
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .expect("mutable Operator playback");
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let mut expected = vec![[0.0; 2]; 6_500];
+    for block in expected.chunks_mut(113) {
+        playback
+            .render(block)
+            .expect("registered feedback playback");
+    }
+
+    let directory = TestDir::new();
+    let path = directory.0.join("operator-feedback.wav");
+    let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
+        .expect("linear prepared feedback export");
+    assert_eq!(report.frames, 6_500);
+    let bytes = fs::read(path).expect("read exported feedback wav");
+    for (frame_index, (samples, expected)) in bytes[44..].chunks_exact(4).zip(expected).enumerate()
+    {
+        let left = i16::from_le_bytes([samples[0], samples[1]]);
+        let right = i16::from_le_bytes([samples[2], samples[3]]);
+        let expected = (expected[0].clamp(-1.0, 1.0) * 32_767.0).round() as i16;
+        assert_eq!(left, expected, "feedback export mismatch at {frame_index}");
+        assert_eq!(right, expected, "centered mono at {frame_index}");
+    }
+}
