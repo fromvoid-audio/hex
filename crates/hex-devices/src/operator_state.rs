@@ -1,6 +1,6 @@
 //! Original Operator control state and registered shared-context instrument.
 //!
-//! Version-2 data preserves the version-1 float prefix and appends four shape choices.
+//! Version-3 data preserves the version-2 prefix and appends fixed tuning.
 //! The old FM4 device keeps its separate type, state layout and global ADSR.
 use crate::operator_waveform::OperatorWaveform;
 use crate::{
@@ -21,16 +21,19 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 2;
+pub const OPERATOR_STATE_VERSION: u32 = 3;
+const WAVEFORM_STATE_VERSION: u32 = 2;
+mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;
 const ENVELOPE_FIELDS: usize = 6;
 const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
 const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
 const WAVEFORM_COUNT: usize = OPERATORS;
-const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1;
+const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT + WAVEFORM_COUNT + 1 + OPERATORS * 3;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
-const PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
+const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
+const PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -65,6 +68,22 @@ pub mod parameter {
             return ParameterId::from_static(0);
         }
         ParameterId::from_static(56 + operator)
+    }
+
+    pub const fn fixed(operator: u32) -> ParameterId {
+        tuning_parameter(operator, 0)
+    }
+    pub const fn fixed_frequency(operator: u32) -> ParameterId {
+        tuning_parameter(operator, 1)
+    }
+    pub const fn fixed_multiplier(operator: u32) -> ParameterId {
+        tuning_parameter(operator, 2)
+    }
+    const fn tuning_parameter(operator: u32, field: u32) -> ParameterId {
+        if operator == 0 || operator > 4 {
+            return ParameterId::from_static(0);
+        }
+        ParameterId::from_static(62 + (operator - 1) * 3 + field)
     }
 
     /// Derived topology selector. Custom is inferred from the stored routing.
@@ -213,6 +232,13 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         default: ParameterValue::Choice(0),
         presentation: ParameterPresentation::Linear,
     };
+    index += 1;
+    let tuning = tuning::descriptors();
+    let mut offset = 0;
+    while offset < tuning.len() {
+        result[index + offset] = tuning[offset];
+        offset += 1;
+    }
     result
 }
 
@@ -223,13 +249,14 @@ static PARAMETERS: [ParameterDescriptor; PARAMETER_COUNT] = parameters();
 pub struct OperatorSettings {
     fields: [f32; FIELD_COUNT],
     waveforms: [OperatorWaveform; OPERATORS],
+    tuning: tuning::TuningState,
 }
 
 impl OperatorSettings {
     /// Original defaults; no measured Live transfer/default compatibility claim.
     pub fn defaults() -> Self {
         let mut fields = [0.0; FIELD_COUNT];
-        for descriptor in PARAMETERS {
+        for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             if let ParameterValue::Float(value) = descriptor.default {
                 fields[descriptor.id.value() as usize - 1] = value;
             }
@@ -237,6 +264,7 @@ impl OperatorSettings {
         Self {
             fields,
             waveforms: [OperatorWaveform::Sine; OPERATORS],
+            tuning: tuning::TuningState::default(),
         }
     }
 
@@ -246,6 +274,7 @@ impl OperatorSettings {
         }
         let expected_len = match state.state_version() {
             LEGACY_STATE_VERSION => LEGACY_PAYLOAD_BYTES,
+            WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -266,8 +295,8 @@ impl OperatorSettings {
             *field = f32::from_le_bytes(bytes);
         }
         let mut waveforms = [OperatorWaveform::Sine; OPERATORS];
-        if state.state_version() == OPERATOR_STATE_VERSION {
-            for (index, bytes) in state.payload()[LEGACY_PAYLOAD_BYTES..]
+        if state.state_version() >= WAVEFORM_STATE_VERSION {
+            for (index, bytes) in state.payload()[LEGACY_PAYLOAD_BYTES..WAVEFORM_PAYLOAD_BYTES]
                 .chunks_exact(size_of::<u32>())
                 .enumerate()
             {
@@ -279,7 +308,16 @@ impl OperatorSettings {
                     .ok_or(DeviceContractError::MalformedState)?;
             }
         }
-        let result = Self { fields, waveforms };
+        let tuning = if state.state_version() == OPERATOR_STATE_VERSION {
+            tuning::TuningState::decode(&state.payload()[WAVEFORM_PAYLOAD_BYTES..])?
+        } else {
+            tuning::TuningState::default()
+        };
+        let result = Self {
+            fields,
+            waveforms,
+            tuning,
+        };
         result.kernel_parts()?;
         Ok(result)
     }
@@ -296,6 +334,7 @@ impl OperatorSettings {
         for waveform in self.waveforms {
             payload.extend_from_slice(&waveform.choice().to_le_bytes());
         }
+        self.tuning.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -310,6 +349,7 @@ impl OperatorSettings {
         ),
         DeviceContractError,
     > {
+        self.tuning.modes()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -380,12 +420,13 @@ impl OperatorSettings {
         sample_rate: u32,
     ) -> Result<PreparedOperatorConfiguration, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorConfiguration::new_with_waveforms(
+        PreparedOperatorConfiguration::new_with_tuning(
             sample_rate,
             oscillators,
             routing,
             envelopes,
             self.waveforms,
+            self.tuning.modes()?,
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -398,7 +439,7 @@ impl OperatorSettings {
         velocity: u8,
     ) -> Result<PreparedOperatorFm4, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorFm4::new_with_waveforms(
+        PreparedOperatorFm4::new_with_tuning(
             sample_rate,
             pitch,
             velocity,
@@ -406,6 +447,7 @@ impl OperatorSettings {
             routing,
             envelopes,
             self.waveforms,
+            self.tuning.modes()?,
         )
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -445,6 +487,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.tuning.read(parameter) {
+            return Ok(value);
+        }
         if parameter == parameter::routing_preset() {
             return Ok(ParameterValue::Choice(settings.routing_preset().choice()));
         }
@@ -475,6 +520,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.tuning.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if parameter == parameter::routing_preset() {
             let ParameterValue::Choice(choice) = value else {
                 return Err(DeviceContractError::InvalidParameterValue);
@@ -608,5 +656,7 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
     (index < OPERATORS).then_some(index)
 }
 
+#[cfg(test)]
+mod fixed_tests;
 #[cfg(test)]
 mod tests;

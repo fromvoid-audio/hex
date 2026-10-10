@@ -1,6 +1,6 @@
 # hex todo
 
-Updated 9 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
+Updated 10 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
 This file retains request order and repository evidence; [plan](docs/plan.md)
 owns milestone gates and [features](docs/features.md) owns capability assessment.
@@ -25,6 +25,28 @@ Completed chronology and superseded work orders are preserved in the
   automated source checks belong to the implementing agent.
 
 ## current priority — lattice devices
+
+### latest source checkpoint
+
+The current user test app remains `hex-lattice-return-review-20261010-006866f.app`
+(PR38–87); it has not been replaced or launched by the agent. Source-ready,
+unmerged follow-ups are [PR88](https://github.com/PORTALSURFER/hex/pull/88)
+(cancellable seek worker), [PR89](https://github.com/PORTALSURFER/hex/pull/89)
+(interactive Arrangement preroll) and [PR90](https://github.com/PORTALSURFER/hex/pull/90)
+(effect-tail/quiescence contract). Each passed all16 exact-head local CI checks.
+They are combined locally on `codex/lattice-review-56`; that combined branch
+still needs its own exact-head checks and fresh bundle before user review.
+
+Pulse2192 is implementing native stateful seek admission/publication and
+cancellation; Pulse2203 is implementing captured track-effect suffix lifetime.
+Each has its own focused branch and future PR. Return-bus residual ownership
+(Pulse2204), constructor stack measurements (2195), mutable loop boundaries
+(2165), sustained performance (2108), complete Operator parity and plugin
+hosting remain open. One freely positioned instrument per track is confirmed.
+The interactive 100-track preparation profile has now been captured: 48,000
+frames at 48 kHz took 200–211 ms in nine fresh samples on an Apple M5 Pro.
+This is bounded background readiness evidence, not a native audio deadline or
+first-audible claim; see [performance](docs/performance.md).
 
 The implementation request covers every currently open Hex ticket in Pulse,
 including work without an existing PR. The priority below orders dependencies;
@@ -999,6 +1021,19 @@ admission checks or change unconditional fresh/inherited publication. Full local
 CI, exact-head review and native integration remain pending; do not mark Pulse2186
 done before those gates.
 
+
+## 2026-10-10 combined native review 54
+
+Combines source PR38–87, adding conditional fresh-runtime publication (Pulse2186,
+PR86) and original derived Operator routing presets (Pulse2187, PR87) to
+review53. Both focused heads passed all16 local checks independently:
+7227e144 / `20261010T062045Z-817fcd13` and
+66f0abe / `20261010T062240Z-7d26bc1a`. Canonical preset changes now have exact
+one-edit Undo/Redo coverage. Combined exact-head CI, fresh release/signing and
+user UI/listening acceptance are separate gates. Native seek worker integration
+is active on Pulse2188 and not included in this checkpoint; full Operator parity,
+mutable loops, plugin hosting and general latency compensation remain open.
+
 2026-10-10 Pulse2190 interactive Arrangement preroll source milestone:
 `ArrangementSeekMode::Interactive` constructs the ordinary Session runtime
 before bounded Arrangement replay; linear export-style preparation remains the
@@ -1028,8 +1063,8 @@ admission/publication, route/Stop fencing, enabled transport loops, and measured
 100-track readiness remain open. Debug/release Service-worker checks and focused
 crate tests/Clippy pass. An ignored release profile now reuses the 100-track
 mutable fixture for both linear and interactive preroll; the interactive profile
-uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Root has not yet captured
-its release timing evidence.
+uses 48,000 frames at 48 kHz and an 8 MiB worker stack. Captured release timing
+evidence and its limits are recorded in [performance](docs/performance.md).
 
 2026-10-10 Pulse2192 stateful Arrangement seek UI integration is implemented in
 source on a focused branch. Pointer seek and Spacebar PlayFrom retain the exact
@@ -1052,3 +1087,12 @@ Root acceptance adds fault/shutdown admission gates and verifies all8 prepared
 seek UI tests. After publication, cancellation suppresses UI completion but
 cannot withdraw the accepted audio owner; canonical edits alone are not an audio
 fence. A stronger cancellation barrier remains follow-up work.
+
+## 10 October2026 — Pulse2205 Operator fixed tuning
+
+Original per-oscillator Fixed mode, frequency and multiplier now use the generic
+Lattice metadata/state contract. Version3 preserves old prefixes, uses288 bytes
+and69 descriptors; shared context/note sizes are688/48 bytes. Independent PCM,
+canonical refusal/history, opaque persistence and callback allocation checks pass.
+See [the contract](docs/operator-fixed-tuning.md). Full local CI, focused PR and
+combined native review/listening are pending; no full Operator parity claim.

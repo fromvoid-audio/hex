@@ -68,7 +68,9 @@ release/span scratch by10,019,840bytes relative to the prior40byte sampler; see
 [lattice instruments](lattice-instruments.md) for checked ceilings and scope.
 Configuration lifetime across copied release tails and bounded voice/event
 identity use the source-tested shared analytic continuity runtime. Mutable
-feedback chase/replay still needs a separate runtime contract. Fixed tuning,
+feedback chase/replay still needs a separate runtime contract. The distinct
+registered Operator now supports [fixed tuning](operator-fixed-tuning.md);
+registered FM4 remains ratio-only. FM4 fixed tuning,
 additional waveforms and partials,
 filters/LFO/modulation, polyphony/stealing, spread/glide, antialiasing, native
 controls and measured reference parity are not supplied here. Below-Nyquist

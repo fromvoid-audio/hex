@@ -2030,3 +2030,30 @@ figures cover scratch and declared processor state; they exclude allocator/Arc
 headers and the rest of the compiled graph. The separate callback allocation
 probe verifies zero total and signed-net allocation changes for a stateful
 Return render/handoff block and control-side retirement.
+
+## interactive Arrangement preparation, 10 October 2026
+
+Source `6652d28c0394ec77d0482f221d9f7554241be749` (PR89) was measured
+on Apple M5 Pro, macOS 26.6.2 (25G83), Rust 1.98.1. The optimized ignored
+`interactive_arrangement_preroll_profiles_100_stateful_tracks` fixture contains
+100 original mutable-feedback instruments at 48 kHz. It prepares a fresh
+interactive runtime and replays 48,000 frames in 188 blocks of at most 256
+frames, using an explicit 8 MiB control-thread stack. Graph construction occurs
+before timing; candidate construction and replay are timed, destruction is
+outside timing. There is no warm-up. No Cargo/rustc processes were observed
+during the three fresh process runs, each with three samples.
+
+Times in milliseconds: `203.258500, 206.348500, 206.393791`;
+`208.109834, 211.095084, 205.288334`;
+`204.426542, 200.020666, 206.125666`.
+The accounted runtime/scratch upper bound is 22,209,656 bytes, separate from
+the worker stack and shared immutable graph. `SessionPlayback` struct size is
+104,568 bytes; peak stack residency is unmeasured (Pulse2195).
+
+Raw logs, exact executable/hash, hardware and invocation manifest are preserved
+in local ignored `artifacts/profiles/interactive-arrangement-preroll-20261010/6652d28/`
+under the primary checkout. These timings measure background preparation, not
+native input latency, callback deadlines, first audible output or UI readiness.
+They reinforce the need for responsive pending feedback and cancellation while
+reconstruction runs off the UI and audio callback. Native integration is
+Pulse2192; no comparison with Live or general 100-track workload claim follows.

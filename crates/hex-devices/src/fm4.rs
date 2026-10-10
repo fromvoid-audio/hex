@@ -7,7 +7,9 @@
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
-pub use operator::{PreparedOperatorConfiguration, PreparedOperatorFm4, PreparedOperatorNote};
+pub use operator::{
+    OperatorTuning, PreparedOperatorConfiguration, PreparedOperatorFm4, PreparedOperatorNote,
+};
 
 use crate::operator_waveform::{OperatorWaveform, OperatorWaveformBank};
 use crate::{Invalid, PHASE_SCALE, SineTable};

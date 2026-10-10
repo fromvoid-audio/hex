@@ -1,13 +1,13 @@
 # registered Operator instrument
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes57 descriptors and opaque version2 state,
-migrating the prior version1 float prefix to all-sine defaults; storage, history and UI do not have
+catalog. The control codec exposes69 descriptors and opaque version3 state,
+migrating version1 to all-sine ratio defaults and version2 to ratio defaults; storage, history and UI do not have
 Operator-specific branches.
 
 The admitted DSP is the original bounded acyclic four-oscillator core with
 independent envelopes, carrier/modulation routing, and per-operator sine, saw,
-square or triangle selectors. Preparation validates the full state and oscillator
+square or triangle selectors and per-oscillator fixed tuning. Preparation validates the full state and oscillator
 domains on control. It retains the existing sine table and, when any non-sine
 shape is selected, a reference to one process-wide immutable harmonic-limited
 table bank. Each note stores four phase steps, velocity and packed cap indices
@@ -31,3 +31,7 @@ This milestone does not implement mutable feedback, filters, additional
 waveforms beyond these four, unbounded routing, full Operator controls or Live numerical parity. The injected
 mutable runtime remains test-only. Native listening and device-deadline behavior
 require separate acceptance; see [performance measurements](performance.md).
+
+Fixed oscillators use frequency in Hz times a multiplier, independent of MIDI
+pitch. Ratio oscillators retain the previous exact phase-step law. See the
+[fixed tuning contract](operator-fixed-tuning.md) for bounds and validation.

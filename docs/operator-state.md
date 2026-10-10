@@ -7,21 +7,24 @@ context contract. This is a bounded original acyclic FM device with four periodi
 choices, not full Operator behavior or proof of Live numerical parity. Feedback,
 filters, further waveform controls and remaining behavior remain separate work.
 
-`hex.instrument.operator`, state version2, owns exactly240 bytes: the original
-224-byte version1 prefix of 56 little-endian f32 fields followed by four
-little-endian u32 waveform choices. Version1 migration validates its old fields,
-preserves the first224 bytes bit-for-bit (including signed zero), and selects
-sine for all four operators. Version2 appends one selector for each operator.
+`hex.instrument.operator`, state version3, owns exactly288 bytes: the original
+224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32
+waveform choices (version2's 240-byte prefix), then four 12-byte tuning records.
+Each tuning record stores a u32 fixed flag, f32 frequency in Hz, and f32 multiplier.
+Version1 migration validates and preserves its prefix bit-for-bit (including
+signed zero), selects sine, and defaults every oscillator to ratio tuning.
+Version2 migration preserves its full 240-byte prefix and defaults ratio tuning.
 The first12 fields are ratio, level and phase in
 operator order; the next16 are source-major modulation depths, including four
 reserved zero diagonal entries; the next4 are carrier weights. The final24 fields of the original prefix are
 initial, peak, sustain, attack, decay and release for each of four operators.
 Parameter IDs are one-based field indices, excluding reserved diagonals; waveform
-selectors use stable IDs57–60. There are57 editable descriptors:52 floats, four
+selectors use stable IDs57–60. There are69 editable descriptors:52 original floats, four
 waveform choices (`sine`, `saw`, `square`, `triangle`) and one derived routing
-preset choice (`custom`, `serial`, `parallel`, `two pairs`). Routing preset ID61
+preset choice (`custom`, `serial`, `parallel`, `two pairs`), plus four fixed switches and eight
+frequency/multiplier floats. Tuning uses stable IDs62–73. Routing preset ID61
 is computed from the exact sixteen modulation depths and four carrier weights;
-it adds no serialized field and does not change state version2 or its240-byte
+it adds no serialized field and does not add to the current288-byte
 payload. Named choices replace those twenty routing fields atomically. `custom`
 leaves routing intact and is not a persisted mode; editing the topology changes
 readback to `custom` unless it exactly matches a named layout. See the
@@ -31,8 +34,9 @@ readback to `custom` unless it exactly matches a named layout. See the
 Every decode, migration and patch validates all fields and the acyclic routing
 graph. Unknown types/versions, wrong lengths, nonfinite values, invalid ranges,
 self-feedback and cycles are refused. Patches return a new opaque state, leaving
-the original intact on failure. Migration accepts exactly version1 or version2;
-the former migrates to version2 while the latter is validated and preserved.
+the original intact on failure. Migration accepts versions1,2 and3; older valid states migrate to version3,
+and version3 is validated and preserved. Inactive fixed settings are validated
+too. See the [fixed tuning contract](operator-fixed-tuning.md).
 Storage needs no special Operator branch: this uses the existing opaque
 native-device state contract.
 

@@ -291,6 +291,11 @@ fn registered_operator_waveform_choices_roundtrip_as_opaque_state() {
     check_operator_opaque_roundtrip(2);
 }
 
+#[test]
+fn registered_operator_fixed_tuning_roundtrips_as_opaque_state() {
+    check_operator_opaque_roundtrip(3);
+}
+
 fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
@@ -320,9 +325,16 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
         fields[offset..offset + 6].copy_from_slice(&[0.0, 1.0, 0.7, 0.005, 0.1, 0.1]);
     }
     let mut payload: Vec<u8> = fields.into_iter().flat_map(f32::to_le_bytes).collect();
-    if state_version == 2 {
+    if state_version >= 2 {
         for choice in [1_u32, 2, 3, 0] {
             payload.extend_from_slice(&choice.to_le_bytes());
+        }
+    }
+    if state_version == 3 {
+        for index in 0..4 {
+            payload.extend_from_slice(&u32::from(index % 2 == 0).to_le_bytes());
+            payload.extend_from_slice(&(100.0_f32 * (index + 1) as f32).to_le_bytes());
+            payload.extend_from_slice(&2.0_f32.to_le_bytes());
         }
     }
     let state = NativeDeviceState::new(

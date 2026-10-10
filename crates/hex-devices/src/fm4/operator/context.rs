@@ -1,6 +1,6 @@
 //! Shared original DSP configuration with compact, independently prepared notes.
 use super::*;
-use crate::fm4::{PreparedFmConfiguration, prepared_steps};
+use crate::fm4::PreparedFmConfiguration;
 use crate::operator_waveform::{
     OperatorWaveform, OperatorWaveformBank, harmonic_cap_index, is_canonical_harmonic_cap,
     prepared_bank,
@@ -13,6 +13,7 @@ use crate::operator_waveform::{
 pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
     ratios: [f64; OPERATORS],
+    tuning: [OperatorTuning; OPERATORS],
     configuration: PreparedFmConfiguration,
     envelopes: PreparedOperatorEnvelopes,
     waveforms: [OperatorWaveform; OPERATORS],
@@ -53,6 +54,28 @@ impl PreparedOperatorConfiguration {
         envelopes: [OperatorEnvelope; OPERATORS],
         waveforms: [OperatorWaveform; OPERATORS],
     ) -> Result<Self, Invalid> {
+        Self::new_with_tuning(
+            sample_rate,
+            oscillators,
+            routing,
+            envelopes,
+            waveforms,
+            [OperatorTuning::Ratio; OPERATORS],
+        )
+    }
+
+    /// Immutable per-oscillator tuning. Fixed frequencies ignore note pitch.
+    pub fn new_with_tuning(
+        sample_rate: u32,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelopes: [OperatorEnvelope; OPERATORS],
+        waveforms: [OperatorWaveform; OPERATORS],
+        tuning: [OperatorTuning; OPERATORS],
+    ) -> Result<Self, Invalid> {
+        for mode in tuning {
+            mode.validate()?;
+        }
         let envelopes = PreparedOperatorEnvelopes::new(sample_rate, envelopes)?;
         let waveform_bank = if waveforms
             .iter()
@@ -68,6 +91,7 @@ impl PreparedOperatorConfiguration {
         Ok(Self {
             sample_rate,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
+            tuning,
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             envelopes,
             waveforms,
@@ -80,7 +104,8 @@ impl PreparedOperatorConfiguration {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
         }
-        let steps = prepared_steps(self.sample_rate, pitch, &self.ratios)?;
+        let steps =
+            super::tuning::prepared_steps(self.sample_rate, pitch, &self.ratios, &self.tuning)?;
         let mut caps = [0_u8; OPERATORS];
         for index in 0..OPERATORS {
             if self.waveforms[index] != OperatorWaveform::Sine {
