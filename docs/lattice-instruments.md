@@ -1,8 +1,9 @@
 # Canonical Lattice instrument slots
 
 Pulse2114 is a focused prerequisite within native runtime16 before Operator19.
-This change admits immutable analytic instruments. Mutable FM voices, expression,
-plugin instruments, event queues and general chase/tail contracts remain deferred.
+The current built-in instruments use immutable analytic sampling. Mutable FM
+voices, expression, plugin instruments, engine event scheduling and general
+chase/tail integration remain deferred.
 
 ## Model and persistence
 
@@ -243,3 +244,55 @@ remain covered separately. Full local CI and native acceptance are separate gate
 The browser exposes registered FM4 through the same canonical slot and generic
 parameter panel. FM4 authored-state and replacement continuity use the shared
 instrument contracts; this does not implement mutable Operator voices or plugins.
+
+## Mutable runtime contract foundation — Pulse2157
+
+`PreparedNativeInstrument` now has an optional mutable-runtime preparation
+capability whose default is `None`, leaving current sine and FM4 sampler
+behavior unchanged. A prepared mutable runtime declares a nonzero version,
+per-twin fixed storage, maximum event count, maximum active occurrence count,
+and a finite maximum duration from final note-off to output quiescence. The
+tail bound includes envelope release and internal feedback/output. The caller
+must supply finite pair-byte, event-count, occurrence-count and tail-duration
+ceilings; the lattice checks every declaration and checked twin-byte arithmetic
+before constructing either runtime. It then verifies that the newly-created
+twins can copy history in both directions and that their reported fixed storage
+does not exceed the declaration. Declarations include the concrete fixed voice
+array and owned buffers; reported sizes exclude allocator bookkeeping and remain
+the implementation's accounting contract. The API adds no engine-wide voice,
+onset or block-event constants.
+
+The caller passes an ordered event slice and mutable stereo slice. Event offsets
+are half-open (`0..frames.len()`), offsets must be nondecreasing, IDs must be
+nonzero, and repeated note-on IDs in a batch are refused. Equal-offset order is
+preserved, so note-off followed by note-on can free capacity when the runtime's
+release policy makes a slot available. Each runtime's read-only preflight must
+also reject duplicate IDs already active in prior blocks and its own
+occurrence-capacity failures. No event or
+PCM mutation occurs until both generic and implementation-specific preflight
+succeed. After admission, processing, reset, history copy and twin commit are
+infallible; callers can abandon scratch after a later-stage failure and retry
+from committed primary history. Runtime compatibility must remain invariant for
+the lifetime of both twins. A committed-state quiescence query lets a future
+owner check whether the bounded tail has finished before control-side retirement.
+
+History-copy compatibility is implementation-defined but must include every
+immutable configuration value that affects future samples, not only runtime
+version. A later engine compiler must additionally check device ID, device
+type/state and sample rate before asking this runtime to inherit. Runtime
+objects own any immutable configuration needed after their prepared factory is
+released; graph retirement and final destruction stay on the control side.
+
+The discontinuity contract at this stage is hard reset with no chase or replay.
+Mutable-only definitions must explicitly refuse analytic `prepare_note`; a
+future compiler must select the mutable capability and may not substitute a
+silent or sine analytic sampler when analytic preparation fails. The test-only
+feedback instrument proves overlapping equal-pitch occurrence IDs, same-frame
+off/on ordering, partition equivalence, duplicate/capacity refusal, rollback,
+compatibility, actual twin storage, additive output over nonzero caller PCM, and
+quiescence within its declared release/output-tail bound. The proof feedback law
+uses a finite tail counter to clear residual output. These tests inspect the
+bounded proof runtime but do not instrument production engine callbacks. No
+built-in instrument uses this runtime yet. Engine event/tail integration and the
+prepared shared-playback export adapter remain separate prerequisites (Pulse
+2158 and 2159).
