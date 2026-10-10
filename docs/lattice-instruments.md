@@ -316,6 +316,17 @@ source iterator order. Note-offs at an onset's in-query gate end are included
 in the same ordered batch. The complete
 project remains subject to the existing compiled occurrence cap.
 
+Before publishing an Arrangement revision or Session inventory, mutable MIDI
+admission also proves every sliding 256-frame event window against the smaller
+of the device's declared event capacity and the host's 256-event buffer. This
+counts both NoteOn and NoteOff edges, including short gates and release-tail
+overlap, with exact-boundary NoteOffs ordered before new NoteOns. The existing
+release-inclusive voice proof is checked against the smaller of the declared
+device voice capacity and the host's 64-occurrence limit. Invalid zero or
+oversized declarations and dense candidates are refused before history or
+playback publication; callback event handling remains bounded by the same
+validated limits.
+
 Mutable processing participates in the same whole-block transaction as audio,
 effect history, routes and transport. Any later segment failure discards the
 mutable scratch ledger and runtime history with the rest of the candidate block.

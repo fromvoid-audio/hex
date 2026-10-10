@@ -274,22 +274,26 @@ fn compile_project<'a>(
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
-        let mutable_instrument = track
+        let mutable_limits = if let Some(instrument) = track
             .instrument()
             .filter(|device| !device.bypassed())
             .and(instrument_config.as_ref())
-            .map(|instrument| {
-                instrument
-                    .prepare_mutable_runtime()
-                    .map(|runtime| runtime.is_some())
-                    .map_err(|_| Invalid("mutable instrument runtime is unsupported"))
-            })
-            .transpose()?
-            .unwrap_or(false);
+        {
+            instrument
+                .prepare_mutable_runtime()
+                .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+                .map(|factory| {
+                    crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let mutable_looping_source = track
             .midi_clips()
             .iter()
             .any(|clip| clip.source().looping());
+        let mutable_instrument = mutable_limits.is_some();
         let clips = track
             .clips()
             .iter()
@@ -335,6 +339,7 @@ fn compile_project<'a>(
                     snapshot,
                     track,
                     prepared_instrument,
+                    mutable_limits,
                     track
                         .instrument()
                         .and_then(|device| shared_contexts.index_for_device(device.id()))

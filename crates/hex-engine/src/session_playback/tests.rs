@@ -27,6 +27,8 @@ thread_local! {
     static MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE: Cell<Option<usize>> = const {
         Cell::new(None)
     };
+    static MUTABLE_EVENT_CAPACITY_OVERRIDE: Cell<Option<usize>> = const { Cell::new(None) };
+    static MUTABLE_VOICE_CAPACITY_OVERRIDE: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 #[derive(Default)]
@@ -383,10 +385,10 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
         std::mem::size_of::<ZeroTailMutableRuntime>()
     }
     fn max_events_per_block(&self) -> usize {
-        256
+        MUTABLE_EVENT_CAPACITY_OVERRIDE.with(|limit| limit.get().unwrap_or(256))
     }
     fn max_active_occurrences(&self) -> usize {
-        64
+        MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|limit| limit.get().unwrap_or(64))
     }
     fn max_release_tail_frames(&self) -> u64 {
         0
@@ -614,10 +616,14 @@ impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
         Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
         hex_lattice_contract::DeviceContractError,
     > {
-        Ok(Some(Box::new(MutableFeedbackFactory {
-            level: self.level,
-            release_frames: self.release_frames,
-        })))
+        if self.release_frames == 0 {
+            Ok(Some(Box::new(ZeroTailMutableFactory)))
+        } else {
+            Ok(Some(Box::new(MutableFeedbackFactory {
+                level: self.level,
+                release_frames: self.release_frames,
+            })))
+        }
     }
 }
 
@@ -633,10 +639,10 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
         })
     }
     fn max_events_per_block(&self) -> usize {
-        256
+        MUTABLE_EVENT_CAPACITY_OVERRIDE.with(|limit| limit.get().unwrap_or(256))
     }
     fn max_active_occurrences(&self) -> usize {
-        64
+        MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|limit| limit.get().unwrap_or(64))
     }
     fn max_release_tail_frames(&self) -> u64 {
         self.release_frames + 8
@@ -9658,3 +9664,6 @@ mod source_loop_tests;
 
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
+
+#[path = "device_capacity_tests.rs"]
+mod device_capacity_tests;
