@@ -58,12 +58,40 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn declared_runtime_bytes(&self) -> usize;
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime>;
 
+    /// Describe the processor's residual-output contract after its final
+    /// nonzero input frame. Finite values are sample frames at this prepared
+    /// processor's sample rate. A host must validate the value against its own
+    /// finite work budget before admission, using checked frame arithmetic;
+    /// in particular, `u64::MAX` is not an automatic acceptance. Unknown
+    /// implementations conservatively make no finite reclamation-time promise.
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Unbounded
+    }
+
     /// Return known algorithmic latency in frames; `None` means unknown.
     /// Implementations may report zero when processing introduces no fixed
     /// buffering or lookahead delay.
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         None
     }
+}
+
+/// Prepared bound on residual output after the last nonzero input sample.
+/// A `Finite` declaration promises that, after at most the declared number of
+/// subsequent zero-input frames, `NativeProcessorRuntime::is_quiescent` is
+/// true. The promise covers all supported finite input histories and every
+/// stored state that can affect future output. It does not include fixed
+/// algorithmic latency, host/device buffering, or external signal tails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputTail {
+    /// After at most this many subsequent zero-input frames, the runtime must
+    /// report quiescent. This bound includes every internal state capable of
+    /// producing later output; zero means quiescent immediately after the last
+    /// nonzero input frame.
+    Finite { max_tail_frames: u64 },
+    /// No finite tail bound is guaranteed. A runtime may still become
+    /// quiescent, but callers must not infer a deadline from observed samples.
+    Unbounded,
 }
 
 /// Audio-owned state with allocation-free, infallible block processing and
@@ -79,6 +107,18 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         }
     }
     fn reset(&mut self);
+    /// True only when this runtime cannot produce any future output under
+    /// zero input and its current prepared configuration, including output
+    /// from dormant delay lines or recursive state. A currently silent block
+    /// alone is not proof. This query must be bounded, allocation-free,
+    /// infallible, lock-free and read-only. Implementations may be conservative
+    /// and keep returning false. The default is false so an older runtime never
+    /// implies silence from uninspected state. Callers must inspect committed
+    /// audio-owned state only; speculative twins are not evidence that the
+    /// committed processor has drained.
+    fn is_quiescent(&self) -> bool {
+        false
+    }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool;
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime);
     fn as_any(&self) -> &dyn StdAny;
@@ -826,6 +866,9 @@ mod tests {
         fn reset(&mut self) {
             self.history = 0.0;
         }
+        fn is_quiescent(&self) -> bool {
+            self.history == 0.0
+        }
         fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
             previous.as_any().is::<Self>()
         }
@@ -836,6 +879,86 @@ mod tests {
         }
         fn as_any(&self) -> &dyn StdAny {
             self
+        }
+    }
+
+    struct DelayedTailPrepared;
+
+    impl PreparedNativeProcessor for DelayedTailPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<DelayedTailRuntime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(DelayedTailRuntime::default())
+        }
+        fn output_tail(&self) -> OutputTail {
+            OutputTail::Finite { max_tail_frames: 3 }
+        }
+    }
+
+    #[derive(Default)]
+    struct DelayedTailRuntime {
+        delay: [StereoFrame; 3],
+    }
+
+    impl NativeProcessorRuntime for DelayedTailRuntime {
+        fn process_block(&mut self, frames: &mut [StereoFrame]) {
+            for frame in frames {
+                let delayed = self.delay[0];
+                self.delay.rotate_left(1);
+                self.delay[2] = *frame;
+                *frame = delayed;
+            }
+        }
+        fn reset(&mut self) {
+            self.delay = [[0.0; 2]; 3];
+        }
+        fn is_quiescent(&self) -> bool {
+            self.delay.iter().all(|frame| *frame == [0.0; 2])
+        }
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                self.delay = previous.delay;
+            }
+        }
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+    }
+
+    #[test]
+    fn finite_output_tail_keeps_delayed_residual_until_bound_and_reset() {
+        let prepared = DelayedTailPrepared;
+        assert_eq!(
+            prepared.output_tail(),
+            OutputTail::Finite { max_tail_frames: 3 }
+        );
+        for partition in [1, 2, 7] {
+            let mut runtime = prepared.create_runtime();
+            assert!(runtime.is_quiescent());
+            let mut impulse = [[1.0, -0.5]];
+            runtime.process_block(&mut impulse);
+            assert_eq!(impulse, [[0.0, 0.0]]);
+            assert!(!runtime.is_quiescent());
+
+            let mut silence = [[0.0, 0.0]; 3];
+            let mut processed = 0;
+            for block in silence.chunks_mut(partition) {
+                runtime.process_block(block);
+                processed += block.len();
+                assert_eq!(runtime.is_quiescent(), processed == 3);
+            }
+            assert_eq!(silence, [[0.0, 0.0], [0.0, 0.0], [1.0, -0.5]]);
+            assert!(runtime.is_quiescent());
+
+            runtime.reset();
+            assert!(runtime.is_quiescent());
         }
     }
 
@@ -865,6 +988,22 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(prepared.algorithmic_latency_frames(), None);
+        assert_eq!(prepared.output_tail(), OutputTail::Unbounded);
+        let legacy_runtime: Box<dyn NativeProcessorRuntime> = Box::new(IncompatibleRuntime);
+        assert!(!legacy_runtime.is_quiescent());
+        let mut feedback = prepared.create_runtime();
+        assert!(feedback.is_quiescent());
+        let mut excitation = [[1.0, 1.0]];
+        feedback.process_block(&mut excitation);
+        assert!(!feedback.is_quiescent());
+        for _ in 0..32 {
+            let mut silence = [[0.0, 0.0]; 7];
+            feedback.process_block(&mut silence);
+            assert!(silence.iter().all(|frame| *frame != [0.0, 0.0]));
+            assert!(!feedback.is_quiescent());
+        }
+        feedback.reset();
+        assert!(feedback.is_quiescent());
         let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,

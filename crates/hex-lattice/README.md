@@ -15,10 +15,14 @@ latency metadata, plus the borrowed native-device definition registry and
 preconstructed transactional effect and instrument twins with checked compatible
 histories. Prepared processors report known algorithmic delay in frames or
 `None` when unknown; this describes fixed buffering/lookahead, not filter
-phase/group delay, interface latency or effect tails. Mutable instrument event
-batches are caller-owned and preflighted
-before scratch-state processing; runtime factories declare finite output-tail
-bounds and expose committed-state quiescence for later control-side retirement.
+phase/group delay, interface latency or effect tails. Prepared effect processors
+declare a finite sample-frame tail bound or default conservatively to unbounded;
+their runtimes expose a read-only quiescence query. This is a contract only;
+engine effect-tail retention/reclamation is a separate change. See [native
+effect tails](../../docs/native-effect-tails.md). Mutable instrument event
+batches are caller-owned and preflighted before scratch-state processing; their
+separate runtime factory declares a finite release-tail bound and exposes
+committed-state quiescence for later retirement.
 Analytic instruments may also prepare an immutable shared context and compact
 copyable note payloads; the host enforces per-context and per-revision byte
 bounds, while the engine owns revision and release leases.

@@ -145,6 +145,61 @@ fn arbitrary_block_boundaries_and_reset_are_deterministic() {
 }
 
 #[test]
+fn active_filter_histories_report_quiescence_only_after_zero_input_drains_them() {
+    let mut inactive = UtilityFilterProcessor::new(prepared(false, false, false));
+    inactive.process_frame([0.75, -0.25]);
+    assert!(inactive.is_quiescent());
+
+    // The stereo stimulus exercises DC histories plus both mid and side
+    // Linkwitz–Riley biquad paths, including when audition selects one path.
+    for (dc, bass, audition) in [
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let config = prepared(dc, bass, audition);
+        for chunk_size in [1, 7, 128, 257] {
+            let mut processor = UtilityFilterProcessor::new(config);
+            assert!(processor.is_quiescent());
+            let mut excitation = [[0.75, -0.25]; 16];
+            processor.process_block(&mut excitation);
+            assert!(!processor.is_quiescent());
+
+            // A single zero frame cannot erase all enabled recursive state.
+            let mut first_zero = [[0.0, 0.0]];
+            processor.process_block(&mut first_zero);
+            assert!(!processor.is_quiescent());
+
+            let mut saw_nonzero_residual = first_zero[0] != [0.0, 0.0];
+            let mut drained = false;
+            for _ in 0..200_000usize.div_ceil(chunk_size) {
+                let mut silence = vec![[0.0, 0.0]; chunk_size];
+                processor.process_block(&mut silence);
+                saw_nonzero_residual |= silence.iter().any(|frame| *frame != [0.0, 0.0]);
+                if processor.is_quiescent() {
+                    drained = true;
+                    break;
+                }
+            }
+            assert!(saw_nonzero_residual, "mode {dc}/{bass}/{audition}");
+            assert!(drained, "mode {dc}/{bass}/{audition}");
+
+            let mut after_drain = [[0.0, 0.0]; 32];
+            processor.process_block(&mut after_drain);
+            assert!(after_drain.iter().all(|frame| *frame == [0.0, 0.0]));
+            assert!(processor.is_quiescent());
+
+            processor.process_frame([0.5, -0.125]);
+            assert!(!processor.is_quiescent());
+            processor.reset();
+            assert!(processor.is_quiescent());
+        }
+    }
+}
+
+#[test]
 fn compatible_history_transfer_preserves_candidate_configuration() {
     let mut old = UtilityFilterProcessor::new(prepared(true, true, false));
     for _ in 0..1_000 {
