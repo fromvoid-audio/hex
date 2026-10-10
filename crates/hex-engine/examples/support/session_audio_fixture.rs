@@ -91,6 +91,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
                 source_phase: 0,
                 fade: ClipFade::neutral(arrangement_duration)?,
             }]),
+            sends: Vec::new(),
         });
         cells.push(SessionCellSnapshot {
             track: track_id,
@@ -146,6 +147,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         master_gain: 0.5,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })?;
     let media = project
         .assets()

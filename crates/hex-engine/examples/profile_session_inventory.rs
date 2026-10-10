@@ -42,6 +42,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(Vec::new()),
+            sends: Vec::new(),
         });
         for scene in 1..=2 {
             let clip = next_id;
@@ -95,6 +96,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         master_gain: 1.0,
         tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        return_tracks: Vec::new(),
     })?)
 }
 

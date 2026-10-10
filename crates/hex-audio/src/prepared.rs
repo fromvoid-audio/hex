@@ -1123,6 +1123,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(Vec::new()),
+                sends: Vec::new(),
             }],
             session: SessionSnapshot {
                 scenes: vec![SceneSnapshot {
@@ -1148,6 +1149,7 @@ mod tests {
                 hex_project::BeatTime::ZERO,
                 hex_project::Meter::COMMON_TIME,
             )],
+            return_tracks: Vec::new(),
         })
         .unwrap();
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.5], [0.75, -1.0]]).unwrap();
@@ -1556,6 +1558,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Instrument(Vec::new()),
+                sends: Vec::new(),
             }],
             session: SessionSnapshot {
                 scenes: Vec::new(),
@@ -1568,6 +1571,7 @@ mod tests {
                 hex_project::BeatTime::ZERO,
                 hex_project::Meter::COMMON_TIME,
             )],
+            return_tracks: Vec::new(),
         })
         .unwrap();
         let revision = Arc::new(

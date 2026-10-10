@@ -46,6 +46,15 @@ bypass/state edits and history. New/imported tracks receive the explicit neutral
 sine envelope; removing the slot means MIDI silence. See
 [instrument slots](../../docs/lattice-instruments.md).
 
+The schema-17 return model adds up to 16 pinned-order return buses, each with a
+stable `ReturnId`, gain/mute and up to 64 opaque native effects. Regular tracks
+own sparse unique sends to returns in the finite linear gain domain `0..=2`;
+zero removes the send. Return IDs and device IDs share global project ID
+validation/high-water behavior. Return removal cascades target sends atomically,
+and track removal drops its owned sends. This is metadata/history only: playback
+does not compile nonempty return/send projects until the engine owns routed graph
+processing. See [return tracks](../../docs/return-tracks.md).
+
 Prepared browser imports can atomically insert a default hybrid track before a
 stable `TrackId` or append at the end, then create its audio asset and clip at a
 validated frame start. The legacy prepared-import command remains append-at-end

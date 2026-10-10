@@ -1397,6 +1397,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
                 })
                 .collect(),
         }]),
+        sends: Vec::new(),
     });
     snapshot.next_id = first_note_id + count as u64;
     Project::from_snapshot(snapshot).unwrap()

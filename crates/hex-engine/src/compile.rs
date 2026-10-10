@@ -245,6 +245,16 @@ fn compile_project<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    if !snapshot.return_tracks().is_empty()
+        || snapshot
+            .tracks()
+            .iter()
+            .any(|track| !track.sends().is_empty())
+    {
+        return Err(Invalid(
+            "return tracks and sends are not supported by playback compilation yet",
+        ));
+    }
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let shared_contexts = match shared_contexts {
         Some(contexts) => contexts,

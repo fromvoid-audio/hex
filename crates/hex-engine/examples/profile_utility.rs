@@ -61,6 +61,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                     looping: true,
                     fade: ClipFade::neutral(1_000_000)?,
                 }]),
+                sends: Vec::new(),
             })
         })
         .collect::<Result<_, _>>()?;

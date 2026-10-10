@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             instrument: None,
             instrument_position: None,
             content: hex_project::TrackContentSnapshot::Audio(clips),
+            sends: Vec::new(),
         });
     }
     let project = Project::from_snapshot(Snapshot {
@@ -60,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hex_project::BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     })?;
     let track = project.tracks()[0].id();
     let mut editor = Editor::new(project, 32)?;

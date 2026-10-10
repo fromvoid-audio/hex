@@ -191,6 +191,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(clips),
+            sends: Vec::new(),
         }],
         session: Default::default(),
         loop_region: None,
@@ -203,6 +204,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             hex_project::BeatTime::ZERO,
             hex_project::Meter::COMMON_TIME,
         )],
+        return_tracks: Vec::new(),
     })
     .expect("valid clip-limit fixture");
     let full_clip = full.tracks()[0].clips()[0].id();

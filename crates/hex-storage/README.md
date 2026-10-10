@@ -25,6 +25,13 @@ intentionally silent. Unknown instrument envelopes are preserved, and adding an
 instrument type needs no storage branch. See
 [instrument slots](../../docs/lattice-instruments.md).
 
+Schema17 requires ordered return-track records and a sparse sends array on each
+regular track. Return effect envelopes use the same strict generic device DTO as
+regular effects. Schemas1–16 decode with empty return and send collections;
+return IDs, device IDs, send references, names, gain bounds, count limits and
+allocator high-water are validated by `hex-project`. See
+[return tracks](../../docs/return-tracks.md).
+
 Schema 14 adds ordered per-track native device envelopes: stable instance ID,
 bypass, namespaced type ID, state version and bounded opaque bytes. Schemas 1–13
 migrate to empty chains. Storage preserves unknown types and future device-state
