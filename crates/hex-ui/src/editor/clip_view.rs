@@ -27,10 +27,31 @@ impl EditorView {
     /// Track focus selects devices without implicitly opening a closed pane.
     pub(super) fn focus_track_details(&mut self, window: &mut gpui::Window) {
         self.cancel_midi_note_gesture();
+        self.focused_return = None;
         self.device_panel_active = true;
         if self.midi_focus.is_focused(window) {
             self.focus.focus(window);
         }
+    }
+
+    /// Return focus changes the device owner without changing the regular-track
+    /// selection used by clip and time-range editing.
+    pub(super) fn focus_return_details(
+        &mut self,
+        return_track: hex_project::ReturnId,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.device_panel_active && !super::device_panel::finalize_controls(self, cx) {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        self.focused_return = Some(return_track);
+        self.device_panel_active = true;
+        if self.midi_focus.is_focused(window) {
+            self.focus.focus(window);
+        }
+        true
     }
 
     /// An explicit focus with no selected track or clip leaves an open pane

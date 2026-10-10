@@ -1,13 +1,12 @@
 use super::drag::BrowserAudioDrag;
+use super::tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT};
+use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
     Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
     Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
 };
-
-use super::tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT};
-use super::viewport::Viewport;
 
 impl EditorView {
     pub(super) fn begin_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
@@ -108,7 +107,8 @@ impl EditorView {
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
             let main = self.main_track_row(viewport, &[], &[], cx);
-            return self.arrangement_surface(upper, main, cx);
+            let returns = self.return_tracks_view(cx);
+            return self.arrangement_surface(upper, returns, main, cx);
         };
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
@@ -169,7 +169,8 @@ impl EditorView {
                     cx,
                 )]);
             let main = self.main_track_row(empty_viewport, &bands, &grid, cx);
-            return self.arrangement_surface(upper, main, cx);
+            let returns = self.return_tracks_view(cx);
+            return self.arrangement_surface(upper, returns, main, cx);
         }
 
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -256,7 +257,8 @@ impl EditorView {
             .child(super::loop_rail::view(self, state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)]);
         let main = self.main_track_row(viewport, &bands, &grid, cx);
-        self.arrangement_surface(upper, main, cx)
+        let returns = self.return_tracks_view(cx);
+        self.arrangement_surface(upper, returns, main, cx)
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> Div {
@@ -504,7 +506,13 @@ impl EditorView {
         body
     }
 
-    fn arrangement_surface(&self, upper: Div, main: Div, cx: &mut Context<Self>) -> Div {
+    fn arrangement_surface(
+        &self,
+        upper: Div,
+        returns: impl IntoElement,
+        main: Div,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
         div()
@@ -512,7 +520,9 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .children([upper.flex_1().min_h_0(), main])
+            .child(upper.flex_1().min_h_0())
+            .child(returns)
+            .child(main)
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
                     return;

@@ -249,15 +249,18 @@ nonzero time rectangles remain steady. See [time selection](docs/time-selection.
   Source now has a fixed 44 px Arrangement row, canonical master gain and regular-region
   hit testing; 304 UI tests/two existing ignores and strict UI Clippy/guards pass.
   Clean full CI, native scroll/drop/minimum-layout review and merge remain open.
-- [ ] **return tracks above main** — add/remove return tracks pinned immediately
-  above main, below the scrollable regular-track region. Implement canonical
-  return routing, sends, history and persistence, not decorative rows. Pulse2176
-  now supplies the model/storage prerequisite; see [return tracks](docs/return-tracks.md).
-  Pulse2177 must compile routed audio and validate registered effect classes,
-  bounded processing, latency compensation and retirement. Pulse2178 must place
-  return rows above Main and prove compact native interaction. Until then the
-  engine refuses projects with returns or sends. Keep both sections usable at
-  small heights and prevent implicit feedback cycles.
+- [ ] **return tracks above main** — Pulse2176 supplies schema17, canonical
+  return IDs, gain/mute, generic effect chains, sparse sends and history. Pulse2178
+  now supplies the bounded pinned return section, add/remove/mute/gain controls,
+  focused return effect view, effect-only drag/drop, same-return reorder, and
+  compact per-source send menus with readable linear levels and validated 0.1
+  steps. The section caps at 67 logical pixels and scrolls internally, preserving
+  the regular Arrangement area and pinned Main at 880×540 with details open.
+  Pulse2177 audio integration is a separate dependency and is not merged into
+  this branch: playback compilation currently refuses return projects. Therefore
+  full playback/send/effect validation, integrated save/reopen and native
+  interaction/listening remain open. Send gain drag/type with one undo step is
+  tracked separately as Pulse2179. See [return tracks](docs/return-tracks.md).
 - [ ] **project-wide time selection on main/master** — separate feature PR
   after the pinned main row. Selecting time there addresses every project track
   as one rectangle, including returns when implemented, gaps and every supported
@@ -742,3 +745,16 @@ refuses projects containing return routes until audio2177. Focused model/storage
 engine regressions, affected package checks, local fmt, architecture and style
 checks passed; full local CI and native return-row interaction/listening remain
 open for the integration owner. See [return track contract](docs/return-tracks.md).
+
+Pulse2178 pinned return UI: return rows are pinned immediately above Main and
+scroll internally within a 67 px cap; return focus preserves regular-track
+selection and project-wide time scope. Return effect controls reuse the regular
+device descriptor/gesture lifecycle and reject instrument/cross-owner drops.
+Per-track send menus show named destinations and current linear values with
+validated 0.1 steps; continuous drag/type editing with one undo step is deferred
+to Pulse2179. Return-only rail and device rendering are extracted into focused
+editor modules; step arithmetic clamps roundoff to exact 0/2 endpoints without
+rounding interior saved levels. The 2 send-step tests, 9 Arrangement/Main UI tests,
+18 device-panel tests, strict hex-ui Clippy, format and source guards pass. Full
+audio integration, device command playback/save validation and native user
+acceptance remain open until Pulse2177 is integrated.
