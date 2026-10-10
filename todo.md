@@ -1355,3 +1355,24 @@ Exact-head full local CI and publication follow. Native feedback controls, state
 codec and runtime admission are separately tracked by Pulse2225, including safe
 same-Operator analytic/mutable transitions and preserved unavailable authored
 values. Current review63 app remains unchanged; no native feedback/parity claim.
+
+## 10 October 2026 — review64 feedback-kernel checkpoint
+
+Focused [PR103](https://github.com/PORTALSURFER/hex/pull/103), source00cd95f,
+passed all16 checks20261010T102648Z-f059c465; combined709d846 passed all16
+checks20261010T102658Z-53636e26. Both clean/stale=false. Pulse2223 is
+ready_for_review; native feedback admission2225 remains separate.
+
+Fresh optimized release28.32seconds, strict ad-hoc signature independently
+verified: artifacts/hex-lattice-feedback-kernel-review-20261010-709d846.app.
+Signed binarySHA2566572a324c47d85b20af4b7adc607f8dda0e5d39a5a96018f0fcffc1b08bf2689.
+Adjacent manifest records66 integrated sourcePRlinks38–103. This source includes
+the standalone DSP prerequisite; registered native feedback controls/runtime
+remain absent. User can continue testing existing velocity controls, MIDI
+playback, device reordering and save/reopen. No agent app launch/native acceptance
+or automatic merge. Previous review apps remain intact.
+
+Next2225 preparation found a native memory budget decision: a152-byte voice
+with64slots exceeds the existing4096-byte mutable twin cap even before IDs.
+Astra is reviewing a narrow capacity/budget choice before implementation; no
+silent global budget expansion or64-voice/scalability claim.
