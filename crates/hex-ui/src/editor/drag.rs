@@ -737,6 +737,13 @@ impl super::EditorView {
     pub(super) fn begin_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
         self.active_clip_drag = None;
         self.active_browser_audio_drag = None;
+        if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
+            // Make the native-device receiver visible as soon as a catalog drag
+            // becomes active. Keep the selected track/clip untouched: a missing
+            // target remains an empty device pane and the eventual drop can refuse.
+            self.device_panel_active = true;
+            self.clip_view_open = true;
+        }
         self.active_native_device_drag = Some(drag.clone());
     }
 

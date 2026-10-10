@@ -491,3 +491,12 @@ tests, affected strict Clippy, formatting and architecture/style guards. Full
 local CI remains before review; native pointer/track-focus review remains with
 the user. FM4 remains
 unregistered and is intentionally absent from this catalog.
+
+Pulse2152: starting a native-device drag from the left browser opens the device
+pane and switches its content from clip details to devices, while preserving the
+current focused track and clip selection. A missing track remains an empty pane
+and invalid drop target; cancel or release without a target clears the drag but
+keeps the pane open. Ordinary track focus continues to honor the user's closed
+pane choice. Four targeted GPUI device-browser/device-focus tests, strict
+`hex-ui` Clippy, formatting, architecture, style and GPUI patch guards pass.
+Full local CI and native review remain open.

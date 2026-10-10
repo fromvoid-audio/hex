@@ -224,6 +224,8 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        view.clip_view_open = false;
+        view.device_panel_active = false;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -232,11 +234,6 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     let source = visual
         .debug_bounds("browser-device-effect-1")
         .expect("registered utility in device browser");
-    let card_selector =
-        Box::leak(format!("device-drop-card-{}", existing.value()).into_boxed_str());
-    let card = visual
-        .debug_bounds(card_selector)
-        .expect("existing utility card drop receiver");
     let down = point(
         source.origin.x + source.size.width / 2.0,
         source.origin.y + source.size.height / 2.0,
@@ -247,6 +244,18 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
         MouseButton::Left,
         Modifiers::default(),
     );
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-panel").is_some());
+    editor.read_with(cx, |view, _| {
+        assert!(view.clip_view_open, "browser drag reveals the closed pane");
+        assert!(view.device_panel_active);
+        assert_eq!(view.selected_track, Some(track));
+    });
+    let card_selector =
+        Box::leak(format!("device-drop-card-{}", existing.value()).into_boxed_str());
+    let card = visual
+        .debug_bounds(card_selector)
+        .expect("existing utility card drop receiver");
     let destination = point(
         card.origin.x + px(24.0),
         card.origin.y + card.size.height / 2.0,
@@ -287,6 +296,8 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
         assert_eq!(devices[1].id(), existing);
         assert_ne!(devices[0].id(), existing);
         assert!(view.active_native_device_drag.is_none());
+        assert!(view.clip_view_open, "successful drop keeps the pane open");
+        assert!(view.device_panel_active);
     });
 }
 

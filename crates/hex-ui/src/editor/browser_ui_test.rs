@@ -222,6 +222,8 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                     document_path: None,
                 }));
                 view.browser.section = BrowserSection::Instruments;
+                view.clip_view_open = false;
+                view.device_panel_active = false;
                 cx.notify();
             });
             editor
@@ -246,8 +248,14 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     );
     visual.run_until_parked();
     assert!(cx.update(|app| app.has_active_drag()));
+    assert!(visual.debug_bounds("device-panel-empty").is_some());
     editor.read_with(cx, |view, _| {
         assert!(view.selected_track.is_none());
+        assert!(view.clip_view_open, "browser drag reveals the closed pane");
+        assert!(
+            view.device_panel_active,
+            "browser drag selects device details"
+        );
         let drag = view
             .active_native_device_drag
             .as_ref()
@@ -265,6 +273,63 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(view.active_native_device_drag.is_none());
+        assert!(view.clip_view_open, "a no-target drop leaves the pane open");
+        assert!(view.device_panel_active);
+        assert!(
+            view.selected_track.is_none(),
+            "drag does not invent a track"
+        );
+    });
+}
+
+#[gpui::test]
+fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
+    cx: &mut TestAppContext,
+) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.device_panel_active = false;
+        view.clip_view_open = true;
+        view.browser.section = BrowserSection::Instruments;
+        cx.notify();
+    });
+
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
+    let instrument = visual
+        .debug_bounds("browser-device-instrument-0")
+        .expect("registered sine instrument row");
+    let down = point(instrument.center().x, instrument.center().y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+
+    assert!(visual.debug_bounds("device-panel").is_some());
+    editor.read_with(cx, |view, _| {
+        assert!(view.clip_view_open);
+        assert!(view.device_panel_active);
+        assert_eq!(view.selected_track, Some(track));
+        assert_eq!(view.selected_clip, Some(clip));
+        assert!(view.active_native_device_drag.is_some());
+    });
+
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.active_native_device_drag.is_none());
+        assert!(view.clip_view_open, "cancel keeps the revealed pane open");
+        assert!(view.device_panel_active);
+        assert_eq!(view.selected_track, Some(track));
+        assert_eq!(view.selected_clip, Some(clip));
     });
 }
 
