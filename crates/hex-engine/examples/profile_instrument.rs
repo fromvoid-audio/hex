@@ -4,6 +4,7 @@ use hex_engine::{
     compile,
     playback::{Playback, PlaybackCommand},
 };
+use hex_lattice::PreparedAnalyticNote;
 use hex_project::{
     BeatTime, Meter, MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, Project, Snapshot, Tempo,
     TempoPoint, TrackContentSnapshot, TrackSnapshot,
@@ -112,6 +113,22 @@ fn measure(project: &hex_engine::Project, block_size: usize) -> Result<(), hex_e
 fn main() -> Result<(), Box<dyn Error>> {
     let editable = fixture()?;
     let project = compile::project(&editable, &Default::default())?;
+    let sampler_references = project.midi_note_sampler_reference_count()?;
+    let old_sampler_bytes = sampler_references
+        .checked_mul(std::mem::size_of::<PreparedAnalyticNote>())
+        .ok_or("old sampler byte estimate overflow")?;
+    let indexed_bytes = project
+        .midi_note_bank_storage_bytes()?
+        .checked_add(
+            sampler_references
+                .checked_mul(std::mem::size_of::<u16>())
+                .ok_or("indexed sampler reference byte count overflow")?,
+        )
+        .ok_or("indexed sampler byte estimate overflow")?;
+    println!(
+        "note storage estimate: refs={} indexed_bytes={} previous_inline_sampler_bytes={} (bank entries include keys and owner overhead)",
+        sampler_references, indexed_bytes, old_sampler_bytes
+    );
     for block_size in [128, 512] {
         measure(&project, block_size)?;
     }

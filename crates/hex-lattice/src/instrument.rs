@@ -59,6 +59,11 @@ impl PreparedAnalyticNote {
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
+    /// Prepare the immutable sampler for one authored pitch/velocity pair.
+    /// Implementations must be deterministic for a fixed prepared instrument
+    /// configuration, sample rate, pitch and velocity. The engine may intern
+    /// one returned sampler per pair instead of preparing one per note
+    /// occurrence, so this method must not encode occurrence-specific state.
     fn prepare_note(
         &self,
         pitch: u8,

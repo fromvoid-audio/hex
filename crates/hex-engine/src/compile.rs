@@ -199,6 +199,8 @@ fn compile_project<'a>(
         .map_err(|_| Invalid("could not reserve compiled tracks"))?;
     let mut stateful_count = 0_usize;
     let mut stateful_bytes = 0_usize;
+    let mut midi_bank_bytes = 0_usize;
+    let mut midi_bank_references = 0_usize;
     for track in snapshot.tracks() {
         // Validate a present slot even when it is bypassed or has no current
         // MIDI clips; unknown/future definitions must refuse graph publication.
@@ -260,6 +262,19 @@ fn compile_project<'a>(
                 .ok_or(Invalid("instrument content missing after compile"))?,
             )
         };
+        if let Some(instrument) = &instrument {
+            midi_bank_bytes = midi_bank_bytes
+                .checked_add(instrument.bank.storage_bytes()?)
+                .ok_or(Invalid("midi note bank byte count overflow"))?;
+            midi_bank_references = midi_bank_references
+                .checked_add(instrument.spans.len())
+                .ok_or(Invalid("midi note bank reference count overflow"))?;
+            crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
+                midi_bank_bytes,
+                midi_bank_references,
+                crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
+            )?;
+        }
         let (effects, device_chain) =
             compile_device_effects(track, registry, snapshot.sample_rate())?;
         for device in &device_chain {

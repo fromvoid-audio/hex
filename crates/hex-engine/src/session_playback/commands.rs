@@ -345,12 +345,12 @@ impl SessionPlayback {
                 let mut failure = None;
                 let mut next_order = self.release_order_scratch;
                 track
-                    .for_each_active_midi_span(source_frame, |span| {
+                    .for_each_active_midi_span(source_frame, |span, sampler| {
                         let voice = match MidiReleaseVoice::from_finite_span(
                             span.start,
                             span.gate_end,
                             span.end,
-                            span.voice,
+                            sampler,
                             source_frame,
                             performance_frame,
                         ) {

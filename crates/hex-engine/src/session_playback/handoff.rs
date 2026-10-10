@@ -94,12 +94,12 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     let mut failure = None;
                     old_track
-                        .for_each_active_midi_span(previous.arrangement_frame, |span| {
+                        .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
                             let voice = MidiReleaseVoice::from_finite_span(
                                 span.start,
                                 span.gate_end,
                                 span.end,
-                                span.voice,
+                                sampler,
                                 previous.arrangement_frame,
                                 previous.performance_frame,
                             );

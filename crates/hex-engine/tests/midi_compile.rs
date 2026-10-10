@@ -1,13 +1,13 @@
 use hex_devices::SineTable;
 use hex_engine::{
-    Invalid, Renderer, compile,
+    Invalid, PreparedSessionInventory, Renderer, compile,
     midi_compile::{MAX_MIDI_EVENT_EDGES, MidiEventKind, midi_events},
     playback::{Playback, PlaybackCommand},
 };
 use hex_project::{
     BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 fn beat(num: u64, den: u64) -> BeatTime {
     BeatTime::from_ratio(num, den).unwrap()
@@ -388,6 +388,125 @@ fn zero_frame_note_is_explicitly_refused() {
     assert_eq!(
         compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
         Invalid("midi note duration quantizes to zero frames")
+    );
+}
+
+fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
+    let track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "keys".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(3, 1));
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(4, 1),
+            source_start: beat(1, 1),
+            loop_start: BeatTime::ZERO,
+            loop_end: beat(4, 1),
+            looping: false,
+            length: beat(3, 1),
+        })
+        .unwrap();
+    for (start, pitch) in [(beat(3, 2), 60), (high_note_start, 127)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: beat(1, 4),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    editor
+}
+
+#[test]
+fn arrangement_bank_ignores_notes_outside_the_emitted_source_window() {
+    let hidden = arrangement_source_window_editor(beat(1, 2));
+    assert!(compile::project(hidden.project(), &BTreeMap::new()).is_ok());
+
+    let emitted = arrangement_source_window_editor(beat(5, 2));
+    assert!(compile::project(emitted.project(), &BTreeMap::new()).is_err());
+}
+
+fn session_source_window_editor(high_note_start: BeatTime) -> Editor {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
+    let track = match editor
+        .execute(Command::AddMidiTrack {
+            name: "keys".into(),
+        })
+        .unwrap()
+    {
+        Created::Track(id) => id,
+        _ => panic!("track"),
+    };
+    let scene = match editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    {
+        Created::Scene(id) => id,
+        _ => panic!("scene"),
+    };
+    let clip = match editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "source".into(),
+            source_length: beat(4, 1),
+        })
+        .unwrap()
+    {
+        Created::SessionClip(id) => id,
+        _ => panic!("session clip"),
+    };
+    editor
+        .execute(Command::SetSessionMidiClipSource {
+            clip,
+            source_length: beat(4, 1),
+            source_start: beat(1, 1),
+            loop_start: BeatTime::ZERO,
+            loop_end: beat(4, 1),
+            looping: false,
+        })
+        .unwrap();
+    for (start, pitch) in [(beat(3, 2), 60), (high_note_start, 127)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: beat(1, 4),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    editor
+}
+
+#[test]
+fn session_bank_ignores_notes_outside_the_emitted_source_window() {
+    let hidden = session_source_window_editor(beat(1, 2));
+    assert!(
+        PreparedSessionInventory::prepare(hidden.project(), Arc::new(SineTable::new()), None,)
+            .is_ok()
+    );
+
+    let emitted = session_source_window_editor(beat(5, 2));
+    assert!(
+        PreparedSessionInventory::prepare(emitted.project(), Arc::new(SineTable::new()), None,)
+            .is_err()
     );
 }
 

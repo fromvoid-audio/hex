@@ -375,3 +375,13 @@ diff checks pass. Coverage includes snap/free placement, zoom/pan mapping,
 outside-rail release, lane-selection ownership, resize, activation, toggle and
 stale-state protection. Clean full local CI and native acceptance remain open;
 this stays a separate focused PR.
+
+Indexed analytic sampler banks2125: prepared Arrangement occurrences and Session
+intro/repeat spans retain compact per-track bank indices; query/release paths
+resolve copied samplers without extending bank lifetime. Keys include only emitted
+notes, preserving source-window admission. Focused engine/session/export and
+callback allocation checks pass; clean full local CI remains the integration gate.
+Accounted repeated-note sampler/index storage falls in the Session fixture, while
+unique-heavy Arrangement storage rises; noisy timings establish no speedup.
+FM4 registration/payload expansion2124 and native instrument panel2127 remain
+separate open work, with Pulse authoritative for review and acceptance.
