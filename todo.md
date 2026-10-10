@@ -1108,3 +1108,13 @@ residual ownership2204 has its own branch. No automatic merge or native
 acceptance is claimed. GitHub GraphQL PR creation hit a request rate limit;
 GitHub CLI REST creation succeeded. Codex attachment registration reached its
 100-identity limit, so verified PR links remain in Pulse and the ledger.
+## 10 October2026 — Pulse2208 prepared seek cancellation barrier
+
+Conditional fresh publications now arbitrate UI cancellation against the
+callback's final apply CAS using a revision-keyed control-allocated token.
+Cancellation before apply preserves old PCM and returns the candidate for
+control reclamation; a callback winner completes before the canonical successor.
+Ordinary inherited publication is unchanged. Race/queue failure/Stop/successor
+unit tests, two callback allocation probes and the actual UI invalidation helper
+test pass. Full local CI and native edit/Open/seek acceptance remain pending.
+See [the contract](docs/prepared-seek-cancellation.md).
