@@ -396,6 +396,9 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
     fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
         Box::new(ZeroTailMutableRuntime::default())
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
@@ -661,6 +664,9 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
             feedback: 0.0,
             tail_left: 0,
         })
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -9070,6 +9076,510 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         });
     let stateful_return = revision(&Project::from_snapshot(return_snapshot).unwrap(), table);
     assert!(stateful_return.arrangement_seek_requires_preroll());
+}
+
+#[test]
+fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() {
+    use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    fn edited_state(
+        feedback: f32,
+        level: f32,
+        carrier: f32,
+    ) -> hex_lattice_contract::NativeDeviceState {
+        let state = OPERATOR_METADATA.default_state().unwrap();
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &state,
+                parameter::feedback(1),
+                ParameterValue::Float(feedback),
+            )
+            .unwrap();
+        let state = OPERATOR_METADATA
+            .patch_parameter(
+                &state,
+                parameter::oscillator_level(1),
+                ParameterValue::Float(level),
+            )
+            .unwrap();
+        OPERATOR_METADATA
+            .patch_parameter(
+                &state,
+                parameter::carrier(1),
+                ParameterValue::Float(carrier),
+            )
+            .unwrap()
+    }
+
+    fn run(
+        partition: &[usize],
+        session_route: bool,
+        apply_intermediate: bool,
+    ) -> Vec<crate::Frame> {
+        let table = Arc::new(hex_devices::SineTable::new());
+        let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+        snapshot.tracks[0].instrument.as_mut().unwrap().state = edited_state(0.15, 0.45, 0.3);
+        let arrangement = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips) => clips,
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+            _ => panic!("fixture has MIDI arrangement content"),
+        };
+        arrangement[0].notes.push(MidiNoteSnapshot {
+            id: 7,
+            start_raw: 1 << 24,
+            duration_raw: 1 << 32,
+            pitch: 67,
+            channel: 0,
+            velocity: 88,
+        });
+        let Some(session_cell) = snapshot.session.cells.first_mut() else {
+            panic!("fixture has Session MIDI content");
+        };
+        let SessionCellContentSnapshot::Midi(session_clip) = &mut session_cell.content else {
+            panic!("fixture has Session MIDI content");
+        };
+        session_clip.source.notes.push(MidiNoteSnapshot {
+            id: 9,
+            start_raw: 1 << 24,
+            duration_raw: 1 << 32,
+            pitch: 67,
+            channel: 0,
+            velocity: 88,
+        });
+        snapshot.next_id = 10;
+        let source_project = Project::from_snapshot(snapshot).unwrap();
+        let old_revision = Arc::new(
+            PreparedRevision::prepare(&source_project, &BTreeMap::new(), Arc::clone(&table), None)
+                .unwrap(),
+        );
+        let track_id = old_revision.arrangement().tracks()[0]
+            .canonical_track_id()
+            .unwrap();
+        assert!(
+            old_revision
+                .session()
+                .mutable_instrument_factory(track_id)
+                .is_some()
+        );
+
+        let instrument_id = source_project.tracks()[0].instrument().unwrap().id();
+        let mut intermediate_editor = Editor::new(source_project.clone(), 4).unwrap();
+        intermediate_editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument_id,
+                state: edited_state(0.48, 0.7, 0.6),
+            })
+            .unwrap();
+        let intermediate_project = intermediate_editor.project().clone();
+        let intermediate_revision = Arc::new(
+            PreparedRevision::prepare(
+                &intermediate_project,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(old_revision.session()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            intermediate_revision
+                .session()
+                .mutable_history_retarget(track_id)
+                .is_some()
+        );
+
+        let mut final_editor = Editor::new(intermediate_project, 4).unwrap();
+        final_editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument_id,
+                state: edited_state(0.75, 0.9, 0.8),
+            })
+            .unwrap();
+        // Deliberately prepare C from canonical B. The audio owner may still
+        // have A, so C's target proof must be applicable to the actual runtime
+        // rather than being chained to the most recently prepared revision.
+        let candidate_revision = Arc::new(
+            PreparedRevision::prepare(
+                final_editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(intermediate_revision.session()),
+            )
+            .unwrap(),
+        );
+        assert!(
+            candidate_revision
+                .session()
+                .mutable_history_retarget(track_id)
+                .is_some()
+        );
+        assert_eq!(
+            candidate_revision
+                .session()
+                .mutable_history_retarget_storage_bytes(),
+            112,
+            "the inventory separately accounts the exact candidate proof"
+        );
+
+        let mut previous = SessionPlayback::new(old_revision).unwrap();
+        if session_route {
+            let clip = previous.revision.session().midi_clips()[0].id;
+            previous
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 64];
+        previous.render(&mut prefix).unwrap();
+        assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+
+        let mut successor = if apply_intermediate {
+            let mut intermediate = SessionPlayback::new(intermediate_revision).unwrap();
+            intermediate.try_inherit_state_from(&mut previous).unwrap();
+            let mut ramp_prefix = [[0.0; 2]; 7];
+            intermediate.render(&mut ramp_prefix).unwrap();
+            SessionPlayback::new(candidate_revision)
+                .and_then(|mut final_candidate| {
+                    final_candidate.try_inherit_state_from(&mut intermediate)?;
+                    Ok(final_candidate)
+                })
+                .unwrap()
+        } else {
+            let mut final_candidate = SessionPlayback::new(candidate_revision).unwrap();
+            final_candidate
+                .try_inherit_state_from(&mut previous)
+                .unwrap();
+            final_candidate
+        };
+        let mut suffix = Vec::new();
+        let mut index = 0;
+        while suffix.len() < 384 {
+            let count = partition[index % partition.len()].min(384 - suffix.len());
+            let mut block = vec![[0.0; 2]; count];
+            successor.render(&mut block).unwrap();
+            suffix.extend(block);
+            index += 1;
+        }
+        assert!(suffix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+        suffix
+    }
+
+    for session_route in [false, true] {
+        for apply_intermediate in [false, true] {
+            let single_frame = run(&[1], session_route, apply_intermediate);
+            assert_eq!(
+                run(&[37, 128, 19, 64], session_route, apply_intermediate),
+                single_frame
+            );
+        }
+    }
+}
+
+#[test]
+fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
+    use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    fn source_project(note_duration: u64, arrangement_note: bool) -> Project {
+        let mut state = OPERATOR_METADATA.default_state().unwrap();
+        state = OPERATOR_METADATA
+            .patch_parameter(&state, parameter::feedback(1), ParameterValue::Float(0.25))
+            .unwrap();
+        let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+        let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
+        instrument.state = state;
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips) => clips,
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+            _ => panic!("fixture has MIDI arrangement content"),
+        };
+        if arrangement_note {
+            clips[0].notes.push(MidiNoteSnapshot {
+                id: snapshot.next_id,
+                start_raw: 0,
+                duration_raw: note_duration,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            });
+            snapshot.next_id += 1;
+        }
+        let Some(session_cell) = snapshot.session.cells.first_mut() else {
+            panic!("fixture has Session content");
+        };
+        let SessionCellContentSnapshot::Midi(session_clip) = &mut session_cell.content else {
+            panic!("fixture has Session MIDI content");
+        };
+        session_clip.source.notes.push(MidiNoteSnapshot {
+            id: snapshot.next_id,
+            start_raw: 0,
+            duration_raw: note_duration,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        });
+        snapshot.next_id += 1;
+        Project::from_snapshot(snapshot).unwrap()
+    }
+
+    fn unsupported_candidate(
+        source: &Project,
+        instrument_id: hex_project::DeviceId,
+        old_revision: &PreparedRevision,
+        table: Arc<hex_devices::SineTable>,
+    ) -> Arc<PreparedRevision> {
+        let mut state = source.tracks()[0].instrument().unwrap().state().clone();
+        state = OPERATOR_METADATA
+            .patch_parameter(&state, parameter::waveform(1), ParameterValue::Choice(1))
+            .unwrap();
+        let mut editor = Editor::new(source.clone(), 4).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument_id,
+                state,
+            })
+            .unwrap();
+        let candidate = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                table,
+                Some(old_revision.session()),
+            )
+            .unwrap(),
+        );
+        let track = source.tracks()[0].id();
+        assert!(
+            !candidate
+                .session()
+                .mutable_history_retarget_requires_quiescence(track)
+        );
+        assert!(
+            candidate
+                .session()
+                .mutable_history_retarget(track)
+                .is_some()
+        );
+        candidate
+    }
+
+    let table = Arc::new(hex_devices::SineTable::new());
+
+    // A held voice prevents a same-source unsupported law change from being
+    // detached into an outgoing tail.
+    let source = source_project(1 << 32, false);
+    let instrument_id = source.tracks()[0].instrument().unwrap().id();
+    let old_revision = Arc::new(
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+    );
+    let candidate =
+        unsupported_candidate(&source, instrument_id, &old_revision, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(old_revision).unwrap();
+    let session_clip = previous.revision.session().midi_clips()[0].id;
+    previous
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut held_prefix = [[0.0; 2]; 128];
+    previous.render(&mut held_prefix).unwrap();
+    assert!(previous.routes.iter().enumerate().any(|(index, route)| {
+        matches!(route.owner, RouteOwner::Session { .. })
+            && previous
+                .mutable_instruments
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    }));
+    let mut successor = SessionPlayback::new(candidate).unwrap();
+    assert_eq!(
+        successor.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert!(previous.playing());
+
+    // A released voice still owns feedback/envelope tail state and receives
+    // the same refusal until that committed tail expires.
+    let source = source_project(1 << 30, true);
+    let instrument_id = source.tracks()[0].instrument().unwrap().id();
+    let old_revision = Arc::new(
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+    );
+    let candidate =
+        unsupported_candidate(&source, instrument_id, &old_revision, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(old_revision).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut released_prefix = vec![[0.0; 2]; 7_000];
+    previous.render(&mut released_prefix).unwrap();
+    assert!(
+        previous.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    let mut successor = SessionPlayback::new(candidate).unwrap();
+    assert_eq!(
+        successor.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+
+    // The same edit is admissible after the prior runtime has no active ledger
+    // entries or feedback tail; the new law starts from a fresh runtime.
+    let source = source_project(1 << 32, true);
+    let instrument_id = source.tracks()[0].instrument().unwrap().id();
+    let old_revision = Arc::new(
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+    );
+    let candidate = unsupported_candidate(&source, instrument_id, &old_revision, table);
+    let mut previous = SessionPlayback::new(old_revision).unwrap();
+    let mut successor = SessionPlayback::new(candidate).unwrap();
+    successor.try_inherit_state_from(&mut previous).unwrap();
+}
+
+#[test]
+fn skipped_unsupported_operator_edit_uses_actual_source_law() {
+    use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    let table = Arc::new(hex_devices::SineTable::new());
+    let source = {
+        let mut state = OPERATOR_METADATA.default_state().unwrap();
+        state = OPERATOR_METADATA
+            .patch_parameter(&state, parameter::feedback(1), ParameterValue::Float(0.25))
+            .unwrap();
+        let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+        snapshot.tracks[0].instrument.as_mut().unwrap().state = state;
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips) => clips,
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+            _ => panic!("fixture has MIDI arrangement content"),
+        };
+        clips[0].notes.push(MidiNoteSnapshot {
+            id: snapshot.next_id,
+            start_raw: 0,
+            duration_raw: 1 << 32,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        });
+        snapshot.next_id += 1;
+        let SessionCellContentSnapshot::Midi(session_clip) = &mut snapshot.session.cells[0].content
+        else {
+            panic!("fixture has Session MIDI content");
+        };
+        session_clip.source.notes.push(MidiNoteSnapshot {
+            id: snapshot.next_id,
+            start_raw: 0,
+            duration_raw: 1 << 32,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        });
+        snapshot.next_id += 1;
+        Project::from_snapshot(snapshot).unwrap()
+    };
+    let instrument_id = source.tracks()[0].instrument().unwrap().id();
+    let old_revision = Arc::new(
+        PreparedRevision::prepare(&source, &BTreeMap::new(), Arc::clone(&table), None).unwrap(),
+    );
+
+    let edit = |base: &Project, state: hex_lattice_contract::NativeDeviceState| {
+        let mut editor = Editor::new(base.clone(), 4).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument_id,
+                state,
+            })
+            .unwrap();
+        editor.project().clone()
+    };
+    let unsupported_state = OPERATOR_METADATA
+        .patch_parameter(
+            &source.tracks()[0].instrument().unwrap().state().clone(),
+            parameter::waveform(1),
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    let skipped_project = edit(&source, unsupported_state);
+    let skipped_revision = Arc::new(
+        PreparedRevision::prepare(
+            &skipped_project,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(old_revision.session()),
+        )
+        .unwrap(),
+    );
+    let compatible_state = OPERATOR_METADATA
+        .patch_parameter(
+            &source.tracks()[0].instrument().unwrap().state().clone(),
+            parameter::feedback(1),
+            ParameterValue::Float(0.75),
+        )
+        .unwrap();
+    let final_project = edit(&skipped_project, compatible_state);
+    let final_revision = Arc::new(
+        PreparedRevision::prepare(
+            &final_project,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(skipped_revision.session()),
+        )
+        .unwrap(),
+    );
+
+    // B changes an immutable Operator law but is never published. C is
+    // prepared from B, while the audio owner is still on A; target-bound proof
+    // and actual-source validation should allow the compatible A -> C edit.
+    let mut actual_a = SessionPlayback::new(old_revision.clone()).unwrap();
+    let session_clip = actual_a.revision.session().midi_clips()[0].id;
+    actual_a
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    actual_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut active = [[0.0; 2]; 128];
+    actual_a.render(&mut active).unwrap();
+    assert!(
+        actual_a.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    let mut direct_c = SessionPlayback::new(Arc::clone(&final_revision)).unwrap();
+    direct_c.try_inherit_state_from(&mut actual_a).unwrap();
+
+    // The same C target must refuse if B really was applied: its immutable
+    // waveform law no longer matches the actual runtime while notes are live.
+    let mut quiescent_a = SessionPlayback::new(old_revision).unwrap();
+    let mut applied_b = SessionPlayback::new(skipped_revision).unwrap();
+    applied_b.try_inherit_state_from(&mut quiescent_a).unwrap();
+    let session_clip = applied_b.revision.session().midi_clips()[0].id;
+    applied_b
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    applied_b.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut active = [[0.0; 2]; 128];
+    applied_b.render(&mut active).unwrap();
+    assert!(
+        applied_b.mutable_instruments[0]
+            .as_ref()
+            .is_some_and(|runtime| !runtime.committed_is_quiescent())
+    );
+    let mut from_applied_b = SessionPlayback::new(final_revision).unwrap();
+    assert_eq!(
+        from_applied_b.try_inherit_state_from(&mut applied_b),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert!(from_applied_b.candidate_admission_open);
 }
 
 fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {

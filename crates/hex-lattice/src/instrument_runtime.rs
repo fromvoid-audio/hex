@@ -1,5 +1,6 @@
 //! Optional bounded mutable note runtimes for instruments with voice history.
 use super::StereoFrame;
+use hex_lattice_contract::DeviceContractError;
 use std::{any::Any, fmt};
 
 /// One note-on or note-off event in caller-owned block storage.
@@ -66,6 +67,42 @@ pub trait PreparedMutableInstrumentRuntime: Send + Sync {
     fn max_active_occurrences(&self) -> usize;
     fn max_release_tail_frames(&self) -> u64;
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime>;
+    fn as_any(&self) -> &dyn Any;
+
+    /// Prepare an opt-in proof for this exact target configuration. The proof
+    /// is source-independent: at adoption, the runtime checks the actual
+    /// committed source law and derives the ramp from its current state. This
+    /// allows skipped canonical revisions without weakening source validation.
+    /// Preparation runs on control and returned proof storage must be bounded.
+    /// The default preserves exact-copy and detached-tail behavior.
+    fn prepare_history_retarget_target(
+        &self,
+    ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+        Ok(InstrumentHistoryRetargetPreparation::Unchanged)
+    }
+}
+
+/// Control-side admission policy authored by one candidate target factory.
+/// Applicability to the actual committed source is checked at handoff, not
+/// inferred from a potentially skipped canonical predecessor.
+pub enum InstrumentHistoryRetargetPreparation {
+    /// Preserve the existing exact-copy and detached-tail compatibility policy.
+    Unchanged,
+    /// A bounded proof authorizes this exact candidate target for a supported
+    /// retarget law; the runtime validates the actual source at handoff.
+    Prepared(Box<dyn PreparedInstrumentHistoryRetarget>),
+    /// This target cannot retarget active history; replacing it requires the
+    /// old same-owner runtime to be quiescent.
+    RequiresQuiescence,
+}
+
+/// Opaque immutable control-prepared authorization for one precise mutable
+/// instrument history transition. The candidate graph owns the proof and keeps
+/// it alive until that graph is retired on control. The declared payload size
+/// excludes allocator bookkeeping.
+pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
+    fn declared_fixed_storage_bytes(&self) -> usize;
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Mutable per-note state. Compatibility must include every immutable law
@@ -106,6 +143,25 @@ pub trait MutableInstrumentRuntime: Any + Send {
     /// include held/released voices and every envelope, phase, feedback and
     /// random-generator state value; this operation is bounded and alloc-free.
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime);
+    /// Read-only opt-in preflight for the exact proof prepared by this
+    /// candidate's factory. It must validate complete source and target laws,
+    /// every carried voice and all bounded runtime state.
+    fn can_retarget_history_from(
+        &self,
+        _previous: &dyn MutableInstrumentRuntime,
+        _proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        false
+    }
+    /// Apply a previously preflighted history retarget. Both twins must have
+    /// passed `can_retarget_history_from` before either is changed. This is
+    /// infallible, bounded and allocation-free.
+    fn retarget_history_from(
+        &mut self,
+        _previous: &dyn MutableInstrumentRuntime,
+        _proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) {
+    }
     fn fixed_storage_bytes(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
 }
@@ -324,6 +380,41 @@ impl NativeInstrumentRuntimePair {
         self.scratch.copy_history_from(previous.primary.as_ref());
         Ok(())
     }
+
+    /// Preflight an explicit prepared retarget of both runtime twins. Exact
+    /// `can_inherit_from` semantics remain unchanged; candidate topology and
+    /// source identity are checked by the owning engine graph.
+    pub fn can_retarget_from(
+        &self,
+        previous: &Self,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        !self.block_started
+            && !previous.block_started
+            && self.runtime_version == previous.runtime_version
+            && self
+                .primary
+                .can_retarget_history_from(previous.primary.as_ref(), proof)
+            && self
+                .scratch
+                .can_retarget_history_from(previous.primary.as_ref(), proof)
+    }
+
+    /// Apply a retarget only after both twins pass the complete preflight.
+    pub fn retarget_from(
+        &mut self,
+        previous: &Self,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.can_retarget_from(previous, proof) {
+            return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
+        }
+        self.primary
+            .retarget_history_from(previous.primary.as_ref(), proof);
+        self.scratch
+            .retarget_history_from(previous.primary.as_ref(), proof);
+        Ok(())
+    }
 }
 
 fn validate_event_batch(
@@ -517,6 +608,10 @@ mod tests {
                 feedback: 0.0,
             })
         }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     impl MutableInstrumentRuntime for FeedbackRuntime {
@@ -681,6 +776,211 @@ mod tests {
             pitch,
             velocity,
         }
+    }
+
+    struct PairRetargetProof {
+        target_key: u8,
+        target_value: f32,
+    }
+
+    impl PreparedInstrumentHistoryRetarget for PairRetargetProof {
+        fn declared_fixed_storage_bytes(&self) -> usize {
+            std::mem::size_of::<Self>()
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    struct PairRetargetPrepared {
+        key: u8,
+        reject_second_twin: bool,
+        initial_value: f32,
+        creations: Arc<AtomicUsize>,
+    }
+
+    struct PairRetargetRuntime {
+        key: u8,
+        reject_retarget: bool,
+        value: f32,
+    }
+
+    impl PreparedMutableInstrumentRuntime for PairRetargetPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_twin_bytes(&self) -> usize {
+            std::mem::size_of::<PairRetargetRuntime>()
+        }
+
+        fn max_events_per_block(&self) -> usize {
+            8
+        }
+
+        fn max_active_occurrences(&self) -> usize {
+            2
+        }
+
+        fn max_release_tail_frames(&self) -> u64 {
+            0
+        }
+
+        fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
+            let ordinal = self.creations.fetch_add(1, Ordering::Relaxed);
+            Box::new(PairRetargetRuntime {
+                key: self.key,
+                reject_retarget: self.reject_second_twin && ordinal == 1,
+                value: self.initial_value,
+            })
+        }
+
+        fn prepare_history_retarget_target(
+            &self,
+        ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+            Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
+                PairRetargetProof {
+                    target_key: self.key,
+                    target_value: 7.0,
+                },
+            )))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    impl MutableInstrumentRuntime for PairRetargetRuntime {
+        fn preflight_events(
+            &self,
+            events: &[NativeInstrumentEvent],
+            _frame_count: usize,
+        ) -> Result<(), NativeInstrumentRuntimeError> {
+            if events.is_empty() {
+                Ok(())
+            } else {
+                Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+            }
+        }
+
+        fn process_block(&mut self, _events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
+            for frame in frames {
+                frame[0] += self.value;
+            }
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
+            previous
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|previous| self.key == previous.key)
+        }
+
+        fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                self.value = previous.value;
+            }
+        }
+
+        fn can_retarget_history_from(
+            &self,
+            previous: &dyn MutableInstrumentRuntime,
+            proof: &dyn PreparedInstrumentHistoryRetarget,
+        ) -> bool {
+            !self.reject_retarget
+                && proof
+                    .as_any()
+                    .downcast_ref::<PairRetargetProof>()
+                    .is_some_and(|proof| {
+                        proof.target_key == self.key
+                            && previous
+                                .as_any()
+                                .downcast_ref::<Self>()
+                                .is_some_and(|previous| previous.key == 1)
+                    })
+        }
+
+        fn retarget_history_from(
+            &mut self,
+            previous: &dyn MutableInstrumentRuntime,
+            proof: &dyn PreparedInstrumentHistoryRetarget,
+        ) {
+            let Some(proof) = proof.as_any().downcast_ref::<PairRetargetProof>() else {
+                return;
+            };
+            if self.can_retarget_history_from(previous, proof) {
+                self.value = proof.target_value;
+            }
+        }
+
+        fn fixed_storage_bytes(&self) -> usize {
+            std::mem::size_of::<Self>()
+        }
+
+        fn reset(&mut self) {
+            self.value = 0.0;
+        }
+
+        fn is_quiescent(&self) -> bool {
+            self.value == 0.0
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn retarget_preflights_both_twins_before_mutating_either() {
+        let old_prepared = PairRetargetPrepared {
+            key: 1,
+            reject_second_twin: false,
+            initial_value: 3.0,
+            creations: Arc::new(AtomicUsize::new(0)),
+        };
+        let target_prepared = PairRetargetPrepared {
+            key: 2,
+            reject_second_twin: true,
+            initial_value: 0.0,
+            creations: Arc::new(AtomicUsize::new(0)),
+        };
+        let previous = NativeInstrumentRuntimePair::new(&old_prepared, TEST_LIMITS).unwrap();
+        let mut target = NativeInstrumentRuntimePair::new(&target_prepared, TEST_LIMITS).unwrap();
+        let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+            target_prepared.prepare_history_retarget_target().unwrap()
+        else {
+            panic!("target provides explicit retarget proof");
+        };
+
+        assert!(!target.can_retarget_from(&previous, proof.as_ref()));
+        assert_eq!(
+            target.retarget_from(&previous, proof.as_ref()),
+            Err(NativeInstrumentRuntimeError::IncompatibleHistory)
+        );
+        for runtime in [&target.primary, &target.scratch] {
+            assert_eq!(
+                runtime
+                    .as_any()
+                    .downcast_ref::<PairRetargetRuntime>()
+                    .unwrap()
+                    .value,
+                0.0,
+                "failed second-twin preflight leaves both targets unchanged"
+            );
+        }
+
+        // The source isn't mutated by failed candidate preflight either.
+        assert_eq!(
+            previous
+                .primary
+                .as_any()
+                .downcast_ref::<PairRetargetRuntime>()
+                .unwrap()
+                .value,
+            3.0
+        );
     }
 
     fn event_off(offset: usize, id: u64) -> NativeInstrumentEvent {

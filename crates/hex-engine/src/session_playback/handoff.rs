@@ -247,6 +247,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
+        let mut mutable_retarget_new_for_old = [usize::MAX; MAX_TRACKS];
         if !timing_changed {
             for (old_index, old_route) in previous.routes.iter().enumerate() {
                 let Some(old_runtime) = previous
@@ -280,7 +281,7 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
-                let source_matches = match old_route.owner {
+                let exact_source_matches = match old_route.owner {
                     RouteOwner::Arrangement => previous
                         .revision
                         .mutable_arrangement_track_matches(&self.revision, old_route.id),
@@ -301,7 +302,42 @@ impl SessionPlayback {
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                 };
-                if !source_matches {
+                let retarget_proof = self
+                    .revision
+                    .session()
+                    .mutable_history_retarget(old_route.id);
+                let retarget_owner_matches = match old_route.owner {
+                    RouteOwner::Arrangement => previous
+                        .revision
+                        .mutable_arrangement_retarget_matches(&self.revision, old_route.id),
+                    RouteOwner::Session { clip, .. } => {
+                        let old = previous.revision.session().midi_clip(clip);
+                        let new = self.revision.session().midi_clip(clip);
+                        previous
+                            .revision
+                            .mutable_track_retarget_topology_matches(&self.revision, old_route.id)
+                            && old.zip(new).is_some_and(|(old, new)| {
+                                old.id == new.id
+                                    && old.track == old_route.id
+                                    && new.track == old_route.id
+                                    && old.scene == new.scene
+                                    && old.source_content_matches(new)
+                                    && old.instrument_retarget_compatible(new)
+                            })
+                    }
+                    RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+                };
+                let retarget_source_matches =
+                    !exact_source_matches && retarget_proof.is_some() && retarget_owner_matches;
+                let requires_quiescence = self
+                    .revision
+                    .session()
+                    .mutable_history_retarget_requires_quiescence(old_route.id)
+                    && retarget_owner_matches;
+                if !exact_source_matches && !retarget_source_matches {
+                    if requires_quiescence && !old_runtime.committed_is_quiescent() {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
                     continue;
                 }
                 // The general chain preflight above can exclude a live
@@ -320,10 +356,29 @@ impl SessionPlayback {
                 if !new_chain.can_inherit_from(old_chain) {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
-                if !new_runtime.can_inherit_from(old_runtime) {
-                    return Err(SessionPlaybackError::DeviceRuntime);
+                if exact_source_matches {
+                    if !new_runtime.can_inherit_from(old_runtime) {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                } else if !new_runtime.can_retarget_from(
+                    old_runtime,
+                    retarget_proof.ok_or(SessionPlaybackError::DeviceRuntime)?,
+                ) {
+                    // A target-bound proof may be valid for the candidate yet
+                    // incompatible with the actual applied source law. That
+                    // is a fresh install only after all committed voices and
+                    // tails are quiescent; active history refuses atomically.
+                    if !old_runtime.committed_is_quiescent() {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    continue;
                 }
-                if let Some(target) = mutable_continuity_new_for_old.get_mut(old_index) {
+                let continuity_map = if exact_source_matches {
+                    &mut mutable_continuity_new_for_old
+                } else {
+                    &mut mutable_retarget_new_for_old
+                };
+                if let Some(target) = continuity_map.get_mut(old_index) {
                     *target = new_index;
                 } else {
                     return Err(SessionPlaybackError::RevisionTrackMismatch);
@@ -420,6 +475,7 @@ impl SessionPlayback {
             if !active_old_tail
                 && old_index.is_some_and(|old_index| {
                     mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                        || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
                 })
             {
                 continue;
@@ -504,6 +560,7 @@ impl SessionPlayback {
                 .position(|route| route.id == new_route.id);
             if old_index.is_some_and(|old_index| {
                 mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                    || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
             }) {
                 continue;
             }
@@ -700,7 +757,11 @@ impl SessionPlayback {
                     .tracks()
                     .get(new_index)
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let carried_by_retarget = mutable_retarget_new_for_old
+                    .get(old_index)
+                    .is_some_and(|candidate_index| *candidate_index == new_index);
                 if !old_track.instrument_config_matches(new_track)
+                    && !carried_by_retarget
                     && let Some(changed) = arrangement_instrument_changed.get_mut(old_index)
                 {
                     *changed = true;
@@ -738,7 +799,10 @@ impl SessionPlayback {
                                     *changed = true;
                                 }
                             }
-                            if !next.instrument_config_matches(old) {
+                            let carried_by_retarget = mutable_retarget_new_for_old
+                                .get(old_index)
+                                .is_some_and(|candidate_index| *candidate_index == new_index);
+                            if !next.instrument_config_matches(old) && !carried_by_retarget {
                                 if let Some(changed) = midi_route_changed.get_mut(old_index) {
                                     *changed = true;
                                 }
@@ -1708,6 +1772,9 @@ impl SessionPlayback {
             if mutable_continuity_new_for_old
                 .get(old_index)
                 .is_some_and(|new_index| *new_index != usize::MAX)
+                || mutable_retarget_new_for_old
+                    .get(old_index)
+                    .is_some_and(|new_index| *new_index != usize::MAX)
             {
                 continue;
             }
@@ -1915,6 +1982,33 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             new_runtime
                 .inherit_from(old_runtime)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
+        for (old_index, new_index) in mutable_retarget_new_for_old.iter().copied().enumerate() {
+            if new_index == usize::MAX {
+                continue;
+            }
+            let old_runtime = previous
+                .mutable_instruments
+                .get(old_index)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let new_route = self
+                .routes
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let proof = self
+                .revision
+                .session()
+                .mutable_history_retarget(new_route.id)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            let new_runtime = self
+                .mutable_instruments
+                .get_mut(new_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            new_runtime
+                .retarget_from(old_runtime, proof)
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
         for (old_index, old_route) in previous.routes.iter().enumerate() {

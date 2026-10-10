@@ -106,6 +106,9 @@ impl PreparedMutableInstrumentRuntime for ProbeFactory {
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
         Box::new(ProbeRuntime::default())
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[derive(Clone, Copy, Default)]

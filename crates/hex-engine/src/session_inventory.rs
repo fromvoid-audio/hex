@@ -6,7 +6,10 @@ use crate::{
     midi_template::MIDI_SPAN_BUFFER_CAPACITY,
 };
 use hex_devices::SineTable;
-use hex_lattice::{PreparedMutableInstrumentRuntime, PreparedNativeInstrument};
+use hex_lattice::{
+    InstrumentHistoryRetargetPreparation, PreparedInstrumentHistoryRetarget,
+    PreparedMutableInstrumentRuntime, PreparedNativeInstrument,
+};
 use hex_project::{
     AssetId, ClipId, DeviceId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
 };
@@ -22,11 +25,15 @@ struct PreparedTrackInstrumentConfig {
     bypassed: bool,
     note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+    history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
+    history_retarget_requires_quiescence: bool,
 }
 
 struct PreparedMutableTrackInstrument {
     track: TrackId,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
+    history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
+    history_retarget_requires_quiescence: bool,
 }
 
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
@@ -239,6 +246,14 @@ impl PreparedSessionMidiClip {
             && self.mutable_limits == other.mutable_limits
     }
 
+    /// Preserve clip/source identity and mutable admission limits while
+    /// allowing only the prepared native instrument's authored state to vary.
+    pub(crate) fn instrument_retarget_compatible(&self, other: &Self) -> bool {
+        self.instrument_identity_matches(other)
+            && self.instrument_enabled == other.instrument_enabled
+            && self.mutable_limits == other.mutable_limits
+    }
+
     pub(crate) fn instrument_identity_matches(&self, other: &Self) -> bool {
         self.instrument_id == other.instrument_id
     }
@@ -268,6 +283,7 @@ pub struct PreparedSessionInventory {
     tracks: Vec<PreparedSessionTrack>,
     midi_clips: Vec<PreparedSessionMidiClip>,
     mutable_instruments: Vec<PreparedMutableTrackInstrument>,
+    mutable_history_retarget_storage_bytes: usize,
     audio_clips: Vec<PreparedSessionAudioClip>,
     work: SessionWorkEnvelope,
     contains_streamed_sources: bool,
@@ -458,6 +474,18 @@ impl PreparedSessionInventory {
             } else {
                 None
             };
+            let retarget_preparation = match mutable_runtime.as_deref() {
+                Some(candidate) => candidate
+                    .prepare_history_retarget_target()
+                    .map_err(|_| crate::Invalid("could not prepare mutable instrument retarget"))?,
+                None => InstrumentHistoryRetargetPreparation::Unchanged,
+            };
+            let (history_retarget_target, history_retarget_requires_quiescence) =
+                match retarget_preparation {
+                    InstrumentHistoryRetargetPreparation::Unchanged => (None, false),
+                    InstrumentHistoryRetargetPreparation::Prepared(proof) => (Some(proof), false),
+                    InstrumentHistoryRetargetPreparation::RequiresQuiescence => (None, true),
+                };
             instrument_configs.push(PreparedTrackInstrumentConfig {
                 track: track.id(),
                 config,
@@ -466,6 +494,8 @@ impl PreparedSessionInventory {
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
                 mutable_runtime,
+                history_retarget_target,
+                history_retarget_requires_quiescence,
             });
             instrument_track_indices.insert(track.id(), instrument_configs.len() - 1);
         }
@@ -960,11 +990,31 @@ impl PreparedSessionInventory {
         mutable_instruments
             .try_reserve_exact(mutable_count)
             .map_err(|_| crate::Invalid("could not reserve mutable instrument factories"))?;
+        let mut mutable_history_retarget_storage_bytes = 0usize;
         for config in &mut instrument_configs {
             if let Some(factory) = config.mutable_runtime.take() {
+                let proof = config.history_retarget_target.take();
+                if let Some(proof) = proof.as_deref() {
+                    let declared = proof.declared_fixed_storage_bytes();
+                    mutable_history_retarget_storage_bytes = mutable_history_retarget_storage_bytes
+                        .checked_add(declared)
+                        .filter(|bytes| {
+                            declared > 0
+                                && declared <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                                && *bytes
+                                    <= hex_project::MAX_TRACKS
+                                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                        })
+                        .ok_or(crate::Invalid(
+                            "mutable instrument retarget proof exceeds its bounded storage",
+                        ))?;
+                }
                 mutable_instruments.push(PreparedMutableTrackInstrument {
                     track: config.track,
                     factory,
+                    history_retarget_target: proof,
+                    history_retarget_requires_quiescence: config
+                        .history_retarget_requires_quiescence,
                 });
             }
         }
@@ -981,6 +1031,7 @@ impl PreparedSessionInventory {
             tracks,
             midi_clips,
             mutable_instruments,
+            mutable_history_retarget_storage_bytes,
             audio_clips,
             work,
             contains_streamed_sources,
@@ -1097,6 +1148,27 @@ impl PreparedSessionInventory {
             .iter()
             .find(|instrument| instrument.track == track)
             .map(|instrument| instrument.factory.as_ref())
+    }
+
+    pub(crate) fn mutable_history_retarget(
+        &self,
+        track: TrackId,
+    ) -> Option<&dyn PreparedInstrumentHistoryRetarget> {
+        self.mutable_instruments
+            .iter()
+            .find(|instrument| instrument.track == track)
+            .and_then(|instrument| instrument.history_retarget_target.as_deref())
+    }
+
+    pub(crate) fn mutable_history_retarget_storage_bytes(&self) -> usize {
+        self.mutable_history_retarget_storage_bytes
+    }
+
+    pub(crate) fn mutable_history_retarget_requires_quiescence(&self, track: TrackId) -> bool {
+        self.mutable_instruments
+            .iter()
+            .find(|instrument| instrument.track == track)
+            .is_some_and(|instrument| instrument.history_retarget_requires_quiescence)
     }
 
     pub(crate) fn has_mutable_instruments(&self) -> bool {

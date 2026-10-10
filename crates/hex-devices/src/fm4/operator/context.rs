@@ -242,7 +242,7 @@ impl PreparedOperatorConfiguration {
         })
     }
 
-    pub(super) fn feedback_parameters(
+    pub(crate) fn feedback_parameters(
         &self,
         feedback_turns: [f64; OPERATORS],
     ) -> Result<OperatorFeedbackParameters, Invalid> {
@@ -256,11 +256,11 @@ impl PreparedOperatorConfiguration {
         })
     }
 
-    pub(super) const fn configuration_id(&self) -> u64 {
+    pub(crate) const fn configuration_id(&self) -> u64 {
         self.configuration_id
     }
 
-    pub(super) fn retarget_compatible_with(&self, target: &PreparedOperatorConfiguration) -> bool {
+    pub(crate) fn retarget_compatible_with(&self, target: &PreparedOperatorConfiguration) -> bool {
         self.sample_rate == target.sample_rate
             && self.ratios == target.ratios
             && self.tuning == target.tuning

@@ -302,6 +302,9 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
             voices: [MutableFixtureVoice::default(); 64],
         })
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
@@ -2305,6 +2308,7 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
         (35, 1.0),
         (36, 0.0),
         (37, 0.0),
+        (78, 0.25),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             hex_engine::NativeDeviceClass::Instrument,
@@ -2375,16 +2379,14 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
             .ok_or("Operator disappeared")?
             .state(),
         ParameterId::from_static(29),
-        ParameterValue::Float(0.5),
+        ParameterValue::Float(0.6),
     )?;
-    if mixed_waveforms {
-        changed_state = hex_engine::patch_native_device_parameter_for_class(
-            hex_engine::NativeDeviceClass::Instrument,
-            &changed_state,
-            ParameterId::from_static(57),
-            ParameterValue::Choice(2),
-        )?;
-    }
+    changed_state = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        &changed_state,
+        ParameterId::from_static(78),
+        ParameterValue::Float(0.65),
+    )?;
     editor.execute(Command::ReplaceDeviceState {
         device: instrument,
         state: changed_state,
