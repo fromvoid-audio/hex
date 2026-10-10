@@ -904,15 +904,15 @@ impl gpui::Render for NumericControl {
                     .id(self.id.clone())
                     .flex()
                     .flex_col()
-                    .w(px(82.0))
-                    .h(px(51.0))
+                    .w(px(64.0))
+                    .h(px(52.0))
                     .gap(px(1.0))
                     .items_center()
                     .track_focus(&self.focus)
                     .key_context("hex_numeric_control")
                     .child(
                         div()
-                            .w(px(82.0))
+                            .w(px(64.0))
                             .h(px(10.0))
                             .flex()
                             .items_center()
@@ -927,7 +927,7 @@ impl gpui::Render for NumericControl {
                             .id(SharedString::from(format!("{}-knob", self.id)))
                             .debug_selector(|| format!("{}-knob", self.id))
                             .relative()
-                            .size(px(24.0))
+                            .size(px(26.0))
                             .rounded_full()
                             .border_1()
                             .border_color(rgb(if enabled { style.border } else { style.rail }))
@@ -943,15 +943,15 @@ impl gpui::Render for NumericControl {
                                     |_, _, _| (),
                                     move |bounds, _, window, _| {
                                         let center = point(
-                                            bounds.origin.x + px(12.0),
-                                            bounds.origin.y + px(12.0),
+                                            bounds.origin.x + px(13.0),
+                                            bounds.origin.y + px(13.0),
                                         );
                                         let end = point(
-                                            center.x + px(angle.cos() * 8.0),
-                                            center.y + px(angle.sin() * 8.0),
+                                            center.x + px(angle.cos() * 9.0),
+                                            center.y + px(angle.sin() * 9.0),
                                         );
                                         let top = point(
-                                            bounds.origin.x + px(12.0),
+                                            bounds.origin.x + px(13.0),
                                             bounds.origin.y + px(2.0),
                                         );
                                         let tick_end = point(top.x, top.y + px(3.0));
@@ -982,7 +982,7 @@ impl gpui::Render for NumericControl {
                             editing: self.editing,
                             enabled,
                             style,
-                            width: px(82.0),
+                            width: px(64.0),
                             height: px(14.0),
                         },
                         self.value_mouse_down_listener(cx),
@@ -991,8 +991,8 @@ impl gpui::Render for NumericControl {
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::InlineValue) => div()
                 .id(self.id.clone())
                 .flex()
-                .w(px(56.0))
-                .h(px(18.0))
+                .w(px(46.0))
+                .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context("hex_numeric_control")
@@ -1004,8 +1004,8 @@ impl gpui::Render for NumericControl {
                         editing: self.editing,
                         enabled,
                         style,
-                        width: px(56.0),
-                        height: px(16.0),
+                        width: px(46.0),
+                        height: px(14.0),
                     },
                     self.value_mouse_down_listener(cx),
                 )),

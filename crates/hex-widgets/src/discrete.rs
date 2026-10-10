@@ -177,7 +177,7 @@ impl gpui::Render for Toggle {
                     DiscreteControlAppearance::CompactButton
                         | DiscreteControlAppearance::CompactIconButton
                 ) {
-                    17.0
+                    14.0
                 } else {
                     20.0
                 },
@@ -188,14 +188,26 @@ impl gpui::Render for Toggle {
                     DiscreteControlAppearance::CompactButton
                         | DiscreteControlAppearance::CompactIconButton
                 ) {
-                    2.0
+                    1.0
                 } else {
                     3.0
                 },
             ))
-            .gap(px(5.0))
+            .gap(px(
+                if self.appearance == DiscreteControlAppearance::CompactButton {
+                    3.0
+                } else {
+                    5.0
+                },
+            ))
             .items_center()
-            .rounded(px(2.0))
+            .rounded(px(
+                if self.appearance == DiscreteControlAppearance::CompactButton {
+                    1.5
+                } else {
+                    2.0
+                },
+            ))
             .bg(rgb(
                 if matches!(
                     self.appearance,
@@ -233,42 +245,40 @@ impl gpui::Render for Toggle {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| {
-                        let left = bounds.origin.x + px(3.0);
-                        let right = bounds.origin.x + bounds.size.width - px(3.0);
-                        let top = bounds.origin.y + px(2.0);
-                        let bottom = bounds.origin.y + bounds.size.height - px(2.0);
-                        let mid = bounds.origin.y + bounds.size.height * 0.54;
+                        let left = bounds.origin.x + px(1.0);
+                        let right = bounds.origin.x + bounds.size.width - px(1.0);
+                        let top = bounds.origin.y + px(1.0);
+                        let bottom = bounds.origin.y + bounds.size.height - px(1.0);
+                        let mid = bounds.origin.y + bounds.size.height * 0.58;
                         let mut path = PathBuilder::stroke(px(1.1));
                         path.move_to(point(left, mid));
-                        path.line_to(point(left, top + px(4.0)));
+                        path.line_to(point(left, top + px(3.0)));
                         path.line_to(point(
-                            bounds.origin.x + bounds.size.width * 0.28,
+                            bounds.origin.x + bounds.size.width * 0.3,
                             top + px(1.0),
                         ));
                         path.line_to(point(bounds.origin.x + bounds.size.width * 0.5, top));
                         path.line_to(point(
-                            bounds.origin.x + bounds.size.width * 0.72,
+                            bounds.origin.x + bounds.size.width * 0.7,
                             top + px(1.0),
                         ));
-                        path.line_to(point(right, top + px(4.0)));
+                        path.line_to(point(right, top + px(3.0)));
                         path.line_to(point(right, mid));
                         path.move_to(point(left, mid));
-                        path.line_to(point(left, bottom - px(1.0)));
-                        path.line_to(point(bounds.origin.x + px(5.0), bottom));
-                        path.line_to(point(bounds.origin.x + px(7.0), bottom));
-                        path.line_to(point(bounds.origin.x + px(7.0), mid));
+                        path.line_to(point(left, bottom));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.36, bottom));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.36, mid));
                         path.line_to(point(left, mid));
-                        path.move_to(point(bounds.origin.x + bounds.size.width - px(7.0), mid));
-                        path.line_to(point(bounds.origin.x + bounds.size.width - px(7.0), bottom));
-                        path.line_to(point(right - px(5.0), bottom));
-                        path.line_to(point(right, bottom - px(1.0)));
+                        path.move_to(point(bounds.origin.x + bounds.size.width * 0.64, mid));
+                        path.line_to(point(bounds.origin.x + bounds.size.width * 0.64, bottom));
+                        path.line_to(point(right, bottom));
                         path.line_to(point(right, mid));
                         if let Ok(path) = path.build() {
                             window.paint_path(path, icon_color);
                         }
                     },
                 )
-                .size(px(18.0)),
+                .size(px(10.0)),
             );
         } else if self.appearance == DiscreteControlAppearance::CompactButton {
             root = root.child(
@@ -277,7 +287,7 @@ impl gpui::Render for Toggle {
                     .min_w_0()
                     .overflow_hidden()
                     .text_center()
-                    .text_size(px(9.0))
+                    .text_size(px(8.0))
                     .text_color(rgb(if self.enabled {
                         self.style.text
                     } else {
@@ -540,27 +550,33 @@ impl gpui::Render for Selector {
                     .flex()
                     .h(px(
                         if self.appearance == DiscreteControlAppearance::CompactSelector {
-                            18.0
+                            14.0
                         } else {
                             20.0
                         },
                     ))
                     .px(px(
                         if self.appearance == DiscreteControlAppearance::CompactSelector {
-                            3.0
+                            2.0
                         } else {
                             4.0
                         },
                     ))
                     .gap(px(4.0))
                     .items_center()
-                    .rounded(px(2.0))
+                    .rounded(px(
+                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                            1.5
+                        } else {
+                            2.0
+                        },
+                    ))
                     .border_1()
                     .border_color(rgb(self.style.border))
                     .bg(rgb(self.style.raised))
                     .text_size(px(
                         if self.appearance == DiscreteControlAppearance::CompactSelector {
-                            9.0
+                            8.0
                         } else {
                             self.style.font_size
                         },

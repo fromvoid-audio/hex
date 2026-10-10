@@ -33,7 +33,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
     assert!(visual.debug_bounds("midi-source-controls").is_some());
     assert!(visual.debug_bounds("midi-note-roll").is_some());
     let open_panel = visual.debug_bounds("clip-view").expect("open detail panel");
-    assert!(f32::from(open_panel.size.height) >= 228.0);
+    assert!(f32::from(open_panel.size.height) >= 213.0);
 
     let toggle = visual
         .debug_bounds("clip-view-toggle")
@@ -188,7 +188,7 @@ fn open_clip_detail_keeps_its_body_height_after_selection_is_removed(cx: &mut Te
         .debug_bounds("clip-detail-empty")
         .expect("truthful empty detail body");
     assert_eq!(empty.size.height, populated.size.height);
-    assert!(f32::from(empty_body.size.height) >= 228.0);
+    assert!(f32::from(empty_body.size.height) >= 213.0);
     editor.read_with(cx, |view, _| {
         assert!(
             view.clip_view_open,
@@ -341,7 +341,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_up(tab_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let panel = visual.debug_bounds("device-panel").expect("device panel");
-    assert_eq!(panel.size.height, px(228.0));
+    assert_eq!(panel.size.height, px(213.0));
     assert!(visual.debug_bounds("device-panel-header").is_some());
     assert!(visual.debug_bounds("device-add-toggle").is_some());
     let chain = visual
@@ -360,7 +360,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
     assert_eq!(instrument_card.size.width, px(286.0));
-    assert_eq!(effect_card.size.width, px(184.0));
+    assert_eq!(effect_card.size.width, px(144.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"

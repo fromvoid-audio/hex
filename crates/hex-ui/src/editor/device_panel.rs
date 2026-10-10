@@ -16,7 +16,7 @@ use hex_widgets::{
     ControlStyle, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
-    device_frame, rounded_device_frame,
+    compact_rounded_device_frame, device_frame,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -27,18 +27,21 @@ pub(super) use send_controls::{
     commit_owned_numeric_edit, dispatch_numeric_gesture, finalize_send_controls_for_track,
 };
 
-const DEVICE_PANEL_HEIGHT: f32 = 228.0;
+const DEVICE_PANEL_HEIGHT: f32 = 213.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
 const DEVICE_FRAME_WIDTH: f32 = 286.0;
-pub(super) const UTILITY_FRAME_WIDTH: f32 = 184.0;
+pub(super) const UTILITY_FRAME_WIDTH: f32 = 144.0;
 const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
     - DEVICE_PANEL_BORDER_WIDTH
     - DEVICE_PANEL_HEADER_HEIGHT
     - (DEVICE_CHAIN_PADDING * 2.0);
 const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
     - hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
+    - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
+const UTILITY_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
+    - hex_widgets::COMPACT_DEVICE_FRAME_HEADER_HEIGHT
     - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -857,6 +860,7 @@ fn device_drag_grip(
     class: NativeDeviceClass,
     project_generation: u64,
     revision: u64,
+    compact: bool,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let id = device.id();
@@ -875,14 +879,15 @@ fn device_drag_grip(
     div()
         .id(("device-drag-grip", id.value()))
         .debug_selector(move || format!("device-drag-grip-{}", id.value()))
-        .w(px(14.0))
-        .h_full()
+        .w(px(if compact { 12.0 } else { 14.0 }))
+        .when(compact, |style| style.h(px(12.0)))
+        .when(!compact, |style| style.h_full())
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .cursor_move()
-        .text_xs()
+        .text_size(px(if compact { 9.0 } else { 12.0 }))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .hover(|style| style.text_color(rgb(theme::color(theme::PaletteRole::Text))))
         .tooltip(|_, cx| {
@@ -948,6 +953,7 @@ fn render_effect(
         NativeDeviceClass::Effect,
         view.project_generation,
         view.state.as_ref().map_or(0, |state| state.revision),
+        device.state().type_id().as_str() == Ok("hex.utility"),
         cx,
     ));
     let rendered = match &device_view {
@@ -984,12 +990,12 @@ fn render_effect(
                 body
             };
             if device_view.type_id.as_str() == Ok("hex.utility") {
-                rounded_device_frame(
+                compact_rounded_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
                     header_actions,
                     body,
-                    4.0,
+                    2.0,
                 )
             } else {
                 device_frame(
@@ -1007,7 +1013,13 @@ fn render_effect(
                 ))
                 .debug_selector(move || format!("device-body-{}", device_id.value()))
                 .w_full()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .h(px(
+                    if device.state().type_id().as_str() == Ok("hex.utility") {
+                        UTILITY_FRAME_BODY_HEIGHT
+                    } else {
+                        DEVICE_FRAME_BODY_HEIGHT
+                    },
+                ))
                 .min_h_0()
                 .overflow_y_scroll()
                 .p(px(5.0))
@@ -1022,7 +1034,7 @@ fn render_effect(
                     .unwrap_or("unknown device"),
             );
             if device.state().type_id().as_str() == Ok("hex.utility") {
-                rounded_device_frame(title, control_style(), header_actions, body, 4.0)
+                compact_rounded_device_frame(title, control_style(), header_actions, body, 2.0)
             } else {
                 device_frame(title, control_style(), header_actions, body)
             }
@@ -1363,6 +1375,7 @@ fn render_instrument(
         NativeDeviceClass::Instrument,
         view.project_generation,
         view.state.as_ref().map_or(0, |state| state.revision),
+        false,
         cx,
     ));
     let rendered = match &device_view {
@@ -1607,13 +1620,18 @@ fn device_actions(
 ) -> Div {
     let device = &devices[index];
     let id = device.id();
+    let action_size = if device.state().type_id().as_str() == Ok("hex.utility") {
+        12.0
+    } else {
+        14.0
+    };
     let bypassed = device.bypassed();
     let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
     let after_down = devices.get(index + 2).map(|device| device.id());
     let has_down = index + 1 < devices.len();
     let mut actions = div().flex().items_center().gap(px(2.0));
     actions = actions.child(
-        action_button(
+        action_button_sized(
             format!("device-bypass-{}", id.value()),
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
@@ -1622,6 +1640,7 @@ fn device_actions(
             } else {
                 theme::color(theme::PaletteRole::SecondaryText)
             },
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -1634,11 +1653,12 @@ fn device_actions(
         })),
     );
     actions = actions.child(
-        action_button(
+        action_button_sized(
             format!("device-up-{}", id.value()),
             "‹",
             "move device left",
             theme::color(theme::PaletteRole::Text),
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if let Some(before) = before_up
@@ -1654,11 +1674,12 @@ fn device_actions(
         })),
     );
     actions = actions.child(
-        action_button(
+        action_button_sized(
             format!("device-down-{}", id.value()),
             "›",
             "move device right",
             theme::color(theme::PaletteRole::Text),
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if has_down && finalize_controls(view, cx) {
@@ -1672,11 +1693,12 @@ fn device_actions(
         })),
     );
     actions.child(
-        action_button(
+        action_button_sized(
             format!("device-remove-{}", id.value()),
             "×",
             "remove device",
             theme::color(theme::PaletteRole::Primary),
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -1693,14 +1715,24 @@ fn action_button(
     tooltip: &'static str,
     color: u32,
 ) -> Stateful<Div> {
+    action_button_sized(id, icon, tooltip, color, 14.0)
+}
+
+fn action_button_sized(
+    id: String,
+    icon: &'static str,
+    tooltip: &'static str,
+    color: u32,
+    size: f32,
+) -> Stateful<Div> {
     div()
         .id(ElementId::Name(id.clone().into()))
         .debug_selector(move || id.clone())
-        .size(px(14.0))
+        .size(px(size))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(10.0))
+        .text_size(px(if size <= 12.0 { 8.0 } else { 10.0 }))
         .text_color(rgb(color))
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
         .cursor(gpui::CursorStyle::PointingHand)
@@ -1870,8 +1902,8 @@ fn parameter_control_with_presentation(
                 });
             }
             let (width, height) = match presentation {
-                ControlPresentation::CompactDial => (82.0, 51.0),
-                ControlPresentation::InlineValue => (56.0, 18.0),
+                ControlPresentation::CompactDial => (64.0, 52.0),
+                ControlPresentation::InlineValue => (46.0, 14.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -1891,11 +1923,12 @@ fn parameter_control_with_presentation(
             }
             let (width, height) = if presentation == ControlPresentation::CompactButton {
                 let width = match display_label {
-                    Some("bass mono" | "mono") => 82.0,
-                    Some("bass mono audition") => 24.0,
+                    Some("bass mono" | "mono") => 64.0,
+                    Some("bass mono audition") => 14.0,
+                    Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
-                (width, 17.0)
+                (width, 14.0)
             } else {
                 (136.0, 22.0)
             };
@@ -1915,7 +1948,7 @@ fn parameter_control_with_presentation(
                 });
             }
             let (width, height) = if presentation == ControlPresentation::CompactSelector {
-                (82.0, 18.0)
+                (64.0, 14.0)
             } else {
                 (136.0, 22.0)
             };

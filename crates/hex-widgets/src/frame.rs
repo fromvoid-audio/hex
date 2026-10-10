@@ -3,6 +3,7 @@ use gpui::{Div, IntoElement, div, prelude::*, px, rgb};
 
 /// Fixed vertical geometry shared by compact native device frames.
 pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 18.0;
+pub const COMPACT_DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
 pub const DEVICE_FRAME_BORDER_WIDTH: f32 = 1.0;
 
 /// Compact device header and body frame. Header actions remain caller-owned.
@@ -12,7 +13,7 @@ pub fn device_frame(
     header_actions: impl IntoElement,
     body: impl IntoElement,
 ) -> Div {
-    device_frame_inner(title, style, header_actions, body, None)
+    device_frame_inner(title, style, header_actions, body, None, false)
 }
 
 /// Device frame with a caller-selected rounded outer edge.
@@ -23,7 +24,18 @@ pub fn rounded_device_frame(
     body: impl IntoElement,
     radius: f32,
 ) -> Div {
-    device_frame_inner(title, style, header_actions, body, Some(radius))
+    device_frame_inner(title, style, header_actions, body, Some(radius), false)
+}
+
+/// Rounded device frame with compact, reusable title-bar geometry.
+pub fn compact_rounded_device_frame(
+    title: impl Into<gpui::SharedString>,
+    style: ControlStyle,
+    header_actions: impl IntoElement,
+    body: impl IntoElement,
+    radius: f32,
+) -> Div {
+    device_frame_inner(title, style, header_actions, body, Some(radius), true)
 }
 
 fn device_frame_inner(
@@ -32,8 +44,16 @@ fn device_frame_inner(
     header_actions: impl IntoElement,
     body: impl IntoElement,
     radius: Option<f32>,
+    compact_header: bool,
 ) -> Div {
     let title = title.into();
+    let header_height = if compact_header {
+        COMPACT_DEVICE_FRAME_HEADER_HEIGHT
+    } else {
+        DEVICE_FRAME_HEADER_HEIGHT
+    };
+    let header_padding = if compact_header { 2.0 } else { 4.0 };
+    let header_gap = if compact_header { 2.0 } else { 4.0 };
     let frame = div()
         .flex()
         .flex_col()
@@ -44,9 +64,9 @@ fn device_frame_inner(
         .child(
             div()
                 .flex()
-                .h(px(DEVICE_FRAME_HEADER_HEIGHT))
-                .px(px(4.0))
-                .gap(px(4.0))
+                .h(px(header_height))
+                .px(px(header_padding))
+                .gap(px(header_gap))
                 .items_center()
                 .bg(rgb(style.raised))
                 .border_b_1()

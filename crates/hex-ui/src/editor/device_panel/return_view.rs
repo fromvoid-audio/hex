@@ -186,12 +186,17 @@ fn render_return_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let bypassed = device.bypassed();
+    let action_size = if device.state().type_id().as_str() == Ok("hex.utility") {
+        12.0
+    } else {
+        14.0
+    };
     let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
     let after_down = devices.get(index + 2).map(|device| device.id());
     let has_down = index + 1 < devices.len();
     let mut actions = div().flex().items_center().gap(px(2.0));
     actions = actions.child(
-        action_button(
+        action_button_sized(
             format!("device-bypass-{}", id.value()),
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
@@ -200,6 +205,7 @@ fn render_return_effect(
             } else {
                 theme::color(theme::PaletteRole::SecondaryText)
             },
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -213,11 +219,12 @@ fn render_return_effect(
     );
     if let Some(before) = before_up {
         actions = actions.child(
-            action_button(
+            action_button_sized(
                 format!("return-device-up-{}", id.value()),
                 "‹",
                 "move effect left",
                 theme::color(theme::PaletteRole::Text),
+                action_size,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -232,11 +239,12 @@ fn render_return_effect(
     }
     if has_down {
         actions = actions.child(
-            action_button(
+            action_button_sized(
                 format!("return-device-down-{}", id.value()),
                 "›",
                 "move effect right",
                 theme::color(theme::PaletteRole::Text),
+                action_size,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -250,11 +258,12 @@ fn render_return_effect(
         );
     }
     actions = actions.child(
-        action_button(
+        action_button_sized(
             format!("return-device-remove-{}", id.value()),
             "×",
             "remove effect",
             theme::color(theme::PaletteRole::Primary),
+            action_size,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -297,12 +306,12 @@ fn render_return_effect(
                 body
             };
             if device_view.type_id.as_str() == Ok("hex.utility") {
-                rounded_device_frame(
+                compact_rounded_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
                     actions,
                     body,
-                    4.0,
+                    2.0,
                 )
                 .into_any_element()
             } else {
@@ -324,12 +333,19 @@ fn render_return_effect(
                     .unwrap_or("unknown device"),
             );
             let body = div()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
+                .h(px(
+                    if device.state().type_id().as_str() == Ok("hex.utility") {
+                        UTILITY_FRAME_BODY_HEIGHT
+                    } else {
+                        DEVICE_FRAME_BODY_HEIGHT
+                    },
+                ))
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 .child(theme::text(format!("unsupported device state · {error}")));
             if device.state().type_id().as_str() == Ok("hex.utility") {
-                rounded_device_frame(title, control_style(), actions, body, 4.0).into_any_element()
+                compact_rounded_device_frame(title, control_style(), actions, body, 2.0)
+                    .into_any_element()
             } else {
                 device_frame(title, control_style(), actions, body).into_any_element()
             }

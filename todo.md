@@ -1447,3 +1447,15 @@ The mode value uses common pending retirement; switch/ack/undo/redo regression
 passes. Targeted UI tests: 368 passed, 2 existing ignored; strict package clippy,
 desktop build, fmt and architecture/UI/GPUI guards passed. Full local CI and
 fresh signed combined build follow; native visual/input acceptance remains open.
+
+## 10 October 2026 — Utility native visual refinement
+
+User reviewed PR105's review66 build: parameter behavior is retained, but the
+panel remains too wide and its controls too tall/thick. Pulse2232 returns to
+in_progress. Refine the same PR against the supplied Live Utility screenshot:
+narrower Input/Output columns, shorter controls, thin outlines and rounded
+frames/buttons/readouts. Preserve Hex colors, lowercase/font rules, canonical
+gestures, pending-value retirement, mode popup and regular/Return consistency.
+The screenshot's logical scale is inferred; exact visual acceptance remains
+with the user. Fresh source checks and a signed combined build follow the
+refinement; Operator UI2233 remains a separate subsequent PR.
