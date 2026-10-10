@@ -377,11 +377,14 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
-                            loop_region: self
-                                .revision
-                                .arrangement()
-                                .loop_region()
-                                .filter(|region| region.enabled()),
+                            loop_region: if self.linear_arrangement_export {
+                                None
+                            } else {
+                                self.revision
+                                    .arrangement()
+                                    .loop_region()
+                                    .filter(|region| region.enabled())
+                            },
                             timing: &timing,
                         },
                         index,
