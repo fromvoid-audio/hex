@@ -836,3 +836,27 @@ Combined exact-head validation, a fresh signed build and native user acceptance
 remain open at this documentation checkpoint. Pulse is the live review authority;
 this paragraph supplements earlier source checkpoints rather than marking the
 parent Lattice/Operator/return workflows complete.
+
+Pulse2181 source checkpoint: `hex-engine::session_playback` now provides a
+control-owned bounded store of per-track in-memory mutable-instrument snapshots.
+Each keeps the committed runtime twin pair with owned occurrence proofs and the
+next ID; exact `PreparedRevision` Arc identity, track, sample rate and performance
+frame gate restore. Capture rejects an open speculative block; restore preflights
+the whole candidate and changes the target only after compatibility/copy
+succeeds. The store allows 16 entries and charges pair declarations, full
+two-sided proof buffers and all inline slots against 256 KiB; the fixed slots
+remain charged after clear. Restore's retained-store plus temporary-candidate
+operation peak is capped at 512 KiB. One feedback fixture charges 17,976 bytes
+on macOS arm64, with `size_of` terms varying by architecture. Test-only feedback
+continuations match exactly for held notes and ended-gate feedback tails across
+different block partitions. This oracle covers instrument state and the engine
+occurrence ledger only; it does not validate transport, route, return or effect
+history. Refusal tests cover uncommitted blocks, revision/frame mismatch,
+unchanged target IDs and factory-free over-limit admission. These are composable
+track checkpoints at zero replay distance, not project/seek checkpoints:
+transport/source loops, Returns/effects, persistence, offline replay, callback
+publication, and 2164/2165 integration remain open. Targeted engine checkpoint
+tests (3), engine suite (153 passed/1 ignored), lattice suite (24) and strict
+Clippy pass. Architecture, UI-style, GPUI-patch and format guards pass. Full
+local CI and parent integration review remain outstanding. Do not mark Pulse2181
+done or describe this as seek support.
