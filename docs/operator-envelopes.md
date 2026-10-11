@@ -14,10 +14,13 @@ are original choices, not measured Ableton behavior or a numerical parity claim.
 ## Units and finite laws
 
 Each `OperatorEnvelope` validates Initial, Peak and Sustain as finite linear
-amplitudes in [0,1], and Attack, Decay and Release as finite seconds in [0,120].
+amplitudes in [0,1], Attack as finite seconds in [0,20], and Decay/Release in
+[0,60] (Pulse2337, direct user clarification11October2026). The standalone mathematical
+kernel retains zero-duration support; canonical Operator authoring/state requires
+decay/release of at least1ms.
 Levels need not be descending. Preparation accepts sample rates 8,000–192,000 Hz
 and rounds each duration to the nearest frame, with half frames rounded upward.
-Each stage is at most 23,040,000 frames. Preparation computes reciprocals and
+Attack is at most3,840,000 frames; decay/release at most11,520,000 frames. Preparation computes reciprocals and
 curve rates; sample queries do not convert musical time or allocate storage.
 
 For note-relative age `a`, attack frames `A`, decay frames `D`, initial `I`,

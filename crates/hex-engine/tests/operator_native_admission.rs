@@ -152,7 +152,7 @@ fn operator_state(carrier: f32) -> hex_lattice_contract::NativeDeviceState {
         (34, 1.0),     // peak
         (35, 1.0),     // sustain
         (36, 0.0),     // attack
-        (37, 0.0),     // decay
+        (37, 0.001),   // minimum decay; peak equals sustain, so PCM is unchanged
         (38, 0.005),   // release
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(

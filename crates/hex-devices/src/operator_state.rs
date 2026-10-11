@@ -21,7 +21,7 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 6;
+pub const OPERATOR_STATE_VERSION: u32 = 7;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
@@ -239,8 +239,13 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
             id: ParameterId::from_static((CORE_FIELDS + envelope + 1) as u32),
             label: ENVELOPE_LABELS[envelope],
             kind: ParameterKind::Float {
-                min: 0.0,
-                max: if time { 120.0 } else { 1.0 },
+                min: if field >= 4 { 0.001 } else { 0.0 },
+                max: match field {
+                    3 => crate::operator_envelope::MAX_ATTACK_SECONDS as f32,
+                    4 => crate::operator_envelope::MAX_DECAY_SECONDS as f32,
+                    5 => crate::operator_envelope::MAX_RELEASE_SECONDS as f32,
+                    _ => 1.0,
+                },
                 unit: if time { Some("s") } else { None },
             },
             default: ParameterValue::Float(ENVELOPE_DEFAULTS[field]),
@@ -378,7 +383,7 @@ impl OperatorSettings {
             WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
-            FEEDBACK_STATE_VERSION => FEEDBACK_PAYLOAD_BYTES,
+            FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -397,6 +402,23 @@ impl OperatorSettings {
                 .get_mut(index)
                 .ok_or(DeviceContractError::MalformedState)?;
             *field = f32::from_le_bytes(bytes);
+        }
+        // Versions 1–5 permitted every stage up to 120s. Validate the old
+        // domain before clamping; malformed values must remain errors.
+        if state.state_version() < 6 {
+            for operator in 0..OPERATORS {
+                for (field, max) in [
+                    (3, crate::operator_envelope::MAX_ATTACK_SECONDS),
+                    (4, crate::operator_envelope::MAX_DECAY_SECONDS),
+                    (5, crate::operator_envelope::MAX_RELEASE_SECONDS),
+                ] {
+                    let value = &mut fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field];
+                    if !value.is_finite() || !(0.0..=120.0).contains(value) {
+                        return Err(DeviceContractError::InvalidParameterValue);
+                    }
+                    *value = value.clamp(if field >= 4 { 0.001 } else { 0.0 }, max as f32);
+                }
+            }
         }
         let mut waveforms = [OperatorWaveform::Sine; OPERATORS];
         if state.state_version() >= WAVEFORM_STATE_VERSION {

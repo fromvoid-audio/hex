@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn legacy_prefixes_migrate_neutral_and_all_inactive_lfo_words_are_strict() {
         let current = OPERATOR_METADATA.default_state().unwrap();
-        for (version, length) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320)] {
+        for (version, length) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320), (6, 320)] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
                 version,
@@ -206,8 +206,15 @@ mod tests {
             let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
             assert_eq!(&migrated.payload()[..length], old.payload());
             assert_eq!(&migrated.payload()[320..], &current.payload()[320..]);
-            assert_eq!(migrated.state_version(), 6);
+            assert_eq!(migrated.state_version(), 7);
         }
+        let mut invalid_v6 = current.payload()[..320].to_vec();
+        invalid_v6[36 * 4..37 * 4].copy_from_slice(&0.0_f32.to_le_bytes());
+        assert!(
+            OPERATOR_METADATA
+                .migrate_state(&NativeDeviceState::new(OPERATOR_TYPE_ID, 6, invalid_v6).unwrap())
+                .is_err()
+        );
         for (word, invalid) in [
             (0, 2),
             (1, 5),
@@ -226,10 +233,10 @@ mod tests {
         ] {
             let mut bytes = current.payload().to_vec();
             bytes[320 + word * 4..324 + word * 4].copy_from_slice(&invalid.to_le_bytes());
-            let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, 6, bytes).unwrap();
+            let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, bytes).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&bad).is_err());
         }
-        for (version, length) in [(6, 363), (6, 365), (7, 364), (5, 364)] {
+        for (version, length) in [(7, 363), (7, 365), (8, 364), (6, 364), (5, 364)] {
             let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, version, vec![0; length]).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&bad).is_err());
         }

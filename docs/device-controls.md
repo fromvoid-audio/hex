@@ -295,6 +295,22 @@ paths retain existing redraw and gesture behavior.
 See [reference comparison](../research/observations/operator-visual-002.md) for
 provenance, measured scope and remaining appearance/latency gaps.
 
+Pulse2337 uses a fixed three-stage plot informed by the user's maximum/minimum
+Live screenshots. Attack contributes0–1/3 of the width, decay contributes0–1/3
+after the attack endpoint, and release occupies the final third from2/3 to1.
+The sustain line spans the remaining gap. At maximum20/60/60s the nodes land
+at1/3,2/3,1; minimum0/1ms/1ms places attack/decay at0 and release at2/3.
+Attack changes move decay cumulatively; release remains anchored in its section.
+There is no automatic zoom, fit, rescale or recenter, and no explicit zoom action
+is needed to reach the full supported range. An original invertible logarithmic
+display mapping makes short times usable: attack uses a1ms log1p pivot, while
+decay/release map logarithmically from1ms to60s. These intermediate coordinates
+are not measured Live numerical parity; native comparison remains open.
+Pointer feedback, gesture cancellation, outside release, Undo and save/reopen
+still use canonical parameter gestures. See [Operator state](operator-state.md)
+for legacy normalization. [Live's manual](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#operator)
+documents breakpoint dragging but does not specify this intermediate mapping.
+
 Reusable density variants are permitted; variants must not encode a particular
 device identity. Native visual acceptance of the shared system remains with the
 user. Manual review should check the three-column arrangement and right-shell

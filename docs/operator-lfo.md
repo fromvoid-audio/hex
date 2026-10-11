@@ -8,7 +8,7 @@ project commands and shared UI controls. Prototype local values are not imported
 
 ## Stable state and modulation
 
-State version6 appends44 bytes after the exact320-byte version5 prefix, for364
+State version7 appends44 bytes after the exact320-byte version6 prefix, for364
 bytes and88 editable descriptors. Eleven little-endian four-byte words store:
 
 | ID | control | domain / default |
@@ -24,8 +24,9 @@ bytes and88 editable descriptors. Eleven little-endian four-byte words store:
 
 Booleans require integer0/1; choices require their exact index domains. All
 inactive fields are validated. Unknown versions, wrong lengths, invalid floats,
-booleans or choices are refused atomically. Versions1–5 preserve their validated
-prefix bit-for-bit and append disabled defaults. Save/reopen and undo/redo use
+booleans or choices are refused atomically. Versions1–6 preserve their validated
+in-range prefix bit-for-bit and append disabled defaults. Versions1–5 retain
+the established envelope-domain migration; version6 remains strict. Save/reopen and undo/redo use
 the existing generic storage/history path; no project schema branch is added.
 
 For each selected oscillator, frequency multiplies by
@@ -104,10 +105,9 @@ Before/after disabled and feedback modes use the original task baseline; active
 free/sync modes are measured separately. These Linux VM timings do not establish
 native audio deadlines or Live performance parity.
 
-Source completion requires full localCI on the exact clean final commit. Linux
-UI/workspace compilation currently encounters the unchanged locked external
-xattr0.2.3/libc0.2.190 ENOATTR incompatibility (Pulse2349); maintenance2348 owns
-native prerequisites and reusable environment publication. Partial portable tests
+Source completion requires full localCI on the exact clean final commit. The initial Linux UI/workspace compilation was blocked by external xattr/libc
+ENOATTR incompatibility; merged PR161/Pulse2349 supplies the dependency repair.
+Maintenance2348 owns native prerequisites and reusable environment publication. Partial portable tests
 cannot satisfy that gate. PR154 remains draft and unmerged while required checks
 and native UI/listening/reference acceptance remain open.
 

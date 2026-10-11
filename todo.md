@@ -1,3 +1,13 @@
+## xattr Linux source compatibility — pulse2349
+
+The exact xattr0.2.3/libc0.2.190 Linux ENOATTR failure was reproduced with
+Rust1.94.0's Linux target. A verified, licensed external patch uses ENODATA on
+Linux/Android while preserving macOS/BSD. The locked Linux compile regression
+and macOS path/descriptor missing-attribute/error tests pass. No dependency
+versions change. See [dependency boundary and evidence](docs/xattr-compatibility.md).
+Full exact-commit local CI and final PR review are delivery gates; cross checks
+do not prove a complete Linux desktop or native Linux syscall execution.
+
 ## 100-track Lattice effects profile — pulse2317
 
 Original release profiler now checks whole-run standalone composition and timed
@@ -2017,3 +2027,22 @@ Full local CI remains the
 merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).
+
+
+## 11 october 2026 — pulse2337: stable Operator time axis and stage caps
+
+Direct user clarification and two supplied Live screenshots establish fixed
+stage fractions: attack contributes the first third, decay adds up to another
+third after attack, and release is anchored in the final third. There is no
+automatic zoom/fit/recenter. An invertible original logarithmic display mapping
+keeps short times usable; intermediate Live numerical parity is unverified.
+Attack authors0–20s; decay/release1ms–60s in descriptor/graph/current state.
+The standalone kernel retains zero-stage mathematics but enforces upper caps.
+Version6 retains the320-byte layout and clamps valid legacy1–5 stage values
+into the new ranges without notice; malformed old domains/current states refuse.
+All163 device tests and six focused UI/geometry tests pass, including
+gesture/history/save and stage/migration regressions. Original geometry and
+authoring negative controls fail as expected; full exact-final local CI is the
+merge gate. Native visual, pointer and
+listening acceptance remains with the user, separately from source checks.
+See [controls](docs/device-controls.md) and [state](docs/operator-state.md).

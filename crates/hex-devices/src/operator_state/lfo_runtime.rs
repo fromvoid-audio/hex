@@ -405,7 +405,7 @@ mod tests {
             (34, ParameterValue::Float(1.0)),
             (35, ParameterValue::Float(1.0)),
             (36, ParameterValue::Float(0.0)),
-            (37, ParameterValue::Float(0.0)),
+            (37, ParameterValue::Float(0.001)),
             (38, ParameterValue::Float(0.01)),
             (82, ParameterValue::Bool(true)),
             (83, ParameterValue::Choice(waveform)),

@@ -47,7 +47,7 @@ fn operator_state() -> hex_lattice_contract::NativeDeviceState {
         (34, 1.0),
         (35, 1.0),
         (36, 0.0),
-        (37, 0.0),
+        (37, 0.001),
         (38, 0.005),
     ] {
         state = patch_native_device_parameter_for_class(

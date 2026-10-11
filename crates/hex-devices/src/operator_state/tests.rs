@@ -151,7 +151,7 @@ fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
             (EnvelopeField::Peak, 1.0),
             (EnvelopeField::Sustain, 1.0),
             (EnvelopeField::Attack, 0.0),
-            (EnvelopeField::Decay, 0.0),
+            (EnvelopeField::Decay, 0.001),
             (EnvelopeField::Release, 0.004),
         ] {
             state = patch(&state, parameter::envelope(operator, field), value);
@@ -561,12 +561,12 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
         state = patch(
             &state,
             parameter::envelope(index as u32 + 1, EnvelopeField::Decay),
-            0.0,
+            0.001,
         );
         state = patch(
             &state,
             parameter::envelope(index as u32 + 1, EnvelopeField::Release),
-            0.0,
+            0.001,
         );
     }
     let prepared = registry
@@ -971,7 +971,11 @@ fn routing_field_direction_and_carrier_sign_match_independent_modulation() {
             );
             for (field, value) in [
                 (EnvelopeField::Attack, 0.0),
-                (EnvelopeField::Decay, 0.0),
+                (EnvelopeField::Decay, 0.001),
+                (
+                    EnvelopeField::Peak,
+                    if operator == source { 0.6 } else { 0.3 },
+                ),
                 (
                     EnvelopeField::Sustain,
                     if operator == source { 0.6 } else { 0.3 },
@@ -1070,5 +1074,161 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
             );
             assert_eq!(context.sample(&note, age, gate), [expected, expected]);
         }
+    }
+}
+
+#[test]
+fn envelope_authoring_respects_stage_caps_for_every_operator() {
+    let original = OPERATOR_METADATA.default_state().expect("defaults");
+    for operator in 1..=4 {
+        for (field, max) in [
+            (EnvelopeField::Attack, 20.0),
+            (EnvelopeField::Decay, 60.0),
+            (EnvelopeField::Release, 60.0),
+        ] {
+            let parameter = parameter::envelope(operator, field);
+            let min = if matches!(field, EnvelopeField::Attack) {
+                0.0
+            } else {
+                0.001
+            };
+            for value in [min, max] {
+                let edited = patch(&original, parameter, value);
+                assert_eq!(
+                    OPERATOR_METADATA
+                        .read_parameter(&edited, parameter)
+                        .unwrap(),
+                    ParameterValue::Float(value)
+                );
+                assert!(
+                    OperatorSettings::from_state(&edited)
+                        .unwrap()
+                        .prepare_configuration(192_000)
+                        .is_ok()
+                );
+            }
+            if min > 0.0 {
+                assert!(
+                    OPERATOR_METADATA
+                        .patch_parameter(&original, parameter, ParameterValue::Float(0.0))
+                        .is_err()
+                );
+            }
+            for value in [
+                f32::from_bits(max.to_bits() + 1),
+                120.0,
+                f32::INFINITY,
+                f32::NAN,
+                -0.01,
+            ] {
+                assert!(
+                    OPERATOR_METADATA
+                        .patch_parameter(&original, parameter, ParameterValue::Float(value))
+                        .is_err()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() {
+    let original = OPERATOR_METADATA.default_state().unwrap();
+    for (version, len) in [
+        (1, LEGACY_PAYLOAD_BYTES),
+        (2, WAVEFORM_PAYLOAD_BYTES),
+        (3, TUNING_PAYLOAD_BYTES),
+        (4, VELOCITY_PAYLOAD_BYTES),
+        (5, FEEDBACK_PAYLOAD_BYTES),
+    ] {
+        let mut bytes = original.payload()[..len].to_vec();
+        for operator in 0..OPERATORS {
+            for field in 3..6 {
+                let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
+                bytes[offset..offset + 4]
+                    .copy_from_slice(&(70.0 + operator as f32 * 10.0).to_le_bytes());
+            }
+        }
+        let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes).unwrap();
+        let migrated = OPERATOR_METADATA.migrate_state(&legacy).unwrap();
+        assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
+        let mut expected_prefix = legacy.payload().to_vec();
+        for operator in 0..OPERATORS {
+            for (field, max) in [(3, 20.0_f32), (4, 60.0), (5, 60.0)] {
+                let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
+                expected_prefix[offset..offset + 4].copy_from_slice(&max.to_le_bytes());
+                assert_eq!(&migrated.payload()[offset..offset + 4], &max.to_le_bytes());
+            }
+        }
+        assert_eq!(&migrated.payload()[..len], expected_prefix);
+        assert_eq!(
+            OPERATOR_METADATA.migrate_state(&migrated).unwrap(),
+            migrated
+        );
+        for field in 3..6 {
+            for invalid in [120.01_f32, f32::NAN, f32::INFINITY, -0.01] {
+                let mut bytes = legacy.payload().to_vec();
+                let offset = (CORE_FIELDS + field) * 4;
+                bytes[offset..offset + 4].copy_from_slice(&invalid.to_le_bytes());
+                let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes).unwrap();
+                assert!(OPERATOR_METADATA.migrate_state(&bad).is_err());
+            }
+        }
+    }
+    for version in 1..=5 {
+        let len = match version {
+            1 => LEGACY_PAYLOAD_BYTES,
+            2 => WAVEFORM_PAYLOAD_BYTES,
+            3 => TUNING_PAYLOAD_BYTES,
+            4 => VELOCITY_PAYLOAD_BYTES,
+            _ => FEEDBACK_PAYLOAD_BYTES,
+        };
+        let mut bytes = original.payload()[..len].to_vec();
+        for operator in 0..OPERATORS {
+            for field in 4..6 {
+                let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
+                bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
+            }
+        }
+        let migrated = OPERATOR_METADATA
+            .migrate_state(&NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes).unwrap())
+            .unwrap();
+        for operator in 1..=4 {
+            for field in [EnvelopeField::Decay, EnvelopeField::Release] {
+                assert_eq!(
+                    OPERATOR_METADATA
+                        .read_parameter(&migrated, parameter::envelope(operator, field))
+                        .unwrap(),
+                    ParameterValue::Float(0.001)
+                );
+            }
+        }
+    }
+    for field in 4..6 {
+        let mut bytes = original.payload().to_vec();
+        let offset = (CORE_FIELDS + field) * 4;
+        bytes[offset..offset + 4]
+            .copy_from_slice(&f32::from_bits(0.001_f32.to_bits() - 1).to_le_bytes());
+        assert!(
+            OPERATOR_METADATA
+                .migrate_state(
+                    &NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                        .unwrap()
+                )
+                .is_err()
+        );
+    }
+    for (field, max) in [(3, 20.0_f32), (4, 60.0), (5, 60.0)] {
+        let mut bytes = original.payload().to_vec();
+        let offset = (CORE_FIELDS + field) * 4;
+        bytes[offset..offset + 4].copy_from_slice(&f32::from_bits(max.to_bits() + 1).to_le_bytes());
+        assert!(
+            OPERATOR_METADATA
+                .migrate_state(
+                    &NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                        .unwrap()
+                )
+                .is_err()
+        );
     }
 }
