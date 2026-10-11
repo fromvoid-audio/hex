@@ -50,9 +50,9 @@ pub enum MidiTemplateError {
     MutableEventsNotAnalytic,
 }
 
-impl std::fmt::Display for MidiTemplateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl MidiTemplateError {
+    pub(crate) fn diagnostic_message(self) -> &'static str {
+        match self {
             Self::InvalidSource(message) => message,
             Self::Allocation => "could not reserve ongoing midi template storage",
             Self::ArithmeticOverflow => "ongoing midi template arithmetic overflow",
@@ -89,7 +89,13 @@ impl std::fmt::Display for MidiTemplateError {
             Self::MutableEventsNotAnalytic => {
                 "mutable midi event source cannot use analytic note rendering"
             }
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for MidiTemplateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.diagnostic_message())
     }
 }
 

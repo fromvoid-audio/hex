@@ -320,7 +320,12 @@ fn streamed_session_one_shot_mixes_pages_and_keeps_cold_misses_local() {
     launch_and_play(&mut cold);
 
     let mut untouched = [[9.0; 2]; 12];
-    assert!(cold.render(&mut untouched).is_err());
+    assert_eq!(
+        cold.render(&mut untouched)
+            .expect_err("provider is required")
+            .to_string(),
+        "streamed session playback requires a media page provider"
+    );
     assert_eq!(untouched, [[9.0; 2]; 12]);
     assert_eq!(cold.performance_frame(), 0);
     let mut empty = [];

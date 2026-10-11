@@ -1,6 +1,8 @@
 //! GPUI UI service; device output is supplied by the desktop composition root.
 mod app;
 mod context_menu;
+mod diagnostics;
+pub use diagnostics::install_session_log;
 mod editor;
 mod layout;
 mod theme;

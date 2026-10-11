@@ -38,6 +38,11 @@ limiter. These coefficients are Hex-defined, not measured Ableton behavior.
 
 ## Desktop runtime
 
+`hex-diagnostics` owns per-session background log I/O and ten-file retention.
+Desktop owns its worker lifecycle; UI forwards changed control-side status and
+errors. Audio publishes only fixed atomic fault snapshots, without a logging
+dependency. See [session diagnostics](diagnostics.md).
+
 The default GPUI editor uses hex-session's canonical model and worker to import,
 edit, load/save and compile immutable playback. hex-audio publishes compiled
 projects through bounded queues and reclaims old graphs away from the callback.

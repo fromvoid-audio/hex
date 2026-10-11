@@ -1,6 +1,8 @@
 mod device;
+mod render_fault;
 pub use device::PreparedOutput;
 pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
+pub use render_fault::RenderFaultSnapshot;
 mod lifecycle;
 pub mod processor_audition;
 pub mod spectrum;

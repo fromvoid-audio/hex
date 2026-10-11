@@ -31,10 +31,20 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let logging_failure = crate::diagnostics::record_state(cx, &self.status, &self.error);
+        let logging_changed = if let Some(failure) = logging_failure {
+            let message = self
+                .error
+                .as_ref()
+                .map_or_else(|| failure.clone(), |error| format!("{error} · {failure}"));
+            replace_error(&mut self.error, &message)
+        } else {
+            false
+        };
         let pending_before = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
-        let mut visible_change = self.poll_audio_recovery();
+        let mut visible_change = self.poll_audio_recovery() || logging_changed;
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -428,10 +438,19 @@ impl EditorView {
             self.pending_session_ticket = None;
             self.play_intent.clear();
             visible_change |= replace_status(&mut self.status, "audio render fault · stopped");
-            visible_change |= replace_error(
-                &mut self.error,
-                "audio render fault · stopped · edit or undo to recover",
+            let diagnostic = audio.control.status.render_fault_snapshot().map_or_else(
+                || "audio render fault · stopped · edit or undo to recover".to_owned(),
+                |fault| {
+                    format!(
+                        "audio stopped · {}{} · frame {} · audio rev {} · edit or undo to recover",
+                        fault.message,
+                        if fault.truncated { " [truncated]" } else { "" },
+                        fault.frame,
+                        fault.audio_revision
+                    )
+                },
             );
+            visible_change |= replace_error(&mut self.error, &diagnostic);
         }
         if !audio.control.status.device_fault.load(Relaxed)
             && !audio.control.status.render_fault.load(Relaxed)

@@ -160,7 +160,9 @@ fn build<T: SizedSample + FromSample<f32>>(
             data[complete..].fill(T::from_sample(0.0));
             for chunk in data[..complete].chunks_mut(channels * block.len()) {
                 let frames = chunk.len() / channels;
-                let render_valid = callback.render(&mut block[..frames]).is_ok()
+                let block_start_frame = status.position.load(Relaxed);
+                let rendered = callback.render(&mut block[..frames]);
+                let render_valid = rendered.is_ok()
                     && block[..frames]
                         .iter()
                         .flatten()
@@ -168,8 +170,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                 let _ = callback.finish_spectrum_block(start, render_valid);
                 if !render_valid {
                     block[..frames].fill([0.0; 2]);
-                    status.render_fault.store(true, Relaxed);
-                    callback.stop_after_fault();
+                    callback.report_render_fault(rendered.as_ref().err(), block_start_frame);
                 }
                 for (frame, stereo) in chunk.chunks_mut(channels).zip(&block[..frames]) {
                     for channel in 0..2 {
