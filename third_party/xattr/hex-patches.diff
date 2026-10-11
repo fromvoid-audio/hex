@@ -1,0 +1,18 @@
+--- a/src/sys/mod.rs
++++ b/src/sys/mod.rs
+@@ -8,8 +8,14 @@
+             #[cfg(any($(target_os = $platform),*))]
+             pub use self::$module::*;
+ 
+-            #[cfg(any($(target_os = $platform),*))]
++            #[cfg(all(any($(target_os = $platform),*),
++                      not(any(target_os = "linux", target_os = "android"))))]
+             pub const ENOATTR: ::libc::c_int = ::libc::ENOATTR;
++
++            // Linux and Android report a missing attribute with ENODATA.
++            #[cfg(all(any($(target_os = $platform),*),
++                      any(target_os = "linux", target_os = "android")))]
++            pub const ENOATTR: ::libc::c_int = ::libc::ENODATA;
+         )*
+ 
+         #[cfg(all(feature = "unsupported", not(any($($(target_os = $platform),*),*))))]

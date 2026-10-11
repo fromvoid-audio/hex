@@ -271,6 +271,46 @@ active drafts/popups while hidden, and retires on device removal or project
 replacement. Native visual acceptance remains with the user; none of this
 establishes Live visual, sound or control-law parity.
 
+The reference pass in Pulse2332 uses 12px A/B/C/D selection badges, 9px fixed
+markers inside 14px hit regions, and open 270-degree shared dial rails with a
+short value arc and needle. Micro-dial labels sit above the dial, with smaller
+values beside its lower edge. Idle readouts have no field border; focused and
+invalid editors retain their visible feedback. Rectangular value fields scrub
+vertically (up increases, down decreases); horizontal slider tracks keep their
+horizontal gesture. Click-to-type and fine sensitivity remain available.
+Compact selectors fit their 14px
+frames; the filter slope uses directly selectable 12/24 segments. LFO/filter
+rows reserve a selector column, while pitch/global reserve only a narrow icon
+column beside three dials. Those preview controls still own local state only.
+
+The center display uses a dark background and flat square-marked page tabs
+beneath the plot. Envelope labels sit above the supported six values. Times
+format as ms/s and amplitudes as dB without changing their pointer mappings or
+canonical units. The plot samples the existing original linear attack and
+exponential decay/release laws; it does not add a new envelope law. Unchanged
+geometry is cached, and fixed exponential factors avoid per-redraw powers.
+Pointer Change also updates retained graph/readout entities in the input turn,
+without requesting a full editor rebuild per movement. Terminal/cancel/error
+paths retain existing redraw and gesture behavior.
+See [reference comparison](../research/observations/operator-visual-002.md) for
+provenance, measured scope and remaining appearance/latency gaps.
+
+Pulse2337 uses a fixed three-stage plot informed by the user's maximum/minimum
+Live screenshots. Attack contributes0–1/3 of the width, decay contributes0–1/3
+after the attack endpoint, and release occupies the final third from2/3 to1.
+The sustain line spans the remaining gap. At maximum20/60/60s the nodes land
+at1/3,2/3,1; minimum0/1ms/1ms places attack/decay at0 and release at2/3.
+Attack changes move decay cumulatively; release remains anchored in its section.
+There is no automatic zoom, fit, rescale or recenter, and no explicit zoom action
+is needed to reach the full supported range. An original invertible logarithmic
+display mapping makes short times usable: attack uses a1ms log1p pivot, while
+decay/release map logarithmically from1ms to60s. These intermediate coordinates
+are not measured Live numerical parity; native comparison remains open.
+Pointer feedback, gesture cancellation, outside release, Undo and save/reopen
+still use canonical parameter gestures. See [Operator state](operator-state.md)
+for legacy normalization. [Live's manual](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#operator)
+documents breakpoint dragging but does not specify this intermediate mapping.
+
 Reusable density variants are permitted; variants must not encode a particular
 device identity. Native visual acceptance of the shared system remains with the
 user. Manual review should check the three-column arrangement and right-shell
@@ -306,3 +346,43 @@ code. The rendered regression covers valid and invalid input, no-change reset,
 post-reset movement, external synchronization and keyboard adjustment. Native
 pointer sanity acceptance remains for the user; this is not an Operator playback
 stop diagnosis.
+
+### value-field pointer lifecycle — 11 October 2026
+
+Pulse2340 / [PR155](https://github.com/PORTALSURFER/hex/pull/155) keeps the arrow
+pointer over shared rectangular numeric fields, including focused text editing.
+The insertion caret, validated typing, vertical adjustment, Shift precision,
+reset and canonical gesture/Undo protocol remain available. A stationary click
+never hides the pointer. Crossing the existing three-pixel drag threshold hides
+it for value-field adjustment, including horizontal movement at an unchanged
+value and adjustment at a domain bound. Knob/slider control surfaces retain their
+existing pointer styles.
+
+The frame-owned GPUI cursor override restores on release (including outside the
+window), Escape, lost button state, disable, focus/window/application loss,
+widget removal and window removal/destruction. macOS uses a cached transparent
+NSCursor instead of incrementing a process-wide hide count. Removing a widget
+clears the override with the next frame; deactivation and window removal restore
+immediately. Other platforms currently fall back to arrow; macOS is the accepted
+initial platform and this is not a cross-platform invisibility claim.
+
+Automated evidence: all39 widget tests pass. Two new rendered regressions cover
+hover/click/typing, threshold crossing without a value change, outside release,
+Escape, button-state loss, disable, blur, deactivation, root replacement and
+window removal. The hover regression fails with the original I-beam behavior.
+Existing sensitivity, reset, text/IME validation and gesture-phase tests remain.
+The test-platform readout establishes cursor delivery and override ownership,
+not physical cursor appearance or native event delivery.
+
+Native acceptance reported by the user on 11 October 2026: arrow on value
+fields, hidden during dragging, reliable restoration, typing and Undo all pass.
+The user explicitly authorized merging PR155. Checklist supplied for testing:
+1. Hover and click numeric fields in Utility and Operator: arrow pointer, working
+   typing/selection/insertion caret; Enter validates and Escape cancels.
+2. Drag vertically, change Shift during drag, reach a value bound, and release
+   outside the field and window: pointer hidden only during adjustment; restored
+   afterward; one Undo restores the pre-drag value.
+3. Repeat with Escape, focus loss, application switching, window closing and
+   device removal. Confirm the arrow stays visible afterward in this and another
+   window/application. Preserve unsaved user projects; use an isolated fixture or
+   review app. Full local CI and native appearance/delivery are separate gates.

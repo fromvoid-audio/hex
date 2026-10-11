@@ -161,6 +161,15 @@ impl ResponseGraph {
         Ok(())
     }
 
+    /// Current displayed node position, without waiting for the next paint.
+    pub fn node_position(&self, id: u32) -> Option<[f32; 2]> {
+        self.model
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| node.position)
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }

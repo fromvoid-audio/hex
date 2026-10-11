@@ -4,8 +4,11 @@ use super::id;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
 use hex_widgets::{ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode};
 
-const HOLD_SECONDS: f32 = 0.25;
-const TIME_LIMIT_SECONDS: f32 = 120.0;
+const STAGE_WIDTH: f32 = 1.0 / 3.0;
+const MIN_DECAY_RELEASE_SECONDS: f32 = 0.001;
+const ATTACK_LIMIT_SECONDS: f32 = 20.0;
+const DECAY_LIMIT_SECONDS: f32 = 60.0;
+const RELEASE_LIMIT_SECONDS: f32 = 60.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::editor::device_panel) struct GraphKey {
@@ -16,13 +19,20 @@ pub(in crate::editor::device_panel) struct GraphKey {
 pub(in crate::editor::device_panel) struct GraphControl {
     entity: Entity<ResponseGraph>,
     selected_node: u32,
+    model_input: Option<ModelInput>,
     _subscription: Subscription,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ModelInput {
+    values: [f32; 6],
+    selected: u32,
+    style: hex_widgets::ControlStyle,
 }
 
 #[derive(Clone, Copy)]
 pub(in crate::editor::device_panel) struct GraphGesture {
     node_id: u32,
-    window_seconds: f32,
     initial: [f32; 6],
 }
 
@@ -38,7 +48,7 @@ pub(super) fn graph(
         .operator_envelope_graphs
         .entry(key)
         .or_insert_with(|| {
-            let style = super::super::control_style();
+            let style = super::display_style();
             let entity = cx.new(|graph_cx| {
                 let mut graph = ResponseGraph::new(
                     graph_cx,
@@ -55,27 +65,33 @@ pub(super) fn graph(
             GraphControl {
                 entity,
                 selected_node: 1,
+                model_input: None,
                 _subscription: subscription,
             }
         });
-    let window = view
-        .device_panel
-        .operator_envelope_gestures
-        .get(&key)
-        .map_or_else(|| display_window(values), |gesture| gesture.window_seconds);
     let selected = view
         .device_panel
         .operator_envelope_graphs
         .get(&key)
         .map_or(1, |graph| graph.selected_node);
-    let model = graph_model(values, window, selected);
-    let Some(control) = view.device_panel.operator_envelope_graphs.get(&key) else {
+    let input = ModelInput {
+        values,
+        selected,
+        style: super::display_style(),
+    };
+    let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) else {
         return div().id("operator-envelope-graph-unavailable");
     };
     let graph_entity = control.entity.clone();
-    graph_entity.update(cx, |graph, cx| {
-        let _ = graph.set_model(model, super::super::control_style(), cx);
-    });
+    if control.model_input != Some(input) {
+        let model = graph_model(values, selected);
+        let updated = graph_entity.update(cx, |graph, cx| {
+            graph.set_model(model, input.style, cx).is_ok()
+        });
+        if updated {
+            control.model_input = Some(input);
+        }
+    }
     div()
         .id(ElementId::Name(
             format!("operator-envelope-graph-{}-{operator}", device.value()).into(),
@@ -87,25 +103,54 @@ pub(super) fn graph(
         .child(graph_entity)
 }
 
-fn display_window([_, _, _, attack, decay, release]: [f32; 6]) -> f32 {
-    ((attack + decay + release + HOLD_SECONDS) * 1.5).max(0.5)
+// Fixed stage fractions, independent of all other parameters. The 1ms pivot
+// keeps short attacks usable; decay/release use their authored 1ms minimum.
+// This logarithmic display law is original, not measured Live numerical parity.
+fn stage_width(seconds: f32, min: f32, max: f32) -> f32 {
+    let seconds = f64::from(seconds.clamp(min, max));
+    let fraction = if min == 0.0 {
+        (seconds / 0.001).ln_1p() / (f64::from(max) / 0.001).ln_1p()
+    } else {
+        (seconds / f64::from(min)).ln() / (f64::from(max) / f64::from(min)).ln()
+    };
+    fraction as f32 * STAGE_WIDTH
 }
 
-fn graph_model(values: [f32; 6], window: f32, selected: u32) -> ResponseGraphModel {
+fn stage_seconds(width: f32, min: f32, max: f32) -> f32 {
+    let fraction = f64::from((width / STAGE_WIDTH).clamp(0.0, 1.0));
+    if fraction == 0.0 {
+        return min;
+    }
+    // Subtracting the fixed 2/3 anchor can lose an f32 ulp at the right edge.
+    if fraction >= 1.0 - f64::from(f32::EPSILON) * 2.0 {
+        return max;
+    }
+    let seconds = if min == 0.0 {
+        (fraction * (f64::from(max) / 0.001).ln_1p()).exp_m1() * 0.001
+    } else {
+        f64::from(min) * (fraction * (f64::from(max) / f64::from(min)).ln()).exp()
+    };
+    (seconds as f32).clamp(min, max)
+}
+
+fn graph_model(values: [f32; 6], selected: u32) -> ResponseGraphModel {
     let [initial, peak, sustain, attack, decay, release] = values;
-    let axis = window.max(HOLD_SECONDS + f32::EPSILON);
-    let x_attack = (attack / axis).clamp(0.0, 1.0);
-    let x_decay = ((attack + decay) / axis).clamp(x_attack, 1.0);
-    let x_release = ((attack + decay + HOLD_SECONDS) / axis).clamp(x_decay, 1.0);
-    let x_end = ((attack + decay + HOLD_SECONDS + release) / axis).clamp(x_release, 1.0);
-    let points = vec![
+    let x_attack = stage_width(attack, 0.0, ATTACK_LIMIT_SECONDS);
+    let x_decay = x_attack + stage_width(decay, MIN_DECAY_RELEASE_SECONDS, DECAY_LIMIT_SECONDS);
+    let x_release = STAGE_WIDTH * 2.0;
+    let x_end = x_release + stage_width(release, MIN_DECAY_RELEASE_SECONDS, RELEASE_LIMIT_SECONDS);
+    // Match the existing original DSP laws: linear attack, exponential
+    // decay/release with a 1e-5 relative cutoff and exact stage endpoints.
+    // Stage widths use the display mapping; normalized stage shape retains the
+    // original DSP law. This plot is not a uniform time axis.
+    let mut points = Vec::with_capacity(68);
+    points.extend([
         [0.0, initial.clamp(0.0, 1.0)],
         [x_attack, peak.clamp(0.0, 1.0)],
-        [x_decay, sustain.clamp(0.0, 1.0)],
-        [x_release, sustain.clamp(0.0, 1.0)],
-        [x_end, 0.0],
-        [1.0, 0.0],
-    ];
+    ]);
+    append_decay(&mut points, x_attack, x_decay, peak, sustain);
+    points.push([x_release, sustain.clamp(0.0, 1.0)]);
+    append_decay(&mut points, x_release, x_end, sustain, 0.0);
     ResponseGraphModel {
         primary: points.clone(),
         secondary: points,
@@ -117,6 +162,54 @@ fn graph_model(values: [f32; 6], window: f32, selected: u32) -> ResponseGraphMod
             node(3, [x_end, 0.0], selected),
         ],
     }
+}
+
+// Fixed original exponential shape at 1/32-stage intervals, computed once
+// independently of parameter values. Curve samples do not evaluate powers.
+const DECAY_FACTORS: [f32; 31] = [
+    6.978306e-01,
+    4.869675e-01,
+    3.398208e-01,
+    2.371374e-01,
+    1.654817e-01,
+    1.154782e-01,
+    8.058422e-02,
+    5.623413e-02,
+    3.92419e-02,
+    2.73842e-02,
+    1.910953e-02,
+    1.333521e-02,
+    9.30572e-03,
+    6.493816e-03,
+    4.531584e-03,
+    3.162278e-03,
+    2.206734e-03,
+    1.539927e-03,
+    1.074608e-03,
+    7.498942e-04,
+    5.232991e-04,
+    3.651741e-04,
+    2.548297e-04,
+    1.778279e-04,
+    1.240938e-04,
+    8.659643e-05,
+    6.042964e-05,
+    4.216965e-05,
+    2.942727e-05,
+    2.053525e-05,
+    1.433013e-05,
+];
+
+/// Bounded drawing samples; the owner supplies normalized stage endpoints.
+fn append_decay(points: &mut Vec<[f32; 2]>, start: f32, end: f32, from: f32, to: f32) {
+    if end > start {
+        for (index, factor) in DECAY_FACTORS.iter().enumerate() {
+            let t = (index + 1) as f32 / 32.0;
+            let level = to + (from - to) * factor;
+            points.push([start + (end - start) * t, level.clamp(0.0, 1.0)]);
+        }
+    }
+    points.push([end, to.clamp(0.0, 1.0)]);
 }
 
 fn node(id: u32, position: [f32; 2], selected: u32) -> ResponseGraphNode {
@@ -187,13 +280,100 @@ fn handle_event(
             EditValues::Pair(value) => view.change_device_pair_gesture(value),
         }
     };
-    if let Err(error) = result {
-        view.device_panel.message = Some(error.to_owned());
+    if let Err(error) = &result {
+        view.device_panel.message = Some((*error).to_owned());
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Commit {
         view.device_panel.operator_envelope_gestures.remove(&key);
     }
-    cx.notify();
+    if event.phase == hex_widgets::ResponseGraphPhase::Change && result.is_ok() {
+        // Update the retained graph/readout entities in the input turn. A drag
+        // must not wait for rebuilding the entire editor to derive its geometry.
+        update_drag_display(view, key, gesture, cx);
+    } else {
+        cx.notify();
+    }
+}
+
+fn update_drag_display(
+    view: &mut EditorView,
+    key: GraphKey,
+    gesture: GraphGesture,
+    cx: &mut Context<EditorView>,
+) {
+    let base = 33 + key.operator as u32 * 6;
+    let mut values = gesture.initial;
+    for (index, value) in values.iter_mut().enumerate() {
+        let parameter = ParameterKey {
+            device: key.device,
+            parameter: id(base + index as u32),
+        };
+        if let Some(ParameterValue::Float(pending)) =
+            view.device_panel.pending_values.get(&parameter)
+        {
+            *value = *pending;
+        }
+        if let Some(super::super::ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&parameter)
+        {
+            entity.update(cx, |control, cx| {
+                let _ = control.set_external_value(f64::from(*value), cx);
+            });
+        }
+    }
+    if let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
+        let input = ModelInput {
+            values,
+            selected: control.selected_node,
+            style: super::display_style(),
+        };
+        if control.model_input != Some(input) {
+            let model = graph_model(values, input.selected);
+            if control.entity.update(cx, |graph, cx| {
+                graph.set_model(model, input.style, cx).is_ok()
+            }) {
+                control.model_input = Some(input);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn dispatch_change(
+    view: &mut EditorView,
+    device: DeviceId,
+    operator: usize,
+    node_id: u32,
+    position: [f32; 2],
+    cx: &mut Context<EditorView>,
+) {
+    handle_event(
+        view,
+        GraphKey { device, operator },
+        ResponseGraphEvent {
+            phase: hex_widgets::ResponseGraphPhase::Change,
+            node_id,
+            position,
+            modifiers: gpui::Modifiers::default(),
+        },
+        cx,
+    );
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn displayed_node(
+    view: &EditorView,
+    device: DeviceId,
+    operator: usize,
+    node: u32,
+    cx: &gpui::App,
+) -> Option<[f32; 2]> {
+    view.device_panel
+        .operator_envelope_graphs
+        .get(&GraphKey { device, operator })?
+        .entity
+        .read(cx)
+        .node_position(node)
 }
 
 fn begin_gesture(
@@ -212,7 +392,6 @@ fn begin_gesture(
     let base = 33 + key.operator as u32 * 6;
     let gesture = GraphGesture {
         node_id: event.node_id,
-        window_seconds: display_window([initial, peak, sustain, attack, decay, release]),
         initial: [initial, peak, sustain, attack, decay, release],
     };
     let begin_result = match event.node_id {
@@ -280,17 +459,17 @@ fn edit_values(
     gesture: GraphGesture,
     [x, y]: [f32; 2],
 ) -> Option<(u32, EditValues)> {
-    let [_, _, _, attack, decay, release] = gesture.initial;
-    let window = gesture.window_seconds;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let attack = gesture.initial[3];
     let x = x.clamp(0.0, 1.0);
     let y = y.clamp(0.0, 1.0);
     let base = 33 + operator as u32 * 6;
     Some(match gesture.node_id {
         0 => (base, EditValues::Single(ParameterValue::Float(y))),
         1 => {
-            let max_attack =
-                (window - decay - release - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
-            let next_attack = (x * window).clamp(0.0, max_attack);
+            let next_attack = stage_seconds(x, 0.0, ATTACK_LIMIT_SECONDS);
             (
                 base + 1,
                 EditValues::Pair(ParameterPairValue {
@@ -300,9 +479,11 @@ fn edit_values(
             )
         }
         2 => {
-            let max_decay =
-                (window - attack - release - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
-            let next_decay = (x * window - attack).clamp(0.0, max_decay);
+            let next_decay = stage_seconds(
+                x - stage_width(attack, 0.0, ATTACK_LIMIT_SECONDS),
+                MIN_DECAY_RELEASE_SECONDS,
+                DECAY_LIMIT_SECONDS,
+            );
             (
                 base + 2,
                 EditValues::Pair(ParameterPairValue {
@@ -312,9 +493,11 @@ fn edit_values(
             )
         }
         3 => {
-            let max_release =
-                (window - attack - decay - HOLD_SECONDS).clamp(0.0, TIME_LIMIT_SECONDS);
-            let next_release = (x * window - attack - decay - HOLD_SECONDS).clamp(0.0, max_release);
+            let next_release = stage_seconds(
+                x - STAGE_WIDTH * 2.0,
+                MIN_DECAY_RELEASE_SECONDS,
+                RELEASE_LIMIT_SECONDS,
+            );
             (
                 base + 5,
                 EditValues::Single(ParameterValue::Float(next_release)),
@@ -504,110 +687,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_hold_mapping_keeps_all_stage_points_ordered_with_headroom() {
-        let values = [0.0, 0.9, 0.6, 0.005, 0.1, 0.1];
-        let window = display_window(values);
-        assert!((window - 0.6825).abs() < 0.00001);
-        let model = graph_model(values, window, 1);
-        assert!(model.validate().is_ok());
-        assert_eq!(model.nodes[3].position[1], 0.0);
-        assert!(model.nodes[3].position[0] < 1.0);
+    fn fixed_sections_match_minimum_and_maximum_reference_positions() {
+        let min = graph_model([0.0, 1.0, 0.0, 0.0, 0.001, 0.001], 1);
+        let max = graph_model([0.0, 1.0, 0.0, 20.0, 60.0, 60.0], 1);
+        assert_eq!(
+            min.nodes
+                .iter()
+                .map(|node| node.position[0])
+                .collect::<Vec<_>>(),
+            vec![0.0, 0.0, 0.0, 2.0 / 3.0]
+        );
+        assert_eq!(
+            max.nodes
+                .iter()
+                .map(|node| node.position[0])
+                .collect::<Vec<_>>(),
+            vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]
+        );
+        for model in [min, max] {
+            model.validate().unwrap();
+            assert_eq!(
+                model.primary.last().copied(),
+                Some(model.nodes[3].position),
+                "curve stops at the release handle, including minimum times"
+            );
+        }
     }
 
     #[test]
-    fn stage_mappings_keep_the_hold_fixed_and_respect_available_axis() {
-        let gesture = GraphGesture {
-            node_id: 1,
-            window_seconds: 1.0,
-            initial: [0.0, 1.0, 0.7, 0.1, 0.2, 0.1],
-        };
-        let (_, EditValues::Pair(attack)) = edit_values(0, gesture, [0.9, 0.4]).unwrap() else {
-            panic!("peak should edit paired peak and attack")
-        };
-        assert_eq!(attack.first, ParameterValue::Float(0.4));
-        assert_eq!(attack.second, ParameterValue::Float(0.45));
+    fn stage_edits_keep_scale_fixed_with_cumulative_attack_decay_and_anchored_release() {
+        let before = [0.2, 1.0, 0.3, 0.1, 0.2, 0.4];
+        let mut edited = before;
+        edited[3] = 1.0;
+        let a = graph_model(before, 1);
+        let b = graph_model(edited, 1);
+        assert_eq!(a.nodes[0].position, b.nodes[0].position);
+        assert_eq!(a.nodes[3].position, b.nodes[3].position);
+        let shift = b.nodes[1].position[0] - a.nodes[1].position[0];
+        assert!(shift > 0.0);
+        assert!((b.nodes[2].position[0] - a.nodes[2].position[0] - shift).abs() < 1e-6);
+        for (node_id, min, max) in [(1, 0.0, 20.0), (2, 0.001, 60.0), (3, 0.001, 60.0)] {
+            let gesture = GraphGesture {
+                node_id,
+                initial: before,
+            };
+            for (x, expected) in [(0.0, min), (1.0, max)] {
+                let (_, values) = edit_values(0, gesture, [x, 0.5]).unwrap();
+                let duration = match values {
+                    EditValues::Pair(pair) => pair.second,
+                    EditValues::Single(value) => value,
+                };
+                assert_eq!(duration, ParameterValue::Float(expected));
+            }
+        }
+    }
 
-        let decay_gesture = GraphGesture {
-            node_id: 2,
-            ..gesture
-        };
-        let (_, EditValues::Pair(decay)) = edit_values(0, decay_gesture, [0.8, 0.3]).unwrap()
-        else {
-            panic!("sustain should edit paired sustain and decay")
-        };
-        assert_eq!(decay.first, ParameterValue::Float(0.3));
-        assert!(
-            (match decay.second {
-                ParameterValue::Float(value) => value,
-                _ => -1.0,
-            } - 0.55)
-                .abs()
-                < 0.00001
-        );
-
-        let release_gesture = GraphGesture {
-            node_id: 3,
-            ..gesture
-        };
-        let (_, EditValues::Single(ParameterValue::Float(release))) =
-            edit_values(0, release_gesture, [1.0, 0.0]).unwrap()
-        else {
-            panic!("release endpoint should edit a scalar release")
-        };
-        assert!((release - 0.45).abs() < 0.00001);
-
-        let initial_gesture = GraphGesture {
-            node_id: 0,
-            ..gesture
-        };
-        assert!(matches!(
-            edit_values(3, initial_gesture, [0.0, 0.35]),
-            Some((51, EditValues::Single(ParameterValue::Float(value)))) if (value - 0.35).abs() < 0.00001
-        ));
-        assert!(matches!(
-            edit_values(
-                3,
-                GraphGesture {
-                    node_id: 1,
-                    ..gesture
-                },
-                [0.2, 0.6]
-            ),
-            Some((
-                52,
-                EditValues::Pair(ParameterPairValue {
-                    first: ParameterValue::Float(0.6),
-                    second: ParameterValue::Float(_),
-                })
-            ))
-        ));
-        assert!(matches!(
-            edit_values(
-                3,
-                GraphGesture {
-                    node_id: 2,
-                    ..gesture
-                },
-                [0.4, 0.25]
-            ),
-            Some((
-                53,
-                EditValues::Pair(ParameterPairValue {
-                    first: ParameterValue::Float(0.25),
-                    second: ParameterValue::Float(_),
-                })
-            ))
-        ));
-        assert!(matches!(
-            edit_values(
-                3,
-                GraphGesture {
-                    node_id: 3,
-                    ..gesture
-                },
-                [0.9, 0.0]
-            ),
-            Some((56, EditValues::Single(ParameterValue::Float(_))))
-        ));
+    #[test]
+    fn logarithmic_stage_mapping_is_invertible_and_preserves_smooth_dsp_shape() {
+        for (min, max) in [(0.0, 20.0), (0.001, 60.0)] {
+            for seconds in [min, 0.005, 0.1, 1.0, max] {
+                let back = stage_seconds(stage_width(seconds, min, max), min, max);
+                assert!((back - seconds).abs() <= seconds.max(0.001) * 2e-6);
+            }
+        }
+        let model = graph_model([0.2, 1.0, 0.3, 0.1, 0.2, 0.4], 2);
+        model.validate().unwrap();
+        let decay_mid = model.primary[17];
+        assert!((decay_mid[1] - (0.3 + 0.7 * 0.00001_f32.sqrt())).abs() < 1e-6);
+        assert!(model.nodes[2].selected);
+        assert_eq!(model.nodes[3].position[1], 0.0);
     }
 }

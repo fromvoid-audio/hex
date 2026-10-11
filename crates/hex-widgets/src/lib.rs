@@ -15,7 +15,7 @@ pub use color_picker::{
 pub use curve::{curve_plot, transfer_plot};
 pub use discrete::{
     DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
-    ToggleConfig,
+    ToggleConfig, panel_tab,
 };
 pub use frame::{
     COMPACT_DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT,

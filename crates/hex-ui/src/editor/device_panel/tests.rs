@@ -922,6 +922,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         "amp graph bounds: {:?}",
         envelope_graph.size
     );
+    let tab = visual
+        .debug_bounds(Box::leak(
+            format!("operator-page-{}-amp env", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("flat envelope tab");
+    assert!(
+        tab.origin.y >= envelope_graph.origin.y + envelope_graph.size.height,
+        "page tabs belong beneath the envelope plot"
+    );
     let detail = visual
         .debug_bounds(Box::leak(
             format!("operator-detail-{}", instrument_id.value()).into_boxed_str(),
@@ -953,6 +962,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .expect("right-side shared micro dial");
         assert_eq!(control.size.width, px(46.0));
         assert_eq!(control.size.height, px(40.0));
+    }
+    // Three-dial sections start beside the narrow switch/icon column,
+    // rather than inheriting the LFO/filter selector column.
+    for field in [4, 7] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("three-dial row starts next to its icon");
+        assert!(control.origin.x - preview.origin.x >= px(40.0));
+        assert!(control.origin.x - preview.origin.x < px(50.0));
     }
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
@@ -1472,8 +1492,11 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
             _ => panic!("Operator envelope value is not numeric"),
         })
         .collect();
-    let window =
-        ((envelope_values[3] + envelope_values[4] + envelope_values[5] + 0.25) * 1.5).max(0.5);
+    let attack_x = |seconds: f32| {
+        ((f64::from(seconds) / 0.001).ln_1p() / (20.0_f64 / 0.001).ln_1p()) as f32 / 3.0
+    };
+    let stage_x =
+        |seconds: f32| ((f64::from(seconds) / 0.001).ln() / (60.0_f64 / 0.001).ln()) as f32 / 3.0;
     let path = std::env::temp_dir().join(format!(
         "hex-operator-envelope-{}-{}.hex",
         std::process::id(),
@@ -1501,7 +1524,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
         .expect("editable Operator envelope graph");
     let width = graph.size.width - px(14.0);
     let peak = point(
-        graph.origin.x + px(7.0) + width * (envelope_values[3] / window),
+        graph.origin.x + px(7.0) + width * attack_x(envelope_values[3]),
         graph.origin.y + px(7.0),
     );
     visual.simulate_click(peak, Modifiers::default());
@@ -1532,6 +1555,27 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
                 }
         );
         attack
+    });
+
+    // A terminal commit must not fit the changed total duration. Cumulative
+    // decay follows attack while release stays in its fixed final third.
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let peak = operator_panel::envelope::displayed_node(view, device, 0, 1, cx).unwrap();
+        let decay = operator_panel::envelope::displayed_node(view, device, 0, 2, cx).unwrap();
+        let release = operator_panel::envelope::displayed_node(view, device, 0, 3, cx).unwrap();
+        assert!(
+            (peak[0] - attack_x(edited_attack)).abs() < 1e-6,
+            "commit preserves zoom"
+        );
+        assert!(
+            (decay[0] - (attack_x(edited_attack) + stage_x(envelope_values[4]))).abs() < 1e-6,
+            "decay follows cumulative attack"
+        );
+        assert!(
+            (release[0] - (2.0 / 3.0 + stage_x(envelope_values[5]))).abs() < 1e-6,
+            "release stays in fixed final section without fitting"
+        );
     });
 
     editor.update(cx, |view, cx| view.save_project(cx));
@@ -1570,7 +1614,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
         .debug_bounds("operator-envelope-graph")
         .expect("envelope graph remains visible during numeric draft");
     let peak = point(
-        graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * (envelope_values[3] / window),
+        graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * attack_x(envelope_values[3]),
         graph.origin.y + px(7.0),
     );
     let moved = point(peak.x + px(12.0), peak.y);
@@ -1656,26 +1700,56 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
 
-    let release_endpoint = |visual: &mut VisualTestContext, state: &ViewState| {
+    let release_endpoint = |visual: &mut VisualTestContext, cx: &mut TestAppContext| {
         let graph = visual
             .debug_bounds("operator-envelope-graph")
             .expect("envelope graph");
-        let attack = float_value(state, 36);
-        let decay = float_value(state, 37);
-        let release = float_value(state, 38);
-        let window = ((attack + decay + release + 0.25) * 1.5).max(0.5);
-        let x = (attack + decay + 0.25 + release) / window;
+        let x = editor.read_with(cx, |view, cx| {
+            operator_panel::envelope::displayed_node(view, device, 0, 3, cx).unwrap()[0]
+        });
         point(
             graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * x,
             graph.origin.y + graph.size.height - px(7.0),
         )
     };
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x + px(16.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    // Pointer feedback is already in the retained graph and numeric entity
+    // before another whole-editor layout or worker acknowledgement is pumped.
+    let bounds = visual
+        .debug_bounds("operator-envelope-graph")
+        .expect("graph bounds");
+    let feedback_x = f32::from(moved.x - bounds.origin.x - px(7.0))
+        / f32::from(bounds.size.width - px(14.0))
+        + 0.02;
+    editor.update(cx, |view, cx| {
+        operator_panel::envelope::dispatch_change(view, device, 0, 3, [feedback_x, 0.0], cx);
+        let node = operator_panel::envelope::displayed_node(view, device, 0, 3, cx)
+            .expect("immediate dragged node");
+        assert!(
+            (node[0] - feedback_x).abs() < 1e-5,
+            "node follows this input turn"
+        );
+        let key = ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(38),
+        };
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&key] else {
+            panic!("release readout");
+        };
+        let ParameterValue::Float(pending) = view.device_panel.pending_values[&key] else {
+            panic!("pending release");
+        };
+        assert_eq!(entity.read(cx).value(), f64::from(pending));
+        assert_eq!(
+            float_value(view.state.as_ref().expect("canonical state"), 38),
+            original_release
+        );
+    });
+
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let snapshot = view.device_gesture.snapshot().expect("release drag begins");
@@ -1716,8 +1790,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
         );
     });
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("graph after cancel");
@@ -1742,9 +1815,12 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     let committed_release = editor.read_with(cx, |view, _| {
         float_value(view.state.as_ref().expect("committed state"), 38)
     });
+    assert_eq!(
+        committed_release, 60.0,
+        "outside release clamps to hard maximum"
+    );
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x - px(12.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
@@ -1798,8 +1874,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
         cx.notify();
     });
     visual.run_until_parked();
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x - px(12.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
@@ -2108,7 +2183,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         entity.read_with(cx, |control, _| assert!(control.is_editing()));
     });
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("0.7");
+    visual.simulate_input("-6 db");
     visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -2120,7 +2195,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         let state = view.state.as_ref().expect("state");
         assert_eq!(
             operator_level(state, 8),
-            ParameterValue::Float(0.7),
+            ParameterValue::Float(10.0_f32.powf(-6.0 / 20.0)),
             "the newly focused numeric field accepts and commits typed input"
         );
         assert_eq!(
@@ -2188,6 +2263,12 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         );
         let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
         assert_eq!(row_bounds.size.height, px(40.0));
+        let badge = visual
+            .debug_bounds(Box::leak(
+                format!("operator-select-{}-{operator}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("compact oscillator badge");
+        assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
         let fixed_id = 62 + operator * 3;
         let level_id = operator * 3 + 2;
         for parameter in [fixed_id + 1, level_id] {

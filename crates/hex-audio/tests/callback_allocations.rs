@@ -2526,7 +2526,7 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
         (34, 1.0),
         (35, 1.0),
         (36, 0.0),
-        (37, 0.0),
+        (37, 0.001),
         (78, 0.25),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(

@@ -397,6 +397,40 @@ fn rendered_drag_captures_outside_release_and_emits_one_complete_gesture(cx: &mu
 }
 
 #[gpui::test]
+fn rectangular_value_fields_drag_vertically_without_horizontal_adjustment(cx: &mut TestAppContext) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds("test-control-value")
+        .expect("rectangular field");
+    let initial = control.read_with(cx, |control, _| control.value());
+    let start = field.center();
+    let sideways = point(start.x + px(12.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(sideways, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert_eq!(
+            control.value(),
+            initial,
+            "horizontal motion does not adjust a value field"
+        )
+    });
+    let up = point(sideways.x, start.y - px(24.0));
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert!(control.value() > initial, "up increases")
+    });
+    let down = point(sideways.x, start.y + px(12.0));
+    visual.simulate_mouse_move(down, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert!(control.value() < initial, "down decreases")
+    });
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    control.read_with(cx, |control, _| assert!(!control.is_interacting()));
+}
+
+#[gpui::test]
 fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1164,4 +1198,111 @@ fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
         "popup should remain scrollable within the window"
     );
     selector.read_with(cx, |selector, _| assert!(selector.is_open()));
+}
+
+#[gpui::test]
+fn value_cursor_preserves_click_editing_and_restores_after_outside_drag(cx: &mut TestAppContext) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let start = visual
+        .debug_bounds("test-control-value")
+        .expect("value field")
+        .center();
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(control.read_with(cx, |control, _| control.is_editing()));
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.5");
+    visual.simulate_keystrokes("enter");
+    assert_eq!(control.read_with(cx, |control, _| control.value()), 0.5);
+
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    // Horizontal threshold crossing begins a value gesture without changing its value.
+    let sideways = start + point(px(4.0), px(0.0));
+    visual.simulate_mouse_move(sideways, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Hidden)
+    );
+    assert!(visual.update(|window, _| window.has_hidden_cursor_override()));
+    assert_eq!(control.read_with(cx, |control, _| control.value()), 0.5);
+    let outside = point(px(-40.0), px(-40.0));
+    visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.has_hidden_cursor_override()));
+    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
+    assert!(!control.read_with(cx, |control, _| control.is_interacting()));
+}
+
+#[gpui::test]
+fn value_cursor_cancellation_focus_loss_and_removal_release_override(cx: &mut TestAppContext) {
+    for termination in 0..7 {
+        let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let start = visual
+            .debug_bounds("test-control-value")
+            .expect("value field")
+            .center();
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        let moved = start - point(px(0.0), px(12.0));
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.update(|window, _| window.has_hidden_cursor_override()));
+        assert_eq!(visual.platform_cursor_style(), gpui::CursorStyle::Hidden);
+        match termination {
+            0 => visual.simulate_keystrokes("escape"),
+            1 => visual.simulate_mouse_move(moved, None, Modifiers::default()),
+            2 => visual.deactivate_window(),
+            3 => {
+                control.update(cx, |control, cx| control.set_enabled(false, cx));
+            }
+            4 => {
+                visual.update(|window, _| window.blur());
+            }
+            5 => {
+                visual.update(|window, cx| {
+                    window.replace_root(cx, |_, _| Empty);
+                });
+            }
+            _ => {
+                visual.update(|window, _| window.remove_window());
+            }
+        }
+        visual.run_until_parked();
+        assert_ne!(
+            visual.platform_cursor_style(),
+            gpui::CursorStyle::Hidden,
+            "termination {termination}"
+        );
+        if termination == 6 {
+            continue;
+        }
+        assert!(
+            !visual.update(|window, _| window.has_hidden_cursor_override()),
+            "termination {termination}"
+        );
+        if termination < 5 {
+            assert!(!control.read_with(cx, |control, _| control.is_interacting()));
+            assert_eq!(control.read_with(cx, |control, _| control.value()), 0.0);
+        }
+    }
 }

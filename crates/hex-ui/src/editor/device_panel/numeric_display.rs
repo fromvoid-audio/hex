@@ -8,6 +8,9 @@ pub(super) enum NumericDisplayCodec {
     MidSide,
     Hertz,
     Ratio,
+    AmplitudeDb,
+    Seconds,
+    Number,
 }
 
 impl NumericDisplayCodec {
@@ -19,9 +22,49 @@ impl NumericDisplayCodec {
                 Self::MidSide if value == 0.0 => "0".to_owned(),
                 Self::MidSide => format_side(value, "m", "s"),
                 Self::Hertz => format!("{} hz", format_number(value, 2)),
+                Self::Number => format_number(value, 2),
+                Self::AmplitudeDb if value == 0.0 => "-inf db".to_owned(),
+                Self::AmplitudeDb => format!("{:.1} db", 20.0 * value.log10()),
+                Self::Seconds if value < 1.0 => format!("{} ms", format_number(value * 1000.0, 1)),
+                Self::Seconds => format!("{} s", format_number(value, 2)),
                 Self::Ratio => format!("{}:1", format_number(value, 2)),
             },
             move |text| match self {
+                Self::Number => text
+                    .trim()
+                    .strip_suffix('x')
+                    .unwrap_or(text.trim())
+                    .trim()
+                    .parse::<f64>()
+                    .ok(),
+                Self::AmplitudeDb => {
+                    let number = text.trim().strip_suffix("db").unwrap_or(text.trim()).trim();
+                    if number == "-inf" {
+                        Some(0.0)
+                    } else {
+                        number
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|db| db.is_finite())
+                            .map(|db| 10.0_f64.powf(db / 20.0))
+                            .filter(|amp| {
+                                amp.is_finite() && (*amp as f32).is_finite() && *amp as f32 > 0.0
+                            })
+                    }
+                }
+                Self::Seconds => {
+                    let text = text.trim();
+                    let (number, factor) = if let Some(ms) = text.strip_suffix("ms") {
+                        (ms, 0.001)
+                    } else {
+                        (text.strip_suffix('s').unwrap_or(text), 1.0)
+                    };
+                    number
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .map(|value| value * factor)
+                }
                 Self::Percent => text
                     .trim()
                     .strip_suffix('%')
@@ -103,6 +146,42 @@ fn parse_side(text: &str, negative: &str, positive: &str) -> Option<f64> {
 mod tests {
     use super::NumericDisplayCodec;
     use hex_widgets::{NumericScale, NumericSpec};
+
+    #[test]
+    fn amplitude_and_time_readouts_preserve_pointer_mapping_and_validate_units() {
+        let raw = NumericSpec::new(
+            0.0,
+            1.0,
+            1.0,
+            NumericScale::Linear,
+            2,
+            None::<std::sync::Arc<str>>,
+        )
+        .unwrap();
+        let db = NumericDisplayCodec::AmplitudeDb.apply(raw.clone());
+        assert_eq!(db.format(0.0).unwrap(), "-inf db");
+        assert_eq!(db.format(1.0).unwrap(), "0.0 db");
+        assert!((db.parse("-6 db").unwrap() - 0.5011872336).abs() < 1e-9);
+        assert_eq!(db.to_normalized(0.5), raw.to_normalized(0.5));
+        for invalid in ["nan db", "inf db", "1 db", "-1000 db"] {
+            assert!(db.parse(invalid).is_err());
+        }
+        let time = NumericDisplayCodec::Seconds.apply(
+            NumericSpec::new(
+                0.0,
+                120.0,
+                0.1,
+                NumericScale::Linear,
+                2,
+                None::<std::sync::Arc<str>>,
+            )
+            .unwrap(),
+        );
+        assert_eq!(time.format(0.08).unwrap(), "80 ms");
+        assert_eq!(time.parse("80 ms").unwrap(), 0.08);
+        assert_eq!(time.parse("2 s").unwrap(), 2.0);
+        assert!(time.parse("121 s").is_err());
+    }
 
     #[test]
     fn percentage_codec_shows_endpoints_and_rejects_invalid_values() {
