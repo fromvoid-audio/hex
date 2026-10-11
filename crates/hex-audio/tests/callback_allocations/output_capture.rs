@@ -183,6 +183,21 @@ fn actual_deleted_instrument_effect_and_return_tails_capture_without_callback_dr
     editor.execute(Command::RemoveReturnTrack(bus))?;
     let mut candidate = SessionPlayback::new(prepare(editor.project())?)?;
     candidate.try_inherit_state_from(&mut previous)?;
+    let mut carried = SessionPlayback::new(prepare(editor.project())?)?;
+    carried.try_inherit_state_from(&mut candidate)?;
+    assert_eq!(
+        candidate
+            .output_capture_plan(&[OutputCaptureId::Track(track)], 512)
+            .unwrap_err(),
+        OutputCaptureError::MissingOwner
+    );
+    assert_eq!(
+        candidate
+            .output_capture_plan(&[OutputCaptureId::Return(bus)], 512)
+            .unwrap_err(),
+        OutputCaptureError::MissingOwner
+    );
+    let mut candidate = carried;
     let plan = candidate.output_capture_plan(
         &[OutputCaptureId::Track(track), OutputCaptureId::Return(bus)],
         512,

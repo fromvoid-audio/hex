@@ -18,7 +18,8 @@ The plan binds the exact runtime instance, prepared revision and successful
 inheritance generation. Another runtime, or another inheritance on the same
 runtime, requires a new plan. Successful handoff invalidates both recipient and
 donor plans because processor ownership changes on both sides. A missing expired owner is refused before render
-mutation. Completed effect groups remain retained until control publication,
+mutation. Retained metadata alone does not admit a donated owner: its actual
+chain or ungrouped release must still belong to this runtime. Completed effect groups remain retained until control publication,
 so an otherwise valid selected retired owner may produce silence. Analytic
 release entries may expire at render commit; their retired-only keys then cease
 to be selectable. IDs are never reassigned to a replacement track by array index.

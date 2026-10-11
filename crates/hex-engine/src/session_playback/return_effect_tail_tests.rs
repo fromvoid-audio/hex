@@ -496,6 +496,20 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         if carry {
             let mut next = SessionPlayback::new(prepare(&candidate_project)).unwrap();
             next.try_inherit_state_from(&mut candidate).unwrap();
+            if !replacement {
+                assert_eq!(
+                    candidate
+                        .output_capture_plan(&[OutputCaptureId::Track(track_id)], 8)
+                        .unwrap_err(),
+                    OutputCaptureError::MissingOwner
+                );
+                assert_eq!(
+                    candidate
+                        .output_capture_plan(&[OutputCaptureId::Return(return_id)], 8)
+                        .unwrap_err(),
+                    OutputCaptureError::MissingOwner
+                );
+            }
             candidate = next;
             assert!(candidate.tail_track_ids.contains(&Some(track_id)));
         }

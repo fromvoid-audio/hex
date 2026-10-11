@@ -236,8 +236,15 @@ impl SessionPlayback {
         match id {
             OutputCaptureId::Track(id) => {
                 self.routes.iter().any(|route| route.id == id)
-                    || self.releases.iter().any(|release| release.track_id == id)
-                    || self.tail_track_ids.contains(&Some(id))
+                    || self
+                        .releases
+                        .iter()
+                        .any(|release| release.tail_group.is_none() && release.track_id == id)
+                    || self
+                        .tail_groups
+                        .iter()
+                        .zip(&self.tail_track_ids)
+                        .any(|(group, owner)| group.is_some() && *owner == Some(id))
             }
             OutputCaptureId::Return(id) => {
                 self.revision
