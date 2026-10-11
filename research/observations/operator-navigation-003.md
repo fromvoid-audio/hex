@@ -230,3 +230,14 @@ vertical outer padding decreases from 3 to 1 so four 40px rows and three 2px
 gaps fit within the unchanged 168px body. Shared frame geometry, controls,
 canonical parameters and accepted keyboard behavior remain intact. New source
 checks and native appearance acceptance are required for this changed tree.
+
+The strengthened rendered row regression was replayed against gray68 runtime
+source with the new assertions: it fails because the bottom oscillator extends
+outside its shell. The retained log is
+`artifacts/operator-navigation-evidence/gutter-before-regression.log`. After the
+correction all 13 Operator tests pass, including exact 2px gutters, row containment
+and control dimensions. Current main 399a68c (cursor155, xattr161 and environment160)
+is integrated; only document append conflicts required resolution, preserving
+both sections. Final full CI is performed after freezing this evidence; the
+result belongs in PR156/Pulse2341 so the validated source digest stays unchanged.
+Native acceptance of the latest appearance remains open.
