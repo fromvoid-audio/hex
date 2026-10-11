@@ -277,8 +277,11 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
             self.analytic_continuation_scratch[usize::from(new_context_index)] = transition;
             let same_opted_in_configuration = target.same_configuration(source)
-                && target.context().analytic_continuation().is_some()
-                && source.context().analytic_continuation().is_some();
+                && target
+                    .context()
+                    .analytic_continuation()
+                    .zip(source.context().analytic_continuation())
+                    .is_some_and(|(target, source)| target.format() == source.format());
             analytic_owner_matches[usize::from(old_context_index)] =
                 source.id() == target.id() || transition.is_some() || same_opted_in_configuration;
             if source.id() != target.id() && (transition.is_some() || same_opted_in_configuration) {
