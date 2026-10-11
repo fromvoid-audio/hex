@@ -441,3 +441,8 @@ For the additive shared-context sampling comparison, run
 It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
 outside timing, and reports render versus control construction separately.
 It is a headless benchmark, not a native callback deadline test.
+
+Canonical selected TrackId/ReturnId outputs are available through control-built
+`OutputCapturePlan` and borrowed `OutputCapture` slices, transactionally committed
+with Main. See [the capture contract](../../docs/output-capture.md) for admitted
+Arrangement-only modes, original retired-tail identity, bounds and export limits.
