@@ -1899,3 +1899,11 @@ native visual acceptance remain pending. See [Operator shell context contract]
   Reusable all-active profiler control and36 matched logs expose the tradeoff;
   exact PCM, partition,17-voice refusal and callback allocation guards pass.
   Measurements/hashes/limits are in docs/performance.md;2226/2108 stay open.
+
+
+-11 October2026: Pulse2316 adds a compact Gate panel using shared Lattice dials:
+  threshold/return/floor at left and attack/hold/release at right. The same fixed
+  rounded frame is used for Track and Return, with all six values still routed
+  through canonical device gestures. Headless geometry/edit/undo and invalid
+  threshold validation are in gate_ui_tests.rs; native appearance/pointer
+  acceptance and full integrated local CI remain pending review.
