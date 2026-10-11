@@ -594,6 +594,9 @@ mod tests {
         let overflow = completed(Arc::clone(&overflow_graph), 3);
         {
             let mut mailbox = lock(&worker.shared.mailbox);
+            // Hold both bounded slots until owner teardown; shutdown must drain
+            // them even while normal worker drainage is paused.
+            mailbox.test_pause_drain = true;
             mailbox.retired = Some(retired);
         }
         drop(retired_graph);
@@ -604,6 +607,8 @@ mod tests {
             .retire_result_for_shutdown(overflow)
             .expect_err("both bounded worker slots are already occupied");
         assert!(Arc::ptr_eq(&overflow.prepared_revision, &overflow_graph));
+        assert!(retired_weak.upgrade().is_some());
+        assert!(held_weak.upgrade().is_some());
         drop(overflow);
         drop(overflow_graph);
         drop(worker);
