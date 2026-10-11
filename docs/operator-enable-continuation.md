@@ -1,7 +1,8 @@
 # Proposed analytic enable continuation — Pulse2335
 
-Status: architecture proposal awaiting coordinated approval and shared ownership;
-no implementation, storage measurement or passing runtime regression is claimed.
+Status: narrow contract direction approved by the coordinating parent on
+11October2026; shared PR154/158 ownership/version allocation remains pending.
+No implementation, storage measurement or passing runtime regression is claimed.
 
 ## Why a host contract is required
 
