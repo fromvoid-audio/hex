@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), 3);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -295,6 +295,12 @@ mod tests {
             crate::native_device_parameter(&original, first.id).unwrap(),
             first.default
         );
+        let saturator = catalog
+            .iter()
+            .find(|entry| entry.name == "saturator")
+            .expect("registered Saturator appears in the generic effect catalog");
+        let state = crate::default_native_device_state(saturator.type_id).unwrap();
+        assert_eq!(native_device_view(&state).unwrap().name, "saturator");
     }
 
     #[test]
@@ -397,9 +403,10 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 2);
+        assert_eq!(effects.len(), 3);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq eight"));
+        assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()

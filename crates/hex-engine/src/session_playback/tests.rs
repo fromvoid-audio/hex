@@ -10671,6 +10671,8 @@ mod effect_tail_budget_tests;
 
 #[path = "return_effect_tail_tests.rs"]
 mod return_effect_tail_tests;
+#[path = "saturator_tests.rs"]
+mod saturator_tests;
 #[path = "silence_effect_tests.rs"]
 mod silence_effect_tests;
 
