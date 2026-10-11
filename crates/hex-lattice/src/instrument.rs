@@ -160,6 +160,15 @@ pub trait PreparedNativeInstrument: Send + Sync {
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(None)
     }
+    /// Alternative single-owner law plus both mutable histories. Default absent
+    /// preserves all existing instrument factories. Host selection MUST reject
+    /// simultaneous independent and owned-pair mutable capabilities; neither
+    /// may silently substitute for a failed/unsupported capability.
+    fn prepare_owned_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn crate::PreparedOwnedInstrumentRuntime>>, DeviceContractError> {
+        Ok(None)
+    }
 }
 
 /// Registered analytic instrument definition. Instruments use a separate

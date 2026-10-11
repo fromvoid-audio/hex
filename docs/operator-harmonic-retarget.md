@@ -447,3 +447,45 @@ Do not claim the other settings observed from those images. Native E05 remains
 blocked until the human opens a safely bound disposable fixture. PR160
 comment6107606343 requests the tested old-instance native bootstrap from2348;
 this is not a new published-environment fault.
+
+## approved direction and current integration sequence
+
+Direct human11Oct authorizes the recommended pair-owned design provided it
+preserves high-quality music production, Live parity or improvement; primary
+verified authorization. No further approval is needed for this pair ownership
+contract. `instrument_pair.rs` now provides an optional single-owner factory,
+complete-pair admission and guarded transactions. Existing independent factories
+are unchanged. Operator selection/clock/engine dispatch is not connected yet.
+Five new lattice contract tests exercise admission-before-creation and lying
+payload rejection, failed-event PCM preservation, later rollback and checkpoint,
+actual-boundary interrupted retarget/retry without resetting phase/feedback,
+wrong proof/generation/open-block refusal, partitions and detached-owner
+independence. Their original scalar fixture is a contract test, not production
+Operator DSP or feedback/aliasing acceptance.
+
+Main399a68c was merged into this same StartTask branch. Actual main Operator
+state is nowv6/320B (envelope149), conflicting with frozen LFOv6/364B. PR154 owns
+reconciliation, proposedv7/364B with strictmainv6 migration. PR164 enable owns
+next strictboolsuffix, proposedv8/380B(4u32); harmonics thenv9. No shared Operator
+writes until owners publish agreed exact versions. Reserve harmonicIDs93–512
+(256 coefficients93–348, ranges349–352; remaining IDs merely reserved), enable
+IDs513–516. Current descriptor count limit256 does not admit the combined356
+parameters; primary has a concrete512control-side limit versus bounded spectrum
+parameter alternative to select. No admission limit changed yet.
+
+PR164's parent-approved direction is a separate bounded analytic effective-level
+continuation with exact provider/provenance and owned held/release/tail snapshots,
+not conversion of every Operator to mutable. It preserves onset/gate and ramps
+from actual applied level, not stale canonical level. PR158 does not absorb it.
+Freeze its host provider APIs before harmonic bridging touches related handoff
+surfaces. No all-Operator mutable conversion is authorized. A harmonic pair must
+still preserve existing shapes and import an active analytic source correctly
+when first painting introduces custom state; that cross-class seam is not
+implemented or proven by the generic pair tests. No future-note-only substitute,
+quiescence-only adoption or phase reset is allowed. All shared host edits require
+frozen owner patches/sequence, and all prototype CPU limitations above remain.
+
+Direct user image is now attached and visually inspected in this chat: confirms
+64bars/64selected,16/32/64selector,Userwave/preview and companion controls as
+listed in research inventory. Exact build, ranges/modes and sound laws remain
+unproved. Background darkgray belongs PR156; no shell/navigation edits here.

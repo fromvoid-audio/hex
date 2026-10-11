@@ -424,7 +424,7 @@ impl NativeInstrumentRuntimePair {
     }
 }
 
-fn validate_event_batch(
+pub(super) fn validate_event_batch(
     events: &[NativeInstrumentEvent],
     frame_count: usize,
     max_events: usize,
