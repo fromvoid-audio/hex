@@ -195,3 +195,21 @@ unchanged sound-state assertions remain. Retained failed evidence:
 `artifacts/local-ci/operator-enable-integrated-ui-20261011/summary.json`.
 These corrections and full final CI remain pending; the stopped build lease was
 released with no native input or app opening.
+
+The complete fixture audit at clean `9c449b44` passed all fifteen Operator tests.
+Full default CI then stopped in workspace tests on a default-stack abort in
+`mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_suffix`.
+Source digest `8fe75f32252da6eddfc32767e92384c28df5912427e8719cc35c029ac4814434`
+was unchanged; evidence: `artifacts/local-ci/operator-enable-final-20261011`.
+No full-CI success or final provider handoff is claimed for that run.
+
+Source review identifies seven by-value playback owners and aggregate constructor
+returns in the unchanged pre-enable fixture. Each carries an existing 82,952-byte
+span buffer plus approximately 16.9 KiB of onset storage. Production already
+boxes playback ownership, and mutable twins live on the heap; this fixture does
+not instantiate Operator. The proposed test-local non-inlined boxed constructor
+isolates construction frames, retaining every owner/assertion/default-stack path
+and existing runtime accounting. The exact overflow PC/frame and baseline runtime
+pass remain unverified; a focused rerun must confirm this inference. Separately,
+the instrument facade fixture still expects 88 descriptors instead of the new92;
+its correction also checks exact IDs513–516 and true Boolean defaults.
