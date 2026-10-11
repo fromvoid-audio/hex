@@ -1022,12 +1022,18 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
     });
+    // Keep the compact-width layout assertions above, then expose the full
+    // horizontal device rail before interacting with the far-right controls.
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
     let wave_selector = Box::leak(
         format!("operator-preview-{}-selector-0", instrument_id.value()).into_boxed_str(),
     );
     let wave_bounds = visual
         .debug_bounds(wave_selector)
         .expect("local filter waveform selector");
+    assert!(wave_bounds.origin.x >= px(0.0));
+    assert!(wave_bounds.origin.x + wave_bounds.size.width <= px(1440.0));
     visual.simulate_click(
         point(
             wave_bounds.origin.x + px(5.0),
@@ -1055,10 +1061,6 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
     });
-    // Keep the compact-width layout assertions above, then expose the full
-    // horizontal device rail before interacting with the far-right controls.
-    visual.simulate_resize(size(px(1440.0), px(540.0)));
-    visual.run_until_parked();
     let rate_knob =
         Box::leak(format!("operator-preview-{}-0-knob", instrument_id.value()).into_boxed_str());
     let rate_value =
