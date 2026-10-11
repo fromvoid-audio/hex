@@ -17,6 +17,19 @@ gates. The original parameter-triggered Operator stop remains unreproduced and
 open for user reproduction; diagnostics do not claim a playback fix.
 See [diagnostics](docs/diagnostics.md).
 
+## lattice saturator — pulse 2309
+
+An original stateless nonlinear `hex.saturator` is registered through the
+existing native effect/device contracts. Its two curves, opaque state, generic
+parameters, project save/load and undo/redo, track/Return rendering, live
+parameter publication, and callback admission/render allocation probe are
+implemented. Targeted device, engine, storage, and allocation-probe tests pass;
+the effect callback measures zero total and signed-net allocations and checks
+known PCM results through the track/send/Return order. The curves are original
+choices and do not claim Ableton transfer-law parity. Root owns full local CI,
+PR review and merge. Shared-panel appearance and native listening remain user
+acceptance. See [Saturator](docs/saturator.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets

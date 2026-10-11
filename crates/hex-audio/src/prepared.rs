@@ -1828,6 +1828,164 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "allocation-probe")]
+    fn saturator_track_and_return_graph(drive_db: f32) -> Playback {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let make_state = || {
+            let mut state = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.saturator"),
+            )
+            .expect("registered saturator state");
+            state = hex_engine::patch_native_device_parameter(
+                &state,
+                ParameterId::from_static(1),
+                ParameterValue::Float(drive_db),
+            )
+            .expect("saturator drive");
+            hex_engine::patch_native_device_parameter(
+                &state,
+                ParameterId::from_static(4),
+                ParameterValue::Choice(1),
+            )
+            .expect("saturator curve")
+        };
+        let project = CanonicalProject::from_snapshot(Snapshot {
+            sample_rate: 48_000,
+            next_id: RETURN_DEVICE_ID + 1,
+            assets: vec![AssetSnapshot {
+                id: ASSET_ID,
+                path: "saturator-callback-test.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: FRAMES,
+                playback_frames: FRAMES,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            }],
+            tracks: vec![TrackSnapshot {
+                id: TRACK_ID,
+                name: "saturator callback fixture".into(),
+                gain: 1.0,
+                balance: 0.0,
+                muted: false,
+                soloed: false,
+                devices: vec![DeviceSnapshot {
+                    id: TRACK_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
+                instrument: None,
+                instrument_position: None,
+                content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    id: CLIP_ID,
+                    asset: ASSET_ID,
+                    start: 0,
+                    duration: FRAMES,
+                    source_offset: 0,
+                    source_length: FRAMES,
+                    looping: true,
+                    source_phase: 0,
+                    fade: ClipFade::neutral(FRAMES).expect("neutral fade"),
+                }]),
+                sends: vec![SendLevelSnapshot {
+                    return_track: RETURN_ID,
+                    gain: 0.5,
+                }],
+            }],
+            return_tracks: vec![ReturnTrackSnapshot {
+                id: RETURN_ID,
+                name: "saturator return fixture".into(),
+                gain: 0.75,
+                muted: false,
+                devices: vec![DeviceSnapshot {
+                    id: RETURN_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
+            }],
+            session: SessionSnapshot::default(),
+            loop_region: None,
+            master_gain: 1.0,
+            tempo_points: vec![TempoPoint::new(hex_project::BeatTime::ZERO, Tempo::DEFAULT)],
+            meter_points: vec![MeterPoint::new(
+                hex_project::BeatTime::ZERO,
+                hex_project::Meter::COMMON_TIME,
+            )],
+        })
+        .expect("valid track and Return graph");
+        let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
+            .expect("audio fixture");
+        let media = [(project.assets().next().expect("asset").id(), audio)]
+            .into_iter()
+            .collect();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .expect("prepared track and Return chain"),
+        );
+        Playback::try_from_prepared_with_session(revision).expect("playback")
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn saturator_track_and_return_revision_admission_and_render_allocate_nothing() {
+        let (mut control, mut callback) = channel(48_000).expect("channel");
+        let playback = saturator_track_and_return_graph(36.0);
+        control.publish(playback).expect("publish");
+        control.command(PlaybackCommand::Play).expect("play");
+        callback.begin_block();
+        let mut original_output = [[0.0; 2]; 128];
+        callback
+            .render(&mut original_output)
+            .expect("initial callback render");
+        assert!(
+            original_output.iter().all(|frame| {
+                (frame[0] - 1.75).abs() < 1.0e-6 && (frame[1] + 1.75).abs() < 1.0e-6
+            })
+        );
+
+        control
+            .publish(saturator_track_and_return_graph(0.0))
+            .expect("publish edited prepared revision");
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).expect("callback render");
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0),
+        );
+        assert_ne!(output, original_output);
+        assert!(output.iter().all(|frame| {
+            (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
+        }));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
     #[test]
     fn seek_cancels_a_waiting_begin_without_blocking_a_later_fresh_press() {
         let (mut control, mut callback) = channel(48_000).unwrap();
