@@ -136,7 +136,9 @@ publications preserve it without duplicating the current Return chain. A retirin
 mutable-instrument suffix retains its independently checked ordinary EQ PCM after
 hard-cancellation; an older same-track tail cannot mask the current held owner.
 The pointer-up geometry regression distinguishes actual graph bounds from clamped
-drag coordinates. No native interaction or listening test was performed.
+drag coordinates. Physical outside release is separate from the authored Commit,
+so shared Operator envelope drags retain their accepted outside-release behavior.
+The actual UI-feature outside-envelope reproducer passes with this separation. No native interaction or listening test was performed.
 
 The actual Track callback allocation fixture exercises Begin, repeated parameter
 publications, instrument-release-tail transfer, smooth release, hard cancellation

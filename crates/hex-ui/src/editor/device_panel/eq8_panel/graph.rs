@@ -88,12 +88,14 @@ fn handle_graph_event(
         }
         return;
     }
-    if event.phase == hex_widgets::ResponseGraphPhase::Cancel
-        && view
-            .device_panel
-            .eq8_panels
-            .get(&device)
-            .is_some_and(|panel| panel.audition_gesture_active)
+    if matches!(
+        event.phase,
+        hex_widgets::ResponseGraphPhase::Cancel | hex_widgets::ResponseGraphPhase::ReleaseOutside
+    ) && view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .is_some_and(|panel| panel.audition_gesture_active)
     {
         if let Some(audio) = view.audio.as_mut() {
             let _ = audio.control.processor_audition.cancel_immediately();
@@ -101,6 +103,11 @@ fn handle_graph_event(
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
             panel.audition_gesture_active = false;
         }
+    }
+    // Physical release never edits the authored parameter preview. A Commit
+    // may still be awaiting the worker-backed gesture barrier.
+    if event.phase == hex_widgets::ResponseGraphPhase::ReleaseOutside {
+        return;
     }
     let Some(snapshot) = view.device_gesture.snapshot() else {
         if event.phase != hex_widgets::ResponseGraphPhase::Begin {

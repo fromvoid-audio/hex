@@ -30,6 +30,8 @@ pub enum ResponseGraphPhase {
     Commit,
     /// Physical pointer release after either a stationary press or an edit.
     Release,
+    /// Physical pointer release outside the graph after preserving any edit.
+    ReleaseOutside,
     Cancel,
 }
 
@@ -342,8 +344,8 @@ impl ResponseGraph {
         };
         let normalized = self.normalized_position(event.position);
         let inside = point_inside_graph(self.bounds, event.position);
-        if let (Some(position), true) = (normalized, inside) {
-            let (first, second) = pointer_end_phases(true, true);
+        if let Some(position) = normalized {
+            let (first, second) = pointer_end_phases(true, inside);
             cx.emit(ResponseGraphEvent {
                 phase: first,
                 node_id: drag.node_id,
@@ -359,9 +361,8 @@ impl ResponseGraph {
                 });
             }
         } else {
-            let (phase, _) = pointer_end_phases(true, false);
             cx.emit(ResponseGraphEvent {
-                phase,
+                phase: ResponseGraphPhase::Cancel,
                 node_id: drag.node_id,
                 position: [0.5, 0.5],
                 modifiers: drag.modifiers,
@@ -451,7 +452,11 @@ fn pointer_end_phases(
 ) -> (ResponseGraphPhase, Option<ResponseGraphPhase>) {
     match (dragging, inside) {
         (false, true) => (ResponseGraphPhase::Release, None),
-        (_, false) => (ResponseGraphPhase::Cancel, None),
+        (false, false) => (ResponseGraphPhase::ReleaseOutside, None),
+        (true, false) => (
+            ResponseGraphPhase::Commit,
+            Some(ResponseGraphPhase::ReleaseOutside),
+        ),
         (true, true) => (
             ResponseGraphPhase::Commit,
             Some(ResponseGraphPhase::Release),
@@ -811,14 +816,14 @@ mod tests {
     }
 
     #[test]
-    fn pointer_press_lifecycle_releases_stationary_holds_and_cancels_outside() {
+    fn pointer_press_lifecycle_distinguishes_outside_release_from_cancellation() {
         assert_eq!(
             pointer_end_phases(false, true),
             (ResponseGraphPhase::Release, None)
         );
         assert_eq!(
             pointer_end_phases(false, false),
-            (ResponseGraphPhase::Cancel, None)
+            (ResponseGraphPhase::ReleaseOutside, None)
         );
         assert_eq!(
             pointer_end_phases(true, true),
@@ -829,7 +834,10 @@ mod tests {
         );
         assert_eq!(
             pointer_end_phases(true, false),
-            (ResponseGraphPhase::Cancel, None)
+            (
+                ResponseGraphPhase::Commit,
+                Some(ResponseGraphPhase::ReleaseOutside)
+            )
         );
     }
 
@@ -851,7 +859,10 @@ mod tests {
         );
         assert_eq!(
             pointer_end_phases(true, point_inside_graph(Some(bounds), outside)),
-            (ResponseGraphPhase::Cancel, None)
+            (
+                ResponseGraphPhase::Commit,
+                Some(ResponseGraphPhase::ReleaseOutside)
+            )
         );
     }
 

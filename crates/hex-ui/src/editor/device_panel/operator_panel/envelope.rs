@@ -144,6 +144,14 @@ fn handle_event(
         cx.notify();
         return;
     }
+    if matches!(
+        event.phase,
+        hex_widgets::ResponseGraphPhase::Press
+            | hex_widgets::ResponseGraphPhase::Release
+            | hex_widgets::ResponseGraphPhase::ReleaseOutside
+    ) {
+        return;
+    }
     if event.phase == hex_widgets::ResponseGraphPhase::Begin {
         begin_gesture(view, key, event, cx);
         return;
