@@ -52,11 +52,13 @@ establish native UI or listening acceptance.
 
 The 326px panel uses the shared rounded fixed-height frame and shared editable
 controls. Ratio, attack and release form the left column; threshold and manual
-output (makeup) are inline fields above the curve, with knee below. The read-only
+output (makeup) are inline fields above the curve, with knee below. Ratio uses
+the shared typed `n:1` display/parse codec; plain numeric entry remains accepted. The read-only
 static curve comes from the actual original gain-reduction law at steady detector
 levels. Input is -60..0 db and output is -66..24 db, including the soft-knee
-dip at the lowest threshold. It is explicitly a static preview, not a live gain-reduction meter or timing display. No unsupported modes
-or lookahead controls are drawn. Track and Return instances share the same body.
+dip at the lowest threshold. It is explicitly a static preview, not a live
+gain-reduction meter or timing display. No unsupported modes or lookahead
+controls are drawn. Track and Return instances share the same body.
 
 Curve samples are bounded and cached by device state and effective local values;
 drafts update before worker acknowledgement. Owner/project/removal retire cached

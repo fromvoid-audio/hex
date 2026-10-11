@@ -100,7 +100,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
         .debug_bounds(threshold_selector)
         .expect("threshold field");
     let start = threshold.center();
-    let moved = point(start.x, start.y - px(25.0));
+    let moved = point(start.x + px(25.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
