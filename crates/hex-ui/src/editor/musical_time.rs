@@ -979,11 +979,24 @@ mod tests {
                 start,
                 length: 72_000,
             };
-            let ticks = ruler_ticks(editor.project(), viewport, 600.0);
-            assert_eq!(
-                ticks.iter().map(|tick| tick.frame).collect::<Vec<_>>(),
-                expected_frames
-            );
+            let ticks = ruler_candidates(
+                editor.project(),
+                viewport,
+                viewport.end().unwrap(),
+                editor.project().tempo_map().frame_to_beat(start).unwrap(),
+                editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat(viewport.end().unwrap() - 1)
+                    .unwrap(),
+                8,
+                LandmarkDensity::Meter,
+            )
+            .ticks;
+            let mut frames = ticks.iter().map(|tick| tick.frame).collect::<Vec<_>>();
+            frames.sort_unstable();
+            frames.dedup();
+            assert_eq!(frames, expected_frames);
             assert_eq!(
                 ticks.iter().filter(|tick| tick.meter_marker).count(),
                 usize::from(start <= 96_000)
