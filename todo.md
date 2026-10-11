@@ -2048,3 +2048,14 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Full local CI, actual macOS cursor appearance/delivery and native one-step Undo
   remain separate gates. PR155 must remain unmerged until its required native
   validation passes. The concrete checklist is in docs/device-controls.md.
+
+- 11 October2026 — Pulse2345 / PR157: shared gray focus corners and normalized
+  progressive knob arcs with the observed lower-right opening. Source widget
+  regressions cover focus corners, fixed press/drag/type geometry and pan reset;
+  corner and wobble regressions fail against their original behavior.
+  Isolated same-size native before/after clicked/typed/dragged captures retained.
+  Micro/Mini58x40/18px shared metrics, visible labels and explicit semantic dial
+  layouts are implemented; Operator layout integration and
+  final full local CI. Actual-device narrow/wide review and Live endpoint sequence
+  and exact pan/Return reference remain open; this is implementation evidence,
+  not completed acceptance.

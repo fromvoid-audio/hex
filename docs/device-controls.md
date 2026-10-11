@@ -384,3 +384,35 @@ Required native acceptance before merging this particular PR remains open:
    device removal. Confirm the arrow stays visible afterward in this and another
    window/application. Preserve unsaved user projects; use an isolated fixture or
    review app. Full local CI and native appearance/delivery are separate gates.
+
+## shared knob artwork (Pulse2345 / PR157)
+
+Every native knob appearance uses the shared renderer: black unfilled rail,
+progressive secondary-accent fill and light needle. Explicit DialLayout selects
+a lower-right readout gap, bottom gap, or center-up pan with a reset triangle.
+Orientation is selected by semantics, independently of density and bipolar scale.
+Ordinary knobs fill from their normalized minimum, including logarithmic and
+amplitude/dB mappings. Bipolar zero is a neutral center with no fill, and signed
+values fill from center toward their position. No value/DSP/gesture law changed.
+
+Enabled focus, pointer interaction and numeric drafts use four short neutral-gray
+L corners around the complete tile. Typed drafts retain caret/selection and
+background; invalid drafts retain red error feedback. Numeric focus/keyboard
+handling and the separately reviewed cursor lifecycle remain intact.
+
+The MicroDial and MiniDial label-above tiles are58x40logical pixels with an18px
+dial; the width follows the measured installed Live Coarse class. Mini labels
+remain visible. Compact and Standard footprints remain unchanged. Device layouts
+consume exported shared metrics. Pointer capture has absolute positioning so
+pressing cannot insert a flex gap or shift the dial/readout.
+The isolated `cargo run -p hex-ui --example knob_review` fixture has no audio,
+project or settings I/O and shows all densities at normalized minimum/middle/
+maximum initially; each column remains editable. Generic density/semantic row
+headings do not rename actual devices. It is a rendering/gesture fixture, not
+canonical device acceptance. Exact installed Live pan/Return geometry remains
+a required reference gate; the public Live12 Mixing manual supports the reset
+triangle behavior, not pixel equivalence.
+
+Reference provenance, before/after native captures, regression sensitivity and
+remaining actual-device/reference acceptance are recorded in
+[knob focus observation](../research/observations/knob-focus-001.md).

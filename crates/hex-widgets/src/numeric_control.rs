@@ -1,11 +1,12 @@
+use crate::dial::{DialLayout, DialValue, paint_dial};
+use crate::focus_marker::corner_markers;
 use crate::numeric_text::NumericTextElement;
 use crate::{ControlStyle, NumericError, NumericSpec};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
-    Point, ShapedLine, SharedString, Style, Window, actions, canvas, div, point, prelude::*, px,
-    relative, rgb,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
+    SharedString, Style, Window, actions, canvas, div, prelude::*, px, relative, rgb,
 };
 use std::ops::Range;
 
@@ -113,6 +114,7 @@ pub struct NumericControlConfig {
     text: String,
     style: ControlStyle,
     appearance: NumericControlAppearance,
+    dial_layout: DialLayout,
 }
 
 impl NumericControlConfig {
@@ -136,7 +138,14 @@ impl NumericControlConfig {
             text,
             style,
             appearance: NumericControlAppearance::Standard,
+            dial_layout: DialLayout::ReadoutGap,
         })
+    }
+
+    /// Select rail geometry from caller-owned control semantics, never density.
+    pub fn with_dial_layout(mut self, layout: DialLayout) -> Self {
+        self.dial_layout = layout;
+        self
     }
 
     pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
@@ -181,6 +190,7 @@ pub struct NumericControl {
     press: Option<Press>,
     pub(crate) style: ControlStyle,
     appearance: NumericControlAppearance,
+    dial_layout: DialLayout,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -212,6 +222,7 @@ impl NumericControl {
             text,
             style,
             appearance,
+            dial_layout,
         } = config;
         Self {
             id,
@@ -233,6 +244,7 @@ impl NumericControl {
             press: None,
             style,
             appearance,
+            dial_layout,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -372,6 +384,62 @@ impl NumericControl {
             });
         }
         cx.notify();
+    }
+
+    fn dial_element(
+        &self,
+        size: f32,
+        value: DialValue,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let style = self.style;
+        let enabled = self.enabled;
+        let id = self.id.clone();
+        let marker_id = self.id.clone();
+        div()
+            .id(SharedString::from(format!("{}-knob", self.id)))
+            .debug_selector(move || format!("{id}-knob"))
+            .relative()
+            .size(px(size))
+            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
+            .cursor(if enabled {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::Arrow
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        paint_dial(bounds, size, value, enabled, style, window);
+                    },
+                )
+                .absolute()
+                .inset_0()
+                .size_full(),
+            )
+            .when(self.dial_layout == DialLayout::Pan, |dial| {
+                dial.child(
+                    div()
+                        .id(SharedString::from(format!("{}-pan-reset", self.id)))
+                        .debug_selector(move || format!("{marker_id}-pan-reset"))
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(size / 2.0 - 3.0))
+                        .w(px(6.0))
+                        .h(px(4.0))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|control, _, window, cx| {
+                                cx.stop_propagation();
+                                if control.enabled {
+                                    control.focus.focus(window);
+                                    control.reset(cx);
+                                }
+                            }),
+                        ),
+                )
+            })
     }
 
     fn value_mouse_down(
@@ -910,6 +978,7 @@ impl gpui::Render for NumericControl {
         let enabled = self.enabled;
         let style = self.style;
         let value = self.spec.to_normalized(self.draft).unwrap_or(0.0) as f32;
+        let dial_value = DialValue::new(value, self.spec.scale(), self.dial_layout);
         let label = self.label.clone();
         let value_text = NumericTextElement {
             input: entity.clone(),
@@ -943,116 +1012,34 @@ impl gpui::Render for NumericControl {
         }
 
         let mut root = match (self.kind, self.appearance) {
-            (NumericControlKind::Knob, NumericControlAppearance::MiniDial) => div()
-                .id(self.id.clone())
-                .flex()
-                .w(px(46.0))
-                .h(px(40.0))
-                .items_center()
-                .gap(px(2.0))
-                .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{}-knob", self.id)))
-                        .debug_selector(|| format!("{}-knob", self.id))
-                        .relative()
-                        .size(px(18.0))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
-                        .cursor(if enabled {
-                            CursorStyle::PointingHand
-                        } else {
-                            CursorStyle::Arrow
-                        })
-                        .child(
-                            canvas(
-                                |_, _, _| (),
-                                move |bounds, _, window, _| {
-                                    paint_compact_dial(bounds, 18.0, value, enabled, style, window);
-                                },
-                            )
-                            .absolute()
-                            .inset_0()
-                            .size_full(),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(26.0))
-                        .h(px(24.0))
-                        .flex()
-                        .flex_col()
-                        .justify_center()
-                        .gap(px(1.0))
-                        .child(
-                            div()
-                                .h(px(8.0))
-                                .w_full()
-                                .overflow_hidden()
-                                .text_size(px(8.0))
-                                .text_color(rgb(if enabled { style.muted } else { style.border }))
-                                .child(label),
-                        )
-                        .child(value_field_sized(
-                            self.id.clone(),
-                            value_text,
-                            ValueFieldPresentation {
-                                invalid: self.invalid_text,
-                                editing: self.editing,
-                                enabled,
-                                style,
-                                width: px(26.0),
-                                height: px(14.0),
-                            },
-                            self.value_mouse_down_listener(cx),
-                        )),
-                ),
-            (NumericControlKind::Knob, NumericControlAppearance::MicroDial) => div()
+            (
+                NumericControlKind::Knob,
+                NumericControlAppearance::MicroDial | NumericControlAppearance::MiniDial,
+            ) => div()
                 .id(self.id.clone())
                 .relative()
-                .w(px(46.0))
-                .h(px(40.0))
+                .w(px(crate::MICRO_DIAL_WIDTH))
+                .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
                 .key_context("hex_numeric_control")
                 .child(
                     div()
                         .absolute()
+                        .debug_selector(|| format!("{}-label", self.id))
                         .top(px(0.0))
                         .left(px(2.0))
-                        .w(px(44.0))
+                        .w(px(crate::MICRO_DIAL_WIDTH - 4.0))
                         .h(px(9.0))
-                        .text_size(px(7.0))
+                        .text_size(px(8.0))
                         .text_color(rgb(if enabled { style.muted } else { style.border }))
                         .overflow_hidden()
                         .child(label),
                 )
                 .child(
-                    div()
-                        .id(SharedString::from(format!("{}-knob", self.id)))
-                        .debug_selector(|| format!("{}-knob", self.id))
+                    self.dial_element(crate::MICRO_DIAL_DIAMETER, dial_value, cx)
                         .absolute()
                         .top(px(12.0))
-                        .left(px(2.0))
-                        .size(px(18.0))
-                        .cursor(if enabled {
-                            CursorStyle::PointingHand
-                        } else {
-                            CursorStyle::Arrow
-                        })
-                        .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
-                        .child(
-                            canvas(
-                                |_, _, _| (),
-                                move |bounds, _, window, _| {
-                                    paint_compact_dial(bounds, 18.0, value, enabled, style, window);
-                                },
-                            )
-                            .absolute()
-                            .inset_0()
-                            .size_full(),
-                        ),
+                        .left(px(2.0)),
                 )
                 .child(
                     div()
@@ -1067,10 +1054,10 @@ impl gpui::Render for NumericControl {
                                 editing: self.editing,
                                 enabled,
                                 style: ControlStyle {
-                                    font_size: 7.0,
+                                    font_size: 8.0,
                                     ..style
                                 },
-                                width: px(33.0),
+                                width: px(crate::MICRO_DIAL_WIDTH - 13.0),
                                 height: px(12.0),
                             },
                             self.value_mouse_down_listener(cx),
@@ -1101,33 +1088,7 @@ impl gpui::Render for NumericControl {
                             .overflow_hidden()
                             .child(label),
                     )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("{}-knob", self.id)))
-                            .debug_selector(|| format!("{}-knob", self.id))
-                            .relative()
-                            .size(px(knob_size))
-                            .rounded_full()
-                            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
-                            .cursor(if enabled {
-                                CursorStyle::PointingHand
-                            } else {
-                                CursorStyle::Arrow
-                            })
-                            .child(
-                                canvas(
-                                    |_, _, _| (),
-                                    move |bounds, _, window, _| {
-                                        paint_compact_dial(
-                                            bounds, knob_size, value, enabled, style, window,
-                                        );
-                                    },
-                                )
-                                .absolute()
-                                .inset_0()
-                                .size_full(),
-                            ),
-                    )
+                    .child(self.dial_element(knob_size, dial_value, cx))
                     .child(value_field_sized(
                         self.id.clone(),
                         value_text,
@@ -1163,70 +1124,38 @@ impl gpui::Render for NumericControl {
                     },
                     self.value_mouse_down_listener(cx),
                 )),
-            (NumericControlKind::Knob, _) => {
-                let quarter_turn = std::f32::consts::FRAC_PI_4;
-                let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
-                    .clamp(-5.0 * quarter_turn, quarter_turn);
-                let marker_left = 16.0 + angle.cos() * 12.0 - 2.0;
-                let marker_top = 16.0 + angle.sin() * 12.0 - 2.0;
-                div()
-                    .id(self.id.clone())
-                    .flex()
-                    .flex_col()
-                    .w(px(48.0))
-                    .h(px(67.0))
-                    .gap(px(1.0))
-                    .items_center()
-                    .track_focus(&self.focus)
-                    .key_context("hex_numeric_control")
-                    .child(
-                        div()
-                            .w(px(48.0))
-                            .h(px(14.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(style.font_size))
-                            .text_color(rgb(if enabled { style.muted } else { style.border }))
-                            .overflow_hidden()
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("{}-knob", self.id)))
-                            .debug_selector(|| format!("{}-knob", self.id))
-                            .relative()
-                            .size(px(34.0))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(rgb(if enabled { style.border } else { style.rail }))
-                            .bg(rgb(style.raised))
-                            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
-                            .cursor(if enabled {
-                                CursorStyle::PointingHand
-                            } else {
-                                CursorStyle::Arrow
-                            })
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(px(marker_left))
-                                    .top(px(marker_top))
-                                    .size(px(4.0))
-                                    .rounded_full()
-                                    .bg(rgb(style.accent)),
-                            ),
-                    )
-                    .child(value_field(
-                        self.id.clone(),
-                        value_text,
-                        self.invalid_text,
-                        self.editing,
-                        enabled,
-                        style,
-                        self.value_mouse_down_listener(cx),
-                    ))
-            }
+            (NumericControlKind::Knob, _) => div()
+                .id(self.id.clone())
+                .flex()
+                .flex_col()
+                .w(px(48.0))
+                .h(px(67.0))
+                .gap(px(1.0))
+                .items_center()
+                .track_focus(&self.focus)
+                .key_context("hex_numeric_control")
+                .child(
+                    div()
+                        .w(px(48.0))
+                        .h(px(14.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(style.font_size))
+                        .text_color(rgb(if enabled { style.muted } else { style.border }))
+                        .overflow_hidden()
+                        .child(label),
+                )
+                .child(self.dial_element(34.0, dial_value, cx))
+                .child(value_field(
+                    self.id.clone(),
+                    value_text,
+                    self.invalid_text,
+                    self.editing,
+                    enabled,
+                    style,
+                    self.value_mouse_down_listener(cx),
+                )),
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1301,13 +1230,16 @@ impl gpui::Render for NumericControl {
                 )),
         };
 
+        let selected =
+            enabled && (self.focus.is_focused(window) || self.press.is_some() || self.editing);
         root = root
+            .relative()
             .debug_selector(|| self.id.to_string())
+            // Retain the existing one-pixel layout inset; only its paint changes.
             .border_1()
-            .border_color(if self.focus.is_focused(window) {
-                rgb(style.accent)
-            } else {
-                gpui::rgba(0)
+            .border_color(gpui::rgba(0))
+            .when(selected, |root| {
+                root.child(corner_markers(&self.id, style.focus_marker))
             })
             .cursor(if enabled {
                 CursorStyle::PointingHand
@@ -1401,6 +1333,9 @@ impl Element for GestureCaptureElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
+        // Capture installs window listeners only; it must never enter flex flow
+        // or add a gap/shrink the dial while a pointer is held.
+        style.position = gpui::Position::Absolute;
         style.size.width = px(0.0).into();
         style.size.height = px(0.0).into();
         (window.request_layout(style, [], cx), ())
@@ -1500,60 +1435,6 @@ struct ValueFieldPresentation {
     height: Pixels,
 }
 
-/// Open 270-degree rail, short value arc and radial pointer, shared by compact
-/// dial densities. Owner colors and existing hit regions remain authoritative.
-fn paint_compact_dial(
-    bounds: Bounds<Pixels>,
-    size: f32,
-    value: f32,
-    enabled: bool,
-    style: ControlStyle,
-    window: &mut Window,
-) {
-    let center = point(
-        bounds.origin.x + px(size / 2.0),
-        bounds.origin.y + px(size / 2.0),
-    );
-    let radius = size / 2.0 - 1.5;
-    let start = -5.0 * std::f32::consts::FRAC_PI_4;
-    let sweep = 6.0 * std::f32::consts::FRAC_PI_4;
-    let angle = start + value * sweep;
-    let polar = |angle: f32, radius: f32| {
-        point(
-            center.x + px(angle.cos() * radius),
-            center.y + px(angle.sin() * radius),
-        )
-    };
-    let mut rail = PathBuilder::stroke(px(1.5));
-    rail.move_to(polar(start, radius));
-    for step in 1..=48 {
-        rail.line_to(polar(start + sweep * step as f32 / 48.0, radius));
-    }
-    if let Ok(path) = rail.build() {
-        window.paint_path(path, rgb(if enabled { style.text } else { style.muted }));
-    }
-    if enabled && value > 0.0 {
-        let mut arc = PathBuilder::stroke(px(1.8));
-        let arc_start = (angle - sweep * 0.18).max(start);
-        arc.move_to(polar(arc_start, radius));
-        for step in 1..=12 {
-            arc.line_to(polar(
-                arc_start + (angle - arc_start) * step as f32 / 12.0,
-                radius,
-            ));
-        }
-        if let Ok(path) = arc.build() {
-            window.paint_path(path, rgb(style.accent));
-        }
-    }
-    let mut needle = PathBuilder::stroke(px(1.5));
-    needle.move_to(polar(angle, radius * 0.12));
-    needle.line_to(polar(angle, radius * 0.85));
-    if let Ok(path) = needle.build() {
-        window.paint_path(path, rgb(if enabled { style.text } else { style.muted }));
-    }
-}
-
 fn value_field_sized(
     id: SharedString,
     child: NumericTextElement,
@@ -1581,8 +1462,6 @@ fn value_field_sized(
         .border_1()
         .border_color(if invalid {
             rgb(0xff554c)
-        } else if editing {
-            rgb(style.accent)
         } else {
             gpui::rgba(0)
         })

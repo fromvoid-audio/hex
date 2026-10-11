@@ -200,6 +200,8 @@ pub(super) fn control_style() -> ControlStyle {
         ),
         muted: theme::color(theme::PaletteRole::Muted),
         accent: theme::color(theme::PaletteRole::Secondary),
+        focus_marker: 0xaaaaaa,
+        dial_rail: 0x000000,
         hover: theme::color(theme::PaletteRole::Hover),
         font_size: 9.0,
     }
