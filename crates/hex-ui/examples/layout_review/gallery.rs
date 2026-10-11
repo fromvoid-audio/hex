@@ -195,7 +195,7 @@ impl Gallery {
         element: Div,
         index: usize,
         live: bool,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if !live {

@@ -2108,6 +2108,6 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   section labels, readouts and display guides across the fixture catalog.
   Disabled appearance overrides retained focus/selection; input refusal and
   geometry remain covered by the existing eleven-family regression.
-- Prior `ad51d79` app/CI are superseded. Source guards pass; renewed targeted
-  tests, native build and final full local CI await the coordinated build slot.
+- Prior `ad51d79` app/CI are superseded. Seven example tests, strict Clippy and native build pass. Final exact-source
+  full local CI evidence is retained on PR163/Pulse2355.
   Updated native visual acceptance remains open. No production DSP changes.

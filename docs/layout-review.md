@@ -88,7 +88,7 @@ Disabled previews affect all targets.
 
 ## Acceptance checklist and evidence
 
-- [ ] Renew targeted rendered GPUI tests after the latest user corrections: header-only selection, pointer/keyboard
+- [x] Updated targeted rendered GPUI tests pass after the latest user corrections: header-only selection, pointer/keyboard
   transitions, disabled refusal, state geometry, preview containment/non-overlap
   at 760×660 and 1320×660 logical pixels.
 - Full local CI must pass on the final exact commit/unchanged source digest;
@@ -141,5 +141,8 @@ that disabled appearance overrides retained focus/selection, and a new rendered
 regression exercises keyboard focus with no separate focused preview.
 
 The previously validated `ad51d79` app and CI are superseded for this candidate.
-Source guards pass; renewed targeted tests, native build, exact final full CI
-and human visual acceptance are pending the coordinated Mac build slot.
+Seven example tests pass (five rendered gallery regressions plus two theme
+tests), as do strict example/tests Clippy and the native build. Final exact-source
+full CI is recorded on PR163/Pulse2355; updated human visual acceptance remains
+open. The first strict check caught an unused Window argument after removal of
+the focus outline; it was corrected before the final targeted passes.
