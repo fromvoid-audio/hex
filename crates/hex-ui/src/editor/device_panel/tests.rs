@@ -2338,18 +2338,21 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         ] {
             let row = visual
                 .debug_bounds(Box::leak(
-                    format!("operator-preview-row-{}-{title}", instrument_id.value()).into_boxed_str(),
+                    format!("operator-preview-row-{}-{title}", instrument_id.value())
+                        .into_boxed_str(),
                 ))
                 .expect("preview row");
             for field in fields {
                 let control = visual
                     .debug_bounds(Box::leak(
-                        format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+                        format!("operator-preview-{}-{field}", instrument_id.value())
+                            .into_boxed_str(),
                     ))
                     .expect("preview control");
                 assert!(control.origin.x >= row.origin.x + px(4.0));
                 assert!(
-                    control.origin.x + control.size.width <= row.origin.x + row.size.width - px(4.0),
+                    control.origin.x + control.size.width
+                        <= row.origin.x + row.size.width - px(4.0),
                     "preview controls need an inset from the dark row edges"
                 );
             }
