@@ -1153,7 +1153,7 @@ impl EditorView {
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
-        if !matches!(&request, Request::Open(_))
+        if !matches!(&request, Request::Open(_) | Request::ImportLiveSet { .. })
             && !allows_non_open_request(
                 self.close_prompt_open,
                 self.opening_project,
@@ -1167,7 +1167,7 @@ impl EditorView {
             });
             return false;
         }
-        if !matches!(&request, Request::Open(_)) {
+        if !matches!(&request, Request::Open(_) | Request::ImportLiveSet { .. }) {
             self.pending_open_path = None;
         }
         if matches!(
@@ -1182,6 +1182,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::ImportLiveSet { .. }
                 | Request::Open(_)
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
@@ -1196,6 +1197,7 @@ impl EditorView {
         if matches!(
             &request,
             Request::Open(_)
+                | Request::ImportLiveSet { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)

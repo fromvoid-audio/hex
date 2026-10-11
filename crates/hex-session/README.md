@@ -14,6 +14,9 @@ paste compiles before history commit. Successful project opening clears it.
 
 ## Dependencies
 
+`hex-live-set` prepares bounded Arrangement import candidates on the worker;
+no current project is replaced before canonical/media compilation succeeds.
+
 `hex-project` owns canonical project state and history. `hex-media` decodes WAV
 files into validated audio, converts source rates and supplies cached peak summaries. `hex-engine`
 compiles the canonical snapshot into offline playback. The crate uses the

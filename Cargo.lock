@@ -2659,6 +2659,7 @@ dependencies = [
  "hex-engine",
  "hex-export",
  "hex-lattice-contract",
+ "hex-live-set",
  "hex-media",
  "hex-project",
  "hex-storage",

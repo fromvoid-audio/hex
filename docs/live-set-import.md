@@ -4,7 +4,12 @@ PR #150 implements a finite control-side importer in `hex-live-set`, with a
 headless `hex-cli import-live-set <input.als> <new-project.hex>` entry point.
 It builds and compiles a separate canonical candidate and validates local WAV
 assets before create-new publication; failure cannot replace an existing project.
-Native UI import, Live audio parity and listening acceptance are not established.
+The file menu exposes `import live set…`: save current work first, choose the
+compatibility policy, then choose the `.als`. Import is prepared on the control
+worker; success opens a new unsaved Hex project, preserving the old saved file.
+Cancel, unsupported behavior, stale project/revision and media/resource failures
+leave the current project intact. Use `save as…` to persist the result. Native
+menu/file-picker acceptance, Live audio parity and listening remain unverified.
 
 ## evidence and compatibility
 

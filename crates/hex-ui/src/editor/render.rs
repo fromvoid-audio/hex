@@ -1,11 +1,11 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, OpenRecentProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection,
-    PreviousTrack, Quit, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
-    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    ImportAudio, ImportLiveSet, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NextTrack, OpenProject, OpenRecentProject, PanTimelineLeft, PanTimelineRight,
+    PasteTimeSelection, PreviousTrack, Quit, Redo, RemoveTrack, SaveAsProject, SaveProject,
+    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
+    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -471,6 +471,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
+            .on_action(
+                cx.listener(|view, _: &ImportLiveSet, window, cx| view.live_set_dialog(window, cx)),
+            )
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
             .on_action(cx.listener(|view, action: &OpenRecentProject, _, cx| {
                 if super::device_panel::finalize_controls(view, cx) {

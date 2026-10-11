@@ -1,5 +1,7 @@
 //! Native application menus dispatch the editor's existing guarded actions.
-use super::{OpenProject, OpenRecentProject, OpenSettings, Quit, SaveAsProject, SaveProject};
+use super::{
+    ImportLiveSet, OpenProject, OpenRecentProject, OpenSettings, Quit, SaveAsProject, SaveProject,
+};
 use crate::theme;
 use gpui::{App, Menu, MenuItem};
 use std::path::PathBuf;
@@ -18,6 +20,7 @@ pub(super) fn install(cx: &mut App, recent_projects: &[PathBuf]) {
             name: theme::text("file"),
             items: vec![
                 MenuItem::action(theme::text("open project…"), OpenProject),
+                MenuItem::action(theme::text("import live set…"), ImportLiveSet),
                 MenuItem::submenu(Menu {
                     name: theme::text("recent projects"),
                     items: recent_projects

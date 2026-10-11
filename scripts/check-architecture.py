@@ -15,7 +15,7 @@ ALLOWED = {
     'hex-devices': {'hex-lattice', 'hex-lattice-contract'},
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-lattice-contract'},
-    'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
+    'hex-session': {'hex-live-set', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
     'hex-engine': {'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
     'hex-export': {'hex-engine'},
