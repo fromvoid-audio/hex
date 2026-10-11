@@ -110,8 +110,8 @@ fn prepared_export_renders_effectful_return_before_master_once() {
     );
     let directory = TestDir::new();
     let path = directory.0.join("return.wav");
-    let report =
-        hex_export::render_prepared_new(&path, revision, 0, 1).expect("prepared Return export");
+    let report = hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 1)
+        .expect("prepared Return export");
     assert_eq!(report.frames, 1);
     let bytes = fs::read(path).expect("read export");
     let left = i16::from_le_bytes([bytes[44], bytes[45]]);
@@ -121,4 +121,139 @@ fn prepared_export_renders_effectful_return_before_master_once() {
         let pcm = (expected * 32_767.0).round() as i16;
         assert!((i32::from(actual) - i32::from(pcm)).abs() <= 1);
     }
+
+    // Capture actual post-fader/Return outputs from the same graph, excluding
+    // master gain. These independent PCM expectations distinguish send input,
+    // Return output, dry track and Main instead of mirroring capture buffers.
+    for (name, id, expected) in [
+        (
+            "track",
+            hex_engine::OutputCaptureId::Track(track),
+            [0.125_f32, -0.25],
+        ),
+        (
+            "return",
+            hex_engine::OutputCaptureId::Return(return_track),
+            [0.0625_f32, 0.125],
+        ),
+    ] {
+        let control = hex_export::ExportControl::default();
+        let target = directory.0.join(format!("stem-{name}.wav"));
+        hex_export::render_prepared_controlled(
+            &target,
+            Arc::clone(&revision),
+            0,
+            1,
+            hex_export::ExportSignal::CapturedMix(vec![id]),
+            &control,
+        )
+        .expect("captured output export");
+        let data = fs::read(target).unwrap();
+        for (channel, expected) in expected.into_iter().enumerate() {
+            let offset = 44 + channel * 2;
+            assert_eq!(
+                i16::from_le_bytes([data[offset], data[offset + 1]]),
+                (expected * 32767.0).round() as i16
+            );
+        }
+        assert_eq!(
+            control.progress(),
+            hex_export::ExportProgress {
+                processed_frames: 1,
+                total_frames: 1
+            }
+        );
+    }
+    let batch = directory.0.join("stems");
+    let stems = vec![
+        hex_export::Stem {
+            id: hex_engine::OutputCaptureId::Return(return_track),
+            name: "same/name".into(),
+        },
+        hex_export::Stem {
+            id: hex_engine::OutputCaptureId::Track(track),
+            name: "same/name".into(),
+        },
+    ];
+    hex_export::render_stems_new(
+        &batch,
+        Arc::clone(&revision),
+        0,
+        1,
+        &stems,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    let files: Vec<_> = fs::read_dir(&batch)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 2);
+    for (kind, id, expected) in [
+        ("track", track.value(), [0.125_f32, -0.25]),
+        ("return", return_track.value(), [0.0625_f32, 0.125]),
+    ] {
+        let data = fs::read(batch.join(format!("{kind}-{id}-same_name.wav"))).unwrap();
+        assert_eq!(data.len(), 48);
+        for (channel, expected) in expected.into_iter().enumerate() {
+            let offset = 44 + channel * 2;
+            assert_eq!(
+                i16::from_le_bytes([data[offset], data[offset + 1]]),
+                (expected * 32767.0).round() as i16
+            );
+        }
+    }
+    // Refuse the whole existing batch; never merge/delete files in it.
+    fs::write(batch.join("unrelated.txt"), b"preserve me").unwrap();
+    assert!(
+        hex_export::render_stems_new(
+            &batch,
+            Arc::clone(&revision),
+            0,
+            1,
+            &stems,
+            &hex_export::ExportControl::default()
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read(batch.join("unrelated.txt")).unwrap(),
+        b"preserve me"
+    );
+    let duplicate = directory.0.join("duplicates");
+    let repeated = vec![stems[0].clone(), stems[0].clone()];
+    assert!(
+        hex_export::render_stems_new(
+            &duplicate,
+            Arc::clone(&revision),
+            0,
+            1,
+            &repeated,
+            &hex_export::ExportControl::default()
+        )
+        .is_err()
+    );
+    assert!(!duplicate.exists());
+    assert!(!fs::read_dir(&directory.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".hex-stems-")
+    }));
+    let cancelled = hex_export::ExportControl::default();
+    cancelled.cancel();
+    let target = directory.0.join("cancelled.wav");
+    assert!(matches!(
+        hex_export::render_prepared_controlled(
+            &target,
+            revision,
+            0,
+            1,
+            hex_export::ExportSignal::Main,
+            &cancelled
+        ),
+        Err(hex_export::ExportError::Cancelled)
+    ));
+    assert!(!target.exists());
 }

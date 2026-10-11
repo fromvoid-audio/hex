@@ -18,7 +18,10 @@ Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
 Project rendering validates original source rate/count, prepares project-rate PCM
 with the saved converter contract and validates playback length before opening
 the output. Input is capped at 64 MiB / 8,000,000 source frames per file; referenced
-prepared PCM is separately capped at 8,000,000 frames. Output never overwrites.
+prepared PCM is separately capped at 8,000,000 frames. Legacy render-project
+never overwrites. The explicit export-project command supports controlled ranges,
+canonical captures, stems and consented overwrite with retained originals;
+see [the export contract](../../docs/export.md).
 
 Recover a retained prior generation without replacing either original file:
 

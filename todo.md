@@ -2085,3 +2085,13 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Required full exact clean local CI is a merge gate. Native macOS/audio,
   listening and physical throughput remain manual gaps; no export UI/preroll or
   publication is included. Active Pulse30 prerequisite linking remains blocked.
+
+### export — pulse30 / pr152
+
+- Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
+  the canonical capture prerequisite, with sample ranges and cancellable preroll.
+- Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
+  old files are retained, new batches publish exclusively, and races return
+  truthful recovery errors. The finite behavior is documented in docs/export.md.
+- Final exact-source local checks and PR review remain gates. Native macOS,
+  listening and sustained throughput acceptance remain unverified.

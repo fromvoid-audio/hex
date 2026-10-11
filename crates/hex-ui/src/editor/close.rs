@@ -109,6 +109,9 @@ impl EditorView {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        if let Some(control) = &view.export_control {
+                            control.cancel();
+                        }
                         view.stop();
                     } else {
                         cx.notify();

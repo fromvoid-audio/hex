@@ -3820,3 +3820,13 @@ Arrangement-only cut without loop/pending Session scheduling; linear export
 keeps its inheritance refusal. Required final-source local CI and native/manual
 acceptance remain separate gates; this implementation does not finish export30.
 Pulse cannot link the prerequisite while30's workflow is active; no bypass.
+
+### export — pulse30 / pr152
+
+The finite [export contract](export.md) consumes canonical capture from verified
+PR159 source 3f1ef2279696de0acb7dec2941dfdbe5fe53c6e2. It adds progress/cancel,
+half-open frame ranges with bounded stateful preroll, explicit Main/track/Return
+scopes, separately named stems, and safe staged publication with concrete overwrite
+consent and retained displaced files. Capture dependencies remain separate PRs.
+Listening, native macOS behavior and sustained physical throughput require their
+own acceptance evidence; Linux source checks do not establish them.
