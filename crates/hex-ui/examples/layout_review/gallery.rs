@@ -13,6 +13,8 @@ const LIGHT: u32 = 0x414141;
 const TEXT: u32 = 0xbcbcbc;
 const SELECTED: u32 = 0xaedce7;
 const ACCENT: u32 = 0x00bfd0;
+const ACTIVATOR: u32 = 0xffb657;
+const MUTED: u32 = 0x888888;
 const SAMPLE_HEIGHT: f32 = 116.0;
 const TARGET_IDS: [&str; 3] = ["target-0", "target-1", "target-2"];
 
@@ -76,21 +78,14 @@ impl Family {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Idle,
-    Focused,
     Selected,
     Disabled,
 }
-const STATES: [State; 4] = [
-    State::Idle,
-    State::Focused,
-    State::Selected,
-    State::Disabled,
-];
+const STATES: [State; 3] = [State::Idle, State::Selected, State::Disabled];
 impl State {
     fn selector(self) -> &'static str {
         match self {
             Self::Idle => "preview-idle",
-            Self::Focused => "preview-focused",
             Self::Selected => "preview-selected",
             Self::Disabled => "preview-disabled",
         }
@@ -98,7 +93,6 @@ impl State {
     fn label(self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Focused => "focused",
             Self::Selected => "selected",
             Self::Disabled => "disabled",
         }
@@ -114,20 +108,22 @@ fn style(state: State, header: bool) -> ControlStyle {
             BACKGROUND
         },
         rail: DISPLAY,
-        border: if header && state == State::Focused {
-            TEXT
-        } else {
-            BACKGROUND
-        },
+        border: BACKGROUND,
         text: if state == State::Disabled {
-            0x888888
+            MUTED
         } else if header && state == State::Selected {
             0x101010
         } else {
             TEXT
         },
-        muted: 0x888888,
-        accent: ACCENT,
+        muted: MUTED,
+        accent: if state == State::Disabled {
+            DISPLAY
+        } else if header {
+            ACTIVATOR
+        } else {
+            ACCENT
+        },
         hover: LIGHT,
         font_size: 10.0,
     }
@@ -205,13 +201,11 @@ impl Gallery {
         if !live {
             return element.into_any_element();
         }
-        let focused = self.focus[index].is_focused(window);
         element
             .id(TARGET_IDS[index])
             .debug_selector(move || TARGET_IDS[index].into())
             .track_focus(&self.focus[index])
             .border_1()
-            .when(focused, |element| element.border_color(rgb(TEXT)))
             .cursor_pointer()
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -226,27 +220,41 @@ impl Gallery {
             )
             .into_any_element()
     }
-    fn sample(&self, state: State, live: bool, window: &Window, cx: &mut Context<Self>) -> Div {
-        let state_at = |i| {
-            if !live {
-                if state == State::Disabled || i == 0 || (self.family.is_composition() && i == 1) {
-                    state
-                } else {
-                    State::Idle
-                }
-            } else if self.disabled {
-                State::Disabled
-            } else if (self.family.is_composition() && i == 0 && self.device_selected)
-                || self.selected == Some(i)
+    fn visual_state(&self, index: usize, preview: Option<State>, window: &Window) -> State {
+        if let Some(state) = preview {
+            return if state == State::Disabled
+                || index == 0
+                || (self.family.is_composition() && index == 1)
             {
-                State::Selected
-            } else if self.focus[i].is_focused(window) {
-                State::Focused
+                state
             } else {
                 State::Idle
-            }
-        };
-        let mut body = div().flex().flex_col().size_full().gap(px(2.0));
+            };
+        }
+        if self.disabled {
+            return State::Disabled;
+        }
+        let device_focused = self.family.is_composition()
+            && index == 0
+            && self.focus.iter().any(|handle| handle.is_focused(window));
+        if device_focused
+            || (self.family.is_composition() && index == 0 && self.device_selected)
+            || self.selected == Some(index)
+            || self.focus[index].is_focused(window)
+        {
+            State::Selected
+        } else {
+            State::Idle
+        }
+    }
+    fn sample(&self, state: State, live: bool, window: &Window, cx: &mut Context<Self>) -> Div {
+        let state_at = |i| self.visual_state(i, if live { None } else { Some(state) }, window);
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .gap(px(2.0))
+            .text_color(rgb(style(state_at(0), false).text));
         match self.family {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
@@ -291,9 +299,7 @@ impl Gallery {
                         .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
                         .bg(rgb(DISPLAY))
                         .border_1()
-                        .border_color(rgb(if current == State::Focused {
-                            TEXT
-                        } else if current == State::Selected {
+                        .border_color(rgb(if current == State::Selected {
                             ACCENT
                         } else {
                             DISPLAY
@@ -324,19 +330,13 @@ impl Gallery {
                         .px(px(4.0))
                         .gap(px(6.0))
                         .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
-                        .bg(rgb(
-                            if matches!(current, State::Focused | State::Selected) {
-                                BACKGROUND
-                            } else {
-                                DARK
-                            },
-                        ))
-                        .border_1()
-                        .border_color(rgb(if current == State::Focused {
-                            TEXT
-                        } else {
+                        .bg(rgb(if current == State::Selected {
                             BACKGROUND
+                        } else {
+                            DARK
                         }))
+                        .border_1()
+                        .border_color(rgb(BACKGROUND))
                         .text_color(rgb(style(current, false).text))
                         .child(theme::text(label));
                     let row = if self.family == Family::Sections {
@@ -366,11 +366,7 @@ impl Gallery {
                     )
                     .w(px(76.0))
                     .border_1()
-                    .border_color(rgb(if current == State::Focused {
-                        TEXT
-                    } else {
-                        BACKGROUND
-                    }));
+                    .border_color(rgb(BACKGROUND));
                     tabs = tabs.child(self.target(tab, i, live, window, cx));
                 }
                 body = body.child(tabs).child(
@@ -527,6 +523,17 @@ mod tests {
                 .debug_bounds("disable-sample")
                 .expect("disable control");
             visual.simulate_click(disable.center(), Modifiers::default());
+            visual.update(|window, cx| {
+                view.read_with(cx, |view, _| {
+                    for index in 0..family.target_count() {
+                        assert_eq!(
+                            view.visual_state(index, None, window),
+                            State::Disabled,
+                            "disabled appearance overrides retained focus and selection"
+                        );
+                    }
+                })
+            });
             let selected = view.read_with(cx, |view, _| view.selected);
             visual.simulate_keystrokes("enter space");
             let target = visual.debug_bounds("target-0").expect("disabled target");
@@ -684,5 +691,60 @@ mod page_tests {
             screen
         );
         assert_eq!(visual.debug_bounds("target-2").expect("stable tab"), tab);
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod accepted_state_tests {
+    use super::*;
+    use gpui::{AppContext, Empty, Modifiers, TestAppContext, VisualTestContext, point};
+
+    #[gpui::test]
+    fn keyboard_focus_uses_selected_device_state_without_separate_focus_preview(
+        cx: &mut TestAppContext,
+    ) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let view = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |_, cx| {
+                    let mut view = Gallery::new(cx);
+                    view.family = Family::Inspector;
+                    view
+                })
+            })
+            .expect("gallery");
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("preview-focused").is_none());
+        let header = visual.debug_bounds("target-0").expect("header");
+        visual.simulate_click(
+            point(header.origin.x + px(12.0), header.origin.y + px(8.0)),
+            Modifiers::default(),
+        );
+        visual.simulate_keystrokes("escape tab");
+        visual.update(|window, cx| {
+            view.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.selected, None,
+                    "focus does not change committed section selection"
+                );
+                assert_eq!(
+                    view.visual_state(0, None, window),
+                    State::Selected,
+                    "focus anywhere in the device highlights its header"
+                );
+                assert_eq!(
+                    view.visual_state(1, None, window),
+                    State::Selected,
+                    "focused section uses selected appearance"
+                );
+            })
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("target-0").expect("stable header"),
+            header
+        );
     }
 }

@@ -2099,3 +2099,15 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   checks now pass: six example tests (four rendered regressions), strict Clippy
   and native build. Final exact-commit fullCI evidence is retained on PR163/
   Pulse2355. Native screenshots and user reference comparison remain required.
+
+### Gallery selection / disabled correction — 11 October 2026
+
+- User accepts the composition direction; device focus and selection share the
+  highlighted header, without a white device outline or separate focus preview.
+- Utility reference adds orange enabled / dark disabled activators and muted
+  section labels, readouts and display guides across the fixture catalog.
+  Disabled appearance overrides retained focus/selection; input refusal and
+  geometry remain covered by the existing eleven-family regression.
+- Prior `ad51d79` app/CI are superseded. Source guards pass; renewed targeted
+  tests, native build and final full local CI await the coordinated build slot.
+  Updated native visual acceptance remains open. No production DSP changes.

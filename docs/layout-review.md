@@ -23,10 +23,10 @@ PR157 owns knobs/shared control styling, and PR158 owns harmonic editing.
 
 | Family | Evidence | Meaningful states and fixture interaction |
 | --- | --- | --- |
-| Standard device frame/header | User whole-device crop; production shared frame | Idle/focused/selected/disabled. Only the header selects the device; cyan selected header is independent of section selection. |
+| Standard device frame/header | User whole-device crop; production shared frame | Idle/selected/disabled; keyboard focus uses the selected appearance. Only the header selects the device; cyan selected header is independent of section selection. |
 | Compact device frame/header | Existing production compact frame | Same fixture interaction; compact header density is a Hex variant, not independently verified Live geometry. |
-| Rounded dark display | User dark-gray center crop | Neutral `0x191919` center; rounded outline; static guide only. Focus/selection border are fixture inspection aids, not claimed Live behavior. |
-| Section rail | User left/right crops; PR156 source tokens | Rounded `0x363636` sections, `0x474747` gutters; Focused and selected rows merge into `0x474747` outer background; focus retains a border marker. Two-logical-pixel gutters (four physical pixels at scale 2). Single selected section. |
+| Rounded dark display | User dark-gray center crop | Neutral `0x191919` center; rounded outline; static guide only. Selection uses the same appearance for pointer and keyboard focus; the cyan screen marker is a fixture inspection aid. |
+| Section rail | User left/right crops; PR156 source tokens | Rounded `0x363636` sections, `0x474747` gutters; Focused and selected rows merge into `0x474747` outer background; there is no separate white focus border. Two-logical-pixel gutters (four physical pixels at scale 2). Single selected section. |
 | Grouped rows | User oscillator rows | Fixed labels/readout footprint; focus and selection merge the first row into the outer background in previews. No numeric control or oscillator semantics. |
 | Stable tabs | User center crop; shared `panel_tab` | Fixed three-tab footprint, independent focus versus active page; changing page does not change panel size. Exact Live tab marker/underline geometry remains unverified. |
 | Compact grouped sections | User modulation/filter/pitch/global section crop | Dense separated sections, shared row state policy. Text-only layout placeholders have no audio effect. |
@@ -59,7 +59,7 @@ on Pulse2355, including this focused-fill regression.
 New private copies in this checkout at
 `research/private/layout-review-20261011/` retain the user attachments:
 `user-wavetable-composition.png`, `user-operator-inspector.png`, and
-`user-operator-selected-header.png`. Appearance and composition are directly
+`user-operator-selected-header.png`, and `user-utility-enabled-disabled.png`. Appearance and composition are directly
 observed/provided; keyboard behavior is still the fixture's original contract.
 
 User-supplied crops were preserved by the navigation coordinator at
@@ -82,13 +82,13 @@ Keyboard choices (Tab/Shift-Tab cyclic target focus, arrows, Enter/Space selecti
 Escape clear) are original fixture contracts. Click selection has one owner per
 sample, separate from focus. Disabled samples retain selection but refuse pointer
 and Enter/Space changes; focus may remain for inspection. State previews are
-noninteractive and labelled, so their focus marker is illustrative. The selected
+noninteractive and labelled; there is no separate focused preview. The selected
 preview changes target zero; composite previews also select section one.
 Disabled previews affect all targets.
 
 ## Acceptance checklist and evidence
 
-- [x] Updated targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
+- [ ] Renew targeted rendered GPUI tests after the latest user corrections: header-only selection, pointer/keyboard
   transitions, disabled refusal, state geometry, preview containment/non-overlap
   at 760×660 and 1320×660 logical pixels.
 - Full local CI must pass on the final exact commit/unchanged source digest;
@@ -118,8 +118,28 @@ Acceptance required by ticket2355 blocks gallery completion/merge.
 
 Remaining reference families are explicit gaps: racks/chains and nested headers,
 folded devices, plugin windows, browser/mixer/Arrangement/Session/clip-editor
-surfaces, popups and parameter controls, disabled/bypassed reference transitions,
+surfaces, popups and parameter controls, production disabled/bypassed transitions,
 accessibility and exact per-device display geometry. This extensible catalog
 covers the currently requested device-layout and composite families; it does not claim every
 Live screen or musical behavior. Add a family only with bounded evidence and
 acceptance, rather than silently expanding this PR.
+
+### Latest user corrections — 11 October 2026
+
+The user accepted the composition direction and clarified that device focus and
+selection have the same visual appearance: a highlighted header, with no white
+device outline. The separate focused preview is removed; idle, selected and
+disabled remain. Keyboard focus is retained for navigation and paints selected
+section/header appearance without changing the committed selection.
+
+The supplied side-by-side Utility crop requires an orange enabled activator and
+a dark disabled activator. Disabled labels, readouts and static screen guide
+marks are muted in every family. Disabling still refuses sample input and
+preserves geometry. These changes are fixture-only; they do not activate or
+bypass audio devices. The existing eleven-family input regression now verifies
+that disabled appearance overrides retained focus/selection, and a new rendered
+regression exercises keyboard focus with no separate focused preview.
+
+The previously validated `ad51d79` app and CI are superseded for this candidate.
+Source guards pass; renewed targeted tests, native build, exact final full CI
+and human visual acceptance are pending the coordinated Mac build slot.

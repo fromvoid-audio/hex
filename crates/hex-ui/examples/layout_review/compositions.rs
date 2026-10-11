@@ -27,6 +27,15 @@ impl Gallery {
             }))
             .text_color(rgb(style(header_state, true).text))
             .px(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(3.0))
+            .child(
+                div()
+                    .size(px(7.0))
+                    .rounded_full()
+                    .bg(rgb(style(header_state, true).accent)),
+            )
             .child(theme::text("device"));
         let mut host = div()
             .size_full()
@@ -35,6 +44,7 @@ impl Gallery {
             .bg(rgb(BACKGROUND))
             .border_1()
             .border_color(rgb(BACKGROUND))
+            .text_color(rgb(style(header_state, false).text))
             .child(self.target(header, 0, live, window, cx));
         let section = |index, label: &str| {
             let state = state_at(index);
@@ -42,7 +52,7 @@ impl Gallery {
                 .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
                 .border_1()
                 .border_color(rgb(BACKGROUND))
-                .bg(rgb(if matches!(state, State::Focused | State::Selected) {
+                .bg(rgb(if state == State::Selected {
                     BACKGROUND
                 } else {
                     DARK
@@ -92,7 +102,13 @@ impl Gallery {
                                 panel.debug_selector(|| "inspector-screen".into())
                             })
                             .child(theme::text("inspector"))
-                            .child(div().h(px(1.0)).mt(px(24.0)).bg(rgb(ACCENT)))
+                            .child(div().h(px(1.0)).mt(px(24.0)).bg(rgb(
+                                if header_state == State::Disabled {
+                                    MUTED
+                                } else {
+                                    ACCENT
+                                },
+                            )))
                             .child(theme::text(match self.selected {
                                 Some(1) => "section a",
                                 Some(2) => "section b",
@@ -157,7 +173,13 @@ impl Gallery {
                     } else {
                         "page b · screen"
                     }))
-                    .child(div().h(px(1.0)).mt(px(28.0)).bg(rgb(ACCENT)));
+                    .child(div().h(px(1.0)).mt(px(28.0)).bg(rgb(
+                        if header_state == State::Disabled {
+                            MUTED
+                        } else {
+                            ACCENT
+                        },
+                    )));
                 host = host.child(screen).child(tabs);
             }
             Family::SplitScreen => {
@@ -175,13 +197,11 @@ impl Gallery {
                     .p(px(4.0))
                     .child(theme::text("screen"));
                 let lower = section(2, "controls")
-                    .border_color(rgb(
-                        if matches!(state_at(2), State::Focused | State::Selected) {
-                            BACKGROUND
-                        } else {
-                            DARK
-                        },
-                    ))
+                    .border_color(rgb(if state_at(2) == State::Selected {
+                        BACKGROUND
+                    } else {
+                        DARK
+                    }))
                     .absolute()
                     .top(px(71.0))
                     .left(px(3.0))
