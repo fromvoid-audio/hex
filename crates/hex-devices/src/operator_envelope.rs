@@ -134,6 +134,7 @@ impl PreparedOperatorEnvelope {
     /// Zero-duration stages transition immediately. A zero gate and nonzero
     /// release emits the held level at age zero, then releases; zero release
     /// is immediately silent. No replay or hidden mutable state is involved.
+    #[inline]
     pub fn level(&self, age_frames: u64, gate_frames: u64) -> f64 {
         if age_frames < gate_frames {
             return self.held_level(age_frames);
@@ -168,6 +169,7 @@ impl PreparedOperatorEnvelopes {
         })
     }
 
+    #[inline]
     pub fn levels(&self, age_frames: u64, gate_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
         std::array::from_fn(|index| self.envelopes[index].level(age_frames, gate_frames))
     }
