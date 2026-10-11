@@ -25,13 +25,15 @@ bytes so project/history clones retain state without copying each payload.
 State parsing and replacement allocations belong on control workers.
 
 `hex-lattice` owns the native processing-definition and registry seam;
-`hex-devices` implements and registers Utility, eq eight, and the original
-nonlinear [Saturator](saturator.md). A device definition supplies
-defaults, validation, state migration, parameter access/patching and preparation.
-Its codec interprets its own payload. Adding a device means implementing this
+`hex-devices` implements and registers Utility, eq eight, the original nonlinear
+[Saturator](saturator.md), and the stereo-linked
+[Compressor](compressor.md). A device definition supplies defaults, validation,
+state migration, parameter access/patching and preparation. Its codec interprets
+its own payload. Adding a device means implementing this
 contract and registering it, without adding a per-device storage DTO or engine
-type switch. The first admitted processing class is memoryless linear audio
-effects; other classes need a real runtime implementation before admission.
+type switch. The registry admits memoryless matrix effects and fixed-state
+processors that implement the prepared/runtime history contract; a descriptor
+alone never admits a device into playback.
 
 Canonical snapshots and storage retain each instance's ID, bypass, stable type
 ID, state version and opaque payload. A fused processing matrix is derived data,

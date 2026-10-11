@@ -1943,6 +1943,171 @@ mod tests {
     }
 
     #[cfg(feature = "allocation-probe")]
+    fn compressor_track_and_return_graph(threshold_db: f32) -> Playback {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let make_state = || {
+            let state = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.compressor"),
+            )
+            .expect("registered compressor state");
+            hex_engine::patch_native_device_parameter(
+                &state,
+                ParameterId::from_static(1),
+                ParameterValue::Float(threshold_db),
+            )
+            .expect("compressor threshold")
+        };
+        let project = CanonicalProject::from_snapshot(Snapshot {
+            sample_rate: 48_000,
+            next_id: RETURN_DEVICE_ID + 1,
+            assets: vec![AssetSnapshot {
+                id: ASSET_ID,
+                path: "compressor-callback-test.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: FRAMES,
+                playback_frames: FRAMES,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            }],
+            tracks: vec![TrackSnapshot {
+                id: TRACK_ID,
+                name: "compressor callback fixture".into(),
+                gain: 1.0,
+                balance: 0.0,
+                muted: false,
+                soloed: false,
+                devices: vec![DeviceSnapshot {
+                    id: TRACK_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
+                instrument: None,
+                instrument_position: None,
+                content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    id: CLIP_ID,
+                    asset: ASSET_ID,
+                    start: 0,
+                    duration: FRAMES,
+                    source_offset: 0,
+                    source_length: FRAMES,
+                    looping: true,
+                    source_phase: 0,
+                    fade: ClipFade::neutral(FRAMES).expect("neutral fade"),
+                }]),
+                sends: vec![SendLevelSnapshot {
+                    return_track: RETURN_ID,
+                    gain: 0.5,
+                }],
+            }],
+            return_tracks: vec![ReturnTrackSnapshot {
+                id: RETURN_ID,
+                name: "compressor return fixture".into(),
+                gain: 0.75,
+                muted: false,
+                devices: vec![DeviceSnapshot {
+                    id: RETURN_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
+            }],
+            session: SessionSnapshot::default(),
+            loop_region: None,
+            master_gain: 1.0,
+            tempo_points: vec![TempoPoint::new(hex_project::BeatTime::ZERO, Tempo::DEFAULT)],
+            meter_points: vec![MeterPoint::new(
+                hex_project::BeatTime::ZERO,
+                hex_project::Meter::COMMON_TIME,
+            )],
+        })
+        .expect("valid compressor track and Return graph");
+        let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
+            .expect("audio fixture");
+        let media = [(project.assets().next().expect("asset").id(), audio)]
+            .into_iter()
+            .collect();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .expect("prepared compressor track and Return chain"),
+        );
+        Playback::try_from_prepared_with_session(revision).expect("playback")
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn compressor_routed_reference(
+        track_threshold_db: f64,
+        return_threshold_db: f64,
+        track_history: &mut CompressorReferenceHistory,
+        return_history: &mut CompressorReferenceHistory,
+        input: &[[f32; 2]],
+    ) -> Vec<[f32; 2]> {
+        let process =
+            |frame: [f32; 2], threshold_db: f64, history: &mut CompressorReferenceHistory| {
+                let peak = f64::from(frame[0]).abs().max(f64::from(frame[1]).abs());
+                let alpha = (-1.0_f64 / (0.010 * 48_000.0)).exp();
+                history.envelope = alpha * history.envelope + (1.0 - alpha) * peak;
+                let level_db = if history.envelope == 0.0 {
+                    -120.0
+                } else {
+                    20.0 * history.envelope.log10()
+                };
+                let over = level_db - threshold_db;
+                let slope = 0.25 - 1.0;
+                let reduction_db = if over <= -3.0 {
+                    0.0
+                } else if over >= 3.0 {
+                    slope * over
+                } else {
+                    slope * (over + 3.0).powi(2) / 12.0
+                };
+                let gain_alpha = (-1.0_f64 / (0.005 * 48_000.0)).exp();
+                history.gain_db = gain_alpha * history.gain_db + (1.0 - gain_alpha) * reduction_db;
+                let gain = 10.0_f64.powf(history.gain_db / 20.0);
+                [
+                    (f64::from(frame[0]) * gain) as f32,
+                    (f64::from(frame[1]) * gain) as f32,
+                ]
+            };
+        input
+            .iter()
+            .copied()
+            .map(|frame| {
+                let direct = process(frame, track_threshold_db, track_history);
+                let send_input = [direct[0] * 0.5, direct[1] * 0.5];
+                let returned = process(send_input, return_threshold_db, return_history);
+                [
+                    direct[0] + returned[0] * 0.75,
+                    direct[1] + returned[1] * 0.75,
+                ]
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[derive(Default)]
+    struct CompressorReferenceHistory {
+        envelope: f64,
+        gain_db: f64,
+    }
+
+    #[cfg(feature = "allocation-probe")]
     #[test]
     fn saturator_track_and_return_revision_admission_and_render_allocate_nothing() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
@@ -1981,6 +2146,72 @@ mod tests {
         assert!(output.iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
         }));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn compressor_track_and_return_revision_admission_and_render_allocate_nothing() {
+        let (mut control, mut callback) = channel(48_000).expect("channel");
+        control
+            .publish(compressor_track_and_return_graph(-18.0))
+            .expect("publish compressor graph");
+        control.command(PlaybackCommand::Play).expect("play");
+        callback.begin_block();
+
+        let input = [[0.25, -0.4]; 128];
+        let mut reference_track = CompressorReferenceHistory::default();
+        let mut reference_return = CompressorReferenceHistory::default();
+        let expected_before = compressor_routed_reference(
+            -18.0,
+            -18.0,
+            &mut reference_track,
+            &mut reference_return,
+            &input,
+        );
+        let mut original_output = [[0.0; 2]; 128];
+        callback
+            .render(&mut original_output)
+            .expect("initial callback render");
+        assert_eq!(original_output.as_slice(), expected_before.as_slice());
+
+        let mut changed_track = CompressorReferenceHistory {
+            envelope: reference_track.envelope,
+            gain_db: reference_track.gain_db,
+        };
+        let mut changed_return = CompressorReferenceHistory {
+            envelope: reference_return.envelope,
+            gain_db: reference_return.gain_db,
+        };
+        let expected_after = compressor_routed_reference(
+            -42.0,
+            -42.0,
+            &mut changed_track,
+            &mut changed_return,
+            &input,
+        );
+        control
+            .publish(compressor_track_and_return_graph(-42.0))
+            .expect("publish edited compressor revision");
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("edited callback render");
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0),
+        );
+        assert_eq!(output.as_slice(), expected_after.as_slice());
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();

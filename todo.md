@@ -30,6 +30,20 @@ choices and do not claim Ableton transfer-law parity. Root owns full local CI,
 PR review and merge. Shared-panel appearance and native listening remain user
 acceptance. See [Saturator](docs/saturator.md).
 
+## lattice compressor — pulse 2311
+
+The planned original `hex.compressor` is a zero-lookahead stereo-linked
+feed-forward processor with a soft knee and fixed detector/gain history. This
+slice adds the generic device implementation and focused coverage for knee law,
+history transfer, track/Return routing, persistence, undo, and callback
+allocation. Targeted checks pass: all 143 `hex-devices` tests, all 223
+`hex-engine` tests (3 release-only cases ignored), all 39 `hex-storage` tests,
+and all `hex-audio` allocation-probe tests, including the zero-allocation
+initial/edited Track and Return callback oracle. Focused package Clippy checks,
+format, and the architecture guard pass. It does not claim numeric parity with
+Ableton Live. Root owns full local CI, PR review and merge; the shared native
+panel and native listening acceptance remain open. See [Compressor](docs/compressor.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets
