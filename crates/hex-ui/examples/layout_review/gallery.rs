@@ -124,6 +124,8 @@ fn style(state: State, header: bool) -> ControlStyle {
         } else {
             ACCENT
         },
+        focus_marker: 0xaaaaaa,
+        dial_rail: 0x000000,
         hover: LIGHT,
         font_size: 10.0,
     }
