@@ -12,7 +12,7 @@ mod style;
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
 };
-pub use curve::curve_plot;
+pub use curve::{curve_plot, transfer_plot};
 pub use discrete::{
     DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
     ToggleConfig,

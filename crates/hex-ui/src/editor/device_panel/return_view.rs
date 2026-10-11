@@ -50,6 +50,12 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    retire_transfer_previews(&mut view.device_panel, |id| {
+        devices
+            .iter()
+            .find(|device| device.id() == id)
+            .map(|device| device.state().type_id())
+    });
     retire_removed_eq8_graphs(view, cx, &alive);
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.spectrum_target.desired()
@@ -214,7 +220,10 @@ fn render_return_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let bypassed = device.bypassed();
-    let action_size = if device.state().type_id().as_str() == Ok("hex.utility") {
+    let action_size = if matches!(
+        device.state().type_id().as_str(),
+        Ok("hex.utility" | "hex.saturator")
+    ) {
         12.0
     } else {
         14.0
@@ -304,6 +313,8 @@ fn render_return_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.saturator") {
+                super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 super::eq8_panel::render_body(
                     view,
@@ -345,7 +356,10 @@ fn render_return_effect(
                 }
                 body
             };
-            if matches!(device_view.type_id.as_str(), Ok("hex.utility" | "hex.eq8")) {
+            if matches!(
+                device_view.type_id.as_str(),
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+            ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
@@ -375,7 +389,7 @@ fn render_return_effect(
                 .h(px(
                     if matches!(
                         device.state().type_id().as_str(),
-                        Ok("hex.utility" | "hex.eq8")
+                        Ok("hex.utility" | "hex.eq8" | "hex.saturator")
                     ) {
                         UTILITY_FRAME_BODY_HEIGHT
                     } else {
@@ -387,7 +401,7 @@ fn render_return_effect(
                 .child(theme::text(format!("unsupported device state · {error}")));
             if matches!(
                 device.state().type_id().as_str(),
-                Ok("hex.utility" | "hex.eq8")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
             ) {
                 compact_device_frame(title, control_style(), actions, body).into_any_element()
             } else {
@@ -406,6 +420,7 @@ fn render_return_effect(
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8") => super::eq8_panel::FRAME_WIDTH,
+        Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     div()

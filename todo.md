@@ -30,6 +30,13 @@ choices and do not claim Ableton transfer-law parity. Root owns full local CI,
 PR review and merge. Shared-panel appearance and native listening remain user
 acceptance. See [Saturator](docs/saturator.md).
 
+## lattice saturator panel — pulse 2312
+
+Pulse 2312 adds a compact Saturator composition with shared selector/dials and
+transfer plot, cached original processing-law preview and local draft updates.
+The PR records source checks and local CI; native appearance/listening remains
+user acceptance. See [Saturator](docs/saturator.md).
+
 ## lattice compressor — pulse 2311
 
 The planned original `hex.compressor` is a zero-lookahead stereo-linked
@@ -41,8 +48,14 @@ allocation. Targeted checks pass: all 143 `hex-devices` tests, all 223
 and all `hex-audio` allocation-probe tests, including the zero-allocation
 initial/edited Track and Return callback oracle. Focused package Clippy checks,
 format, and the architecture guard pass. It does not claim numeric parity with
-Ableton Live. Root owns full local CI, PR review and merge; the shared native
-panel and native listening acceptance remain open. See [Compressor](docs/compressor.md).
+Ableton Live. PR134 merged after all 16 local CI checks passed on the clean unchanged
+final tree. The shared native panel and native listening acceptance remain open. See [Compressor](docs/compressor.md).
+
+## native preview retirement — pulse2315
+
+Shared typed live-effect cleanup now covers Return as well as Track preview
+entries. Actual Return device removal regression failed before the fix; final
+checks and full local CI are recorded with PR138. Native sanity check pending.
 
 ## lattice gate — pulse 2313
 

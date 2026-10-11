@@ -51,6 +51,9 @@ widgets = (
     'control(', 'spectrum_toggle(', 'audition_toggle(', 'selected_value)', 'input_heading)', 'output_heading)', 'polarity)',
     'channel)', 'dial)', 'mono)', 'bass)', 'cutoff_row)', 'audition)', 'input)',
     'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
+    # Saturator composition uses typed shared controls and a normalized plot;
+    # its axis/error text is routed through theme::text at the panel boundary.
+    'plot)', 'chooser)', 'drive)', 'wet)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
