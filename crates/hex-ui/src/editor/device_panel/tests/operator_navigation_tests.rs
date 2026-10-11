@@ -54,6 +54,7 @@ fn tab_bounds(
 #[gpui::test]
 fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_fixture();
     let original = state
         .project
@@ -241,6 +242,18 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         "tab from a device widget discovers the routing rail"
     );
     visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Routing,
+            "focused routing activation takes precedence over session launch"
+        );
+    });
+    visual.simulate_click(envelope.center(), Modifiers::default());
+    visual.simulate_click(fine.center(), Modifiers::default());
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(

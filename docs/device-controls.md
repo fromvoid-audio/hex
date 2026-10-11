@@ -358,10 +358,11 @@ Canonical parameters, shared widgets and draft/history contracts remain intact.
 See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
 The harmonic painter is a separate2342feature; this layout does not claim
 complete Oscillator-view parity. Full local CI and native pointer comparison pass at the documented checkpoint.
-Native keyboard activation remains inconclusive and is a required open acceptance
-gate; PR156 stays draft. Human rejected the initial dark outer rails; gray
-Background/Hover left and Surface right now surround the explicitly requested
-black center. Corrected native pointer/color captures are retained. Direct human
-keyboard/color acceptance and final CI remain pending; failed/interrupted disk
-pressure runs do not qualify. Crowded matrix readouts are
+Human native Tab → Enter acceptance failed because the production editor's
+Session action intercepted Enter. The rendered regression now installs actual
+editor keybindings. The global rail has a dedicated Routing key context/action
+for Enter and Space, plus a lighter focused background. Latest supplied crops
+supersede black with a rounded neutral dark gray center and dark rectangular
+rail rows separated by lighter gray gutters. Updated exact-source CI and native
+acceptance remain required; PR156 stays draft. Crowded matrix readouts are
 tracked separately as2352.

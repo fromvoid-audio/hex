@@ -1,21 +1,19 @@
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
-Fixed Envelope-left/Oscillator-right section bounds, routing via the whole
-bottom-right global rail and owner-guarded context selection
-including FineB are implemented. Original rendered regressions fail before the
-repair (54px tab jump; FineB keepsA); all13targeted Operator tests pass afterward.
-Reference/native method and pending exact-source/native gates are in
-[operator navigation evidence](research/observations/operator-navigation-003.md).
-Full Oscillator/harmonic functionality belongs to2342/PR158. Baseline native
-preview-source error is tracked separately as2347; retest blocks acceptance if
-still reproducible. All16 local CI steps pass on clean ec871d1; same-size native pointer captures
-confirm fixed positions and context selection without view-only revision drift.
-Native keyboard acceptance remains inconclusive and blocks task completion/merge;
-PR156 stays draft. Human rejected blanket dark-blue side rails; source now restores
-gray outer roles around the explicitly requested black center. Corrected native
-captures confirm gray/black pixel hierarchy and repeated navigation/FineB/Routing
-pointer behavior. Direct human physical keyboard/color acceptance is pending,
-and final fullCI waits for the Mac build lease; no partial run qualifies. Crowded routing readouts are separate Pulse2352.
+Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
+owner-guarded Fine/shell context are implemented. The original rendered
+regressions fail before repair (54px tab jump; Fine B keeps A). Human native
+Fine B → Tab → Enter failed: production editor bindings intercept activation.
+The regression now installs those bindings and fails before the focused Routing
+action repair; all 13 Operator tests pass afterward. Enter/Space use the rail's
+own key context, and focused rail background provides visible feedback.
+Latest user crops supersede black: neutral dark gray rounded center, dark
+rectangular rail rows and lighter gray gutters. Final changed-tree local CI and
+native acceptance remain required; PR156 stays draft. Historical exact 9f0ba1a
+all-16 CI passed, but does not validate this newer tree.
+See [operator navigation evidence](research/observations/operator-navigation-003.md).
+Harmonics belong to2342/PR158; preview-source error2347 and crowded routing
+readouts2352 remain separate. The new native layout gallery is separate work.
 
 ## 100-track Lattice effects profile — pulse2317
 

@@ -193,3 +193,23 @@ is not substituted for that required physical check. The unused-constant removal
 and evidence-only follow-up do not change the captured widget rendering.
 Final exact-commit full CI must be recorded in PR156/Pulse2341 after the shared
 Mac build lease is released; prior or interrupted reports do not qualify.
+
+## native keyboard failure and latest reference correction
+
+Human result: “tab loses knob focus, enter does nothing it seems.” This failed
+native acceptance supersedes the pending result above. Adding production
+`bind_editor_keys` to the rendered test reproduced it: Tab focuses the global
+rail, but Enter leaves Envelope selected because the Session action is resolved
+before the low-level rail key handler. A dedicated `hex_operator_routing` key
+context and typed Routing activation action handle Enter/Space at the focused
+rail; the updated regression passes. All 13 targeted Operator tests pass.
+
+New user-supplied Live crops clarify dark rectangular rows separated by lighter
+gray gutters on both rails, selected/focused rows lightening, neutral dark gray
+center instead of perfectly black, and rounded center corners. The latest
+request supersedes the black-center stage above. Reference files are retained
+under the private evidence directory as user-left-rail.png, user-right-rail.png,
+user-dark-gray-center.png and user-selected-device.png. Source colors are based
+on these crops; full changed-tree local CI and new native visual/keyboard
+acceptance remain open. These are source results, not native acceptance. The
+separate native layout-gallery request must not expand this navigation PR.

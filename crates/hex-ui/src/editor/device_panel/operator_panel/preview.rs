@@ -257,7 +257,7 @@ pub(super) fn render(
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
-    let mut content = div().w_full().h_full().flex().flex_col();
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
     for row in rows {
         content = content.child(row);
     }
@@ -269,6 +269,7 @@ pub(super) fn render(
         .w(px(PANEL_WIDTH))
         .flex_shrink_0()
         .h_full()
+        .bg(rgb(super::RAIL_GUTTER))
         .border_l_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .pl(px(2.0))
@@ -337,7 +338,9 @@ fn row(
         dials = dials.child(control(view, cx, device, *field));
     }
     row = row.child(dials);
-    row = row.bg(rgb(theme::color(theme::PaletteRole::Surface)));
+    row = row
+        .bg(rgb(super::RAIL_BACKGROUND))
+        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
         let focus = view
             .device_panel
@@ -349,6 +352,8 @@ fn row(
             .clone();
         row = row
             .track_focus(&focus)
+            .key_context("hex_operator_routing")
+            .focus(|style| style.bg(rgb(0x414141)))
             .tab_index(0)
             .tooltip(|_, cx| {
                 cx.new(|_| super::super::super::transport::MiniTooltip {
@@ -366,10 +371,8 @@ fn row(
                     }
                 },
             ))
-            .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                    && let Some(owner) = owner
-                {
+            .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
+                if let Some(owner) = owner {
                     super::context::select_routing(view, cx, owner);
                     cx.stop_propagation();
                 }
