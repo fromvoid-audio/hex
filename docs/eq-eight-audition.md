@@ -146,9 +146,22 @@ and shutdown. Measured scopes have zero total allocations and zero signed-net
 counts/bytes. Separate source tests cover priority Stop, seek, render faults,
 publication generation/rate/floor fences, queue saturation, idle boundaries and
 both-twin refusal. These do not establish that every fault or native API path is
-allocation-free. Return audition continuity is engine-tested; a separate Return
-audition callback allocation probe remains unmeasured. PR125 separately measures
-non-audition Return parameter-history handoff.
+allocation-free. On11October, Pulse2301 extends the shared actual callback
+fixture to Return targets: Begin, repeated compatible edits, source removal,
+smooth release, hard cancel and shutdown all have zero total and signed-net
+counts/bytes. This closes the previously unmeasured Return-audition allocation
+fixture gap; it does not cover every fault/native API path. PR125 separately
+measures non-audition Return parameter-history handoff.
+
+The shared fixture enables a second nonneutral band: the former single flat
+band could not distinguish selected audition from normal cascade output. Initial
+callback PCM exactly matches a separate selected-target Playback oracle and
+must differ from a normal oracle. Subsequent edit/removal/release/cancel PCM also
+matches that separately advanced oracle. The oracle explicitly models successful
+history adoption, transient-only suffix transfer when required, and retired-tail
+hard cancellation before output. Construction, oracle rendering, reclamation
+and destruction remain outside measured scopes. One fixture serves both owners;
+no production API, runtime, layout, capacity or audio behavior changes.
 
 The checked-in `hex-audio` example `profile_eq8_audition` times actual prepared
 callback Begin/render/spectrum-finish calls. It renders an original held sine

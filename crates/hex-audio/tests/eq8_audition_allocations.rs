@@ -35,9 +35,39 @@ fn prepare(editor: &Editor) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     )?))
 }
 
+// Model the documented successful-publication contract outside measured scopes:
+// ordinary history inheritance, transient-only suffix transfer when required,
+// then hard cancellation of retired auditions before any new output.
+fn inherit_audition_oracle(
+    previous: &mut Playback,
+    revision: &Arc<PreparedRevision>,
+    identity: hex_engine::PostNodeIdentity,
+    selection: hex_engine::ProcessorAuditionSelection,
+) -> Result<Playback, Box<dyn Error>> {
+    let mut next = Playback::try_from_prepared_with_session(Arc::clone(revision))?;
+    next.try_inherit_runtime_from(previous)
+        .map_err(|error| format!("oracle graph handoff refused: {error:?}"))?;
+    if !next.processor_audition_is_active(identity, selection) {
+        assert!(next.transfer_processor_audition_from_release_tail(identity, selection));
+    }
+    assert!(next.processor_audition_is_active(identity, selection));
+    next.cancel_retired_processor_auditions();
+    Ok(next)
+}
+
 #[test]
 fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
+    audition_callback_allocations(false)
+}
+
+#[test]
+fn eq8_return_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    audition_callback_allocations(true)
+}
+
+fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
         name: "eq8 audition allocation".into(),
@@ -88,12 +118,53 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
             ParameterValue::Bool(true),
         )?;
     }
-    let Created::Device(device) = editor.execute(Command::InsertDevice {
-        track,
-        before: None,
-        state,
-    })?
-    else {
+    // A second nonneutral band makes normal cascade output distinguishable
+    // from auditioning only band0; a single flat band is a weak audible oracle.
+    for id in [11, 51] {
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            ParameterId::from_static(id),
+            ParameterValue::Bool(true),
+        )?;
+    }
+    for id in [14, 54] {
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            ParameterId::from_static(id),
+            ParameterValue::Float(-9.0),
+        )?;
+    }
+    let (owner, insertion) = if on_return {
+        let Created::ReturnTrack(return_track) = editor.execute(Command::AddReturnTrack {
+            name: "eq8 audition return".into(),
+        })?
+        else {
+            return Err("return missing".into());
+        };
+        editor.execute(Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.5,
+        })?;
+        (
+            hex_engine::ProcessorChainOwner::Return(return_track.value()),
+            Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            },
+        )
+    } else {
+        (
+            hex_engine::ProcessorChainOwner::Track(track.value()),
+            Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            },
+        )
+    };
+    let Created::Device(device) = editor.execute(insertion)? else {
         return Err("eq8 device missing".into());
     };
     let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
@@ -126,11 +197,26 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         .command(PlaybackCommand::Play)
         .map_err(|_| "play command refused")?;
     let identity = hex_engine::PostNodeIdentity::new(
-        hex_engine::ProcessorChainOwner::Track(track.value()),
+        owner,
         device.value(),
         DeviceTypeId::from_static("hex.eq8"),
     );
     let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+    // Oracles and construction stay outside measured callback scopes. Exact PCM
+    // proves the typed target was actually selected, not merely requested.
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    oracle.apply(PlaybackCommand::Play);
+    assert!(oracle.select_processor_audition(identity, Some(selection)));
+    let mut expected = [[0.0; 2]; 128];
+    oracle.render(&mut expected)?;
+    let mut normal = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    normal.apply(PlaybackCommand::Play);
+    let mut normal_output = [[0.0; 2]; 128];
+    normal.render(&mut normal_output)?;
+    assert_ne!(
+        expected, normal_output,
+        "audition changes the routed output"
+    );
     control
         .processor_audition
         .select(identity, 1, revision, RATE, selection)
@@ -143,6 +229,10 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     });
     rendered.ok_or("begin render missing")??;
     assert_zero(measured, "begin audition");
+    assert_eq!(
+        output, expected,
+        "the actual callback auditions the selected owner"
+    );
     control.reclaim();
     assert_eq!(
         control
@@ -164,13 +254,7 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
 
     let current_state = editor
         .project()
-        .track(track)
-        .and_then(|track| {
-            track
-                .devices()
-                .iter()
-                .find(|candidate| candidate.id() == device)
-        })
+        .device(device)
         .ok_or("eq8 device state missing after first edit")?
         .state();
     let second_state = hex_engine::patch_native_device_parameter(
@@ -183,6 +267,8 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         state: second_state,
     })?;
     let second_edit = prepare(&editor)?;
+    oracle = inherit_audition_oracle(&mut oracle, &second_edit, identity, selection)?;
+    oracle.render(&mut expected)?;
     let second_edit_revision = control
         .publish_with_policy_and_context_generation(
             Playback::try_from_prepared_with_session(second_edit)?,
@@ -197,6 +283,10 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     });
     rendered.ok_or("second edit handoff render missing")??;
     assert_zero(measured, "second live parameter handoff");
+    assert_eq!(
+        output, expected,
+        "held audition follows the accepted parameter edit"
+    );
     control.reclaim();
     assert_eq!(
         control
@@ -220,8 +310,7 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     let changed_state = hex_engine::patch_native_device_parameter(
         editor
             .project()
-            .track(track)
-            .and_then(|track| track.devices().first())
+            .device(device)
             .ok_or("eq8 device state missing")?
             .state(),
         ParameterId::from_static(4),
@@ -232,6 +321,8 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         state: changed_state,
     })?;
     let edited = prepare(&editor)?;
+    oracle = inherit_audition_oracle(&mut oracle, &edited, identity, selection)?;
+    oracle.render(&mut expected)?;
     let edited_revision = control
         .publish_with_policy_and_context_generation(
             Playback::try_from_prepared_with_session(edited)?,
@@ -246,6 +337,10 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     });
     rendered.ok_or("edit handoff render missing")??;
     assert_zero(measured, "live parameter handoff");
+    assert_eq!(
+        output, expected,
+        "held audition follows the accepted parameter edit"
+    );
     control.reclaim();
     assert_eq!(
         control
@@ -257,10 +352,10 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     );
     assert!(output.iter().flatten().any(|value| value.abs() > 1.0e-6));
 
-    // Removing the active note from the prepared candidate moves Operator and
-    // its EQ8 suffix into a release tail. The held transient selector should
-    // transfer to the candidate's current EQ8 pair, while the old tail is
-    // hard-cleared before this render.
+    // Remove the active source and switch instrument kind while independently
+    // retained old note tails remain. The current Track/Return target must keep
+    // its held audition; any required suffix transfer obeys the same contract
+    // as the earlier parameter handoffs, without auditioning old tails.
     editor.execute(Command::RemoveMidiClip(clip))?;
     let current_instrument_state = editor
         .project()
@@ -279,6 +374,8 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         state: analytic_operator_state,
     })?;
     let release_candidate = prepare(&editor)?;
+    oracle = inherit_audition_oracle(&mut oracle, &release_candidate, identity, selection)?;
+    oracle.render(&mut expected)?;
     let release_candidate_revision = control
         .publish_with_policy_and_context_generation(
             Playback::try_from_prepared_with_session(release_candidate)?,
@@ -292,7 +389,11 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         rendered = Some(callback.render(&mut output));
     });
     rendered.ok_or("release-tail handoff render missing")??;
-    assert_zero(measured, "release-tail audition transfer");
+    assert_zero(measured, "source-removal audition handoff");
+    assert_eq!(
+        output, expected,
+        "source removal preserves the current audition target"
+    );
     assert_eq!(
         control
             .status
@@ -315,6 +416,8 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
         .processor_audition
         .release()
         .map_err(|_| "audition release refused")?;
+    assert!(oracle.select_processor_audition(identity, None));
+    oracle.render(&mut expected)?;
     rendered = None;
     let measured = measure(|| {
         callback.begin_block();
@@ -322,12 +425,18 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     });
     rendered.ok_or("release render missing")??;
     assert_zero(measured, "smooth release");
+    assert_eq!(
+        output, expected,
+        "the actual callback follows release/cancel PCM"
+    );
     assert!(output.iter().flatten().any(|value| value.abs() > 1.0e-6));
 
     control
         .processor_audition
         .cancel_immediately()
         .map_err(|_| "hard audition cancel refused")?;
+    oracle.cancel_all_processor_auditions();
+    oracle.render(&mut expected)?;
     rendered = None;
     let measured = measure(|| {
         callback.begin_block();
@@ -335,6 +444,10 @@ fn eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocat
     });
     rendered.ok_or("hard cancel render missing")??;
     assert_zero(measured, "hard cancel");
+    assert_eq!(
+        output, expected,
+        "the actual callback follows release/cancel PCM"
+    );
     assert!(output.iter().flatten().any(|value| value.abs() > 1.0e-6));
 
     control.request_shutdown();
