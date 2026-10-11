@@ -1924,3 +1924,13 @@ removing the Rust1.98.1 fallback warning. Vendor baseline identity/license stays
 unchanged; regenerated cumulative patch/hash and the narrow guard retain
 provenance. Full exact-source CI and release compilation are acceptance gates.
 Other dependency warnings remain in Pulse2143; see [native boundary](docs/native-input.md).
+
+## shared knob reset lifecycle — pulse2319
+
+Double-click reset now ends a pending invalid numeric edit even when already at
+the default, releases local press/selection state and accepts the next external
+update or keyboard step. A lean rendered regression reproduces the stuck edit
+before the fix. Valid text's first-click blur commit stays intact. Full exact
+local CI and source review are merge gates; native pointer acceptance remains
+open. See [shared device controls](docs/device-controls.md). Operator stop2305
+remains open; service-level Operator gesture coverage is follow-up2320.

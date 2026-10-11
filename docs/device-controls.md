@@ -270,3 +270,17 @@ finalizes numeric drafts and moves focus out of hidden selector popups. Invalid
 numeric drafts keep their current page and prevent the fixed-frequency switch
 from hiding an invalid ratio field. Per-device page state is cleared on project
 replacement and device removal.
+
+## knob reset lifecycle — 11 October 2026
+
+Pulse2319: a shared knob double-click closes pending text editing, discards
+invalid input/IME selection and releases a pending pointer press, including when
+the canonical control value is already the descriptor default. The reset emits
+one normal Begin/Change/Commit only if it changes the value. The first click's
+existing focus-blur commit of valid text remains separate; reset does not undo
+that completed edit. Subsequent arrow steps and caller value synchronization
+remain available. This applies to every Lattice knob without device-specific
+code. The rendered regression covers valid and invalid input, no-change reset,
+post-reset movement, external synchronization and keyboard adjustment. Native
+pointer sanity acceptance remains for the user; this is not an Operator playback
+stop diagnosis.
