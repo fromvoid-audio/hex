@@ -2007,7 +2007,11 @@ Refined colored oscillator badge and fixed switch sizes, shared open-arc dials,
 label/value placement, flat center tabs, dark curve background, dB/time readouts,
 and right-shell selector versus three-dial row proportions. Smooth envelope
 drawing follows existing DSP laws; cached unchanged geometry removes redundant
-construction. Focused Operator source tests pass. Full local CI remains the
+construction. User clarified slow pointer following; drag Change now updates
+retained graph and numeric entities immediately, avoiding a whole-editor notify
+per successful movement. Its focused regression checks feedback before another
+layout/worker pump while canonical state is still unchanged. Focused Operator
+source tests pass. Full local CI remains the
 merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).

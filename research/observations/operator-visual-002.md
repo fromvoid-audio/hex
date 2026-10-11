@@ -47,6 +47,15 @@ comparison is evidence of placement, not functional/listening acceptance.
 
 The input trace updates pending envelope values and gesture snapshots immediately
 on pointer movement; visual readout does not wait for audio acknowledgement.
+The user clarified that the curve follows the pointer slowly. The drag handler
+formerly deferred display geometry/readout derivation to the whole editor render.
+It now updates retained graph and numeric entities directly in the input turn,
+avoiding a whole-editor notification for each successful Change. Begin, terminal,
+cancel and error paths retain their redraw and canonical gesture semantics.
+A focused regression checks the node/readout before another full editor layout
+or worker pump, while canonical state remains unchanged. Disabling the direct
+update reproduces delayed node feedback; the repaired path passes.
+
 The root service poll remains 16ms and preview preparation remains a bounded
 worker protocol. Those contracts were preserved. Curve generation formerly ran
 on each root redraw; now unchanged values/window/selection/style bypass model

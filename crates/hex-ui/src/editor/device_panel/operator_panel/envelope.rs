@@ -260,13 +260,101 @@ fn handle_event(
             EditValues::Pair(value) => view.change_device_pair_gesture(value),
         }
     };
-    if let Err(error) = result {
-        view.device_panel.message = Some(error.to_owned());
+    if let Err(error) = &result {
+        view.device_panel.message = Some((*error).to_owned());
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Commit {
         view.device_panel.operator_envelope_gestures.remove(&key);
     }
-    cx.notify();
+    if event.phase == hex_widgets::ResponseGraphPhase::Change && result.is_ok() {
+        // Update the retained graph/readout entities in the input turn. A drag
+        // must not wait for rebuilding the entire editor to derive its geometry.
+        update_drag_display(view, key, gesture, cx);
+    } else {
+        cx.notify();
+    }
+}
+
+fn update_drag_display(
+    view: &mut EditorView,
+    key: GraphKey,
+    gesture: GraphGesture,
+    cx: &mut Context<EditorView>,
+) {
+    let base = 33 + key.operator as u32 * 6;
+    let mut values = gesture.initial;
+    for (index, value) in values.iter_mut().enumerate() {
+        let parameter = ParameterKey {
+            device: key.device,
+            parameter: id(base + index as u32),
+        };
+        if let Some(ParameterValue::Float(pending)) =
+            view.device_panel.pending_values.get(&parameter)
+        {
+            *value = *pending;
+        }
+        if let Some(super::super::ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&parameter)
+        {
+            entity.update(cx, |control, cx| {
+                let _ = control.set_external_value(f64::from(*value), cx);
+            });
+        }
+    }
+    if let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
+        let input = ModelInput {
+            values,
+            window: gesture.window_seconds,
+            selected: control.selected_node,
+            style: super::display_style(),
+        };
+        if control.model_input != Some(input) {
+            let model = graph_model(values, input.window, input.selected);
+            if control.entity.update(cx, |graph, cx| {
+                graph.set_model(model, input.style, cx).is_ok()
+            }) {
+                control.model_input = Some(input);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::editor::device_panel) fn dispatch_change(
+    view: &mut EditorView,
+    device: DeviceId,
+    operator: usize,
+    node_id: u32,
+    position: [f32; 2],
+    cx: &mut Context<EditorView>,
+) {
+    handle_event(
+        view,
+        GraphKey { device, operator },
+        ResponseGraphEvent {
+            phase: hex_widgets::ResponseGraphPhase::Change,
+            node_id,
+            position,
+            modifiers: gpui::Modifiers::default(),
+        },
+        cx,
+    );
+}
+
+#[cfg(test)]
+pub(in crate::editor::device_panel) fn displayed_node(
+    view: &EditorView,
+    device: DeviceId,
+    operator: usize,
+    node: u32,
+    cx: &gpui::App,
+) -> Option<[f32; 2]> {
+    view.device_panel
+        .operator_envelope_graphs
+        .get(&GraphKey { device, operator })?
+        .entity
+        .read(cx)
+        .node_position(node)
 }
 
 fn begin_gesture(

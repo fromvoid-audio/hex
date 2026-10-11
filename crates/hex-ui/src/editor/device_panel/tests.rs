@@ -1695,6 +1695,39 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     let moved = point(start.x + px(16.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    // Pointer feedback is already in the retained graph and numeric entity
+    // before another whole-editor layout or worker acknowledgement is pumped.
+    let bounds = visual
+        .debug_bounds("operator-envelope-graph")
+        .expect("graph bounds");
+    let feedback_x = f32::from(moved.x - bounds.origin.x - px(7.0))
+        / f32::from(bounds.size.width - px(14.0))
+        + 0.02;
+    editor.update(cx, |view, cx| {
+        operator_panel::envelope::dispatch_change(view, device, 0, 3, [feedback_x, 0.0], cx);
+        let node = operator_panel::envelope::displayed_node(view, device, 0, 3, cx)
+            .expect("immediate dragged node");
+        assert!(
+            (node[0] - feedback_x).abs() < 1e-5,
+            "node follows this input turn"
+        );
+        let key = ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(38),
+        };
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&key] else {
+            panic!("release readout");
+        };
+        let ParameterValue::Float(pending) = view.device_panel.pending_values[&key] else {
+            panic!("pending release");
+        };
+        assert_eq!(entity.read(cx).value(), f64::from(pending));
+        assert_eq!(
+            float_value(view.state.as_ref().expect("canonical state"), 38),
+            original_release
+        );
+    });
+
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let snapshot = view.device_gesture.snapshot().expect("release drag begins");

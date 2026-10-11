@@ -286,6 +286,9 @@ format as ms/s and amplitudes as dB without changing their pointer mappings or
 canonical units. The plot samples the existing original linear attack and
 exponential decay/release laws; it does not add a new envelope law. Unchanged
 geometry is cached, and fixed exponential factors avoid per-redraw powers.
+Pointer Change also updates retained graph/readout entities in the input turn,
+without requesting a full editor rebuild per movement. Terminal/cancel/error
+paths retain existing redraw and gesture behavior.
 See [reference comparison](../research/observations/operator-visual-002.md) for
 provenance, measured scope and remaining appearance/latency gaps.
 
