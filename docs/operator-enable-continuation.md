@@ -213,3 +213,31 @@ and existing runtime accounting. The exact overflow PC/frame and baseline runtim
 pass remain unverified; a focused rerun must confirm this inference. Separately,
 the instrument facade fixture still expects 88 descriptors instead of the new92;
 its correction also checks exact IDs513–516 and true Boolean defaults.
+
+The test-only boxed construction made that exact handoff pass, but renewed fullCI
+at `ee1fee4` then overflowed the original seven-owner transport-loop fixture.
+Retained current-binary `otool` prologues establish the nested chain: test
+1,582,832 bytes, wrapper240, inheritance245,456, mutable candidate query237,968
+and `MidiSpanBuffer::default`83,440; total2,149,936 before minor callees.
+`RUST_MIN_STACK` was unset. The helper unnecessarily constructed a local82,952-byte
+span buffer even for Arrangement, while the candidate already owned reusable
+scratch. Evidence and binary hash are retained in
+`artifacts/operator-enable-stack-review/before-ee1fee4.md`.
+
+The coherent root repair makes the helper borrow the candidate revision and its
+existing span scratch at both call sites. Session queries reset scratch before
+work/error; Arrangement does not consume it. The fixed192-candidate array returns
+copies, with no escaping borrow or owning handles. Only candidate preflight
+scratch changes; donor, clocks, routes, releases, mutable twins, epochs and
+continuation ownership remain untouched. No new allocation, layout, public API,
+capacity, accounting or final-drop path is introduced. The original seven-owner
+inline fixture is restored, removing the temporary boxing workaround.
+
+Current and baseline aggregate assertions retain `ReleaseEntry`488 and
+`MidiSpanBuffer`82,952 bytes. The current sampler344 is measured; baseline sampler
+and generated frame sizes remain unmeasured. Production boxing alone does not
+prove constructor-stack safety: current constructor and temporary box-helper
+frames were242,160 and222,784 bytes. Fresh default-stack tests for both original
+failures, capture/transport/refusal/storage/facade coverage, rebuilt frames,
+affected callback probes and full final exact-source CI must establish the root
+repair. No fullCI pass or validated provider handoff is claimed yet.

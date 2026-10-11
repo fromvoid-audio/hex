@@ -2140,3 +2140,14 @@ PR154/156 merge; owner-confirmed semantic selector repair, canonical LFO inset
 and enable descriptor inventory are prepared, unrun. Zero-filter UI invocations
 are not acceptance. Full exact final CI, review/merge and user native/listening
 remain open; see docs/operator-enable-continuation.md for retained evidence.
+
+Operator-enable full-CI follow-up: broad15 Operator UI tests pass after complete
+semantic fixture audit, but full workspace CI exposed two default-stack handoff
+aborts. Architect disassembly traced a2,149,936-byte nested chain to redundant
+local span-scratch construction in mutable candidate preflight. The shared helper
+now borrows existing candidate scratch at both calls, with unchanged query/error,
+ownership and accounting contracts. The original seven-owner fixture is restored;
+no stack override or boxing workaround remains. Native facade inventory nowchecks
+all four exact true Boolean defaults. Fresh default-stack/frame/allocation/fullCI
+validation remains pending; see docs/operator-enable-continuation.md for failures,
+measured frames and unmeasured baseline qualifications.

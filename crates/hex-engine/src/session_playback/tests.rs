@@ -4656,13 +4656,6 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
-    // Keep each large aggregate construction in its own control frame while
-    // the seven owners remain live through the original default-stack checks.
-    #[inline(never)]
-    fn boxed_playback(revision: Arc<PreparedRevision>) -> Box<SessionPlayback> {
-        Box::new(SessionPlayback::new(revision).unwrap())
-    }
-
     let mutable_id =
         hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let analytic_id =
@@ -4751,8 +4744,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         )
     };
     let old_revision = prepare(&old_project, Arc::clone(&table));
-    let mut previous = boxed_playback(Arc::clone(&old_revision));
-    let mut reference = boxed_playback(old_revision);
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(old_revision).unwrap();
     for playback in [&mut previous, &mut reference] {
         playback.apply(SessionPlaybackCommand::Play).unwrap();
     }
@@ -4768,7 +4761,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // atomically until mutable occurrence suppression is available.
     let changed_source = with_test_instrument(&old_project, analytic_id, 0);
     let changed_revision = prepare(&changed_source, Arc::clone(&table));
-    let mut refused = boxed_playback(changed_revision);
+    let mut refused = SessionPlayback::new(changed_revision).unwrap();
     let previous_frame = previous.performance_frame();
     assert_eq!(
         refused.try_inherit_state_from(&mut previous),
@@ -4794,7 +4787,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     }
     tail_snapshot.session.cells.clear();
     let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
-    let mut tail_candidate = boxed_playback(prepare(&tail_project, Arc::clone(&table)));
+    let mut tail_candidate =
+        SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
         .try_inherit_state_from(&mut reference)
         .unwrap();
@@ -4809,14 +4803,15 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
-    let mut candidate = boxed_playback(empty_revision);
+    let mut candidate = SessionPlayback::new(empty_revision).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     let mut actual = [[0.0; 2]; 16];
     let mut old_tail_pcm = [[0.0; 2]; 16];
     let mut new_audio_pcm = [[0.0; 2]; 16];
     candidate.render(&mut actual).unwrap();
     tail_candidate.render(&mut old_tail_pcm).unwrap();
-    let mut fresh_audio = boxed_playback(prepare(&candidate_source, Arc::clone(&table)));
+    let mut fresh_audio =
+        SessionPlayback::new(prepare(&candidate_source, Arc::clone(&table))).unwrap();
     fresh_audio.apply(SessionPlaybackCommand::Seek(16)).unwrap();
     fresh_audio.apply(SessionPlaybackCommand::Play).unwrap();
     fresh_audio.render(&mut new_audio_pcm).unwrap();
@@ -4834,7 +4829,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // reintroduce the still-sounding pre-cut occurrence.
     let later_active = with_test_instrument(&old_project, analytic_id, 0);
     let later_revision = prepare(&later_active, Arc::clone(&table));
-    let mut retained_tail_chase = boxed_playback(later_revision);
+    let mut retained_tail_chase = SessionPlayback::new(later_revision).unwrap();
     let tail_frame = candidate.performance_frame();
     assert_eq!(
         retained_tail_chase.try_inherit_state_from(&mut candidate),
