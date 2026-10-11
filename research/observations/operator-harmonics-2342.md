@@ -45,24 +45,28 @@ An arbitrary per-edit static bank leak is not an acceptable ownership strategy.
 
 The mutable feedback runtime supports level/carrier/feedback ramps only.
 Waveform changes with committed voices/tails are explicitly refused. Its
-8064-byte paired payload approaches the8192-byte pair ceiling. Whether custom
-harmonic edits must retarget this path or retain explicit admission refusal is
-an unresolved coordinator decision; do not silently extend this public contract.
+8064-byte paired payload approaches the8192-byte pair ceiling. The direct human decision requires live harmonic retarget during active voices/
+tails. Quiescence-only adoption is not acceptable. The bounded ownership/API
+contract remains pending primary selection; design probes are authorized,
+production integration is not.
 
 PR156 owns operator_panel.rs navigation/render_body/settings layout,
 preview.rs activation/Fine and device_panel.rs context/style. Its owner reports
 frozen navigation y86,height16,90px Envelope/Oscillator halves,86px graph and
-details below; publication SHA is pending. The painter should be a new module.
-PR154 owns LFO and must provide state-version/descriptor allocation and shared
-DSP/UI freeze sequencing before edits. PR159 owns capture; engine/audio runtime
+details below; published frozen SHA9c7cdbd; it is not assumed merged/accepted. The painter should be a new module.
+PR154 LFO frozen SHA2152db14025836c329425e363ee2a03871c2fd36 declares
+v6/364-byte state, IDs82–92, preserving the prior320-byte prefix. Its independent
+LFO processing/clock semantics are not this PR scope. PR159 owns capture; engine/audio runtime
 changes require a touched-file/API exchange. Ownership requests were posted to
 PR156/154/159; this does not establish owner agreement or completed delivery.
 
 ## outstanding required evidence
 
-No feature code, harmonic tests, callback allocation/CPU results, final-source
-full local CI, native before/after comparison, painting/Undo/save-reopen or
-listening evidence exists for this PR yet. All remain required; missing or failed
+No feature integration, production harmonic tests, instrumented callback
+allocation/CPU results, passing final-source full local CI, native before/after
+comparison, painting/Undo/save-reopen or listening evidence exists yet.
+Design-only layout/step/PCM probes and VM CPU measurements are documented in
+docs/operator-harmonic-retarget.md; they do not close feature acceptance. All remain required; missing or failed
 checks block merge. Native interaction is coordinated with the user per AGENTS.md.
 No merge, release, paid CI or deployment is authorized for this task.
 
@@ -70,3 +74,38 @@ Cloud activation reports Rust/cargo1.94.0. Supported command-scoped network
 permission enabled task fetch without proxy changes. Cross-thread codex queue
 failed opening its read-only state database; maintenance2348 has sanitized
 environment-version/failure evidence. This is separate from native acceptance.
+
+## user crop: coordinator-witnessed finite inventory
+
+11 October2026: primary coordinator thread01a129d3-59fc-7092-802f-0d4793af80ac
+reports independently viewing the user-uploaded Oscillator crop. User said
+“and this is what the oscilator tab looks like in ableton live” and “those blue
+bars are an adjustable harmonics paint interface”. Cloud has not received the
+image bytes. Mac clipboard assets44f40b8e-3cd1-4862-ba84-15c09e9fb45a.png and
+3cdd1e9d-3a6c-4e6b-9d54-f69e5dc9c1aa.png are currently local to the Mac.
+Exact installed build and image authorship are not established by this crop.
+
+|visible item|reported state|relationship/evidence limit|
+|---|---|---|
+|harmonic painter|64 vertical blue bars|required authoring view/count, user confirms adjustable|
+|range selectors|16/32/64,64 selected|retention/domain behavior unobserved|
+|navigation|Envelope left, Oscillator right|PR156 owns stable shell/navigation|
+|Wave and overview|User dropdown, waveform preview|preset-to-user interaction unobserved|
+|Feedback|0%|existing DSP control; custom dependency unobserved|
+|Repeat|Off dropdown|other choices and numerical law unobserved|
+|Phase|orange R toggle,0%|existing phase/retrigger; behavior/dependencies unobserved|
+|Osc<Vel|0, orange Q toggle|frequency/quantization semantics need study/manual evidence|
+|timing row|Attack0.00ms,Decay1.00s,Release400ms,Time<Vel0%|preserve existing envelope scope|
+|level row|Initial−∞dB,Peak0dB,Sustain0dB,Vel50%|preserve existing envelope scope|
+|loop/key row|Loop None,Key0%|allowed modes/ranges unobserved|
+|center background|dark gray, not perfectly black|direct human direction; PR156 owns shell color|
+
+This inventory supports finite visible layout and the64-partial requirement.
+It does not prove allowed ranges, Normalize context menu, Repeat modes,
+normalization/aliasing laws or numerical/sound parity. Treat phase/feedback/
+tuning/envelope as existing independent controls to preserve; any coupling to
+custom harmonic editing remains unobserved and must not be invented. Treat
+range/Repeat/Normalize/drawing modes as authoring-related hypotheses supported
+by the manual, with actual dependency/domain semantics still pending. Native
+E05 is blocked pending a human-opened safely bound disposable copy; no competing
+control is authorized. Accessible image copies are requested via PR158.

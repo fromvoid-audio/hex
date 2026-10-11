@@ -261,3 +261,189 @@ The official manual inventory already supports these study questions; no
 installed harmonic-editor observations are claimed. Cloud layout/source checks
 cannot substitute for this study. Later Hex before/after native screenshots,
 painting/Undo/reopen and listening remain separate implementation acceptance.
+
+## concrete sole-pair ownership proposal (not approved or integrated)
+
+Supersedes the Arc/atomic lease hypothesis above. `OwnedPair<64>` in the finite
+layout probe owns one `PairLaw<64>` and two inline `PairHistory` fields. All
+sampling data is inside the same allocation except existing process-wide
+immutable sine/builtin tables. No runtime sibling borrows a pointer to another
+sibling, no independently mutable shared law, no reference counts, and no
+control-side writer retains access. On this x86_64 ABI: law4040 + histories
+2*1720 + transaction8 = **7488 bytes**, alignment8. No separately owned buffers.
+The historical7520 candidate remains useful but its Arc lifetime protocol is
+unnecessary. Target proof24 is source-independent handoff metadata, not an
+owned sampling buffer; existing host ledgers/graph metadata remain separately
+admitted. Allocator metadata is excluded exactly as in existing payload rules.
+Do not put a history/source/cache in proof or host metadata to evade admission.
+
+Ownership is **device pair**, retained by the engine's existing graph owner;
+it is neither a global engine law nor a law shared across devices/tails. Each
+cloned instance gets its own complete pair. Graph retirement, not the callback,
+frees that allocation. No new final-drop path is permitted. Full active and
+retired graph counts remain subject to existing graph/tail bounds.
+
+The following is the proposed lifecycle, not implemented behavior:
+
+1. Control prepares immutable target bytes, harmonic coefficients, normalization,
+   envelope timing, routing, tables and rate. It allocates the pair with a
+   source-not-staged transaction state. Target validation rejects invalid
+   coefficients, rates, routing, configuration versions and capacities before
+   handoff. Neither history may render until admission and source staging.
+2. Admission validates actual complete pair bytes against8192, before callback
+   ownership. Preparation never computes an applied-source boundary from a
+   control snapshot. The audio owner's preflight validates BOTH old histories,
+   occurrence ledger compatibility, current rate/clock generation, transition
+   support and absence of an open speculative block. A configuration ID alone
+   cannot validate an applied boundary. Validate every graph participant before
+   any active graph commit.
+3. After read-only preflight, stage only the INACTIVE candidate: evaluate the
+   actual old primary's interpolated f64 partial/builtin/scalar boundary at its
+   committed elapsed frame; copy voice phases, recurrence memories, gate/age,
+   occurrence IDs, note/device LFO fraction/cycle and velocity/pitch; initialize
+   both candidate histories identically with new elapsed zero. This write uses
+   exclusive `&mut` candidate ownership. Old pair remains immutable throughout.
+   Target fields never change. Source fields become frozen for this adoption.
+4. Publish only after all candidates have staged successfully. The graph swap
+   is the existing single transaction boundary, not a per-device early commit.
+   If staging/host validation aborts, discard or invalidate the inactive
+   candidate on control retirement and continue the untouched old primary.
+   A retry must re-stage from the NOW-current primary, never reuse a source
+   based on an obsolete frame. No old-source pointer is retained. Preflight
+   failures must leave old output, clocks, ledgers and candidate target intact.
+5. During an open render block the law is read-only. Safe field splitting gives
+   the sampler `&PairLaw` and `&mut scratch_history`; primary is not writable.
+   Begin copies primary history to scratch (1720 bytes), scratch renders, commit
+   changes primary selector, abort preserves primary. Source freeze and target
+   are unchanged by either outcome. Event preflight and clock checks remain
+   read-only. A law cannot retarget during an open block; existing block
+   segmentation/adoption points govern audible time, not a new callback lock.
+6. Repeated edits, cancellation and Undo all prepare a new target and stage
+   from the last COMMITTED audible boundary. They do not reverse elapsed time,
+   reset oscillator phase, restart LFOs or interpolate from the original
+   authored source. Interrupted builtin/user/builtin transitions retain all
+   four builtin weights and64 f64 partial coefficients. Target normalization
+   is prepared before interpolation. Exact scalar/LFO interruption semantics
+   must match frozen PR154, including its clock seam and cap rejection.
+7. Detached tails retain their complete old pair/law and continue their own
+   committed clocks until the existing bounded tail end. Removal never borrows
+   the replacement's law. Reset clears both histories and transition clock and
+   establishes direct target-as-source under sole ownership; it cannot revive
+   stale voices. A history clone/snapshot includes the law, both histories and
+   transaction state; restoration is forbidden across mismatched target/rate,
+   clock generation, or open-block state. Callback checkpoint is history-only
+   because the law is immutable throughout a transaction. Whole-pair snapshots
+   are control-allocated, never made via an allocating callback clone.
+
+### public seam and compatibility decision
+
+The current `PreparedMutableInstrumentRuntime::declared_twin_bytes` rule and
+`create_runtime` factory explicitly require each twin to own/copy all sampling
+data; `NativeInstrumentRuntimePair` constructs two independent boxed trait
+objects and admission multiplies the declaration by two. `PreparedNativeInstrument`
+only offers this factory for mutable instruments. A7488-byte combined object
+cannot truthfully implement that factory. No dummy twin or understated Arc
+handle is an acceptable adapter.
+
+Minimal change proposed: an OPTIONAL generic prepared **pair-owned mutable
+runtime capability**, default absent on existing instruments. Its declaration
+is complete paired payload bytes and it creates ONE pair owner. Host dispatch
+selects exactly one mutable capability, rejecting ambiguous dual factories.
+The pair interface exposes the existing transactional/preflight/retarget/reset/
+quiescence guarantees while encapsulating its two histories. Existing independent
+factories retain their existing per-twin accounting, copy rules,8192 admission
+and render behavior. Operator implements the new capability; the capability and
+admission policy belong to lattice/engine, not an Operator-specific engine
+branch. This is an explicit public API extension requiring primary approval
+and PR159 freeze/sequence before source integration. Engine callers should
+retain their transaction API, but the factory/accounting seam necessarily gains
+this new capability; claiming literally unchanged public types would be false.
+
+Alternative: preserve self-contained twins and explicitly increase paired
+payload admission from8192 to at least12496 (6248 each), with engine-wide memory
+and callback checkpoint review. That preserves the factory ownership contract
+and cached per-note steps, but increases every relevant admission/graph budget
+and copies6248 bytes at block begin versus1720 for the coupled candidate.
+Both alternatives preserve16 voices and256 borrowed events. The paired candidate
+requires new generic transaction dispatch/accounting tests, but copies less
+checkpoint data and avoids sibling-law aliases. Neither layout measurement
+proves synthesis correctness or callback deadlines.
+
+Required contract tests before integration acceptance: oversized/lying factories;
+existing-device fallback; ambiguous capabilities; target/source lifetime and
+retirement without final callback drop; read-only preflight rejection; partial
+multi-device staging failure; abort/retry at a later boundary; begin/process/
+commit/abort partition equivalence; source immutability during failed blocks;
+repeated edits/Undo with active voices and feedback; detached-tail independence;
+reset/removal/clone; rate and clock-generation rejection; full16voice/256event
+boundaries; allocation instrumentation; source/target PCM/spectral/aliasing
+fixtures and all frozen LFO clock/cap regressions. The current probe proves
+layout accounting only, not these lifecycle laws.
+
+### phase reconstruction CPU fixture
+
+`operator_harmonic_cpu` is an original, unregistered additive wavetable fixture,
+not a replacement for Operator. It exercises16 voices,4 oscillators, up to64
+partials, integrated u64 phases and f64 recurrence feedback, comparing cached
+steps against exact original-order reconstruction ONCE per voice per block.
+Cost adds16 powf plus64 multiply/divide/round operations per segment. That means
+768000 powf/s at48000Hz partition1,6000 at128,3000 at256; both variants perform
+up to4096 partial lookups/frame. High pitches/low rates reduce this workload
+using a strict unmodulated Nyquist cap. It does not establish active-FM/LFO
+aliasing law. No normalization, envelope, event dispatch or LFO processing is
+present; production performance still requires those complete workloads.
+
+The test compares every PCM frame and final phase/feedback history for partitions
+1/17/64/128/256 against a continuous cached render at four rates. The benchmark
+uses seven interleaved warmed trials, reports median/range, and excludes table
+construction and preparation. It uses no allocation in the render function by
+source inspection; allocation instrumentation and physical/native deadlines
+remain required. Measurements are environment-specific, not an acceptance
+threshold or proof of hard real-time safety.
+
+Measured 11 Oct2026 in the existing Hex Linux cloud instance: x86_64 KVM,
+Intel Xeon Platinum8573C,5 exposed CPUs, Rust/cargo1.94.0, default release
+profile. These are portable VM measurements, not Mac/audio callback evidence.
+Command: `cargo run -p hex-devices --example operator_harmonic_cpu --release
+--locked --offline` after `.hex-tools/activate.sh`. Executable SHA256
+`5f91003c69029aaf62cdc7e1d81d498b6c1c5b8f64fc1027d4f878886f756140`.
+All durations below are for4096 frames, milliseconds. Trial ranges expose
+contention; ratios below1 do not demonstrate a reconstruction optimization.
+
+|rate|partition|cached median [min,max] ms|reconstructed median [min,max] ms|ratio|
+|---|---|---|---|---|
+|8000|1|19.858 [19.423,20.347]|21.548 [20.999,22.896]|1.0851|
+|8000|17|19.744 [19.437,21.067]|19.760 [19.638,21.127]|1.0008|
+|8000|64|20.038 [19.589,22.571]|19.647 [19.425,21.207]|0.9805|
+|8000|128|19.932 [19.685,21.539]|19.918 [19.565,20.537]|0.9993|
+|8000|256|19.737 [19.518,19.903]|20.009 [19.410,20.530]|1.0138|
+|48000|1|30.762 [30.234,33.519]|33.221 [31.744,34.020]|1.0799|
+|48000|17|30.917 [29.926,31.808]|31.243 [29.909,34.668]|1.0106|
+|48000|64|32.735 [30.413,61.803]|35.054 [30.867,50.989]|1.0708|
+|48000|128|30.528 [29.947,41.782]|30.196 [29.879,46.350]|0.9891|
+|48000|256|45.407 [31.574,61.994]|36.396 [30.510,61.213]|0.8015|
+|192000|1|38.698 [30.763,45.669]|40.472 [32.024,46.993]|1.0458|
+|192000|17|34.507 [29.922,44.856]|33.111 [30.328,56.173]|0.9596|
+|192000|64|55.641 [30.037,60.555]|60.322 [31.799,64.058]|1.0841|
+|192000|128|31.024 [29.907,65.947]|37.354 [30.223,59.798]|1.2040|
+|192000|256|31.532 [30.317,63.695]|31.881 [30.081,58.852]|1.0111|
+
+The worst measured reconstructed median is60.322ms/4096 at192000Hz partition64,
+versus a21.333ms physical duration: this fixture does NOT establish real-time
+acceptance at that rate. At48000Hz partition128,30.196ms/4096 is below85.333ms
+physical duration, but it omits the rest of the engine and has no deadline
+instrumentation. No claim of acceptable physical performance follows.
+
+The separate layout probe's100000 warmed-size copies took1.221ms for1720 bytes
+and3.903ms for6248 bytes (12.2/39.0ns per copy); these are repeated hot byte-array
+copies, not measured production checkpoint/dispatch latency. Executable SHA256
+`78961b3d329e9b8066e82fe037117e8ee1cf1f3fb47cc396bb7a04e72dbce296`.
+These measurements support a copy-size trade-off only.
+
+User-supplied image handoff via PR156 owner on11 Oct confirms adjustable harmonic
+bars and16/32/64 selectors. The two Mac-local clipboard paths are inaccessible
+in this cloud instance; PR158 comment6107630360 requests accessible copies.
+Do not claim the other settings observed from those images. Native E05 remains
+blocked until the human opens a safely bound disposable fixture. PR160
+comment6107606343 requests the tested old-instance native bootstrap from2348;
+this is not a new published-environment fault.

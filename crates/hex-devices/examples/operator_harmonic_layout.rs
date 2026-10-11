@@ -130,6 +130,30 @@ struct DeviceWideLaw<const H: usize> {
     frozen: AtomicU64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PairLaw<const H: usize> {
+    canonical_v6: [u8; V6_BYTES],
+    target_partials: [[f32; H]; OSCILLATORS],
+    target_settings: [[u32; 3]; OSCILLATORS],
+    target_normalization: [f64; OSCILLATORS],
+    envelopes: [EnvelopeTiming; OSCILLATORS],
+    phase_origins: [u64; OSCILLATORS],
+    routing_order: [u8; OSCILLATORS],
+    sine: Option<&'static SineTable>,
+    builtin_bank: Option<&'static [f32]>,
+    sample_rate: u32,
+    transition_frames: u32,
+    release_frames: u64,
+    target_configuration_id: u64,
+    // Sole pair owner writes these before adoption; immutable during blocks.
+    source_partials: [[u64; H]; OSCILLATORS],
+    source_builtin_weights: [[u64; 4]; OSCILLATORS],
+    source_scalars: [[u64; OSCILLATORS]; 3],
+    source_configuration_id: u64,
+    frozen: u64,
+}
+
 /// Hypothesis: reconstruct original quantized base steps from canonical tuning,
 /// pitch and rate using precisely the old arithmetic. This changes CPU work,
 /// not stored phase/recurrence precision; equivalence is NOT established here.
@@ -161,6 +185,26 @@ struct DeviceWideCachedStepTwin<const H: usize> {
     velocities: [u8; VOICES],
     device_lfo: Phase,
     transition_elapsed: u32,
+}
+
+/// Sole owner: no Arc, atomic source writer, sibling pointer or owned buffer.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PairHistory {
+    voices: [RecomputedStepVoice; VOICES],
+    pitches: [u8; VOICES],
+    velocities: [u8; VOICES],
+    device_lfo: Phase,
+    transition_elapsed: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OwnedPair<const H: usize> {
+    law: PairLaw<H>,
+    histories: [PairHistory; 2],
+    // Primary selector, open-block state, staged-source flag, reserved guards.
+    transaction: u64,
 }
 
 /// Count BOTH mutable twins, one unique shared payload, Arc's strong/weak words,
@@ -224,15 +268,40 @@ fn report<const H: usize>() {
     );
 }
 
+fn checkpoint_probe<const N: usize>() {
+    use std::hint::black_box;
+    let input = black_box([97_u8; N]);
+    let mut destination = [0_u8; N];
+    let started = std::time::Instant::now();
+    for _ in 0..100_000 {
+        destination.copy_from_slice(black_box(&input));
+        black_box(&mut destination);
+    }
+    println!(
+        "checkpoint_copy bytes={N} copies=100000 elapsed_ns={} checksum={}",
+        started.elapsed().as_nanos(),
+        destination[0]
+    );
+}
+
 fn main() {
     println!(
         "design-stage storage only: arch={} pointer_bits={} voices={VOICES} v6_bytes={V6_BYTES}",
         std::env::consts::ARCH,
         usize::BITS
     );
+    checkpoint_probe::<1720>();
+    checkpoint_probe::<6248>();
     report::<16>();
     report::<32>();
     report::<64>();
+    println!(
+        "sole_pair_owner law={} history={} transaction=8 total={} alignment={} buffers=0",
+        size_of::<PairLaw<64>>(),
+        size_of::<PairHistory>(),
+        size_of::<OwnedPair<64>>(),
+        align_of::<OwnedPair<64>>()
+    );
     println!(
         "devicewide_alternative partials=64 mutable_twin={} unique_shared={} arc_words={} graph_handle={} aggregate={} limit={PAIR_LIMIT} fits={} current_trait_compatible=false",
         size_of::<DeviceWideTwin<64>>(),
@@ -334,6 +403,22 @@ mod tests {
                 2 * (size_of::<DeviceWideTwin<64>>() + size_of::<DeviceWideLaw<64>>()) > PAIR_LIMIT
             );
         }
+    }
+
+    #[test]
+    fn sole_pair_owner_counts_law_once_without_aliases_or_hidden_allocations() {
+        fn copyable<T: Copy>() {}
+        copyable::<OwnedPair<64>>();
+        assert!(!needs_drop::<OwnedPair<64>>());
+        assert_eq!(size_of::<PairLaw<64>>(), 4_040);
+        assert_eq!(size_of::<PairHistory>(), 1_720);
+        assert_eq!(size_of::<OwnedPair<64>>(), 7_488);
+        assert_eq!(
+            size_of::<OwnedPair<64>>(),
+            size_of::<PairLaw<64>>() + 2 * size_of::<PairHistory>() + size_of::<u64>()
+        );
+        assert!(size_of::<OwnedPair<64>>() <= PAIR_LIMIT);
+        assert_eq!(offset_of!(OwnedPair<64>, histories), 4_040);
     }
 
     #[test]
