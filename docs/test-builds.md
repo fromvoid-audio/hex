@@ -75,7 +75,10 @@ local-CI Cargo target lock/ownership and disk-headroom safeguards. Raw Cargo
 commands do not participate in this advisory lock; avoid concurrent raw builds.
 
 Packaging retains font/GPUI licenses, verifies the native linker's ad-hoc signed
-executable, hashes every packaged file and records full provenance in
+executable with `codesign --verify --strict --ignore-resources` so an unsigned
+local bundle is not mistaken for a sealed app. Independent receipt checks still
+verify every resource, and executable signature validation also runs inside
+activation/recovery verification so invalid code triggers rollback. It hashes every packaged file and records full provenance in
 `Contents/Resources/test-build.json`. This is local unsigned bundle packaging,
 not Developer ID signing, notarization or distribution. A copy of the full local
 CI summary and `USER-TEST.md` travel with the app. The complete CI logs remain at
@@ -112,7 +115,9 @@ until exact-build owner approval is recorded.
 The shared full local CI runner includes delivery regression tests for production bundle assembly from Cargo-reported custom target paths, checksum
 failure, unrelated identity/symlinks, running case aliases, serialized activation,
 interrupted rename recovery, corrupt-new-bundle rollback and stale/incomplete CI
-rejection. These deterministic filesystem tests do not establish native UI,
+rejection. A macOS regression compiles a linker-signed fixture and verifies valid
+unsigned-bundle packaging, resource tampering rejection and invalid executable
+signature rejection even after rehashing. These deterministic filesystem tests do not establish native UI,
 physical audio deadlines, listening quality or arbitrary crash/power-loss safety.
 The coordinator supplies the optimized app and finite checklist; the user owns
 native interaction tests while present.

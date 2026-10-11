@@ -98,6 +98,12 @@ def inventory(app: Path) -> dict[str, str]:
     return result
 
 
+def verify_native_executable(binary: Path) -> None:
+    # The local bundle is unsigned; validate Mach-O code, not a bundle seal.
+    # verify() independently checks every packaged resource against the receipt.
+    run(["codesign", "--verify", "--strict", "--ignore-resources", str(binary)])
+
+
 def verify(app: Path) -> dict:
     assert_identity(app)
     receipt = json.loads((app / "Contents/Resources/test-build.json").read_text())
@@ -105,6 +111,7 @@ def verify(app: Path) -> dict:
         raise DeliveryError(f"artifact checksum mismatch: {app}")
     if not os.access(app / "Contents/MacOS/hex", os.X_OK):
         raise DeliveryError("packaged binary is not executable")
+    verify_native_executable(app / "Contents/MacOS/hex")
     return receipt
 
 
@@ -143,7 +150,7 @@ def recover(app: Path, journal: Path) -> None:
         # New candidate has been renamed. Complete only if fully verified.
         try:
             verify(app)
-        except (DeliveryError, OSError, ValueError):
+        except (DeliveryError, OSError, ValueError, subprocess.CalledProcessError):
             if not backup.exists():
                 raise
             assert_identity(backup)
@@ -183,7 +190,7 @@ def activate(app: Path, stage: Path, backup: Path | None = None) -> Path | None:
         stage.rename(app)
         sync_directory(app.parent)
         verify(app)
-    except (OSError, DeliveryError, ValueError):
+    except (OSError, DeliveryError, ValueError, subprocess.CalledProcessError):
         # Retain failed candidate for inspection, then restore the intact old app.
         if backup.exists():
             assert_inactive(app)
@@ -300,7 +307,7 @@ def build(args) -> dict:
             shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
             # Rust's native linker ad-hoc signs the executable. The bundle is local,
             # unsigned packaging; never mutate that binary after hashing it.
-            run(["codesign", "--verify", "--strict", str(contents / "MacOS/hex")])
+            verify_native_executable(contents / "MacOS/hex")
             backup = app.parent / (".hex-rollback-" + uuid.uuid4().hex + ".app")
             receipt = {"schema": 1, "version": version, "source": source, "candidate": args.candidate,
                        "source_sha256": runner.summary["start_tree"]["content_sha256"],
@@ -312,10 +319,10 @@ def build(args) -> dict:
                        "rollback_path": str(backup) if app.exists() else None, "files": inventory(stage)}
             write_json(contents / "Resources/test-build.json", receipt)
             verify(stage)
-            run(["codesign", "--verify", "--strict", str(contents / "MacOS/hex")])
+            verify_native_executable(contents / "MacOS/hex")
             validate_ci(args.ci_report, runner, args.candidate)
             backup = activate(app, stage, backup)
-            run(["codesign", "--verify", "--strict", str(app / "Contents/MacOS/hex")])
+            verify_native_executable(app / "Contents/MacOS/hex")
             receipt["rollback_path"] = str(backup) if backup else None
             write_json(app.parent / "hex-test-build-receipt.json", receipt)
             return receipt

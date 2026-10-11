@@ -2163,3 +2163,12 @@ executable, licenses, CI/checklist/receipts, replacement and prior-app rollback.
 The regression fails with the original ENOENT and passes after the repair.
 Full final local CI, actual stable delivery and exact-build owner approval are
 recorded in Pulse; this entry does not claim native acceptance.
+
+
+11 October 2026 — Pulse #2413 / PR169: native signature verification now checks
+the linker-signed executable separately from the intentionally unsigned bundle
+resource seal. Complete receipt inventory verification remains required, and
+signature validation participates in activation/recovery rollback. A real macOS
+linker/codesign regression reproduces the prior failure and checks resource/code
+tampering. Full exact-source CI, actual stable optimized delivery and combined
+owner acceptance remain pending; prior application untouched.
