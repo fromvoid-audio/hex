@@ -209,7 +209,7 @@ impl Gallery {
                 State::Idle
             }
         };
-        let mut body = div().flex().flex_col().size_full().gap(px(6.0));
+        let mut body = div().flex().flex_col().size_full().gap(px(2.0));
         match self.family {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
