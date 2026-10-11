@@ -10692,3 +10692,6 @@ mod transport_loop_tests;
 mod capture_tests;
 #[path = "device_capacity_tests.rs"]
 mod device_capacity_tests;
+
+#[path = "analytic_continuation_tests.rs"]
+mod analytic_continuation_tests;

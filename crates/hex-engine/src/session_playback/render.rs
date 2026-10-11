@@ -397,6 +397,7 @@ impl SessionPlayback {
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
                             index,
                             timing: &timing,
                             table,
@@ -445,6 +446,7 @@ impl SessionPlayback {
                                 table,
                                 self.revision.arrangement().shared_contexts(),
                                 &self.retained_contexts,
+                                &self.analytic_continuations,
                                 performance_frame,
                                 render_output,
                             )?;
@@ -456,6 +458,7 @@ impl SessionPlayback {
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
                             index,
                             timing: &timing,
                             table,
@@ -538,6 +541,7 @@ impl SessionPlayback {
                                 table,
                                 self.revision.arrangement().shared_contexts(),
                                 &self.retained_contexts,
+                                &self.analytic_continuations,
                                 performance_frame,
                                 render_output,
                             )?;
@@ -549,6 +553,7 @@ impl SessionPlayback {
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
                             index,
                             timing: &timing,
                             table,
@@ -618,6 +623,7 @@ impl SessionPlayback {
                                 table,
                                 self.revision.arrangement().shared_contexts(),
                                 &self.retained_contexts,
+                                &self.analytic_continuations,
                                 performance_frame,
                                 output,
                                 Some(&mut captured[..output.len()]),
@@ -633,6 +639,7 @@ impl SessionPlayback {
                             &self.suppression_scratch,
                             pages.as_deref_mut(),
                             &mut captured[..output.len()],
+                            &self.analytic_continuations,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
@@ -647,6 +654,7 @@ impl SessionPlayback {
                             table,
                             self.revision.arrangement().shared_contexts(),
                             &self.retained_contexts,
+                            &self.analytic_continuations,
                             performance_frame,
                             output,
                             None,
@@ -659,6 +667,7 @@ impl SessionPlayback {
                         route: self.route_scratch[index],
                         historical_floor: self.historical_floor_for(index),
                         suppressions: &self.suppression_scratch,
+                        continuations: &self.analytic_continuations,
                         index,
                         timing: &timing,
                         table,
@@ -689,6 +698,7 @@ impl SessionPlayback {
                     table,
                     self.revision.arrangement().shared_contexts(),
                     &self.retained_contexts,
+                    &self.analytic_continuations,
                     performance_frame,
                     output,
                     capture
@@ -730,6 +740,7 @@ impl SessionPlayback {
                     table,
                     self.revision.arrangement().shared_contexts(),
                     &self.retained_contexts,
+                    &self.analytic_continuations,
                     performance_frame,
                     tail_output,
                 )?;
@@ -1206,6 +1217,7 @@ struct RouteSourceContext<'a, T> {
     route: super::TrackRoute,
     historical_floor: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
+    continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
@@ -1232,6 +1244,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         route,
         historical_floor,
         suppressions,
+        continuations,
         index,
         timing,
         table,
@@ -1249,13 +1262,14 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                 .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
             match stage {
                 SourceStage::Whole => {
-                    if has_active_suppression {
+                    if has_active_suppression || continuations.iter().any(Option::is_some) {
                         track.render_additive_with_suppressions_and_pages(
                             arrangement_frame,
                             performance_frame,
                             output,
                             suppressions,
                             pages.as_deref_mut(),
+                            continuations,
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(arrangement_frame, output, page_provider)
@@ -1279,6 +1293,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                     performance_frame,
                     output,
                     suppressions,
+                    continuations,
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -1298,7 +1313,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             if prepared.instrument_enabled() && !prepared.instrument_template().is_event_source() {
                 let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
                 let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
-                let context = context.with_suppressions(suppressions);
+                let context = context
+                    .with_suppressions(suppressions)
+                    .with_continuations(continuations);
                 prepared
                     .instrument_template()
                     .render_additive(context, source_mix, performance_frame, output, spans)
@@ -1406,6 +1423,7 @@ fn render_release_captured(
     _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
+    continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
     output: &mut [Frame],
     mut capture: Option<&mut [Frame]>,
@@ -1416,7 +1434,11 @@ fn render_release_captured(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(absolute, contexts, retained) {
+        if let Some(sample) = release
+            .voice
+            .sample_at_with_continuation(absolute, contexts, retained, continuations)
+            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
+        {
             let contribution = release.mix.apply_frame(sample);
             frame[0] += contribution[0];
             frame[1] += contribution[1];
@@ -1432,11 +1454,13 @@ fn render_release_captured(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_release_raw(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
+    continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
@@ -1446,7 +1470,11 @@ fn render_release_raw(
         let absolute = performance_frame
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release.voice.sample_at(absolute, contexts, retained) {
+        if let Some(sample) = release
+            .voice
+            .sample_at_with_continuation(absolute, contexts, retained, continuations)
+            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
+        {
             frame[0] += sample[0];
             frame[1] += sample[1];
         }

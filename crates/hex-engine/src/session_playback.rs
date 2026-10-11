@@ -327,6 +327,9 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
+    // Indexed by immutable revision context; charged as inline Self storage.
+    analytic_continuations: [Option<hex_lattice::AnalyticContinuation>; MAX_TRACKS],
+    analytic_continuation_scratch: [Option<hex_lattice::AnalyticContinuation>; MAX_TRACKS],
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
@@ -817,6 +820,8 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
+            analytic_continuations: [None; MAX_TRACKS],
+            analytic_continuation_scratch: [None; MAX_TRACKS],
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,

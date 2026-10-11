@@ -28,6 +28,7 @@ const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
 mod enable;
+mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
@@ -570,7 +571,11 @@ impl OperatorSettings {
             let offset = operator * 3;
             Oscillator::new(
                 f64::from(self.fields[offset]),
-                f64::from(self.fields[offset + 1]),
+                if self.enabled.flags()[operator] {
+                    f64::from(self.fields[offset + 1])
+                } else {
+                    0.0
+                },
                 f64::from(self.fields[offset + 2]),
             )
             .map_err(|_| DeviceContractError::InvalidParameterValue)
@@ -863,6 +868,13 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
+        let authored_state = settings.to_state()?;
+        let effective_levels = *configuration
+            .feedback_parameters([0.0; OPERATORS])
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?
+            .oscillator_levels();
+        let continuation_format =
+            hex_lattice::AnalyticContinuationFormat::new(OPERATOR_TYPE_ID, 1)?;
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
@@ -880,6 +892,9 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         )?;
         Ok(Box::new(PreparedOperatorInstrument {
             configuration,
+            authored_state,
+            effective_levels,
+            continuation_format,
             sine_table,
             feedback_runtime,
             lfo_runtime,
@@ -889,6 +904,9 @@ impl NativeInstrumentDefinition for OperatorMetadata {
 
 struct PreparedOperatorInstrument {
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
     feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
     lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
@@ -919,6 +937,9 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         }
         Ok(Some(Box::new(PreparedOperatorContext {
             configuration: self.configuration.clone(),
+            authored_state: self.authored_state.clone(),
+            effective_levels: self.effective_levels,
+            continuation_format: self.continuation_format,
             sine_table: self.sine_table,
         })))
     }
@@ -940,12 +961,21 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
 
 struct PreparedOperatorContext {
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
 }
 
 impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn analytic_continuation(&self) -> Option<&dyn hex_lattice::PreparedAnalyticContinuation> {
+        Some(self)
+    }
+
     fn declared_context_bytes(&self) -> usize {
-        size_of::<Self>()
+        // Charge the canonical payload even while the control factory shares
+        // its Arc. The allocation includes the two reference-count words.
+        size_of::<Self>() + self.authored_state.payload().len() + 2 * size_of::<usize>()
     }
 
     fn prepare_note(
@@ -1004,6 +1034,8 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
     (index < OPERATORS).then_some(index)
 }
 
+#[cfg(test)]
+mod enable_continuation_tests;
 #[cfg(test)]
 mod enable_tests;
 #[cfg(test)]

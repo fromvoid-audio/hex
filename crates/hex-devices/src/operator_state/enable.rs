@@ -44,6 +44,10 @@ impl Default for EnableSettings {
 }
 
 impl EnableSettings {
+    pub(super) const fn flags(&self) -> &[bool; COUNT] {
+        &self.0
+    }
+
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, DeviceContractError> {
         if bytes.len() != BYTES {
             return Err(DeviceContractError::MalformedState);

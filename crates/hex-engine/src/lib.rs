@@ -886,6 +886,7 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_additive_with_suppressions_and_pages(
         &self,
         start_frame: u64,
@@ -893,6 +894,7 @@ impl Track {
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         pages: Option<&mut (impl MediaPages + ?Sized)>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -911,6 +913,7 @@ impl Track {
                 performance_frame,
                 suppressions,
                 None,
+                continuations,
             )?;
         }
         Ok(())
@@ -947,6 +950,7 @@ impl Track {
 
     // The direct Main fast path taps each existing source addition once. It
     // does not regroup sources into a track buffer (which changes rounding).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_additive_captured<P: MediaPages + ?Sized>(
         &self,
         start_frame: u64,
@@ -955,6 +959,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         pages: Option<&mut P>,
         capture: &mut [Frame],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let end_frame = start_frame
             .checked_add(
@@ -973,6 +978,7 @@ impl Track {
                 performance_frame,
                 suppressions,
                 Some(capture),
+                continuations,
             )?;
         }
         Ok(())
@@ -992,12 +998,14 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_instrument_additive_with_suppressions(
         &self,
         start_frame: u64,
         performance_frame: u64,
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -1010,6 +1018,7 @@ impl Track {
             performance_frame,
             suppressions,
             None,
+            continuations,
         )
     }
 
@@ -1280,9 +1289,11 @@ impl Track {
             0,
             &[],
             None,
+            &[],
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_instrument_range_with_suppressions(
         &self,
         (start_frame, end_frame): (u64, u64),
@@ -1291,6 +1302,7 @@ impl Track {
         performance_frame: u64,
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         mut capture: Option<&mut [Frame]>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
@@ -1304,6 +1316,7 @@ impl Track {
                 let chunk_performance_frame = performance_frame
                     .checked_add(chunk_start - start_frame)
                     .ok_or(Invalid("midi performance frame overflow"))?;
+                let mut failure = None;
                 instrument.for_each_intersecting(
                     chunk_start,
                     chunk_end,
@@ -1332,23 +1345,40 @@ impl Track {
                         };
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            if let Some(sample) = voice.sample(
+                            let Some(absolute) =
+                                chunk_performance_frame.checked_add(frame_position - chunk_start)
+                            else {
+                                failure = Some(Invalid("midi performance frame overflow"));
+                                return;
+                            };
+                            match voice.sample_at(
                                 &instrument.shared_contexts,
                                 &[],
+                                continuations,
+                                absolute,
                                 relative,
                                 span.gate_end - span.start,
                             ) {
-                                self.source_mix.add_captured(
-                                    &mut target[(frame_position - chunk_start) as usize],
-                                    sample,
-                                    capture.as_deref_mut().and_then(|frames| {
-                                        frames.get_mut((frame_position - start_frame) as usize)
-                                    }),
-                                );
+                                Ok(sample) => {
+                                    self.source_mix.add_captured(
+                                        &mut target[(frame_position - chunk_start) as usize],
+                                        sample,
+                                        capture.as_deref_mut().and_then(|frames| {
+                                            frames.get_mut((frame_position - start_frame) as usize)
+                                        }),
+                                    );
+                                }
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return;
+                                }
                             }
                         }
                     },
                 );
+                if let Some(error) = failure {
+                    return Err(error);
+                }
             }
         }
         Ok(())

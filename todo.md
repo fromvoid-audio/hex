@@ -2085,3 +2085,15 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Required full exact clean local CI is a merge gate. Native macOS/audio,
   listening and physical throughput remain manual gaps; no export UI/preroll or
   publication is included. Active Pulse30 prerequisite linking remains blocked.
+
+### operator enable controls — pulse2335 / pr164
+
+- Strict version-8 state appends four canonical enable bools after the frozen
+  LFO prefix: 380 bytes, IDs513–516, all enabled when migrating versions1–7.
+- Five generic continuation-contract tests and three codec tests passed on an
+  unchanged source digest; `docs/operator-enable-continuation.md` records the
+  exact commit/digest and retained partial-run evidence.
+- Active analytic engine integration and provider PCM-oracle tests are prepared
+  source, with shared constructor/context and mutable LFO seams still awaiting
+  owner handoffs. Actual DSP toggles, canonical badge interaction, history/save,
+  callback probes, full local CI and user listening/UI acceptance remain open.

@@ -119,3 +119,19 @@ Measure final integrated owned bytes against existing caps and preserve16-voice/
 256-event mutable limits. Full exact-source localCI and user native/listening
 acceptance remain required and unrun. This proposal establishes no Live
 numerical transition, recurrence or CPU parity.
+
+## Focused source evidence — 11 October 2026
+
+The registered generic contract's five tests and the version-8 enable codec's
+three migration, malformed-input and authored-prefix tests passed at commit
+`69520d89f7f99ac5e4739538d555ca72d3644beb`, with prepared integration files present
+but source editing paused. Start/end source SHA-256 was unchanged:
+`2c05efcdabf7d450d6f98484969eba6ae4d41c34e53d5b28910a7958acf89ac2`.
+Retained evidence is
+`artifacts/local-ci/operator-enable-focused-20261011/summary.json`.
+The custom two-step runner records `partial`, not full PR validation.
+
+These checks do not compile or exercise the prepared engine integration, the
+unregistered Operator provider or its PCM-oracle tests, mutable enable ramps,
+or badge behavior. Their shared-file handoffs and functional validation remain
+open. The sole Mac build lease was released after both commands exited zero.
