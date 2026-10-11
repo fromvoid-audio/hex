@@ -197,7 +197,18 @@ fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
 }
 
 #[test]
+fn lfo_free_sync_and_feedback_export_match_registered_partitioned_playback() {
+    for sync in [false, true] {
+        modulation_export(Some(sync));
+    }
+}
+
+#[test]
 fn feedback_operator_full_prepared_export_matches_registered_playback() {
+    modulation_export(None);
+}
+
+fn modulation_export(lfo: Option<bool>) {
     let state = patch_native_device_parameter_for_class(
         NativeDeviceClass::Instrument,
         &operator_state(),
@@ -205,6 +216,24 @@ fn feedback_operator_full_prepared_export_matches_registered_playback() {
         ParameterValue::Float(0.4),
     )
     .expect("enable first oscillator feedback");
+    let mut state = state;
+    if let Some(sync) = lfo {
+        for (id, value) in [
+            (82, ParameterValue::Bool(true)),
+            (83, ParameterValue::Choice(4)),
+            (84, ParameterValue::Bool(sync)),
+            (85, ParameterValue::Float(100.0)),
+            (87, ParameterValue::Float(100.0)),
+        ] {
+            state = patch_native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+    }
     let revision = operator_revision(state);
     assert!(revision.has_arrangement_mutable_instruments());
     assert!(revision.arrangement_seek_requires_preroll());

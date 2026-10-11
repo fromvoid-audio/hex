@@ -8,6 +8,17 @@ use std::{collections::BTreeMap, sync::Arc, thread, time::Duration, time::Instan
 
 #[test]
 fn feedback_operator_arrangement_seek_uses_bounded_worker_preroll() {
+    operator_preroll(None);
+}
+
+#[test]
+fn lfo_free_sync_and_hold_arrangement_seek_use_bounded_worker_preroll() {
+    for sync in [false, true] {
+        operator_preroll(Some(sync));
+    }
+}
+
+fn operator_preroll(lfo: Option<bool>) {
     const RATE: u32 = 48_000;
     const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
@@ -35,6 +46,25 @@ fn feedback_operator_arrangement_seek_uses_bounded_worker_preroll() {
         ParameterValue::Float(0.4),
     )
     .expect("feedback amount");
+    let mut state = state;
+    if let Some(sync) = lfo {
+        for (id, value) in [
+            (82, ParameterValue::Bool(true)),
+            (83, ParameterValue::Choice(4)),
+            (84, ParameterValue::Bool(sync)),
+            (85, ParameterValue::Float(100.0)),
+            (87, ParameterValue::Float(100.0)),
+            (88, ParameterValue::Bool(false)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+    }
     editor
         .execute(Command::ReplaceDeviceState {
             device: instrument,
