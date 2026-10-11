@@ -2074,3 +2074,14 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   11 October the user reported native arrow/hidden/restored pointer behavior,
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
+
+### canonical capture — pulse2346 / pr159
+
+- Added bounded stable TrackId/ReturnId capture plans and borrowed transactional
+  buffers before Main/master, including empty chains and original-ID retained
+  tails while preserving old sonic routing and shared Returns.
+- Independent PCM/history/partition/refusal fixtures and total/signed-net callback
+  allocation probes cover the finite contract in `docs/output-capture.md`.
+- Required full exact clean local CI is a merge gate. Native macOS/audio,
+  listening and physical throughput remain manual gaps; no export UI/preroll or
+  publication is included. Active Pulse30 prerequisite linking remains blocked.
