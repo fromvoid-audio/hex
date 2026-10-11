@@ -25,7 +25,7 @@ PR157 owns knobs/shared control styling, and PR158 owns harmonic editing.
 | --- | --- | --- |
 | Standard device frame/header | User whole-device crop; production shared frame | Idle/selected/disabled; keyboard focus uses the selected appearance. Only the header selects the device; cyan selected header is independent of section selection. |
 | Compact device frame/header | Existing production compact frame | Same fixture interaction; compact header density is a Hex variant, not independently verified Live geometry. |
-| Rounded dark display | User dark-gray center crop | Neutral `0x191919` center; rounded outline; static guide only. Selection uses the same appearance for pointer and keyboard focus; the cyan screen marker is a fixture inspection aid. |
+| Rounded dark display | User dark-gray center crop | Neutral `0x191919` center; rounded outline; static guide only. No selected/focused outline; screen fill and gray guide are unchanged by selection. |
 | Section rail | User left/right crops; PR156 source tokens | Rounded `0x363636` sections, `0x474747` gutters; Focused and selected rows merge into `0x474747` outer background; there is no separate white focus border. Two-logical-pixel gutters (four physical pixels at scale 2). Single selected section. |
 | Grouped rows | User oscillator rows | Fixed labels/readout footprint; focus and selection merge the first row into the outer background in previews. No numeric control or oscillator semantics. |
 | Stable tabs | User center crop; shared `panel_tab` | Fixed three-tab footprint, independent focus versus active page; changing page does not change panel size. Exact Live tab marker/underline geometry remains unverified. |
@@ -146,3 +146,19 @@ tests), as do strict example/tests Clippy and the native build. Final exact-sour
 full CI is recorded on PR163/Pulse2355; updated human visual acceptance remains
 open. The first strict check caught an unused Window argument after removal of
 the focus outline; it was corrected before the final targeted passes.
+
+### Raised tabs / display refinement — 11 October 2026
+
+The user accepted the updated direction and stable tabs, and explicitly prefers
+the inset inspector surround continuing to cut through the highlighted header.
+Those layouts are retained. The dark display has no cyan selected outline.
+Static layout dividers are gray. Raised screen tabs now have all four corners
+rounded; inactive page rectangles float with visible header space above and
+below them instead of touching the screen. Their fixed input footprints and
+page/header selection ownership are retained. The existing page regression checks
+the inactive painted shape's gap before and after switching pages.
+
+Private references `user-wavetable-raised-tabs-selected.png` and
+`user-wavetable-floating-tabs.png` preserve the new user crops. Prior `6790769`
+app/CI are superseded for this candidate. Renewed source/targeted/build/full-CI
+evidence and native visual acceptance remain pending.

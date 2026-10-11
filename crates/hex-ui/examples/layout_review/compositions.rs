@@ -104,9 +104,9 @@ impl Gallery {
                             .child(theme::text("inspector"))
                             .child(div().h(px(1.0)).mt(px(24.0)).bg(rgb(
                                 if header_state == State::Disabled {
-                                    MUTED
+                                    0x555555
                                 } else {
-                                    ACCENT
+                                    MUTED
                                 },
                             )))
                             .child(theme::text(match self.selected {
@@ -145,10 +145,19 @@ impl Gallery {
                         .border_color(gpui::rgba(0))
                         .child(
                             div()
-                                .h(px(if active_page { 20.0 } else { 14.0 }))
-                                .mt(px(if active_page { 0.0 } else { 4.0 }))
-                                .rounded_tl(px(if active_page { 4.0 } else { 2.0 }))
-                                .rounded_tr(px(if active_page { 4.0 } else { 2.0 }))
+                                .h(px(if active_page { 20.0 } else { 12.0 }))
+                                .mt(px(if active_page { 0.0 } else { 2.0 }))
+                                .rounded(px(if active_page { 4.0 } else { 2.0 }))
+                                .when(live, |shape| {
+                                    shape.debug_selector(move || {
+                                        if index == 1 {
+                                            "page-a-shape"
+                                        } else {
+                                            "page-b-shape"
+                                        }
+                                        .into()
+                                    })
+                                })
                                 .bg(rgb(if active_page { DISPLAY } else { DARK }))
                                 .text_color(rgb(style(state_at(index), false).text))
                                 .px(px(3.0))
@@ -175,9 +184,9 @@ impl Gallery {
                     }))
                     .child(div().h(px(1.0)).mt(px(28.0)).bg(rgb(
                         if header_state == State::Disabled {
-                            MUTED
+                            0x555555
                         } else {
-                            ACCENT
+                            MUTED
                         },
                     )));
                 host = host.child(screen).child(tabs);

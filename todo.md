@@ -2111,3 +2111,12 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Prior `ad51d79` app/CI are superseded. Seven example tests, strict Clippy and native build pass. Final exact-source
   full local CI evidence is retained on PR163/Pulse2355.
   Updated native visual acceptance remains open. No production DSP changes.
+
+### Gallery raised tabs / display refinement — 11 October 2026
+
+- User accepts stable tabs and the inspector surround's header intrusion.
+- Dark displays retain their fill without a cyan selected outline; static
+  dividers are gray. Raised extrusion has rounded lower corners; inactive page
+  rectangles float in header space, preserving fixed targets/page ownership.
+- Existing page regression checks visible separation before/after page switches.
+  Prior `6790769` app/CI are superseded; renewed checks/native acceptance pending.

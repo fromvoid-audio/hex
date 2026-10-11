@@ -299,18 +299,14 @@ impl Gallery {
                         .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
                         .bg(rgb(DISPLAY))
                         .border_1()
-                        .border_color(rgb(if current == State::Selected {
-                            ACCENT
-                        } else {
-                            DISPLAY
-                        }))
+                        .border_color(rgb(DISPLAY))
                         .p(px(6.0))
                         .child(theme::text("display surface"))
                         .child(div().h(px(1.0)).mt(px(22.0)).bg(rgb(
                             if current == State::Disabled {
                                 0x555555
                             } else {
-                                ACCENT
+                                MUTED
                             },
                         )))
                         .child(theme::text("static guide · no signal"));
@@ -670,12 +666,26 @@ mod page_tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let screen = visual.debug_bounds("tabbed-screen").expect("screen");
+        let floating = visual
+            .debug_bounds("page-b-shape")
+            .expect("inactive page b");
+        assert!(floating.origin.y > visual.debug_bounds("target-2").expect("page b").origin.y);
+        assert!(floating.origin.y + floating.size.height < screen.origin.y);
         let tab = visual.debug_bounds("target-2").expect("page b");
         visual.simulate_click(tab.center(), Modifiers::default());
         view.read_with(cx, |view, _| {
             assert_eq!(view.active_tab, 2);
             assert!(!view.device_selected);
         });
+        visual.run_until_parked();
+        let floating = visual
+            .debug_bounds("page-a-shape")
+            .expect("inactive page a");
+        assert!(floating.origin.y + floating.size.height < screen.origin.y);
+        let active = visual
+            .debug_bounds("page-b-shape")
+            .expect("active extrusion");
+        assert!(active.origin.y + active.size.height > screen.origin.y);
         let header = visual.debug_bounds("target-0").expect("header");
         visual.simulate_click(
             point(header.origin.x + px(12.0), header.origin.y + px(8.0)),
