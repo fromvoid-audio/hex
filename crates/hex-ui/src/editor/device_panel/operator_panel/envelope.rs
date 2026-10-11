@@ -16,7 +16,16 @@ pub(in crate::editor::device_panel) struct GraphKey {
 pub(in crate::editor::device_panel) struct GraphControl {
     entity: Entity<ResponseGraph>,
     selected_node: u32,
+    model_input: Option<ModelInput>,
     _subscription: Subscription,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ModelInput {
+    values: [f32; 6],
+    window: f32,
+    selected: u32,
+    style: hex_widgets::ControlStyle,
 }
 
 #[derive(Clone, Copy)]
@@ -38,7 +47,7 @@ pub(super) fn graph(
         .operator_envelope_graphs
         .entry(key)
         .or_insert_with(|| {
-            let style = super::super::control_style();
+            let style = super::display_style();
             let entity = cx.new(|graph_cx| {
                 let mut graph = ResponseGraph::new(
                     graph_cx,
@@ -55,6 +64,7 @@ pub(super) fn graph(
             GraphControl {
                 entity,
                 selected_node: 1,
+                model_input: None,
                 _subscription: subscription,
             }
         });
@@ -68,14 +78,25 @@ pub(super) fn graph(
         .operator_envelope_graphs
         .get(&key)
         .map_or(1, |graph| graph.selected_node);
-    let model = graph_model(values, window, selected);
-    let Some(control) = view.device_panel.operator_envelope_graphs.get(&key) else {
+    let input = ModelInput {
+        values,
+        window,
+        selected,
+        style: super::display_style(),
+    };
+    let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) else {
         return div().id("operator-envelope-graph-unavailable");
     };
     let graph_entity = control.entity.clone();
-    graph_entity.update(cx, |graph, cx| {
-        let _ = graph.set_model(model, super::super::control_style(), cx);
-    });
+    if control.model_input != Some(input) {
+        let model = graph_model(values, window, selected);
+        let updated = graph_entity.update(cx, |graph, cx| {
+            graph.set_model(model, input.style, cx).is_ok()
+        });
+        if updated {
+            control.model_input = Some(input);
+        }
+    }
     div()
         .id(ElementId::Name(
             format!("operator-envelope-graph-{}-{operator}", device.value()).into(),
@@ -98,14 +119,18 @@ fn graph_model(values: [f32; 6], window: f32, selected: u32) -> ResponseGraphMod
     let x_decay = ((attack + decay) / axis).clamp(x_attack, 1.0);
     let x_release = ((attack + decay + HOLD_SECONDS) / axis).clamp(x_decay, 1.0);
     let x_end = ((attack + decay + HOLD_SECONDS + release) / axis).clamp(x_release, 1.0);
-    let points = vec![
+    // Match the existing original DSP laws: linear attack, exponential
+    // decay/release with a 1e-5 relative cutoff and exact stage endpoints.
+    // Sampling changes only drawing; node positions and gestures remain linear.
+    let mut points = Vec::with_capacity(68);
+    points.extend([
         [0.0, initial.clamp(0.0, 1.0)],
         [x_attack, peak.clamp(0.0, 1.0)],
-        [x_decay, sustain.clamp(0.0, 1.0)],
-        [x_release, sustain.clamp(0.0, 1.0)],
-        [x_end, 0.0],
-        [1.0, 0.0],
-    ];
+    ]);
+    append_decay(&mut points, x_attack, x_decay, peak, sustain);
+    points.push([x_release, sustain.clamp(0.0, 1.0)]);
+    append_decay(&mut points, x_release, x_end, sustain, 0.0);
+    points.push([1.0, 0.0]);
     ResponseGraphModel {
         primary: points.clone(),
         secondary: points,
@@ -117,6 +142,54 @@ fn graph_model(values: [f32; 6], window: f32, selected: u32) -> ResponseGraphMod
             node(3, [x_end, 0.0], selected),
         ],
     }
+}
+
+// Fixed original exponential shape at 1/32-stage intervals, computed once
+// independently of parameter values. No transcendental work on redraw.
+const DECAY_FACTORS: [f32; 31] = [
+    6.978306e-01,
+    4.869675e-01,
+    3.398208e-01,
+    2.371374e-01,
+    1.654817e-01,
+    1.154782e-01,
+    8.058422e-02,
+    5.623413e-02,
+    3.92419e-02,
+    2.73842e-02,
+    1.910953e-02,
+    1.333521e-02,
+    9.30572e-03,
+    6.493816e-03,
+    4.531584e-03,
+    3.162278e-03,
+    2.206734e-03,
+    1.539927e-03,
+    1.074608e-03,
+    7.498942e-04,
+    5.232991e-04,
+    3.651741e-04,
+    2.548297e-04,
+    1.778279e-04,
+    1.240938e-04,
+    8.659643e-05,
+    6.042964e-05,
+    4.216965e-05,
+    2.942727e-05,
+    2.053525e-05,
+    1.433013e-05,
+];
+
+/// Bounded drawing samples; the owner supplies normalized stage endpoints.
+fn append_decay(points: &mut Vec<[f32; 2]>, start: f32, end: f32, from: f32, to: f32) {
+    if end > start {
+        for (index, factor) in DECAY_FACTORS.iter().enumerate() {
+            let t = (index + 1) as f32 / 32.0;
+            let level = to + (from - to) * factor;
+            points.push([start + (end - start) * t, level.clamp(0.0, 1.0)]);
+        }
+    }
+    points.push([end, to.clamp(0.0, 1.0)]);
 }
 
 fn node(id: u32, position: [f32; 2], selected: u32) -> ResponseGraphNode {
@@ -502,6 +575,33 @@ fn gesture_target_matches(key: GraphKey, node_id: u32, target: GestureTarget) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plotted_envelope_follows_exponential_stages_and_preserves_handles() {
+        let values = [0.2, 1.0, 0.3, 0.1, 0.2, 0.4];
+        let model = graph_model(values, 1.0, 2);
+        model.validate().expect("bounded normalized envelope");
+        let decay_mid = model
+            .primary
+            .iter()
+            .find(|point| (point[0] - 0.2).abs() < 1e-6)
+            .expect("decay midpoint");
+        assert!((decay_mid[1] - (0.3 + 0.7 * 0.00001_f32.sqrt())).abs() < 1e-6);
+        let release_mid = model
+            .primary
+            .iter()
+            .find(|point| (point[0] - 0.75).abs() < 1e-6)
+            .expect("release midpoint");
+        assert!((release_mid[1] - 0.3 * 0.00001_f32.sqrt()).abs() < 1e-6);
+        assert_eq!(model.nodes[2].position, [0.3, 0.3]);
+        assert!(model.nodes[2].selected);
+        for times in [[0.0, 0.0, 0.0], [120.0, 120.0, 120.0]] {
+            let values = [1.0, 0.2, 0.8, times[0], times[1], times[2]];
+            graph_model(values, display_window(values), 0)
+                .validate()
+                .expect("zero and maximum stages");
+        }
+    }
 
     #[test]
     fn fixed_hold_mapping_keeps_all_stage_points_ordered_with_headroom() {

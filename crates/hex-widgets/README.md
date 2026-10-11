@@ -69,3 +69,9 @@ option clicks select once and stop propagation. Escape, outside click, blur and
 disabling close the popup. Opening it does not change the field footprint.
 A cached content-box measurement refreshes only when bounds change. These are
 shared Lattice widget behaviors, with Utility as the current testbed.
+
+
+Compact square switches, directly selectable compact segments and flat panel tabs
+are reusable density variants with injected display/style. Shared compact dials
+use open rails, short value arcs and needles; micro dials place labels above and
+readouts beside their lower edge. Owners retain canonical bindings and gestures.

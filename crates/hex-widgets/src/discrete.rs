@@ -16,8 +16,14 @@ pub enum DiscreteControlAppearance {
     #[default]
     Standard,
     CompactButton,
+    /// Unlabelled square activator; caller supplies the surrounding label.
+    CompactSquare,
+    /// Smaller marker in the same operable square hit region.
+    MicroSquare,
     CompactIconButton,
     CompactSelector,
+    /// Small directly selectable options without a popup.
+    CompactSegments,
 }
 
 /// Validated toggle construction data for an infallible GPUI entity factory.
@@ -235,6 +241,39 @@ impl gpui::Render for Toggle {
             } else {
                 gpui::CursorStyle::Arrow
             });
+        if matches!(
+            self.appearance,
+            DiscreteControlAppearance::CompactSquare | DiscreteControlAppearance::MicroSquare
+        ) {
+            let marker_size = if self.appearance == DiscreteControlAppearance::MicroSquare {
+                9.0
+            } else {
+                12.0
+            };
+            return root
+                .w(px(14.0))
+                .h(px(14.0))
+                .p(px(0.0))
+                .justify_center()
+                .rounded(px(0.0))
+                .border_color(gpui::rgba(0))
+                .bg(gpui::rgba(0))
+                .child(
+                    div()
+                        .size(px(marker_size))
+                        .border_1()
+                        .border_color(rgb(if self.focus.is_focused(window) {
+                            self.style.accent
+                        } else {
+                            self.style.text
+                        }))
+                        .bg(rgb(if self.checked {
+                            self.style.accent
+                        } else {
+                            self.style.surface
+                        })),
+                );
+        }
         if self.appearance == DiscreteControlAppearance::CompactIconButton {
             let enabled = self.enabled;
             let icon_color = rgb(if enabled {
@@ -488,6 +527,16 @@ impl Selector {
         if !self.enabled {
             return;
         }
+        if self.appearance == DiscreteControlAppearance::CompactSegments {
+            let next = match event.keystroke.key.as_str() {
+                "right" | "down" | "space" => (self.selected + 1) % self.choices.len(),
+                "left" | "up" => (self.selected + self.choices.len() - 1) % self.choices.len(),
+                _ => return,
+            };
+            cx.stop_propagation();
+            self.choose(next, window, cx);
+            return;
+        }
         match event.keystroke.key.as_str() {
             "escape" => {
                 cx.stop_propagation();
@@ -534,6 +583,59 @@ impl gpui::Render for Selector {
                 }
             }));
         }
+        if self.appearance == DiscreteControlAppearance::CompactSegments {
+            let mut row = div()
+                .id(self.id.clone())
+                .debug_selector(|| self.id.to_string())
+                .w_full()
+                .h(px(14.0))
+                .flex()
+                .gap(px(2.0))
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::key_down));
+            for (index, label) in self.choices.iter().cloned().enumerate() {
+                row = row.child(
+                    div()
+                        .id(index)
+                        .flex_1()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_1()
+                        .border_color(rgb(if self.focus.is_focused(window) {
+                            self.style.accent
+                        } else {
+                            self.style.border
+                        }))
+                        .bg(rgb(if index == self.selected {
+                            self.style.accent
+                        } else {
+                            self.style.surface
+                        }))
+                        .text_size(px(8.0))
+                        .text_color(rgb(if index == self.selected {
+                            self.style.background
+                        } else {
+                            self.style.text
+                        }))
+                        .cursor(if self.enabled {
+                            gpui::CursorStyle::PointingHand
+                        } else {
+                            gpui::CursorStyle::Arrow
+                        })
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |selector, _, window, cx| {
+                                cx.stop_propagation();
+                                selector.choose(index, window, cx);
+                            }),
+                        ),
+                );
+            }
+            return row;
+        }
         let selected = self.choices[self.selected].clone();
         let mut root = div()
             .id(self.id.clone())
@@ -554,7 +656,7 @@ impl gpui::Render for Selector {
                     .flex()
                     .h(px(
                         if self.appearance == DiscreteControlAppearance::CompactSelector {
-                            14.0
+                            10.0
                         } else {
                             20.0
                         },
@@ -692,4 +794,27 @@ impl gpui::Render for Selector {
             }))
             .on_key_down(cx.listener(Self::key_down))
     }
+}
+
+/// Flat compact panel navigation. The caller owns lowercase text, identity,
+/// focus and page-switch semantics; the shared library owns its appearance.
+pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -> gpui::Div {
+    gpui::div()
+        .h(gpui::px(16.0))
+        .px(gpui::px(3.0))
+        .flex()
+        .items_center()
+        .gap(gpui::px(3.0))
+        .border_b_1()
+        .border_color(gpui::rgb(if active { style.accent } else { style.border }))
+        .text_size(gpui::px(8.0))
+        .text_color(gpui::rgb(style.text))
+        .child(
+            gpui::div()
+                .size(gpui::px(6.0))
+                .border_1()
+                .border_color(gpui::rgb(style.accent))
+                .when(active, |marker| marker.bg(gpui::rgb(style.accent))),
+        )
+        .child(label)
 }

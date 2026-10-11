@@ -53,7 +53,7 @@ impl Field {
 
     const fn spec(self) -> FieldSpec {
         match self {
-            Self::LfoRate => FieldSpec::new("rate", 0.01, 100.0, 74.59, "hz", 2, true),
+            Self::LfoRate => FieldSpec::new("rate", 0.01, 100.0, 74.59, "", 2, true),
             Self::LfoAmount => FieldSpec::new("amount", 0.0, 100.0, 25.0, "%", 0, false),
             Self::FilterFrequency => FieldSpec::new("freq", 20.0, 20_000.0, 198.0, "hz", 0, true),
             Self::FilterResonance => FieldSpec::new("res", 0.0, 100.0, 74.0, "%", 0, false),
@@ -62,9 +62,9 @@ impl Field {
             Self::Transpose => FieldSpec::new("transpose", -48.0, 48.0, 0.0, "st", 0, false),
             Self::Time => FieldSpec::new("time", 0.0, 100.0, 23.0, "%", 0, false),
             Self::Tone => FieldSpec::new("tone", 0.0, 100.0, 100.0, "%", 0, false),
-            Self::Volume => FieldSpec::new("volume", -60.0, 6.0, -16.0, "db", 1, false),
+            Self::Volume => FieldSpec::new("volume", -60.0, 6.0, -16.0, "db", 0, false),
             Self::FineA | Self::FineB | Self::FineC | Self::FineD => {
-                FieldSpec::new("fine", -100.0, 100.0, 0.0, "cent", 0, false)
+                FieldSpec::new("fine", -100.0, 100.0, 0.0, "", 0, false)
             }
         }
     }
@@ -219,7 +219,7 @@ pub(super) fn render(
             device,
             "filter",
             Some(Switch::Filter),
-            &[Choice::FilterMode, Choice::FilterSlope],
+            &[Choice::FilterSlope, Choice::FilterMode],
             &[Field::FilterFrequency, Field::FilterResonance],
         ),
         row(
@@ -278,33 +278,36 @@ fn row(
         .flex()
         .items_center()
         .gap(px(1.0));
-    let left_width = 80.0;
+    // Two-dial rows have a selector column. Three-dial rows reserve only
+    // the enable/routing icon, so their labels align directly above the dials.
+    let selector_row = !choices.is_empty();
     let mut left = div()
-        .w(px(left_width))
+        .w(px(if selector_row { 96.0 } else { 22.0 }))
+        .flex_shrink_0()
         .h_full()
         .flex()
         .flex_col()
         .justify_center();
-    let mut heading = div().h(px(17.0)).flex().items_center().gap(px(2.0));
-    heading = heading.child(
-        div()
-            .flex_1()
-            .text_size(px(8.0))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(title)),
-    );
-    if let Some(switch) = switch {
-        heading = heading.child(toggle(view, cx, device, switch));
-    }
-    left = left.child(heading);
-    if title == "global" {
-        left = left.child(routing_link(cx, device));
-    } else if !choices.is_empty() {
-        let mut select_row = div().h(px(20.0)).flex().items_center().gap(px(1.0));
+    if selector_row {
+        let mut heading = div().h(px(14.0)).flex().items_center().gap(px(2.0));
+        if let Some(switch) = switch {
+            heading = heading.child(toggle(view, cx, device, switch));
+        }
+        heading = heading.child(
+            div()
+                .text_size(px(8.0))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                .child(theme::text(title)),
+        );
+        let mut select_row = div().h(px(14.0)).flex().items_center().gap(px(2.0));
         for choice in choices {
             select_row = select_row.child(selector(view, cx, device, *choice));
         }
-        left = left.child(select_row);
+        left = left.child(heading).child(select_row);
+    } else if let Some(switch) = switch {
+        left = left.child(toggle(view, cx, device, switch));
+    } else {
+        left = left.child(routing_link(cx, device));
     }
     row = row.child(left);
     let mut dials = div()
@@ -321,27 +324,23 @@ fn row(
 }
 
 fn routing_link(cx: &mut Context<EditorView>, device: hex_project::DeviceId) -> Stateful<Div> {
-    let colors = [
-        theme::PaletteRole::Primary,
-        theme::PaletteRole::Secondary,
-        theme::PaletteRole::ClipFill,
-    ];
+    let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
     let mut icon = div()
-        .w(px(42.0))
-        .h(px(18.0))
+        .w(px(12.0))
+        .h(px(30.0))
         .flex()
+        .flex_col()
         .items_center()
-        .gap(px(2.0));
+        .justify_between();
     for (index, color) in colors.into_iter().enumerate() {
         icon = icon.child(
             div()
                 .id(ElementId::Name(
                     format!("operator-route-icon-{}-{index}", device.value()).into(),
                 ))
-                .w(px(8.0))
-                .h(px(8.0))
-                .rounded(px(1.0))
-                .bg(rgb(theme::color(color))),
+                .w(px(5.0))
+                .h(px(5.0))
+                .bg(rgb(color)),
         );
     }
     div()
@@ -349,8 +348,8 @@ fn routing_link(cx: &mut Context<EditorView>, device: hex_project::DeviceId) -> 
             format!("operator-preview-{}-route-link", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
-        .w(px(46.0))
-        .h(px(20.0))
+        .w(px(18.0))
+        .h(px(34.0))
         .flex()
         .items_center()
         .cursor(gpui::CursorStyle::PointingHand)
@@ -490,7 +489,7 @@ fn toggle(
             enabled,
             control_style(),
         ) {
-            Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactIconButton),
+            Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactSquare),
             Err(error) => return control_error(error),
         };
         let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
@@ -538,8 +537,8 @@ fn toggle(
                 switch.index()
             )
         })
-        .w(px(18.0))
-        .h(px(22.0))
+        .w(px(14.0))
+        .h(px(14.0))
         .flex_shrink_0()
         .child(toggle.entity.clone())
 }
@@ -571,7 +570,11 @@ fn selector(
             selected,
             control_style(),
         ) {
-            Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactSelector),
+            Ok(config) => config.with_appearance(if choice == Choice::FilterSlope {
+                DiscreteControlAppearance::CompactSegments
+            } else {
+                DiscreteControlAppearance::CompactSelector
+            }),
             Err(error) => return control_error(error),
         };
         let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
@@ -604,7 +607,7 @@ fn selector(
         return control_error("selector unavailable");
     };
     let width = if choice == Choice::FilterSlope {
-        28.0
+        42.0
     } else {
         46.0
     };
@@ -625,7 +628,7 @@ fn selector(
             )
         })
         .w(px(width))
-        .h(px(22.0))
+        .h(px(14.0))
         .flex_shrink_0()
         .child(selector.entity.clone())
 }

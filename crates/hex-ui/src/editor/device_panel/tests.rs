@@ -921,6 +921,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         "amp graph bounds: {:?}",
         envelope_graph.size
     );
+    let tab = visual
+        .debug_bounds(Box::leak(
+            format!("operator-page-{}-amp env", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("flat envelope tab");
+    assert!(
+        tab.origin.y >= envelope_graph.origin.y + envelope_graph.size.height,
+        "page tabs belong beneath the envelope plot"
+    );
     let detail = visual
         .debug_bounds(Box::leak(
             format!("operator-detail-{}", instrument_id.value()).into_boxed_str(),
@@ -952,6 +961,16 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .expect("right-side shared micro dial");
         assert_eq!(control.size.width, px(46.0));
         assert_eq!(control.size.height, px(40.0));
+    }
+    // Three-dial sections start beside the narrow switch/icon column,
+    // rather than inheriting the LFO/filter selector column.
+    for field in [4, 7] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("three-dial row starts next to its icon");
+        assert!(control.origin.x - preview.origin.x < px(30.0));
     }
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
@@ -2107,7 +2126,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         entity.read_with(cx, |control, _| assert!(control.is_editing()));
     });
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("0.7");
+    visual.simulate_input("-6 db");
     visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -2119,7 +2138,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
         let state = view.state.as_ref().expect("state");
         assert_eq!(
             operator_level(state, 8),
-            ParameterValue::Float(0.7),
+            ParameterValue::Float(10.0_f32.powf(-6.0 / 20.0)),
             "the newly focused numeric field accepts and commits typed input"
         );
         assert_eq!(
@@ -2187,6 +2206,12 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         );
         let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
         assert_eq!(row_bounds.size.height, px(40.0));
+        let badge = visual
+            .debug_bounds(Box::leak(
+                format!("operator-select-{}-{operator}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("compact oscillator badge");
+        assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
         let fixed_id = 62 + operator * 3;
         let level_id = operator * 3 + 2;
         for parameter in [fixed_id + 1, level_id] {

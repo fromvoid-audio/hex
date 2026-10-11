@@ -260,3 +260,6 @@ mod tests {
         assert_eq!(color(PaletteRole::Primary), before.primary.packed());
     }
 }
+
+/// Dark inset surface for native device plots and contextual parameter displays.
+pub const DEVICE_DISPLAY_BACKGROUND: u32 = 0x17191f;

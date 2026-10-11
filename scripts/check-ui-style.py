@@ -16,12 +16,12 @@ widgets = (
     # Compact Operator composition components keep labels routed through
     # `theme::text` at their component boundary.
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
-    'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'control)',
+    'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
     'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
     'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
-    'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(',
+    'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(',
     'hex_widgets::curve_plot(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',

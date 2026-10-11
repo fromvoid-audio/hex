@@ -271,6 +271,24 @@ active drafts/popups while hidden, and retires on device removal or project
 replacement. Native visual acceptance remains with the user; none of this
 establishes Live visual, sound or control-law parity.
 
+The reference pass in Pulse2332 uses 12px A/B/C/D selection badges, 9px fixed
+markers inside 14px hit regions, and open 270-degree shared dial rails with a
+short value arc and needle. Micro-dial labels sit above the dial, with smaller
+values beside its lower edge. Idle readouts have no field border; focused and
+invalid editors retain their visible feedback. Compact selectors fit their 14px
+frames; the filter slope uses directly selectable 12/24 segments. LFO/filter
+rows reserve a selector column, while pitch/global reserve only a narrow icon
+column beside three dials. Those preview controls still own local state only.
+
+The center display uses a dark background and flat square-marked page tabs
+beneath the plot. Envelope labels sit above the supported six values. Times
+format as ms/s and amplitudes as dB without changing their pointer mappings or
+canonical units. The plot samples the existing original linear attack and
+exponential decay/release laws; it does not add a new envelope law. Unchanged
+geometry is cached, and fixed exponential factors avoid per-redraw powers.
+See [reference comparison](../research/observations/operator-visual-002.md) for
+provenance, measured scope and remaining appearance/latency gaps.
+
 Reusable density variants are permitted; variants must not encode a particular
 device identity. Native visual acceptance of the shared system remains with the
 user. Manual review should check the three-column arrangement and right-shell

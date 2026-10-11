@@ -2363,7 +2363,7 @@ fn parameter_control_with_presentation(
                     Some("bass mono" | "mono") => 64.0,
                     Some("bass mono audition") => 14.0,
                     Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => 18.0,
-                    Some("on" | "fix") => 18.0,
+                    Some("on" | "fix" | "") => 18.0,
                     Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
@@ -2408,7 +2408,15 @@ fn create_parameter_control(
 ) -> Option<()> {
     let descriptor = parameter.descriptor;
     let value = parameter.value;
-    let style = control_style();
+    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && presentation == ControlPresentation::InlineValue
+    {
+        let mut style = operator_panel::display_style();
+        style.text = style.accent;
+        style
+    } else {
+        control_style()
+    };
     let ControlText {
         label: display_label,
         codec: display_codec,
@@ -2529,7 +2537,9 @@ fn create_parameter_control(
         }
         (ParameterKind::Bool, ParameterValue::Bool(value)) => {
             let appearance = if presentation == ControlPresentation::CompactButton {
-                if display_label == Some("bass mono audition") {
+                if display_label == Some("") {
+                    DiscreteControlAppearance::MicroSquare
+                } else if display_label == Some("bass mono audition") {
                     DiscreteControlAppearance::CompactIconButton
                 } else {
                     DiscreteControlAppearance::CompactButton
