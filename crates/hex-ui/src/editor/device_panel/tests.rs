@@ -913,7 +913,10 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let shell_selector =
         Box::leak(format!("operator-shell-{}", instrument_id.value()).into_boxed_str());
     let shell = visual.debug_bounds(shell_selector).expect("operator shell");
-    assert_eq!(shell.size.width, px(210.0));
+    assert_eq!(
+        shell.size.width,
+        px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
+    );
     let envelope_graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("amp envelope is the default contextual view");
@@ -961,7 +964,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
             ))
             .expect("right-side shared micro dial");
-        assert_eq!(control.size.width, px(46.0));
+        assert_eq!(control.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
         assert_eq!(control.size.height, px(40.0));
     }
     // Three-dial sections start beside the narrow switch/icon column,
@@ -2259,44 +2262,54 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let shell = visual
-        .debug_bounds(Box::leak(
-            format!("operator-shell-{}", instrument_id.value()).into_boxed_str(),
-        ))
-        .expect("Operator shell");
-    assert_eq!(shell.size.width, px(210.0));
-    for operator in 0..4 {
-        let row = Box::leak(
-            format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
-        );
-        let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
-        assert_eq!(row_bounds.size.height, px(40.0));
-        let badge = visual
+    for width in [880.0, 1280.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        let shell = visual
             .debug_bounds(Box::leak(
-                format!("operator-select-{}-{operator}", instrument_id.value()).into_boxed_str(),
+                format!("operator-shell-{}", instrument_id.value()).into_boxed_str(),
             ))
-            .expect("compact oscillator badge");
-        assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
-        let fixed_id = 62 + operator * 3;
-        let level_id = operator * 3 + 2;
-        for parameter in [fixed_id + 1, level_id] {
-            let field = Box::leak(
-                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            .expect("Operator shell");
+        assert_eq!(
+            shell.size.width,
+            px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
+        );
+        for operator in 0..4 {
+            let row = Box::leak(
+                format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
             );
-            let bounds = visual.debug_bounds(field).expect("fixed-mode control");
-            assert_eq!(bounds.size.width, px(46.0));
+            let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
+            assert_eq!(row_bounds.size.height, px(40.0));
+            let badge = visual
+                .debug_bounds(Box::leak(
+                    format!("operator-select-{}-{operator}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .expect("compact oscillator badge");
+            assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
+            let fixed_id = 62 + operator * 3;
+            let level_id = operator * 3 + 2;
+            for parameter in [fixed_id + 1, level_id] {
+                let field = Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                );
+                let bounds = visual.debug_bounds(field).expect("fixed-mode control");
+                assert_eq!(bounds.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
+                assert!(
+                    bounds.origin.x + bounds.size.width
+                        <= row_bounds.origin.x + row_bounds.size.width
+                );
+            }
+            let toggle = Box::leak(
+                format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
+            );
+            let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
             assert!(
-                bounds.origin.x + bounds.size.width <= row_bounds.origin.x + row_bounds.size.width
+                toggle_bounds.origin.x + toggle_bounds.size.width
+                    <= row_bounds.origin.x + row_bounds.size.width
             );
         }
-        let toggle = Box::leak(
-            format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
-        );
-        let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
-        assert!(
-            toggle_bounds.origin.x + toggle_bounds.size.width
-                <= row_bounds.origin.x + row_bounds.size.width
-        );
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
@@ -2431,6 +2444,22 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         assert!(bounds.origin.x >= body.origin.x);
         assert!(bounds.origin.x + bounds.size.width <= body.origin.x + body.size.width);
     }
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-2-pan-reset", device.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "balance uses shared pan semantics"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-10-pan-reset", device.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "mid-side bipolar is not automatically pan"
+    );
     let mode_knob = Box::leak(
         format!(
             "device-{}-parameter-{}-knob",

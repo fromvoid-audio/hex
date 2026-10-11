@@ -73,3 +73,34 @@ Reference images are private evidence and are not shipped or committed.
 The original native review window remains available to the user; it predates the
 Mini/wobble/semantic repairs. Updated native acceptance must use the later fixture.
 The fixture columns start at normalized minimum/middle/maximum and are editable.
+
+## integrated source evidence and native checklist
+
+44 widget tests pass, including corner bounds/hit regions, normalized/log/bipolar
+rails, pan marker default reset/disabled behavior and fixed press/drag/type bounds.
+399 UI-feature tests pass (2 existing ignored); strict widget/UI-feature Clippy and
+architecture, UI style and GPUI patch guards pass. Operator consumes exported
+58px tile metrics: shell246, preview264, frame832 logical pixels. Its fixed rows
+are checked at880 and1280px windows, without shrinking controls. Inline routing
+fields remain46px. Utility Balance explicitly selects Pan through its display
+codec; MidSide stays ReadoutGap, despite both having bipolar domains. EQ8 Mini
+and existing Compact effect panels pass their integrated source tests.
+
+The separately named `artifacts/hex-knob-review-v2.app` contains generic
+five-row density/semantic examples and does not replace the user's original
+open review app. Native review must establish:
+
+1. Repeated down/hold/drag/release on each row: no dial/readout movement; Shift,
+   release outside, typing a long draft, Enter and Escape still work.
+2. Complete Mini "amount" label, legible corners and values at narrow/wide sizes.
+   Columns start at normalized min/mid/max and remain independently editable.
+3. Pan center points up; left/right fill leaves center neutral; triangle resets
+   to neutral. BottomGap and ReadoutGap openings remain visibly distinct.
+4. Actual Operator Coarse/Fine/Level, EQ8 Mini and Utility Balance plus another
+   Compact effect at narrow/wide sizes: labels/hits/focus/typing/reset and Undo.
+5. Installed corresponding Live knobs at min/middle/max, including pan triangle,
+   bottom-gap Return/send class and Mini label convention. Compare same scale.
+
+Full final-commit local CI and dependency PR155/156 acceptance are required
+separately. This source evidence does not establish native event delivery, exact
+Live geometry, reference transfer laws, listening or physical audio deadlines.

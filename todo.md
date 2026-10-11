@@ -2067,7 +2067,8 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   corner and wobble regressions fail against their original behavior.
   Isolated same-size native before/after clicked/typed/dragged captures retained.
   Micro/Mini58x40/18px shared metrics, visible labels and explicit semantic dial
-  layouts are implemented; Operator layout integration and
-  final full local CI. Actual-device narrow/wide review and Live endpoint sequence
+  layouts and Operator shared-metric integration are implemented.44widget and
+  399UI-feature tests pass (2existingignored), strict targeted Clippy/guards pass;
+  final full local CI remains required. Actual-device narrow/wide review and Live endpoint sequence
   and exact pan/Return reference remain open; this is implementation evidence,
   not completed acceptance.

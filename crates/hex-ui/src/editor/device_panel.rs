@@ -13,7 +13,7 @@ use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
-    ControlStyle, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
+    ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
     compact_device_frame, device_frame,
@@ -2370,8 +2370,10 @@ fn parameter_control_with_presentation(
             }
             let (width, height) = match presentation {
                 ControlPresentation::CompactDial => (64.0, 52.0),
-                ControlPresentation::MiniDial => (46.0, 40.0),
-                ControlPresentation::MicroDial => (46.0, 40.0),
+                ControlPresentation::MiniDial | ControlPresentation::MicroDial => (
+                    hex_widgets::MICRO_DIAL_WIDTH,
+                    hex_widgets::MICRO_DIAL_HEIGHT,
+                ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 _ => (136.0, 26.0),
             };
@@ -2507,7 +2509,14 @@ fn create_parameter_control(
                 style,
             )
             .ok()?
-            .with_appearance(appearance);
+            .with_appearance(appearance)
+            .with_dial_layout(
+                if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
+                    DialLayout::Pan
+                } else {
+                    DialLayout::ReadoutGap
+                },
+            );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,

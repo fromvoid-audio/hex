@@ -403,7 +403,10 @@ handling and the separately reviewed cursor lifecycle remain intact.
 The MicroDial and MiniDial label-above tiles are58x40logical pixels with an18px
 dial; the width follows the measured installed Live Coarse class. Mini labels
 remain visible. Compact and Standard footprints remain unchanged. Device layouts
-consume exported shared metrics. Pointer capture has absolute positioning so
+consume exported shared metrics. Operator shell/preview/frame widths are derived
+from those tiles; inline routing fields retain46px. Utility Balance chooses Pan
+by its display codec; other bipolar controls retain their own orientation.
+Pointer capture has absolute positioning so
 pressing cannot insert a flex gap or shift the dial/readout.
 The isolated `cargo run -p hex-ui --example knob_review` fixture has no audio,
 project or settings I/O and shows all densities at normalized minimum/middle/

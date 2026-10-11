@@ -1332,10 +1332,12 @@ impl Element for GestureCaptureElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
         // Capture installs window listeners only; it must never enter flex flow
         // or add a gap/shrink the dial while a pointer is held.
-        style.position = gpui::Position::Absolute;
+        let mut style = Style {
+            position: gpui::Position::Absolute,
+            ..Style::default()
+        };
         style.size.width = px(0.0).into();
         style.size.height = px(0.0).into();
         (window.request_layout(style, [], cx), ())
