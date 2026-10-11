@@ -541,6 +541,10 @@ remain separate from time editing and DSP.
   [page delivery](docs/page-delivery.md) and [performance](docs/performance.md).
 - [ ] **project recovery** — missing-asset relinking, automatic crash journal and
   interrupted-write recovery; broader native Save/Save As/Session round trips.
+  Pulse25/PR151 implements explicit recovery/relinking and automatic canonical
+  checkpoints; untitled retains only the latest project, no history. Headless
+  restart/round-trip tests pass; full local/native gates remain open. Contract:
+  [project recovery](docs/project-recovery.md).
 - [ ] **recording and MIDI I/O** — audio input/monitoring/arming, recoverable recording,
   MIDI controllers/expression/MPE, input/output, capture and Session-to-Arrangement.
 - [ ] **musical editing** — real clip gain/pitch/warp, beat-anchored audio, source
@@ -2044,6 +2048,14 @@ reported parameter-triggered playback stop remains unconfirmed and undiagnosed.
 The reported B-oscillator mixing behavior is a separate, unconfirmed observation.
 See [device controls](docs/device-controls.md).
 
+## 11 October 2026 — header build identity (Pulse #2338)
+
+Focused PR #148 adds compile-time package version/source revision at the far
+top right of canonical/loading and demo headers. Dirty/unavailable identities
+are explicit; the centered project title reserves symmetric space. Existing
+minimum-window rendered coverage checks title/readout clearance. Local CI and
+user native visual/resize acceptance are recorded in Pulse and the PR. Operator
+visual refinement remains a separate PR.
 
 ## 11 october 2026 — pulse2332: Operator reference refinement
 
@@ -2182,3 +2194,89 @@ Intentionallegacy364checks retained; fullvalidation stillpending.
 
 Operator-enablec1501a2 fullCIsteps1–12pass; step13rejects unusedmut innewUItest.
 The single token is removed, with strictwarnings preserved; finalCIstillpending.
+
+## 11 October 2026 — Pulse #2408 stable optimized test delivery
+
+PR #167 adds the native optimized delivery wrapper to the existing bundle entry
+point: exact full CI gate, Cargo artifact resolution, stable primary-checkout app,
+identity/process guards, staged verified replacement, retained rollback/journal,
+installed receipt and finite checklist. Delivery tests join the shared local CI
+runner. No projects/settings/media or historical review apps are removed.
+Source verification, actual optimized post-merge delivery and exact-build user
+approval are recorded on Pulse #2408; this entry alone claims none of them.
+## 11 October 2026 — native layout review gallery (Pulse2355 / PR163)
+
+- Source candidate: isolated `hex-ui/examples/layout_review` Rust/GPUI catalog
+  with seven device-layout families, labelled state previews and disposable
+  pointer/keyboard selection. Reuses shared frames/tabs without production
+  Operator/knob/harmonic changes. See `docs/layout-review.md` for inventory,
+  provenance and finite acceptance.
+- Four example tests pass (two rendered gallery regressions), with targeted
+  strict Clippy and a native example build. Final exact-commit local CI evidence
+  is recorded on PR163/Pulse2355. Separate native screenshots and user visual
+  acceptance remain open; no native input automation or app launch performed.
+
+### Gallery composition refinement — 11 October 2026
+
+- Direct user Operator/Wavetable examples add light rounded hosts with matching
+  idle headers, rounded darker sections merging on focus, header-intruding
+  inspector screens with host-colored surrounds, raised screen tabs, joined
+  screen/control silhouettes and separate tall/short sections. Eleven bounded
+  families; independent device-header/section/page selection.
+- Prior `35c6541` app/CI are superseded. Its focused-row fill report was incorrect;
+  the residual darker focus branch is corrected in the expanded source. Updated
+  checks now pass: six example tests (four rendered regressions), strict Clippy
+  and native build. Final exact-commit fullCI evidence is retained on PR163/
+  Pulse2355. Native screenshots and user reference comparison remain required.
+
+### Gallery selection / disabled correction — 11 October 2026
+
+- User accepts the composition direction; device focus and selection share the
+  highlighted header, without a white device outline or separate focus preview.
+- Utility reference adds orange enabled / dark disabled activators and muted
+  section labels, readouts and display guides across the fixture catalog.
+  Disabled appearance overrides retained focus/selection; input refusal and
+  geometry remain covered by the existing eleven-family regression.
+- Prior `ad51d79` app/CI are superseded. Seven example tests, strict Clippy and native build pass. Final exact-source
+  full local CI evidence is retained on PR163/Pulse2355.
+  Updated native visual acceptance remains open. No production DSP changes.
+
+### Gallery raised tabs / display refinement — 11 October 2026
+
+- User accepts stable tabs and the inspector surround's header intrusion.
+- Dark displays retain their fill without a cyan selected outline; static
+  dividers are gray. Raised extrusion has rounded lower corners; inactive page
+  rectangles float in header space, preserving fixed targets/page ownership.
+- Existing page regression checks visible separation before/after page switches.
+  Prior `6790769` app/CI are superseded; renewed checks/native acceptance pending.
+
+### Gallery inward corners / stable-tab input — 11 October 2026
+
+- User confirms dark display, device focus outline and disabled styling fixes.
+- Raised tabs now use inverse corner cutouts at the tab/screen junction and
+  centered labels. Existing geometry regression checks junctions/label bounds.
+- Stable tabs share one active-page selection across mouse and keyboard
+  navigation instead of retaining an old mouse highlight alongside focus.
+  Mixed-input regression added; disabled activation stays refused.
+- Prior `aebc618` app/CI are superseded; renewed source/build validation and user
+  confirmation of these remaining changes are pending.
+
+## 11 October 2026 — Pulse #2411 assembly repair / PR168
+
+The actual #2408 post-action failed before activation because staging created
+Contents/MacOS without its Contents parent. The optimized executable built, and
+the previous stable app was preserved. PR168 creates that parent and adds a
+production orchestration regression covering assembly, reported custom-target
+executable, licenses, CI/checklist/receipts, replacement and prior-app rollback.
+The regression fails with the original ENOENT and passes after the repair.
+Full final local CI, actual stable delivery and exact-build owner approval are
+recorded in Pulse; this entry does not claim native acceptance.
+
+
+11 October 2026 — Pulse #2413 / PR169: native signature verification now checks
+the linker-signed executable separately from the intentionally unsigned bundle
+resource seal. Complete receipt inventory verification remains required, and
+signature validation participates in activation/recovery rollback. A real macOS
+linker/codesign regression reproduces the prior failure and checks resource/code
+tampering. Full exact-source CI, actual stable optimized delivery and combined
+owner acceptance remain pending; prior application untouched.
