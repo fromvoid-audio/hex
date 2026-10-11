@@ -63,6 +63,21 @@ Shared typed live-effect cleanup now covers Return as well as Track preview
 entries. Actual Return device removal regression failed before the fix; final
 checks and full local CI are recorded with PR138. Native sanity check pending.
 
+## lattice gate — pulse 2313
+
+An original stereo-linked hysteresis `hex.gate` uses bounded opaque state and
+the shared effect catalog. It defines threshold/return, floor, attack, hold and
+release behavior, preserves compatible live runtime history, and declares zero
+lookahead and zero output tail. Targeted checks pass: all 150 `hex-devices`
+tests; 225 `hex-engine` tests (3 ignored); 17 storage unit tests plus 23
+persistence tests; and the `hex-audio` allocation-probe suite. Track/Return PCM,
+live history transfer, generic save/load/undo, catalog registration and both
+initial and edited callback admission/render are covered; the Gate callback
+probe reports zero total and signed-net allocations. Focused Clippy, formatting
+and the architecture guard pass. This is an original processor, not a numeric or
+visual Ableton parity claim. Root owns full local CI and PR review/merge; native
+panel and listening acceptance remain open. See [Gate](docs/gate.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets
