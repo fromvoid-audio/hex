@@ -956,7 +956,8 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..12 {
+    for field in operator_panel::preview::Field::ALL {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -967,7 +968,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [2, 5] {
+    for field in [
+        operator_panel::preview::Field::PitchEnvelope,
+        operator_panel::preview::Field::Time,
+    ] {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -2337,10 +2342,29 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         );
     }
     for (title, fields) in [
-        ("lfo", vec![0, 1]),
-        ("filter", vec![2, 3]),
-        ("pitch env", vec![4, 5, 6]),
-        ("global", vec![7, 8, 9]),
+        (
+            "filter",
+            vec![
+                operator_panel::preview::Field::FilterFrequency,
+                operator_panel::preview::Field::FilterResonance,
+            ],
+        ),
+        (
+            "pitch env",
+            vec![
+                operator_panel::preview::Field::PitchEnvelope,
+                operator_panel::preview::Field::Spread,
+                operator_panel::preview::Field::Transpose,
+            ],
+        ),
+        (
+            "global",
+            vec![
+                operator_panel::preview::Field::Time,
+                operator_panel::preview::Field::Tone,
+                operator_panel::preview::Field::Volume,
+            ],
+        ),
     ] {
         let row = visual
             .debug_bounds(Box::leak(
@@ -2348,6 +2372,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             ))
             .expect("preview row");
         for field in fields {
+            let field = field as usize;
             let control = visual
                 .debug_bounds(Box::leak(
                     format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -2359,6 +2384,24 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 "preview controls need an inset from the dark row edges"
             );
         }
+    }
+    // LFO uses canonical controls after PR154, with the same accepted row inset.
+    let lfo_row = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("canonical LFO row");
+    for parameter in [82, 85, 87] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("canonical LFO control");
+        assert!(control.origin.x >= lfo_row.origin.x + px(4.0));
+        assert!(
+            control.origin.x + control.size.width
+                <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
+        );
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.

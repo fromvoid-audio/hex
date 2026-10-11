@@ -150,3 +150,36 @@ The post-repair engine/capture/preroll run, strict Clippy, UI fixtures, callback
 allocation probes and full final exact-commit/digest local CI remain pending.
 User native interaction/listening and physical deadline evidence remain separate.
 No numerical Live transition or CPU parity is claimed.
+
+## Post-repair focused evidence — 11 October 2026
+
+At clean commit `63f6bb6a8a7e0152f9f070d07c43f4d820eac13b`, source digest
+`882ddfdf95ee1e2192a00ff4ef384c8e4c3c72afb06b5b126a70e3af13e17994`,
+ten continuation, nine capture and twelve preroll tests passed on the default
+thread stack (two existing preroll tests ignored); strict engine/device Clippy
+passed. Measured sampler size is 344 bytes, transition slot 96 bytes, and two
+256-slot tables consume 49,152 payload bytes per runtime. The fixture's actual
+20,683,840 bytes are below admitted 20,685,888 and unchanged 33,554,432-byte cap.
+Evidence: `artifacts/local-ci/operator-enable-postrepair-20261011/summary.json`.
+The mutable-specific filter selected zero tests; that step is not acceptance.
+
+After a two-line LFO-tab Owner argument repair, clean `3948b38` ran all five
+mutable LFO tests and three callback probes successfully. Mutable runtime is
+3,920 bytes, twins 7,840 against unchanged 8,192-byte cap, proof eight bytes and
+sixteen voices. Analytic, feedback and free/synced LFO probes cover held/release
+coefficient reversals and assert zero total allocation plus zero signed-net
+count/bytes, with construction/oracles/reclamation outside measured scopes.
+Evidence: `artifacts/local-ci/operator-enable-ui-repair-20261011/summary.json`.
+UI filters in that run omitted `ui-test-support` and selected zero; they do not
+establish UI acceptance.
+
+With the feature enabled and an Envelope-preserving fixture correction, clean
+`9ea80fa` ran both canonical badge/history/save/reopen and pending/refusal tests
+successfully. Both navigation fixtures failed because PR154 removed local LFO
+placeholders and changed the preview enum indices. PR156's owner confirmed this
+source evidence against frozen `9bbdad8`; its runtime navigation hunks remain.
+The focused semantic-selector fixture repair, accepted inset in the canonical
+LFO row and updated descriptor inventory are source-only and await rerun.
+Evidence: `artifacts/local-ci/operator-enable-ui-expectation-20261011/summary.json`.
+All focused runs are partial; full final exact-source CI and native/listening
+acceptance remain open. The Mac build lease was explicitly released.

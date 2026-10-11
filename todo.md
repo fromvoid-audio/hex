@@ -2127,3 +2127,16 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+11 October 2026 Operator-enable focused follow-up: ten engine continuation,
+nine capture and twelve preroll tests pass on default test stacks after the
+control-allocation repair; strict engine/device Clippy passes at 63f6bb6.
+Measured tables are 49,152 bytes/runtime with 344-byte samplers; existing caps
+remain unchanged. At 3948b38 all five mutable LFO tests and three held/release
+reversal callback probes pass with zero total and signed-net allocations. At
+9ea80fa both canonical badge/history/save and pending/refusal UI tests pass with
+ui-test-support. Navigation fixtures expose obsolete preview indices from the
+PR154/156 merge; owner-confirmed semantic selector repair, canonical LFO inset
+and enable descriptor inventory are prepared, unrun. Zero-filter UI invocations
+are not acceptance. Full exact final CI, review/merge and user native/listening
+remain open; see docs/operator-enable-continuation.md for retained evidence.

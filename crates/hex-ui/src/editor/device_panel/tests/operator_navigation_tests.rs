@@ -1,5 +1,6 @@
 use super::*;
 use gpui::Focusable;
+use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -163,7 +164,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in 0..3 {
+    for switch in [Switch::Filter, Switch::Pitch] {
+        let switch = switch.index();
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",
@@ -191,7 +193,11 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     );
     // Click the Time tile rather than the icon, then activate the rail by keyboard.
     let time = visual
-        .debug_bounds(selector(format!("operator-preview-{}-7", device.value())))
+        .debug_bounds(selector(format!(
+            "operator-preview-{}-{}",
+            device.value(),
+            Field::Time as usize
+        )))
         .unwrap();
     visual.simulate_click(
         point(time.center().x, time.origin.y + px(3.0)),
@@ -224,8 +230,9 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     let fine = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-11-knob",
-            device.value()
+            "operator-preview-{}-{}-knob",
+            device.value(),
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
@@ -298,7 +305,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
             .debug_bounds(selector(format!(
                 "operator-preview-{}-{}-knob",
                 device.value(),
-                10 + operator
+                Field::FineA as usize + operator
             )))
             .unwrap();
         visual.simulate_click(fine.center(), Modifiers::default());
@@ -369,8 +376,9 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     });
     let value = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-11-value",
-            device.value()
+            "operator-preview-{}-{}-value",
+            device.value(),
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(value.center(), Modifiers::default());

@@ -1020,6 +1020,7 @@ pub(super) fn lfo_summary(
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
         .h(px(40.0))
+        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(2.0));
@@ -1077,6 +1078,7 @@ mod tests {
         }
         exposed.extend([61]);
         exposed.extend(82..=92);
+        exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
@@ -1102,9 +1104,9 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 88);
+        assert_eq!(exposed.len(), 92);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&92));
+        assert_eq!(exposed.last(), Some(&516));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }
