@@ -56,7 +56,7 @@ impl EditorView {
                 Err(_) => break,
             }
         }
-        visible_change |= self.poll_export();
+        visible_change |= self.poll_export(cx);
         while let Some(request) = self.pending_requests.pop_front() {
             match self.service.submit(request) {
                 Ok(()) => {

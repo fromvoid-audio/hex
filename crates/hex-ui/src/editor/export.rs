@@ -113,7 +113,7 @@ impl EditorView {
                         ExportSignal::Stems(stems),
                         cx,
                     ),
-                    Ok(2 | 3 | 4) => {
+                    Ok(2..=4) => {
                         view.export_dialog_open = false;
                         view.error = Some("export output selection is empty".into());
                     }
@@ -207,6 +207,7 @@ impl EditorView {
                         }) {
                             view.export_pending = true;
                             view.export_control = Some(control);
+                            view.export_window = Some(handle);
                             view.status = "export requested".into();
                             view.error = None;
                         }
@@ -218,7 +219,7 @@ impl EditorView {
         .detach();
     }
 
-    pub(super) fn poll_export(&mut self) -> bool {
+    pub(super) fn poll_export(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
         if self.export_pending {
             if let Some(control) = &self.export_control {
@@ -241,6 +242,32 @@ impl EditorView {
             Ok(event) => {
                 self.export_pending = false;
                 self.export_control = None;
+                // Native message bodies preserve case-sensitive recovery paths;
+                // status chrome normalizes app text through theme::text.
+                let recovery_message = match &event.result {
+                    Ok(report) => report
+                        .recovery_path
+                        .as_ref()
+                        .map(|path| format!("previous file is preserved at {}", path.display())),
+                    Err(error) => Some(error.clone()),
+                };
+                if let (Some(handle), Some(message)) = (self.export_window.take(), recovery_message)
+                {
+                    if let Ok(response) = cx.update_window(handle, |_, window, cx| {
+                        window.prompt(
+                            PromptLevel::Info,
+                            "export result",
+                            Some(&message),
+                            &[PromptButton::new("ok")],
+                            cx,
+                        )
+                    }) {
+                        cx.spawn(async move |_, _| {
+                            let _ = response.await;
+                        })
+                        .detach();
+                    }
+                }
                 match event.result {
                     Ok(report) => {
                         self.status = format!(
@@ -254,13 +281,14 @@ impl EditorView {
                         );
                         self.error = None;
                     }
-                    Err(error) => self.error = Some(error.to_lowercase()),
+                    Err(error) => self.error = Some(error),
                 }
                 true
             }
             Err(TryRecvError::Disconnected) if self.export_pending => {
                 self.export_pending = false;
                 self.export_control = None;
+                self.export_window = None;
                 self.error = Some("export worker stopped".into());
                 true
             }
