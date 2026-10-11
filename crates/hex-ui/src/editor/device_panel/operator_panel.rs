@@ -20,6 +20,8 @@ const BODY_HEIGHT: f32 = 168.0;
 const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
+// Explicit user preference: the Operator center is black, independently of side rails.
+const DISPLAY_BACKGROUND: u32 = 0x000000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct OperatorPanelState {
@@ -136,7 +138,7 @@ pub(super) fn render_body(
                 .flex_1()
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
-                .bg(rgb(theme::DEVICE_DISPLAY_BACKGROUND))
+                .bg(rgb(DISPLAY_BACKGROUND))
                 .relative()
                 .h_full()
                 .flex()
@@ -834,8 +836,8 @@ fn value(
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
     let mut style = super::control_style();
-    style.background = theme::DEVICE_DISPLAY_BACKGROUND;
-    style.rail = 0x242830;
+    style.background = DISPLAY_BACKGROUND;
+    style.rail = 0x242424;
     style
 }
 
