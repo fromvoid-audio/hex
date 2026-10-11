@@ -10,13 +10,13 @@ The standalone and registered bounded self-feedback contracts are documented in
 [Operator feedback](operator-feedback.md). Filters, further waveform controls,
 transport-specific behavior and remaining Operator behavior remain separate work.
 
-`hex.instrument.operator`, state version5, owns exactly320 bytes: the original
+`hex.instrument.operator`, state version6, owns exactly320 bytes: the original
 224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32
 waveform choices (version2's 240-byte prefix), then four 12-byte tuning records.
 Each tuning record stores a u32 fixed flag, f32 frequency in Hz, and f32 multiplier.
-Version1 migration validates and preserves its prefix bit-for-bit (including
+Version1 migration validates and preserves its in-range prefix bit-for-bit (including
 signed zero), selects sine, and defaults every oscillator to ratio tuning.
-Version2 migration preserves its full 240-byte prefix and defaults ratio tuning.
+Version2 migration preserves its in-range 240-byte prefix and defaults ratio tuning.
 The first12 fields are ratio, level and phase in
 operator order; the next16 are source-major modulation depths, including four
 reserved zero diagonal entries; the next4 are carrier weights. The final24 fields of the original prefix are
@@ -46,17 +46,23 @@ readback to `custom` unless it exactly matches a named layout. See the
 Every decode, migration and patch validates all fields and the acyclic routing
 graph. Unknown types/versions, wrong lengths, nonfinite values, invalid ranges,
 invalid diagonal routing and cycles are refused. Patches return a new opaque state, leaving
-the original intact on failure. Migration accepts versions1–5. Versions1–3
-preserve their full existing prefix byte-for-byte and append neutral amplitude-
+the original intact on failure. Migration accepts versions1–6. Versions1–3
+preserve their in-range existing prefix byte-for-byte and append neutral amplitude-
 velocity amounts; version3 fixed tuning remains intact. Version4 is validated
-as an exact 304-byte prefix and migrates with neutral feedback. Version5 validates
-and preserves all 320 bytes. Inactive fixed and feedback settings are validated too. See the
+as an exact 304-byte prefix and migrates with neutral feedback. Versions5–6 validate the same 320-byte layout. Version6 changes the time
+domains without adding fields. Valid legacy1–5 Attack/Decay/Release values up to
+120s clamp to attack[0,20]s and decay/release[0.001,60]s on decode and migration, without a notice;
+nonfinite, negative or above120s legacy values are refused. Other fields and
+prefix bytes are preserved. Version6 is strict and refuses values outside the new
+bounds. Opaque legacy state can remain in a project snapshot until a canonical
+parameter edit writes version6; its control readback and prepared audio already
+use clamped durations, including after save/reopen. Inactive fixed and feedback settings are validated too. See the
 [fixed tuning contract](operator-fixed-tuning.md).
 Storage needs no special Operator branch: this uses the existing opaque
 native-device state contract.
 
 Oscillator/routing domains reuse FM4's exact descriptors. Envelope amplitudes
-are linear values in[0,1]; times are seconds in[0,120]. Original defaults are
+are linear values in[0,1]; attack is seconds in[0,20] and decay/release in[0.001,60]. Original defaults are
 initial0, peak1, sustain0.7, attack0.005s, decay0.1s and release0.1s for each
 operator. These bounds/defaults are Hex choices. The public Live manual supplies
 the control inventory, not measured transfer curves; see the
