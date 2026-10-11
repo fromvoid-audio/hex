@@ -1414,6 +1414,10 @@ pub enum CursorStyle {
     /// The default cursor
     Arrow,
 
+    /// A persistent invisible cursor for a window-scoped pointer adjustment.
+    /// macOS uses a transparent image, without changing NSCursor hide counts.
+    Hidden,
+
     /// A text input cursor
     /// corresponds to the CSS cursor value `text`
     IBeam,

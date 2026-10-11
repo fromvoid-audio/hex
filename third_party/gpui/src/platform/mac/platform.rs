@@ -23,7 +23,7 @@ use cocoa::{
     },
     base::{BOOL, NO, YES, id, nil, selector},
     foundation::{
-        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange,
+        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
         NSSize, NSString, NSUInteger, NSURL,
     },
 };
@@ -69,6 +69,28 @@ const NSUTF8StringEncoding: NSUInteger = 4;
 const MAC_PLATFORM_IVAR: &str = "platform";
 static mut APP_CLASS: *const Class = ptr::null();
 static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
+
+/// A cached transparent cursor avoids NSCursor's process-wide hide count.
+fn make_hidden_cursor() -> Option<StrongPtr> {
+    unsafe {
+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(1.0, 1.0));
+        if image == nil {
+            return None;
+        }
+        let image = StrongPtr::new(image);
+        let _: () = msg_send![*image, lockFocus];
+        let color: id = msg_send![class!(NSColor), clearColor];
+        let _: () = msg_send![color, set];
+        let _: () = msg_send![class!(NSBezierPath), fillRect: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0))];
+        let _: () = msg_send![*image, unlockFocus];
+        let allocated: id = msg_send![class!(NSCursor), alloc];
+        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(0.0, 0.0)];
+        if cursor == nil {
+            return None;
+        }
+        Some(StrongPtr::new(cursor))
+    }
+}
 
 /// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
 fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
@@ -245,6 +267,7 @@ pub(crate) struct MacPlatformState {
     dock_menu: Option<id>,
     menus: Option<Vec<OwnedMenu>>,
     keyboard_mapper: Rc<MacKeyboardMapper>,
+    hidden_cursor: Option<StrongPtr>,
     resize_left_bracket_cursor: Option<StrongPtr>,
     resize_right_bracket_cursor: Option<StrongPtr>,
 }
@@ -294,6 +317,7 @@ impl MacPlatform {
             on_keyboard_layout_change: None,
             menus: None,
             keyboard_mapper,
+            hidden_cursor: if headless { None } else { make_hidden_cursor() },
             resize_left_bracket_cursor,
             resize_right_bracket_cursor,
         }))
@@ -1050,6 +1074,7 @@ impl Platform for MacPlatform {
             let bracket_cursor = {
                 let state = self.0.lock();
                 match style {
+                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::ResizeLeftBracket => state
                         .resize_left_bracket_cursor
                         .as_ref()
@@ -1062,7 +1087,7 @@ impl Platform for MacPlatform {
                 }
             };
             let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
-                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
+                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
                 CursorStyle::IBeam => msg_send![class!(NSCursor), IBeamCursor],
                 CursorStyle::Crosshair => msg_send![class!(NSCursor), crosshairCursor],
                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],

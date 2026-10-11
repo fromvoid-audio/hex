@@ -91,6 +91,10 @@ pub(crate) struct TestPrompts {
 }
 
 impl TestPlatform {
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        *self.active_cursor.lock()
+    }
+
     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
         #[cfg(target_os = "windows")]
         let bitmap_factory = unsafe {

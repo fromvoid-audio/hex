@@ -346,3 +346,43 @@ code. The rendered regression covers valid and invalid input, no-change reset,
 post-reset movement, external synchronization and keyboard adjustment. Native
 pointer sanity acceptance remains for the user; this is not an Operator playback
 stop diagnosis.
+
+### value-field pointer lifecycle — 11 October 2026
+
+Pulse2340 / [PR155](https://github.com/PORTALSURFER/hex/pull/155) keeps the arrow
+pointer over shared rectangular numeric fields, including focused text editing.
+The insertion caret, validated typing, vertical adjustment, Shift precision,
+reset and canonical gesture/Undo protocol remain available. A stationary click
+never hides the pointer. Crossing the existing three-pixel drag threshold hides
+it for value-field adjustment, including horizontal movement at an unchanged
+value and adjustment at a domain bound. Knob/slider control surfaces retain their
+existing pointer styles.
+
+The frame-owned GPUI cursor override restores on release (including outside the
+window), Escape, lost button state, disable, focus/window/application loss,
+widget removal and window removal/destruction. macOS uses a cached transparent
+NSCursor instead of incrementing a process-wide hide count. Removing a widget
+clears the override with the next frame; deactivation and window removal restore
+immediately. Other platforms currently fall back to arrow; macOS is the accepted
+initial platform and this is not a cross-platform invisibility claim.
+
+Automated evidence: all39 widget tests pass. Two new rendered regressions cover
+hover/click/typing, threshold crossing without a value change, outside release,
+Escape, button-state loss, disable, blur, deactivation, root replacement and
+window removal. The hover regression fails with the original I-beam behavior.
+Existing sensitivity, reset, text/IME validation and gesture-phase tests remain.
+The test-platform readout establishes cursor delivery and override ownership,
+not physical cursor appearance or native event delivery.
+
+Native acceptance reported by the user on 11 October 2026: arrow on value
+fields, hidden during dragging, reliable restoration, typing and Undo all pass.
+The user explicitly authorized merging PR155. Checklist supplied for testing:
+1. Hover and click numeric fields in Utility and Operator: arrow pointer, working
+   typing/selection/insertion caret; Enter validates and Escape cancels.
+2. Drag vertically, change Shift during drag, reach a value bound, and release
+   outside the field and window: pointer hidden only during adjustment; restored
+   afterward; one Undo restores the pre-drag value.
+3. Repeat with Escape, focus loss, application switching, window closing and
+   device removal. Confirm the arrow stays visible afterward in this and another
+   window/application. Preserve unsaved user projects; use an isolated fixture or
+   review app. Full local CI and native appearance/delivery are separate gates.

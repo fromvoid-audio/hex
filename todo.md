@@ -2046,3 +2046,16 @@ authoring negative controls fail as expected; full exact-final local CI is the
 merge gate. Native visual, pointer and
 listening acceptance remains with the user, separately from source checks.
 See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
+
+## 11 October 2026 — shared value-field pointer (Pulse2340 / PR155)
+
+- Shared numeric readouts retain arrow hover/typing; active value scrubs request
+  a cached invisible macOS cursor after the existing drag threshold.
+- Frame/window restoration owns no platform hide count. Rendered regressions
+  cover outside release, cancellation, button loss, blur, deactivation, disable,
+  root replacement and window removal. All39 widget tests pass; the hover test
+  fails with the original I-beam behavior. Existing gesture/input tests remain.
+- All16 original exact-source local CI checks passed on clean c9219e2. On
+  11 October the user reported native arrow/hidden/restored pointer behavior,
+  typing and Undo passed and requested merge. Main integration is revalidated
+  before merging. The supplied checklist is in docs/device-controls.md.
