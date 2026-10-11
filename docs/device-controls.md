@@ -433,6 +433,7 @@ complete Oscillator-view parity. Full local CI and native pointer comparison pas
 Native keyboard activation remains inconclusive and is a required open acceptance
 gate; PR156 stays draft. Human rejected the initial dark outer rails; gray
 Background/Hover left and Surface right now surround the explicitly requested
-black center. Corrected native comparison/keyboard acceptance and final CI remain
-pending; disk pressure blocked the final CI attempt. Crowded matrix readouts are
+black center. Corrected native pointer/color captures are retained. Direct human
+keyboard/color acceptance and final CI remain pending; failed/interrupted disk
+pressure runs do not qualify. Crowded matrix readouts are
 tracked separately as2352.

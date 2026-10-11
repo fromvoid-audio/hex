@@ -13,8 +13,9 @@ confirm fixed positions and context selection without view-only revision drift.
 Native keyboard acceptance remains inconclusive and blocks task completion/merge;
 PR156 stays draft. Human rejected blanket dark-blue side rails; source now restores
 gray outer roles around the explicitly requested black center. Corrected native
-color/keyboard acceptance and final fullCI remain required; machine disk pressure
-blocked the final CI attempt, and no partial run qualifies. Crowded routing readouts are separate Pulse2352.
+captures confirm gray/black pixel hierarchy and repeated navigation/FineB/Routing
+pointer behavior. Direct human physical keyboard/color acceptance is pending,
+and final fullCI waits for the Mac build lease; no partial run qualifies. Crowded routing readouts are separate Pulse2352.
 
 ## 100-track Lattice effects profile — pulse2317
 
