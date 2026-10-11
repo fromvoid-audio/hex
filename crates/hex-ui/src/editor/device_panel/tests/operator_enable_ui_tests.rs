@@ -91,7 +91,7 @@ fn operator_enable_rapid_clicks_use_pending_value_and_queue_refusal_restores_it(
 ) {
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let mut visual = VisualTestContext::from_window(handle, cx);
+    let visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(cx, |view, _| {
         assert!(operator_panel::toggle_enable(view, device, 0));

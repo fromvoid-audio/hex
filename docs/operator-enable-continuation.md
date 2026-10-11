@@ -304,3 +304,12 @@ canonical enable values survive preset selection, alongside the existing
 payload[288..] equality and exactUndo/Redo states. All intentional v7prefix,
 migration and malformed-length364checks remain unchanged. Runtime source is
 unchanged; complete preset integration then full16 remain required.
+
+
+Atc1501a2 preset integration4/4passes and full16 reaches step13 after all
+workspace/export/UI tests, audio/stream allocation probes and workspace/export
+Clippy pass. UI-feature Clippy rejects one unnecessary mut in the new rapid-click
+fixture; removing that token changes no runtime/test semantics and retains strict
+warnings. Full run operator-enable-final-preset-20261011 has clean unchanged
+digest0a24fbbef5fb4cb73c5290a4fdde7e892be4b60755598a0916d07afe57a99129;
+steps14–16 were not run. Exact featureClippy and fresh full16 remain required.

@@ -2178,3 +2178,7 @@ Operator-enable6dd02b5 reducedbank1/Session32pass; fullCI nextstops on a stale
 preset-state length364→380. Existing preset fixture nowchecks v8 and preserves
 authoredfalse/true/true/trueenable flags plus exactsuffix/UndoRedo equality.
 Intentionallegacy364checks retained; fullvalidation stillpending.
+
+
+Operator-enablec1501a2 fullCIsteps1–12pass; step13rejects unusedmut innewUItest.
+The single token is removed, with strictwarnings preserved; finalCIstillpending.
