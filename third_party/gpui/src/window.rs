@@ -818,11 +818,21 @@ impl Frame {
     }
 }
 
+// A frame-owned cursor override must restore even when its window is destroyed.
+struct HiddenCursorRestore(Rc<dyn crate::Platform>);
+
+impl Drop for HiddenCursorRestore {
+    fn drop(&mut self) {
+        self.0.set_cursor_style(CursorStyle::Arrow);
+    }
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
     pub(crate) invalidator: WindowInvalidator,
     pub(crate) removed: bool,
+    hidden_cursor_restore: Option<HiddenCursorRestore>,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     display_id: Option<DisplayId>,
     sprite_atlas: Arc<dyn PlatformAtlas>,
@@ -1098,6 +1108,9 @@ impl Window {
                 handle
                     .update(&mut cx, |_, window, cx| {
                         window.active.set(active);
+                        if !active {
+                            window.hidden_cursor_restore.take();
+                        }
                         window.modifiers = window.platform_window.modifiers();
                         window.capslock = window.platform_window.capslock();
                         window
@@ -1211,6 +1224,7 @@ impl Window {
             handle,
             invalidator,
             removed: false,
+            hidden_cursor_restore: None,
             platform_window,
             display_id,
             sprite_atlas,
@@ -1374,8 +1388,16 @@ impl Window {
         }
     }
 
+    /// Whether this window currently owns an invisible cursor override.
+    /// Test support only: this does not establish physical cursor appearance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_hidden_cursor_override(&self) -> bool {
+        self.hidden_cursor_restore.is_some()
+    }
+
     /// Close this window.
     pub fn remove_window(&mut self) {
+        self.hidden_cursor_restore.take();
         self.removed = true;
     }
 
@@ -3527,14 +3549,27 @@ impl Window {
         subscription
     }
 
-    fn reset_cursor_style(&self, cx: &mut App) {
-        // Set the cursor only if we're the active window.
-        if self.is_window_hovered() {
-            let style = self
-                .rendered_frame
-                .cursor_style(self)
-                .unwrap_or(CursorStyle::Arrow);
+    fn reset_cursor_style(&mut self, cx: &mut App) {
+        let style = self
+            .rendered_frame
+            .cursor_style(self)
+            .unwrap_or(CursorStyle::Arrow);
+        // A captured value drag remains invisible outside window bounds. The
+        // override is renewed by paint, so removing its widget restores it.
+        if style == CursorStyle::Hidden && self.is_window_active() {
+            if self.hidden_cursor_restore.is_none() {
+                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
+            }
             cx.platform.set_cursor_style(style);
+        } else {
+            self.hidden_cursor_restore.take();
+            if self.is_window_hovered() {
+                cx.platform.set_cursor_style(if style == CursorStyle::Hidden {
+                    CursorStyle::Arrow
+                } else {
+                    style
+                });
+            }
         }
     }
 
