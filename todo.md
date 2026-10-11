@@ -2096,4 +2096,6 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   families; independent device-header/section/page selection.
 - Prior `35c6541` app/CI are superseded. Its focused-row fill report was incorrect;
   the residual darker focus branch is corrected in the expanded source. Updated
-  checks/native build/fullCI and user reference comparison remain required.
+  checks now pass: six example tests (four rendered regressions), strict Clippy
+  and native build. Final exact-commit fullCI evidence is retained on PR163/
+  Pulse2355. Native screenshots and user reference comparison remain required.

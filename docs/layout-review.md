@@ -83,11 +83,12 @@ Escape clear) are original fixture contracts. Click selection has one owner per
 sample, separate from focus. Disabled samples retain selection but refuse pointer
 and Enter/Space changes; focus may remain for inspection. State previews are
 noninteractive and labelled, so their focus marker is illustrative. The selected
-preview changes target zero; disabled previews affect all targets.
+preview changes target zero; composite previews also select section one.
+Disabled previews affect all targets.
 
 ## Acceptance checklist and evidence
 
-- [ ] Updated targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
+- [x] Updated targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
   transitions, disabled refusal, state geometry, preview containment/non-overlap
   at 760×660 and 1320×660 logical pixels.
 - Full local CI must pass on the final exact commit/unchanged source digest;
@@ -103,8 +104,13 @@ preview changes target zero; disabled previews affect all targets.
 GPUI's test platform uses scale 2; source/rendered tests do not prove native
 raster appearance, physical input or other display scales. Screenshot/native
 acceptance remain pending. The previous four-test pass and native build apply to the superseded
-`35c6541` source. Updated composition/selection regressions, strict checks, native
-build and final full CI are pending the coordinated build lease.
+`35c6541` source. The expanded source now passes six example tests (four rendered
+gallery regressions plus two theme tests), strict example/tests Clippy and the
+native example build. Inspector/header overlap and surround, occluded screen
+input, independent header/section/page ownership, fixed page footprints and all
+eleven-family pointer/keyboard/disabled/minimum-wide geometry checks are covered.
+Final full CI evidence is retained with the published exact commit/digest on
+PR163/Pulse2355; native visual/reference acceptance remains open.
 The first compile exposed the pinned GPUI one-argument focus API; the fixture
 was corrected before these passes. Final local CI results live with the retained
 commit/digest evidence rather than being inferred from the targeted checks.
