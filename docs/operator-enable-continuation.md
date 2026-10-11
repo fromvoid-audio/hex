@@ -259,3 +259,14 @@ rule: that occurrence requires no outgoing release slot. The fixture must render
 one sample before testing a full bank, retaining refusal/count/owner/expiry
 assertions and checking clock atomicity. Callback probes and full CI were not
 reached; no validated final provider handoff is claimed.
+
+
+At clean27d08de the corrected live release-bank refusal and both original
+stack regressions pass exactly1test each, engine library245pass/3existingignored,
+and audio allocation-feature suite136tests pass. Partial run source digest
+394e2f94c174a5527047e5fed51a96281f17f456f110ca21b05cd5b2adc2ad8e is unchanged.
+Full16-step run operator-enable-final-scratch-20261011 passes guards/format but
+stops at workspace tests: Operator native admission's catalog count expects88,
+actual92, outcome10pass/1fail. The integration fixture nowchecks92 plus all four
+exact enable IDs, Boolean kinds and true defaults, retaining independent PCM
+assertions. Fresh exact/full validation is pending; no full pass is claimed.
