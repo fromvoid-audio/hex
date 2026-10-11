@@ -209,7 +209,7 @@ impl Gallery {
                 State::Idle
             }
         };
-        let mut body = div().flex().flex_col().size_full().gap(px(4.0));
+        let mut body = div().flex().flex_col().size_full().gap(px(6.0));
         match self.family {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
@@ -282,13 +282,13 @@ impl Gallery {
                         .items_center()
                         .px(px(4.0))
                         .gap(px(6.0))
-                        .bg(rgb(
-                            if matches!(current, State::Focused | State::Selected) {
-                                LIGHT
-                            } else {
-                                DARK
-                            },
-                        ))
+                        .bg(rgb(if current == State::Selected {
+                            BACKGROUND
+                        } else if current == State::Focused {
+                            LIGHT
+                        } else {
+                            DARK
+                        }))
                         .border_1()
                         .border_color(rgb(if current == State::Focused {
                             TEXT
