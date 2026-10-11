@@ -246,20 +246,36 @@ values, switches, selectors and popup behavior belong to `hex-widgets`. Improve
 those reusable controls rather than introducing Utility-only appearance paths.
 All native devices inherit library styling and interaction improvements; new
 device panels only compose library controls and bind validated descriptors.
-Operator uses a dedicated 580px compact composition within the 213px device
-rail: all four operator rows remain visible, while oscillator, envelope and
-routing details share the same rounded frame and canonical controls. The
-envelope curve is a read-only preview of its authored ADSR-like fields; its
-points are not direct drag handles. The 77 supported descriptors are reached
-through the four operator rows, oscillator/envelope pages and routing matrix;
-the routing matrix labels its source, target and output columns, and the four
-diagonal FM routes are intentionally absent. The oscillator page gives the
-selected waveform's cycle preview the full detail width; fixed-frequency rows
-retain their ratio, multiplier and toggle without shrinking their controls. This panel does not add
-unsupported filter, LFO or preset controls, and the numeric feedback/voice
-behavior remains governed by the device contract. Reusable density variants
-are permitted; variants must not encode a particular device identity. Native
-visual acceptance of the shared system remains with the user.
+Operator uses a 760px compact composition inside the fixed-height 213px device
+rail. Its four colored oscillator strips stay at left, the envelope/oscillator/
+routing detail occupies the center, and four compact LFO, filter, pitch and
+global rows occupy the right. The amp-envelope page opens by default; choosing a
+different oscillator preserves that page. Its editable curve and six values
+remain canonical device controls with gesture, Undo and persistence behavior.
+The Operator shell's coarse/frequency, fixed and level controls remain
+canonical. Its four fine controls and ten right-shell dials use the shared
+`MicroDial` widget and hold bounded per-device view state only. Right-shell
+toggles and selectors update their local display state and never submit project,
+history, save or audio requests. These widgets await DSP and canonical binding
+under Pulse2325 (LFO),2326 (filter),2327 (pitch and fine tuning), and2328
+(global controls); they do not claim those behaviors are implemented.
+
+The global algorithm icon opens the routing page, where the canonical algorithm
+selector is mounted once alongside the source/target/output matrix. All 77
+supported descriptors remain reachable; the four diagonal FM routes remain
+intentionally absent. The oscillator page keeps the selected waveform cycle
+preview at full detail width and exposes its existing waveform, phase, velocity,
+feedback and fixed-multiplier controls. Fixed-frequency shell rows preserve the
+ratio and multiplier values. Preview state survives owner changes, cancels
+active drafts/popups while hidden, and retires on device removal or project
+replacement. Native visual acceptance remains with the user; none of this
+establishes Live visual, sound or control-law parity.
+
+Reusable density variants are permitted; variants must not encode a particular
+device identity. Native visual acceptance of the shared system remains with the
+user. Manual review should check the three-column arrangement and right-shell
+spacing at the fixed rail height, reach the amp envelope and routing pages, and
+confirm local right-shell controls remain responsive after switching tracks.
 
 The Operator oscillator page also shows the selected built-in waveform's ideal
 single-cycle shape and exposes per-oscillator velocity sensitivity as a

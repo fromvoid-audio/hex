@@ -18,7 +18,10 @@ use hex_widgets::{
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
     compact_device_frame, device_frame,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 mod compressor_panel;
 mod eq8_panel;
@@ -133,6 +136,8 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
+    operator_preview_inventory: Option<OperatorPreviewInventory>,
     operator_envelope_graphs:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
     operator_envelope_gestures:
@@ -147,6 +152,12 @@ pub(super) struct DevicePanelState {
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
     add_menu_open: bool,
     message: Option<String>,
+}
+
+struct OperatorPreviewInventory {
+    generation: u64,
+    revision: u64,
+    devices: Arc<HashSet<DeviceId>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -338,6 +349,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        operator_panel::preview::cancel_all(view, cx);
+        view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
@@ -357,6 +370,44 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
+    let inventory_is_current = view
+        .device_panel
+        .operator_preview_inventory
+        .as_ref()
+        .is_some_and(|inventory| {
+            inventory.generation == view.project_generation && inventory.revision == state.revision
+        });
+    if !inventory_is_current {
+        let devices = state
+            .project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.ordered_device_chain())
+            .filter_map(|device| match device {
+                hex_project::TrackDeviceRef::Instrument(device)
+                    if device.state().type_id().as_str().ok()
+                        == Some("hex.instrument.operator") =>
+                {
+                    Some(device.id())
+                }
+                _ => None,
+            })
+            .collect();
+        view.device_panel.operator_preview_inventory = Some(OperatorPreviewInventory {
+            generation: view.project_generation,
+            revision: state.revision,
+            devices: Arc::new(devices),
+        });
+    }
+    let alive_operator = view
+        .device_panel
+        .operator_preview_inventory
+        .as_ref()
+        .map_or_else(
+            || Arc::new(HashSet::new()),
+            |inventory| Arc::clone(&inventory.devices),
+        );
+    operator_panel::preview::retire_removed(view, cx, alive_operator.as_ref());
     let desired_owner = view
         .focused_return
         .filter(|id| {
@@ -396,6 +447,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
@@ -2137,6 +2189,7 @@ enum ControlPresentation {
     Standard,
     CompactDial,
     MiniDial,
+    MicroDial,
     InlineValue,
     CompactButton,
     CompactSelector,
@@ -2286,6 +2339,7 @@ fn parameter_control_with_presentation(
             let (width, height) = match presentation {
                 ControlPresentation::CompactDial => (64.0, 52.0),
                 ControlPresentation::MiniDial => (46.0, 40.0),
+                ControlPresentation::MicroDial => (46.0, 40.0),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 _ => (136.0, 26.0),
             };
@@ -2309,7 +2363,7 @@ fn parameter_control_with_presentation(
                     Some("bass mono" | "mono") => 64.0,
                     Some("bass mono audition") => 14.0,
                     Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => 18.0,
-                    Some("on") => 18.0,
+                    Some("on" | "fix") => 18.0,
                     Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
@@ -2391,14 +2445,15 @@ fn create_parameter_control(
                 spec = codec.apply(spec);
             }
             let kind = match presentation {
-                ControlPresentation::CompactDial | ControlPresentation::MiniDial => {
-                    NumericControlKind::Knob
-                }
+                ControlPresentation::CompactDial
+                | ControlPresentation::MiniDial
+                | ControlPresentation::MicroDial => NumericControlKind::Knob,
                 _ => NumericControlKind::HorizontalSlider,
             };
             let appearance = match presentation {
                 ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
                 ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
+                ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
                 _ => NumericControlAppearance::Standard,
             };
@@ -2425,9 +2480,20 @@ fn create_parameter_control(
                         && let Some(operator) =
                             operator_panel::shell_operator_for_numeric_parameter(key.parameter)
                     {
+                        let current_page = view
+                            .device_panel
+                            .operator_pages
+                            .get(&key.device)
+                            .copied()
+                            .unwrap_or_default()
+                            .page;
                         let context = operator_panel::OperatorPanelState {
                             selected_operator: operator,
-                            page: operator_panel::OperatorPage::Oscillator,
+                            page: if current_page == operator_panel::OperatorPage::Envelope {
+                                operator_panel::OperatorPage::Envelope
+                            } else {
+                                operator_panel::OperatorPage::Oscillator
+                            },
                         };
                         if view
                             .device_panel
