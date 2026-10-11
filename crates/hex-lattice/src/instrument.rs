@@ -136,6 +136,13 @@ pub trait PreparedNativeInstrument: Send + Sync {
         velocity: u8,
     ) -> Result<PreparedAnalyticNote, DeviceContractError>;
 
+    /// Control-side validation before admitting authored mutable note sources.
+    /// Devices with pitch-dependent domains must reject unsupported excursions
+    /// here as well as in their callback event preflight.
+    fn validate_event_note(&self, _pitch: u8, _velocity: u8) -> Result<(), DeviceContractError> {
+        Ok(())
+    }
+
     /// Optional shared immutable analytic context. For the same prepared
     /// instrument state and sample rate, context preparation must describe the
     /// same future PCM law; the host may reuse a prior context with exact state

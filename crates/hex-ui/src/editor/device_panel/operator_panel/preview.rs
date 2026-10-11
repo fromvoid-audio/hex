@@ -17,8 +17,6 @@ const ROW_HEIGHT: f32 = 40.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub(in crate::editor::device_panel) enum Field {
-    LfoRate,
-    LfoAmount,
     FilterFrequency,
     FilterResonance,
     PitchEnvelope,
@@ -48,9 +46,7 @@ impl Field {
         matches!(self, Self::Time | Self::Tone | Self::Volume)
     }
 
-    const ALL: [Self; 14] = [
-        Self::LfoRate,
-        Self::LfoAmount,
+    const ALL: [Self; 12] = [
         Self::FilterFrequency,
         Self::FilterResonance,
         Self::PitchEnvelope,
@@ -67,8 +63,6 @@ impl Field {
 
     const fn spec(self) -> FieldSpec {
         match self {
-            Self::LfoRate => FieldSpec::new("rate", 0.01, 100.0, 74.59, "", 2, true),
-            Self::LfoAmount => FieldSpec::new("amount", 0.0, 100.0, 25.0, "%", 0, false),
             Self::FilterFrequency => FieldSpec::new("freq", 20.0, 20_000.0, 198.0, "hz", 0, true),
             Self::FilterResonance => FieldSpec::new("res", 0.0, 100.0, 74.0, "%", 0, false),
             Self::PitchEnvelope => FieldSpec::new("pitch env", -100.0, 100.0, 11.0, "%", 0, false),
@@ -119,7 +113,6 @@ impl FieldSpec {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::editor::device_panel) enum Switch {
-    Lfo,
     Filter,
     Pitch,
 }
@@ -127,34 +120,30 @@ pub(in crate::editor::device_panel) enum Switch {
 impl Switch {
     const fn index(self) -> usize {
         match self {
-            Self::Lfo => 0,
-            Self::Filter => 1,
-            Self::Pitch => 2,
+            Self::Filter => 0,
+            Self::Pitch => 1,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::editor::device_panel) enum Choice {
-    LfoWave,
     FilterMode,
     FilterSlope,
 }
 
 impl Choice {
-    const ALL: [Self; 3] = [Self::LfoWave, Self::FilterMode, Self::FilterSlope];
+    const ALL: [Self; 2] = [Self::FilterMode, Self::FilterSlope];
 
     const fn index(self) -> usize {
         match self {
-            Self::LfoWave => 0,
-            Self::FilterMode => 1,
-            Self::FilterSlope => 2,
+            Self::FilterMode => 0,
+            Self::FilterSlope => 1,
         }
     }
 
     const fn choices(self) -> &'static [&'static str] {
         match self {
-            Self::LfoWave => &["sine", "square", "noise", "sample"],
             Self::FilterMode => &["clean", "warm", "ms2", "sallen-key"],
             Self::FilterSlope => &["12", "24"],
         }
@@ -162,7 +151,6 @@ impl Choice {
 
     const fn default(self) -> usize {
         match self {
-            Self::LfoWave => 2,
             Self::FilterMode => 0,
             Self::FilterSlope => 1,
         }
@@ -188,10 +176,10 @@ pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) selectors: HashMap<Choice, SelectorPreview>,
-    pub(in crate::editor::device_panel) values: [f64; 14],
-    pub(in crate::editor::device_panel) enabled: [bool; 3],
-    pub(in crate::editor::device_panel) selected: [usize; 3],
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
+    pub(in crate::editor::device_panel) values: [f64; 12],
+    pub(in crate::editor::device_panel) enabled: [bool; 2],
+    pub(in crate::editor::device_panel) selected: [usize; 2],
 }
 
 impl Default for State {
@@ -201,7 +189,7 @@ impl Default for State {
             toggles: HashMap::new(),
             selectors: HashMap::new(),
             values: Field::ALL.map(|field| field.spec().default),
-            enabled: [true; 3],
+            enabled: [true; 2],
             selected: Choice::ALL.map(Choice::default),
             routing_focus: None,
         }
@@ -218,17 +206,10 @@ pub(super) fn render(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: hex_project::DeviceId,
+    device_view: &hex_engine::NativeDeviceView,
 ) -> Stateful<Div> {
     let rows = [
-        row(
-            view,
-            cx,
-            device,
-            "lfo",
-            Some(Switch::Lfo),
-            &[Choice::LfoWave],
-            &[Field::LfoRate, Field::LfoAmount],
-        ),
+        super::lfo_summary(view, cx, device, device_view),
         row(
             view,
             cx,
