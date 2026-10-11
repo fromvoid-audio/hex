@@ -2107,6 +2107,22 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
 
+## 11 October 2026 — candidate-owned handoff scratch (Pulse2371 / PR166)
+
+- Isolated the handoff.rs-only patch from PR164's shared-scratch checkpoint;
+  both candidate queries borrow the existing constructor-owned span buffer.
+  No codec/UI/enable feature, cap, layout or test-fixture change is included.
+- Both unchanged default-stack regressions pass on Darwin with Rust1.94.0
+  and RUST_MIN_STACK unset. Original-helper negative controls also pass on this
+  smaller plan baseline4e20fb13 (parent399a68c); the affected export descendant
+  must independently establish overflow recovery. Logs: artifacts/scratch-2371.
+  Prior PR164 results do not validate this extraction. Capture API integration
+  stays with the consuming export branch; no capture ancestor is included here.
+- Required gates: original default-stack handoff/transport-wrap regressions,
+  unfiltered engine and callback allocation tests, PCM/history/capture/preroll
+  coverage, strict Clippy and full local CI on the exact final revision.
+  A testable build and user correctness confirmation remain required before merge.
+
 - 11 October2026 — Pulse2345 / PR157: shared gray focus corners and normalized
   progressive knob arcs with the observed lower-right opening. Source widget
   regressions cover focus corners, fixed press/drag/type geometry and pan reset;
