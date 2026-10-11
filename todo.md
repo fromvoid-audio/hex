@@ -1,7 +1,7 @@
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
 Fixed Envelope-left/Oscillator-right section bounds, routing via the whole
-bottom-right global rail, dark panel surfaces and owner-guarded context selection
+bottom-right global rail and owner-guarded context selection
 including FineB are implemented. Original rendered regressions fail before the
 repair (54px tab jump; FineB keepsA); all13targeted Operator tests pass afterward.
 Reference/native method and pending exact-source/native gates are in
@@ -11,7 +11,9 @@ preview-source error is tracked separately as2347; retest blocks acceptance if
 still reproducible. All16 local CI steps pass on clean ec871d1; same-size native pointer captures
 confirm fixed positions and context selection without view-only revision drift.
 Native keyboard acceptance remains inconclusive and blocks task completion/merge;
-PR156 stays draft. Crowded routing readouts are separate Pulse2352.
+PR156 stays draft. Human rejected blanket dark-blue side rails; source now restores
+gray outer roles around the dark center, with corrected native/fullCI evidence
+pending. Crowded routing readouts are separate Pulse2352.
 
 ## 100-track Lattice effects profile — pulse2317
 

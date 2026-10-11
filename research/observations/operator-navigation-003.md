@@ -18,7 +18,7 @@ shows the Envelope graph, not a harmonic editing experiment. Exact numeric
 transfer laws and complete oscillator content are not inferred from that image.
 
 Acceptance for this PR is fixed section navigation, routing access from the
-existing global rail, darker rail/detail surfaces, and context following every
+existing global rail, gray outer rails/darker center, and context following every
 supported oscillator-rail control. Actual harmonic painting/custom waveforms
 remain Pulse2342/PR158; enableDSP2335 and activeLFO2325/PR154 are separate.
 Hex retains lowercase Ioskeley Mono and its theme. Full Operator parity is not
@@ -109,8 +109,9 @@ After captures in the same ignored evidence directory are 2480x1522:
 `after-oscillator-d-fixed.png`, `after-envelope-a-undo.png`.
 Compared with the before captures, the navigation stays at the same graph-bottom
 position across Envelope/Oscillator, A–D selection and fixed mode. Compared with
-the actual Live reference, labels/order and dark graph/rail surfaces now follow
-the observed layout. Hex uses its own typography, wider compact fields and
+the actual Live reference, labels/order and the dark central display follow
+the observed layout. The blanket dark outer rails in this checkpoint were
+subsequently rejected by the human; these images do not accept their color. Hex uses its own typography, wider compact fields and
 limited supported controls; exact Live pixel/content parity is not established.
 
 Pointer checks selected B from Fine, C from coarse, D from fixed, and A from
@@ -131,3 +132,22 @@ No save/reopen or listening acceptance is inferred from these pointer captures.
 The existing matrix unit readouts visibly crowd adjacent cells; separate
 Pulse2352 owns their compact formatting, without expanding this navigation PR.
 PR156 remains draft with required native keyboard acceptance pending.
+
+
+## human color correction
+
+The human rejected dark-blue left and right sections after the pointer checkpoint.
+Re-reading the actual native Live reference confirms a neutral-gray left rail,
+a somewhat brighter gray right rail and darker center. Original image coordinates
+(left 865,1775 / 900,1890 / 1270,1800; center 1582,1757;
+right 2021,1880 / 1940,1770) sample RGB 55/55/55, 54/54/54,
+54/54/54, 24/24/24, 70/70/70 and 77/77/77 respectively. These are
+observed pixels, not claimed universal Live theme constants.
+
+The blanket `DEVICE_DISPLAY_BACKGROUND` on the shell/preview rows and dark
+widget style caused the rejected sides. The correction restores Hex's existing
+Background on the left, Hover for its selected row, Surface on the right,
+and standard rail control styles, keeping the center inset dark and its
+canonical readouts accented. No new palette or preference overwrite is added.
+All 13 Operator source tests pass after the correction. Corrected native color
+comparison and exact final-commit CI remain pending; this is not visual acceptance.

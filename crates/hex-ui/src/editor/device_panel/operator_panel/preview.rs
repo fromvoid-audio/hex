@@ -337,7 +337,7 @@ fn row(
         dials = dials.child(control(view, cx, device, *field));
     }
     row = row.child(dials);
-    row = row.bg(rgb(theme::DEVICE_DISPLAY_BACKGROUND));
+    row = row.bg(rgb(theme::color(theme::PaletteRole::Surface)));
     if title == "global" {
         let focus = view
             .device_panel
@@ -471,7 +471,7 @@ pub(super) fn control(
             NumericControlKind::Knob,
             numeric_spec,
             initial,
-            super::display_style(),
+            control_style(),
         ) {
             Ok(config) => config.with_appearance(NumericControlAppearance::MicroDial),
             Err(error) => return control_error(error),
