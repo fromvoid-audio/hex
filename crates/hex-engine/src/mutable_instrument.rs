@@ -665,6 +665,24 @@ pub(crate) enum MutableInstrumentRuntimeError {
     Runtime(NativeInstrumentRuntimeError),
 }
 
+impl MutableInstrumentRuntimeError {
+    /// Render-only cause preservation; admission classifications stay unchanged.
+    pub(crate) fn render_error(self) -> crate::SessionPlaybackError {
+        crate::SessionPlaybackError::MutableInstrumentDiagnostic(match self {
+            Self::Allocation => "mutable instrument storage allocation failed",
+            Self::Budget => "mutable instrument runtime exceeds its storage budget",
+            Self::Arithmetic => "mutable instrument frame arithmetic overflow",
+            Self::OrphanedGate => "mutable instrument note-off has no occurrence",
+            Self::DuplicateOccurrence => "mutable instrument occurrence was dispatched twice",
+            Self::OccurrenceCapacity => "mutable instrument occurrence capacity exceeded",
+            Self::IdentityExhausted => "mutable instrument occurrence identity exhausted",
+            Self::InvalidSourceSpan => "mutable instrument source span is invalid",
+            Self::EventCapacity => "mutable instrument event query capacity exceeded",
+            Self::Runtime(error) => error.diagnostic_message(),
+        })
+    }
+}
+
 impl From<MutableInstrumentRuntimeError> for crate::SessionPlaybackError {
     fn from(error: MutableInstrumentRuntimeError) -> Self {
         match error {

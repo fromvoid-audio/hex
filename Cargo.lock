@@ -2563,6 +2563,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "hex-audio",
+ "hex-diagnostics",
  "hex-ui",
 ]
 
@@ -2573,6 +2574,10 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
 ]
+
+[[package]]
+name = "hex-diagnostics"
+version = "0.1.0"
 
 [[package]]
 name = "hex-engine"
@@ -2672,6 +2677,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "hex-audio",
+ "hex-diagnostics",
  "hex-engine",
  "hex-lattice-contract",
  "hex-library",

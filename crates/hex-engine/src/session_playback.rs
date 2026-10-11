@@ -109,6 +109,7 @@ pub enum SessionPlaybackError {
     ReleaseBankFull,
     DeviceRuntime,
     MutableInstrumentRuntime,
+    MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
     MutableInstrumentLoopUnsupported,
     MutableInstrumentLoopDensity,
@@ -123,60 +124,80 @@ pub enum SessionPlaybackError {
     Arrangement(&'static str),
 }
 
+impl SessionPlaybackError {
+    /// Static render cause: safe to propagate without formatting or allocating
+    /// in the audio callback. Detailed numeric timing formatting stays on control.
+    pub(crate) fn diagnostic_message(self) -> &'static str {
+        match self {
+            Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
+            Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
+            Self::Allocation => "could not reserve session playback runtime storage",
+            Self::UnknownTrack => "session playback track no longer exists",
+            Self::UnknownScene => "session playback scene no longer exists",
+            Self::UnknownClip => "session playback clip no longer exists",
+            Self::ClipTrackMismatch => "session playback clip belongs to another track",
+            Self::InvalidCommand => "session playback command is invalid for this operation",
+            Self::ArithmeticOverflow => "session playback frame or beat overflow",
+            Self::TempoConversion => "session playback timing conversion failed",
+            Self::ReleaseBankFull => "session playback outgoing release bank is full",
+            Self::DeviceRuntime => "session playback native device runtime is unavailable",
+            Self::MutableInstrumentRuntime => {
+                "session playback mutable instrument runtime is unavailable"
+            }
+            Self::MutableInstrumentDiagnostic(message) => message,
+            Self::MutableInstrumentEvents => {
+                "session playback mutable instrument event query is invalid"
+            }
+            Self::MutableInstrumentLoopUnsupported => {
+                "mutable instrument source loops are unsupported by this playback mode"
+            }
+            Self::MutableInstrumentLoopDensity => {
+                "mutable instrument transport loop exceeds bounded event or voice density"
+            }
+            Self::MutableInstrumentActive => {
+                "mutable instrument must become quiescent before this route change"
+            }
+            Self::MutableInstrumentLoopBoundsActive => {
+                "transport loop bounds cannot change while a mutable Arrangement gate is active"
+            }
+            Self::MutableInstrumentRouteBoundary => {
+                "quantized route changes are not admitted for mutable instruments"
+            }
+            Self::MutableInstrumentChase => {
+                "mutable instrument seek or revision requires unsupported note history"
+            }
+            Self::SharedAnalyticContext => {
+                "shared analytic instrument context lease is unavailable"
+            }
+            Self::MediaPagesUnavailable => {
+                "streamed session playback requires a media page provider"
+            }
+            Self::CandidateAlreadyUsed => "session playback candidate has already been used",
+            Self::Midi(error) => error.diagnostic_message(),
+            Self::Arrangement(message) => message,
+            Self::SessionTempoUnavailable(error) => match error {
+                crate::PreparedTempoError::BeatToFrame(message)
+                | crate::PreparedTempoError::FrameToBeat(message)
+                | crate::PreparedTempoError::BeatLowerBound(message)
+                | crate::PreparedTempoError::InvalidLoop(message) => message,
+                crate::PreparedTempoError::SampleRateMismatch { .. } => {
+                    "session tempo sample rates differ"
+                }
+                crate::PreparedTempoError::PointCountOutOfRange { .. } => {
+                    "session tempo point count is out of range"
+                }
+            },
+        }
+    }
+}
+
 impl fmt::Display for SessionPlaybackError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SessionTempoUnavailable(error) => {
                 write!(f, "session tempo is unavailable: {error}")
             }
-            _ => f.write_str(match self {
-                Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
-                Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
-                Self::Allocation => "could not reserve session playback runtime storage",
-                Self::UnknownTrack => "session playback track no longer exists",
-                Self::UnknownScene => "session playback scene no longer exists",
-                Self::UnknownClip => "session playback clip no longer exists",
-                Self::ClipTrackMismatch => "session playback clip belongs to another track",
-                Self::InvalidCommand => "session playback command is invalid for this operation",
-                Self::ArithmeticOverflow => "session playback frame or beat overflow",
-                Self::TempoConversion => "session playback timing conversion failed",
-                Self::ReleaseBankFull => "session playback outgoing release bank is full",
-                Self::DeviceRuntime => "session playback native device runtime is unavailable",
-                Self::MutableInstrumentRuntime => {
-                    "session playback mutable instrument runtime is unavailable"
-                }
-                Self::MutableInstrumentEvents => {
-                    "session playback mutable instrument event query is invalid"
-                }
-                Self::MutableInstrumentLoopUnsupported => {
-                    "mutable instrument source loops are unsupported by this playback mode"
-                }
-                Self::MutableInstrumentLoopDensity => {
-                    "mutable instrument transport loop exceeds bounded event or voice density"
-                }
-                Self::MutableInstrumentActive => {
-                    "mutable instrument must become quiescent before this route change"
-                }
-                Self::MutableInstrumentLoopBoundsActive => {
-                    "transport loop bounds cannot change while a mutable Arrangement gate is active"
-                }
-                Self::MutableInstrumentRouteBoundary => {
-                    "quantized route changes are not admitted for mutable instruments"
-                }
-                Self::MutableInstrumentChase => {
-                    "mutable instrument seek or revision requires unsupported note history"
-                }
-                Self::SharedAnalyticContext => {
-                    "shared analytic instrument context lease is unavailable"
-                }
-                Self::MediaPagesUnavailable => {
-                    "streamed session playback requires a media page provider"
-                }
-                Self::CandidateAlreadyUsed => "session playback candidate has already been used",
-                Self::Midi(_) => "session playback midi query failed",
-                Self::Arrangement(_) => "session playback arrangement source failed",
-                Self::SessionTempoUnavailable(_) => "session tempo is unavailable",
-            }),
+            _ => f.write_str(self.diagnostic_message()),
         }
     }
 }
@@ -1076,4 +1097,57 @@ fn append_release(
     entry.order = order;
     releases.push(entry);
     Ok(())
+}
+
+#[cfg(test)]
+mod render_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn callback_messages_retain_nested_causes_instead_of_a_generic_render_failure() {
+        assert_eq!(
+            SessionPlaybackError::Midi(crate::MidiTemplateError::TooManyEdges).diagnostic_message(),
+            "ongoing midi query exceeds 256 edges"
+        );
+        assert_eq!(
+            SessionPlaybackError::Arrangement("missing source page").diagnostic_message(),
+            "missing source page"
+        );
+        assert_eq!(
+            SessionPlaybackError::SessionTempoUnavailable(crate::PreparedTempoError::BeatToFrame(
+                "beat overflow"
+            ))
+            .diagnostic_message(),
+            "beat overflow"
+        );
+        use crate::mutable_instrument::MutableInstrumentRuntimeError;
+        assert_eq!(
+            MutableInstrumentRuntimeError::Runtime(
+                hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch
+            )
+            .render_error()
+            .diagnostic_message(),
+            "native instrument event batch is invalid"
+        );
+        assert_eq!(
+            MutableInstrumentRuntimeError::OrphanedGate
+                .render_error()
+                .diagnostic_message(),
+            "mutable instrument note-off has no occurrence"
+        );
+        assert_eq!(
+            MutableInstrumentRuntimeError::EventCapacity
+                .render_error()
+                .diagnostic_message(),
+            "mutable instrument event query capacity exceeded"
+        );
+        // Render diagnostics do not change the admission/retry classification.
+        assert_eq!(
+            SessionPlaybackError::from(MutableInstrumentRuntimeError::OrphanedGate),
+            SessionPlaybackError::MutableInstrumentEvents
+        );
+        assert_eq!(
+            SessionPlaybackError::ReleaseBankFull.diagnostic_message(),
+            "session playback outgoing release bank is full"
+        );
+    }
 }

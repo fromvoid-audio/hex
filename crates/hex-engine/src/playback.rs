@@ -760,7 +760,7 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             return runtime
                 .render_with_post_node_observer(output, observer)
-                .map_err(|_| Invalid("session playback render failed"));
+                .map_err(|error| Invalid(error.diagnostic_message()));
         }
         if self.session_unavailable.is_some()
             && (self
@@ -804,7 +804,7 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             return runtime
                 .render_with_pages(output, pages)
-                .map_err(|_| Invalid("session playback render failed"));
+                .map_err(|error| Invalid(error.diagnostic_message()));
         }
         if self.session_unavailable.is_some()
             && (self

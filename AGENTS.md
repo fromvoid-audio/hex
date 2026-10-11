@@ -99,6 +99,7 @@ crates/
     src/lib.rs               window and UI service entry point
     src/app.rs               GPUI view state, controls, drawing, shortcuts
     src/theme.rs             required lowercase text and embedded font
+  hex-diagnostics/            per-session worker log I/O and ten-file retention
   hex-desktop/
     src/main.rs              startup/composition only; injects backend into UI
 scripts/

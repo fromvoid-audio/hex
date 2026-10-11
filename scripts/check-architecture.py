@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract'},
     'hex-lattice': {'hex-lattice-contract'},
@@ -21,8 +22,8 @@ ALLOWED = {
     'hex-preferences': set(),
     'hex-widgets': set(),
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
-    'hex-desktop': {'hex-ui', 'hex-audio'},
+    'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared

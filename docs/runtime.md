@@ -1,5 +1,11 @@
 # GPUI and audio runtime
 
+## session diagnostics
+
+See [diagnostics](diagnostics.md) for bounded fault snapshots and per-launch log
+retention. Render errors stop/silence output as before; the first cause and
+block starting frame survive for control-side reporting until graph recovery.
+
 ## Native device integration
 
 Canonical device state is an opaque versioned envelope; registered definitions

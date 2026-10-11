@@ -865,7 +865,7 @@ fn process_mutable_tail(
             &[],
             events,
         )
-        .map_err(|_| SessionPlaybackError::MutableInstrumentRuntime)
+        .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
@@ -1038,7 +1038,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
             suppressions,
             events,
         )
-        .map_err(SessionPlaybackError::from)
+        .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
 
 struct RouteSourceContext<'a, T> {

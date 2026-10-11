@@ -416,7 +416,9 @@ fn source_loop_identity_exhaustion_rolls_back_audio_clocks_and_ledger_for_retry(
     let mut rejected = [[7.0; 2]; 6_001];
     assert_eq!(
         failed.render(&mut rejected),
-        Err(SessionPlaybackError::ArithmeticOverflow)
+        Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+            "mutable instrument occurrence identity exhausted"
+        ))
     );
     assert!(rejected.iter().flatten().all(|sample| *sample == 0.0));
     assert_eq!(failed.performance_frame(), 0);
