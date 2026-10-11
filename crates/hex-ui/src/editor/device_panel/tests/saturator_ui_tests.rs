@@ -187,7 +187,7 @@ fn saturator_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
         view.clip_view_open = true;
         cx.notify();
     });
-    let mut visual = VisualTestContext::from_window(handle, cx);
+    let visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let expected = hex_engine::patch_native_device_parameter(
         &original,
