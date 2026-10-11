@@ -469,7 +469,7 @@ reconciliation, proposedv7/364B with strictmainv6 migration. PR164 enable owns
 next strictboolsuffix, proposedv8/380B(4u32); harmonics thenv9. No shared Operator
 writes until owners publish agreed exact versions. Reserve harmonicIDs93–512
 (256 coefficients93–348, ranges349–352; remaining IDs merely reserved), enable
-IDs513–516. Current descriptor count limit256 does not admit the combined356
+IDs513–516. Current descriptor count limit256 does not admit the combined352
 parameters; primary has a concrete512control-side limit versus bounded spectrum
 parameter alternative to select. No admission limit changed yet.
 
