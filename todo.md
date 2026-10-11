@@ -2133,4 +2133,3 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   Clean5b0c6f7 all16 fullCI passed, unchanged digest;155 merged/nativeaccepted,
   156 Routing accepted/final appearance revision pending. Actual-device and
   remaining reference acceptance plus final changed-sourceCI are still required.
-

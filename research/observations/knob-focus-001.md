@@ -215,3 +215,13 @@ and its human native acceptance is confirmed by its coordinator. PR156 Routing
 keyboard human acceptance passed; its final appearance revision and acceptance
 remain owned there. Final integration CI must run after that revision and this
 evidence update. PR157 retains its required actual-device/reference gates.
+
+
+The final PR156 appearance revision d27bb76 is integrated, preserving its
+Operator-only caller frame style and shared knob metrics. The only source
+conflict was the fixed-row regression: retain the880/1280 resize loop and58px
+shared width assertions, and apply the new2px gutter and row-containment checks
+at both sizes. Current merged main includes accepted cursor PR155 and local
+build-environment PR160; no widget/cursor runtime difference was found between
+its final cursor checkpoint and the already integrated dependency source.
+All changed-tree verification and native device/reference gates remain required.
