@@ -10676,6 +10676,9 @@ mod saturator_tests;
 
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
+
+#[path = "gate_tests.rs"]
+mod gate_tests;
 #[path = "silence_effect_tests.rs"]
 mod silence_effect_tests;
 

@@ -27,9 +27,11 @@ State parsing and replacement allocations belong on control workers.
 `hex-lattice` owns the native processing-definition and registry seam;
 `hex-devices` implements and registers Utility, eq eight, the original nonlinear
 [Saturator](saturator.md), and the stereo-linked
-[Compressor](compressor.md). A device definition supplies defaults, validation,
-state migration, parameter access/patching and preparation. Its codec interprets
-its own payload. Adding a device means implementing this
+[Compressor](compressor.md), plus the original hysteresis [Gate](gate.md). A
+device definition supplies defaults, validation, state migration, parameter
+access/patching and preparation. Gate adds stereo-linked threshold/return
+hysteresis and fixed history transfer under this generic contract. Its codec
+interprets its own payload. Adding a device means implementing this
 contract and registering it, without adding a per-device storage DTO or engine
 type switch. The registry admits memoryless matrix effects and fixed-state
 processors that implement the prepared/runtime history contract; a descriptor

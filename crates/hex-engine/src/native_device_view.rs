@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 4);
+        assert_eq!(catalog.len(), 5);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -307,6 +307,12 @@ mod tests {
             .expect("registered Compressor appears in the generic effect catalog");
         let state = crate::default_native_device_state(compressor.type_id).unwrap();
         assert_eq!(native_device_view(&state).unwrap().name, "compressor");
+        let gate = catalog
+            .iter()
+            .find(|entry| entry.name == "gate")
+            .expect("registered Gate appears in the generic effect catalog");
+        let state = crate::default_native_device_state(gate.type_id).unwrap();
+        assert_eq!(native_device_view(&state).unwrap().name, "gate");
     }
 
     #[test]
@@ -409,11 +415,12 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 4);
+        assert_eq!(effects.len(), 5);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq eight"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
+        assert!(effects.iter().any(|entry| entry.name == "gate"));
         assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()

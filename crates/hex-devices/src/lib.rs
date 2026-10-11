@@ -2,6 +2,7 @@
 pub mod compressor;
 pub mod eq8;
 pub mod fm4;
+pub mod gate;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
@@ -18,11 +19,12 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 4] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 5] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &saturator::SATURATOR_DEFINITION,
     &compressor::COMPRESSOR_DEFINITION,
+    &gate::GATE_DEFINITION,
 ];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
     &SINE_INSTRUMENT,
