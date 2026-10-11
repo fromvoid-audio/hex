@@ -31,6 +31,29 @@ work; Discard explicitly permits closing. Panel bindings must also finalize or
 protect local typed input before close, and retain the local value during a
 pending commit rather than synchronizing an old canonical value into the widget.
 
+## playing Operator integration coverage
+
+The `hex-session` Service regression
+`operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once`
+drives Begin/Change/Commit for the registered Operator carrier while one
+Arrangement MIDI note is held. Its source sets oscillator-one feedback to 0.3
+(parameter 78), selecting the mutable Operator law for which carrier retargeting
+is supported. The test applies Service-produced preview, committed and Undo
+prepared playbacks through `Playback::try_inherit_runtime_from`, matching the
+host's graph-handoff boundary. The unchanged twin playback is a PCM baseline;
+both runtimes render each block at the same timeline position. After the
+240-frame carrier ramp, the preview, committed and Undo PCM must match that
+same-time baseline scaled by 0.25, 0.6 and 1.0 respectively, within 3e-6 per
+sample. Each block also remains finite, nonzero and advances exactly 512 frames.
+
+It also verifies that Begin/Change leave the canonical project, revision, dirty
+state and Undo availability intact; Commit records one revision; and one Undo
+restores the original carrier while the held note remains renderable. The test
+does not reproduce the reported stop-after-parameter-change failure, cover the
+native audio callback/device, or establish physical latency or audible acceptance.
+Analytic zero-feedback Operator notes intentionally retain their immutable active
+note law, so they are not interchangeable with this mutable-feedback fixture.
+
 ## worker roundtrip profile
 
 `cargo run --release -p hex-session --example profile_device_gestures` uses the

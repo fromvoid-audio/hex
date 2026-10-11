@@ -3225,6 +3225,274 @@ mod service_tests {
     }
 
     #[test]
+    fn operator_device_gesture_retargets_a_playing_feedback_note_and_commits_once() {
+        use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
+        use hex_engine::playback::{PlaybackAction, PlaybackCommand};
+        use hex_lattice_contract::{ParameterId, ParameterValue};
+
+        fn render_active(playback: &mut Playback, frames: usize) -> Vec<hex_engine::Frame> {
+            let mut output = vec![[0.0; 2]; frames];
+            playback
+                .render(&mut output)
+                .expect("active Operator render");
+            assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+            assert!(output.iter().any(|frame| frame[0].abs() > 1.0e-6));
+            output
+        }
+
+        fn assert_scaled_tail(
+            actual: &[hex_engine::Frame],
+            reference: &[hex_engine::Frame],
+            scale: f32,
+        ) {
+            assert_eq!(actual.len(), reference.len());
+            // Operator retargets carrier weight over 240 frames at 48 kHz.
+            // Inspect a later section where the target is fully applied.
+            for (actual_frame, reference_frame) in actual[384..].iter().zip(&reference[384..]) {
+                for channel in 0..2 {
+                    let expected = reference_frame[channel] * scale;
+                    assert!(
+                        (actual_frame[channel] - expected).abs() <= 3.0e-6,
+                        "carrier-scaled PCM differs: actual={}, expected={expected}",
+                        actual_frame[channel]
+                    );
+                }
+            }
+        }
+
+        fn operator_parameter(
+            state: &hex_lattice_contract::NativeDeviceState,
+            parameter: ParameterId,
+        ) -> ParameterValue {
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                state,
+                parameter,
+            )
+            .expect("read Operator parameter")
+        }
+
+        let service = Service::new(48_000, 8, 0).expect("service");
+        let _initial = next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "operator gesture".into(),
+            }))
+            .expect("add track");
+        let track_event = next_event(&service);
+        let track = track_event.state.project.tracks()[0].id();
+        let device = track_event.state.project.tracks()[0]
+            .instrument()
+            .expect("new hybrid track instrument")
+            .id();
+        service
+            .submit(Request::ReplaceNativeDevice {
+                device,
+                class: hex_engine::NativeDeviceClass::Instrument,
+                type_id: Box::new(
+                    hex_lattice_contract::DeviceTypeId::new("hex.instrument.operator")
+                        .expect("Operator type"),
+                ),
+            })
+            .expect("replace default instrument with Operator");
+        let added = next_event(&service);
+        assert!(added.error.is_none(), "{:?}", added.error);
+        assert_eq!(
+            added
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .type_id()
+                .as_str()
+                .unwrap(),
+            "hex.instrument.operator"
+        );
+
+        // Parameter 78 is Operator's authored oscillator-one feedback. A
+        // nonzero value selects the mutable note law whose live handoff is
+        // intentionally supported; analytic zero-feedback notes retain their
+        // original immutable law during active playback.
+        let feedback = ParameterId::new(78).expect("Operator feedback parameter");
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: feedback,
+                value: ParameterValue::Float(0.3),
+            })
+            .expect("enable mutable feedback");
+        let configured = next_event(&service);
+        assert!(configured.error.is_none(), "{:?}", configured.error);
+
+        let beat = |quarters| hex_project::BeatTime::from_quarters(quarters).expect("beat");
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: beat(4),
+            }))
+            .expect("place note clip");
+        let clip_event = next_event(&service);
+        let clip = clip_event.state.project.tracks()[0].midi_clips()[0].id();
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: beat(2),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }))
+            .expect("add held note");
+        let before = next_event(&service);
+        assert!(before.error.is_none(), "{:?}", before.error);
+        let canonical = before.state.project.as_ref().clone();
+        let canonical_revision = before.state.revision;
+        let canonical_can_undo = before.state.can_undo;
+        let original_prepared = Arc::clone(
+            before
+                .playback
+                .as_ref()
+                .and_then(Playback::prepared_revision)
+                .expect("Operator prepared revision"),
+        );
+        let mut active = before.playback.expect("Operator playback");
+        let mut baseline = Playback::try_from_prepared_with_session(original_prepared)
+            .expect("matching active runtime");
+        active
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .expect("play active Operator");
+        baseline
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .expect("play unchanged baseline");
+        let initial_active = render_active(&mut active, 128);
+        let initial_baseline = render_active(&mut baseline, 128);
+        assert_eq!(initial_active, initial_baseline);
+
+        let carrier = ParameterId::new(29).expect("Operator oscillator-one carrier");
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Begin {
+                key,
+                target: GestureTarget::DeviceParameter {
+                    device,
+                    parameter: carrier,
+                },
+            }))
+            .expect("begin carrier gesture");
+        let begun = next_event(&service);
+        assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(0.25),
+            }))
+            .expect("preview carrier value");
+        let preview = next_event(&service);
+        assert!(preview.error.is_none(), "{:?}", preview.error);
+        assert!(preview.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+        assert_eq!(preview.state.revision, canonical_revision);
+        assert_eq!(preview.state.can_undo, canonical_can_undo);
+        assert_eq!(preview.state.project.as_ref(), &canonical);
+        assert_eq!(preview.state.unsaved, before.state.unsaved);
+        let overlay = preview.device_preview.as_ref().expect("prepared preview");
+        assert_eq!(overlay.identity.canonical_revision, canonical_revision);
+        assert_eq!(overlay.identity.sequence, 1);
+        assert_eq!(
+            operator_parameter(
+                overlay.state.project.device(device).unwrap().state(),
+                carrier,
+            ),
+            ParameterValue::Float(0.25)
+        );
+        assert_eq!(
+            operator_parameter(
+                preview.state.project.device(device).unwrap().state(),
+                carrier,
+            ),
+            ParameterValue::Float(1.0)
+        );
+
+        let mut preview_playback = preview.playback.expect("preview playback");
+        let preview_start = active.position();
+        assert_eq!(preview_start, baseline.position());
+        preview_playback
+            .try_inherit_runtime_from(&mut active)
+            .expect("compatible mutable Operator handoff");
+        assert!(preview_playback.playing());
+        assert_eq!(preview_playback.position(), preview_start);
+        let changed = render_active(&mut preview_playback, 512);
+        let unchanged = render_active(&mut baseline, 512);
+        assert_scaled_tail(&changed, &unchanged, 0.25);
+        assert_eq!(preview_playback.position(), preview_start + 512);
+        assert_eq!(preview_playback.position(), baseline.position());
+
+        service
+            .submit(Request::DeviceGesture(GestureRequest::Commit {
+                key,
+                sequence: 2,
+                value: ParameterValue::Float(0.6),
+            }))
+            .expect("commit carrier value");
+        let committed = next_event(&service);
+        assert!(committed.error.is_none(), "{:?}", committed.error);
+        assert!(committed.device_preview.is_none());
+        assert_eq!(committed.state.revision, canonical_revision + 1);
+        assert_eq!(committed.state.project.tracks()[0].id(), track);
+        assert!(committed.state.unsaved);
+        assert_eq!(
+            operator_parameter(
+                committed.state.project.device(device).unwrap().state(),
+                carrier
+            ),
+            ParameterValue::Float(0.6)
+        );
+        let mut committed_playback = committed.playback.expect("committed playback");
+        let commit_start = preview_playback.position();
+        committed_playback
+            .try_inherit_runtime_from(&mut preview_playback)
+            .expect("second compatible mutable Operator handoff");
+        assert!(committed_playback.playing());
+        assert_eq!(committed_playback.position(), commit_start);
+        let committed_audio = render_active(&mut committed_playback, 512);
+        let commit_baseline = render_active(&mut baseline, 512);
+        assert_scaled_tail(&committed_audio, &commit_baseline, 0.6);
+        assert_eq!(committed_playback.position(), commit_start + 512);
+        assert_eq!(committed_playback.position(), baseline.position());
+
+        service
+            .submit(Request::Undo)
+            .expect("undo one gesture edit");
+        let undone = next_event(&service);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.revision, committed.state.revision + 1);
+        assert_eq!(undone.state.project.as_ref(), &canonical);
+        assert_eq!(
+            operator_parameter(
+                undone.state.project.device(device).unwrap().state(),
+                carrier
+            ),
+            ParameterValue::Float(1.0)
+        );
+        let mut undo_playback = undone.playback.expect("undo playback");
+        let undo_start = committed_playback.position();
+        undo_playback
+            .try_inherit_runtime_from(&mut committed_playback)
+            .expect("undo restores compatible active runtime");
+        assert!(undo_playback.playing());
+        let undo_audio = render_active(&mut undo_playback, 512);
+        let undo_baseline = render_active(&mut baseline, 512);
+        assert_scaled_tail(&undo_audio, &undo_baseline, 1.0);
+        assert_eq!(undo_playback.position(), undo_start + 512);
+        assert_eq!(undo_playback.position(), baseline.position());
+    }
+
+    #[test]
     fn undo_barrier_finishes_active_gesture_before_undoing_it() {
         use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
         use hex_lattice_contract::{ParameterId, ParameterValue};
