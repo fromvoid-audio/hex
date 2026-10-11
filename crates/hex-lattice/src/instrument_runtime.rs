@@ -177,16 +177,23 @@ pub enum NativeInstrumentRuntimeError {
     BlockNotStarted,
 }
 
-impl fmt::Display for NativeInstrumentRuntimeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+impl NativeInstrumentRuntimeError {
+    /// Allocation-free cause for callback diagnostics.
+    pub fn diagnostic_message(self) -> &'static str {
+        match self {
             Self::RuntimeBudgetExceeded => "native instrument runtime exceeds caller limits",
             Self::InvalidEventBatch => "native instrument event batch is invalid",
             Self::EventCapacityExceeded => "native instrument event or voice capacity is exceeded",
             Self::IncompatibleHistory => "native instrument runtime histories are incompatible",
             Self::IncompatibleTwins => "native instrument runtime twins are incompatible",
             Self::BlockNotStarted => "native instrument runtime block was not started",
-        })
+        }
+    }
+}
+
+impl fmt::Display for NativeInstrumentRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.diagnostic_message())
     }
 }
 

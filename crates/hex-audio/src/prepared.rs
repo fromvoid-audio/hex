@@ -286,6 +286,7 @@ impl FreshRuntimeFence {
 pub struct Status {
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
+    render_fault_record: crate::render_fault::RenderFaultRecord,
     pub callback_max_ns: AtomicU64,
     pub deadline_misses: AtomicU64,
     pub peak_left: AtomicU32,
@@ -332,6 +333,7 @@ impl Status {
         Self {
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
+            render_fault_record: crate::render_fault::RenderFaultRecord::default(),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
@@ -361,6 +363,18 @@ impl Status {
 }
 
 impl Status {
+    /// Read bounded diagnostic telemetry on control/UI, never in a callback.
+    pub fn render_fault_snapshot(&self) -> Option<crate::RenderFaultSnapshot> {
+        if !self.render_fault.load(Acquire) {
+            return None;
+        }
+        let snapshot = self.render_fault_record.read();
+        if self.render_fault.load(Acquire) {
+            snapshot
+        } else {
+            None
+        }
+    }
     fn try_new() -> Result<Self, Invalid> {
         let mut slots = Vec::new();
         slots
@@ -1269,7 +1283,8 @@ impl Callback {
                         cancellation.finish();
                     }
                     self.publish_active_routes(true);
-                    self.status.render_fault.store(false, Relaxed);
+                    self.status.render_fault_record.clear();
+                    self.status.render_fault.store(false, Release);
                     self.status.applied_revision.store(revision, Release);
                     self.publication_pending.store(false, Release);
                 }
@@ -1418,6 +1433,20 @@ impl Callback {
         if let Some(ticket) = consumed {
             self.status.consumed_command.store(ticket, Release);
         }
+    }
+    /// Latch the first actual render cause before Stop changes the cursor.
+    /// None denotes nonfinite output after successful rendering.
+    /// Native adapters call this on the callback; no formatting, I/O or ownership drops.
+    pub fn report_render_fault(&mut self, error: Option<&Invalid>, block_start_frame: u64) {
+        if !self.status.render_fault.load(Acquire) {
+            self.status.render_fault_record.publish(
+                error.map_or("audio output contains nonfinite samples", |error| error.0),
+                self.status.applied_revision.load(Relaxed),
+                block_start_frame,
+            );
+            self.status.render_fault.store(true, Release);
+        }
+        self.stop_after_fault();
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
@@ -2166,6 +2195,62 @@ mod tests {
                 .processor_audition_is_active(identity, selection)
         );
 
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn first_render_cause_is_latched_before_stop_and_new_admission_clears_it() {
+        let (mut control, mut callback) = channel(48_000).expect("channel");
+        let (playback, _) = spectrum_eq8_graph();
+        let revision = control.publish(playback).expect("publish");
+        control.command(PlaybackCommand::Play).expect("play");
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 128]).expect("prefix");
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            callback
+                .report_render_fault(Some(&Invalid("ongoing midi query exceeds 256 edges")), 128);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.report_render_fault(Some(&Invalid("ongoing midi query exceeds 256 edges")), 128);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0),
+        );
+        assert!(!control.status.playing.load(Relaxed));
+        let fault = control.status.render_fault_snapshot().expect("fault");
+        assert_eq!(fault.message, "ongoing midi query exceeds 256 edges");
+        assert_eq!((fault.audio_revision, fault.frame), (revision, 128));
+        callback.report_render_fault(None, 0);
+        assert_eq!(control.status.render_fault_snapshot(), Some(fault));
+        let (replacement, _) = spectrum_eq8_graph();
+        let replacement_revision = control
+            .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
+            .expect("replacement");
+        callback.begin_block();
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            replacement_revision
+        );
+        assert!(!control.status.render_fault.load(Acquire));
+        assert!(control.status.render_fault_snapshot().is_none());
+        callback.report_render_fault(None, 256);
+        assert_eq!(
+            control
+                .status
+                .render_fault_snapshot()
+                .expect("nonfinite")
+                .message,
+            "audio output contains nonfinite samples"
+        );
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();

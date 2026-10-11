@@ -7,6 +7,16 @@ owns milestone gates and [features](docs/features.md) owns capability assessment
 Completed chronology and superseded work orders are preserved in the
 [historical snapshot](docs/history/todo-2026-10-09.md).
 
+## operator playback diagnostics — 11 october
+
+Pulse 2305: preserve render causes and frame/audio revision; write one background
+session log per launch, retain the newest ten, and report logging failures.
+Source tests cover fault lifecycle, callback allocation, file retention and
+editor-to-log forwarding. Full local CI and a fresh signed build are the delivery
+gates. The original parameter-triggered Operator stop remains unreproduced and
+open for user reproduction; diagnostics do not claim a playback fix.
+See [diagnostics](docs/diagnostics.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets
