@@ -92,3 +92,11 @@ Full exact-commit Mac local CI and a fresh locked release build without the two
 specified notices remain required on the pushed implementation. Linux checks
 cannot establish native/macOS acceptance. PR153 stays draft; merge is not
 within this task's authorization.
+
+Linux full validation on `6838df4` with verified rootless native prerequisites
+reproduced the independent xattr/libc errno failure. The already-merged PR161
+implementation (`9b66bab6e7ba1a8bab8d754cc08d0bd6ec66b1f6`, merge `5a79795`)
+is integrated here as a prerequisite, preserving its exact vendor files, guard,
+license/provenance and unchanged package version. The two warning patches remain
+identical. This integration creates a new source revision; earlier exact-commit
+Mac CI/release evidence must be renewed before acceptance.

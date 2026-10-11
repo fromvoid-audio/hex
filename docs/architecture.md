@@ -584,3 +584,12 @@ original left/right bracket cursor variants, cached NSCursor images on macOS
 and directional native fallbacks elsewhere. Native cursor creation/retention
 remains GPUI-owned, never Hex FFI or per-hover image construction. No reference
 assets are extracted. Exact changed files remain pinned by the provenance guard.
+
+## external xattr compatibility — 11 October 2026
+
+The existing GPUI → zed-async-tar → xattr boundary retains xattr0.2.3 through
+a checksum-verified excluded `third_party/xattr` patch. Only Linux/Android's
+missing-attribute errno name changes to libc::ENODATA; macOS/BSD retain ENOATTR.
+There is no new workspace FFI or unsafe exception. See
+[xattr compatibility](xattr-compatibility.md) for provenance, locked compile
+regression, macOS query tests and explicit cross-compilation limits.
