@@ -444,6 +444,7 @@ impl MutableInstrumentTrackRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn process_segment(
         &mut self,
         track: TrackId,
@@ -453,6 +454,30 @@ impl MutableInstrumentTrackRuntime {
         onsets: &mut MutableOnsetBuffer,
         suppressions: &[MidiOccurrenceSuppression],
         events: &mut Vec<NativeInstrumentEvent>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_clock(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Existing event segment plus borrowed host clock.
+    pub(crate) fn process_segment_with_clock(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
@@ -590,7 +615,7 @@ impl MutableInstrumentTrackRuntime {
             (offset, is_on, occurrence_id)
         });
         self.pair
-            .process_block(events, frames)
+            .process_block_with_clock(events, frames, clock)
             .map_err(map_runtime_error)
     }
 

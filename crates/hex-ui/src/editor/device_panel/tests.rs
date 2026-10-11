@@ -954,7 +954,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..14 {
+    for field in 0..12 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -965,7 +965,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [4, 7] {
+    for field in [2, 5] {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -999,7 +999,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     });
     let lfo_toggle =
         Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let toggle_bounds = visual.debug_bounds(lfo_toggle).expect("local LFO toggle");
+    let toggle_bounds = visual
+        .debug_bounds(lfo_toggle)
+        .expect("local filter toggle");
     visual.simulate_click(toggle_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, cx| {
@@ -1011,7 +1013,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         );
         assert!(view.device_panel.pending_values.is_empty());
         assert!(view.device_gesture.snapshot().is_none());
-        let selector = &state.selectors[&operator_panel::preview::Choice::LfoWave];
+        let selector = &state.selectors[&operator_panel::preview::Choice::FilterMode];
         selector
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
@@ -1021,8 +1023,14 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     );
     let wave_bounds = visual
         .debug_bounds(wave_selector)
-        .expect("local LFO waveform selector");
-    visual.simulate_click(wave_bounds.center(), Modifiers::default());
+        .expect("local filter waveform selector");
+    visual.simulate_click(
+        point(
+            wave_bounds.origin.x + px(5.0),
+            wave_bounds.origin.y + px(4.0),
+        ),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let wave_option = Box::leak(
         format!(
@@ -1033,13 +1041,13 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     );
     let option_bounds = visual
         .debug_bounds(wave_option)
-        .expect("LFO waveform option");
+        .expect("filter waveform option");
     visual.simulate_click(option_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, cx| {
         let state = &view.device_panel.operator_previews[&instrument_id];
         assert_eq!(state.selected[0], 0, "selector changes its local selection");
-        state.selectors[&operator_panel::preview::Choice::LfoWave]
+        state.selectors[&operator_panel::preview::Choice::FilterMode]
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
     });
@@ -1053,7 +1061,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         Box::leak(format!("operator-preview-{}-0-value", instrument_id.value()).into_boxed_str());
     let rate_bounds = visual
         .debug_bounds(rate_value)
-        .expect("local LFO rate value");
+        .expect("local filter rate value");
     let rate_knob_bounds = visual.debug_bounds(rate_knob).expect("local rate knob");
     assert!(rate_bounds.origin.x + rate_bounds.size.width <= px(1440.0));
     assert!(rate_knob_bounds.origin.x + rate_knob_bounds.size.width <= px(1440.0));
@@ -1066,25 +1074,25 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     editor.read_with(cx, |view, cx| {
         assert!(
             view.device_panel.operator_previews[&instrument_id].controls
-                [&operator_panel::preview::Field::LfoRate]
+                [&operator_panel::preview::Field::FilterFrequency]
                 .entity
                 .read_with(cx, |control, _| control.is_editing())
         );
     });
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("75");
+    visual.simulate_input("250");
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let rendered_rate = view.device_panel.operator_previews[&instrument_id].controls
-            [&operator_panel::preview::Field::LfoRate]
+            [&operator_panel::preview::Field::FilterFrequency]
             .entity
             .read_with(cx, |control, _| control.value());
-        assert_ne!(rendered_rate, 74.59, "micro dial receives keyboard input");
+        assert_ne!(rendered_rate, 198.0, "micro dial receives keyboard input");
         assert_ne!(
             view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::LfoRate as usize],
-            74.59,
+                [operator_panel::preview::Field::FilterFrequency as usize],
+            198.0,
             "local numeric edit updates its view value"
         );
         assert_eq!(
@@ -1096,12 +1104,20 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     });
     let committed_local_rate = editor.read_with(cx, |view, _| {
         view.device_panel.operator_previews[&instrument_id].values
-            [operator_panel::preview::Field::LfoRate as usize]
+            [operator_panel::preview::Field::FilterFrequency as usize]
     });
     let wave_bounds = visual.debug_bounds(wave_selector).expect("wave selector");
-    visual.simulate_click(wave_bounds.center(), Modifiers::default());
+    visual.simulate_click(
+        point(
+            wave_bounds.origin.x + px(5.0),
+            wave_bounds.origin.y + px(4.0),
+        ),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
-    let rate_bounds = visual.debug_bounds(rate_knob).expect("local LFO rate knob");
+    let rate_bounds = visual
+        .debug_bounds(rate_knob)
+        .expect("local filter rate knob");
     let rate_start = rate_bounds.center();
     let rate_moved = point(rate_start.x, rate_start.y - px(12.0));
     visual.simulate_mouse_down(rate_start, MouseButton::Left, Modifiers::default());
@@ -1119,17 +1135,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         );
         let state = &view.device_panel.operator_previews[&instrument_id];
         assert_eq!(
-            state.values[operator_panel::preview::Field::LfoRate as usize],
+            state.values[operator_panel::preview::Field::FilterFrequency as usize],
             committed_local_rate,
             "owner changes preserve completed local values"
         );
         assert!(
-            !state.controls[&operator_panel::preview::Field::LfoRate]
+            !state.controls[&operator_panel::preview::Field::FilterFrequency]
                 .entity
                 .read_with(cx, |control, _| control.is_interacting())
         );
         assert!(
-            !state.selectors[&operator_panel::preview::Choice::LfoWave]
+            !state.selectors[&operator_panel::preview::Choice::FilterMode]
                 .entity
                 .read_with(cx, |selector, _| selector.is_open())
         );
@@ -1146,7 +1162,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::LfoRate as usize],
+                [operator_panel::preview::Field::FilterFrequency as usize],
             committed_local_rate,
             "local preview state remains available after returning to its owner"
         );
