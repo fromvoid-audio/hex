@@ -151,3 +151,20 @@ and standard rail control styles, keeping the center inset dark and its
 canonical readouts accented. No new palette or preference overwrite is added.
 All 13 Operator source tests pass after the correction. Corrected native color
 comparison and exact final-commit CI remain pending; this is not visual acceptance.
+
+
+The subsequent direct human request explicitly sets the center field to black,
+not dark blue. Operator's own display background is now `0x000000`, with neutral
+dark grid rails; the shared product constant and other devices are unchanged.
+Gray outer surfaces, accent readouts, fixed geometry and bindings remain intact.
+This supersedes inferring the center color from the Live sample or Hex theme.
+
+Final CI is blocked by machine disk pressure: the first corrected-tree run
+refused before checks at 1.83 GiB (`20261011T091549Z-9b6e0d5f`). After verifying
+no process used this chat's own target, removing only its inactive incremental
+cache allowed a second run to start (`20261011T091635Z-e10be3d2`). The disk fell
+below the 2 GiB floor again during parallel builds. That run was interrupted
+before this new source edit; it is not passing evidence. No floor was weakened,
+other worktrees/caches were preserved, and final full CI/native color/physical
+keyboard acceptance remain required. All 13 tests passed on the gray correction;
+the black-center change currently has source preflight only.
