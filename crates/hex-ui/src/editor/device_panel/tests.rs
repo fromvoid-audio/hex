@@ -6,6 +6,8 @@ use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
 
+mod saturator_ui_tests;
+
 fn receive_service_event(service: &Service) -> Event {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {

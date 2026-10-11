@@ -10,6 +10,9 @@ audio commands, persistence, and undo policy.
 `MiniDial` and `CompactDial` share the same numeric entity and gesture path at
 different reusable densities. `curve_plot` renders a bounded, read-only curve
 from normalized points without assigning device-specific meaning to them.
+`transfer_plot` uses the same bounded curve renderer with centered input/output
+axes. Callers supply normalized samples and display their own axis ranges;
+the widget has no DSP, device state or telemetry dependency.
 
 Utility is the current visual testbed for the shared Lattice device interface.
 Frames, knobs, sliders, value fields, switches, selectors and popup behavior are
