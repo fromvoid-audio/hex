@@ -325,7 +325,7 @@ fn ruler_candidates(
     for (index, point) in points.iter().take(MAX_METER_MAP_POINTS).enumerate() {
         let point_raw = point.beat().raw();
         let section_end = points.get(index + 1).map(|next| next.beat().raw());
-        if point_raw <= last_beat.raw() && !section_end.is_some_and(|end| end <= start_beat.raw()) {
+        if point_raw <= last_beat.raw() && section_end.is_none_or(|end| end > start_beat.raw()) {
             let effective_start = start_beat.raw().max(point_raw);
             let effective_end = section_end
                 .and_then(|end| end.checked_sub(1))
@@ -958,6 +958,50 @@ mod tests {
         assert_eq!(marker.frame, 36_000);
         assert!(marker.fragmentary_bar);
         assert_eq!(marker.label, "2.1");
+    }
+
+    #[test]
+    fn ruler_keeps_only_visible_landmarks_across_section_end() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(4).unwrap(),
+                meter: Meter::new(3, 4).unwrap(),
+            })
+            .unwrap();
+        // At 120 bpm the second, open-ended section begins at frame 96_000.
+        for (start, expected_frames) in [
+            (72_000, vec![72_000, 96_000, 120_000]),
+            (96_000, vec![96_000, 120_000, 144_000]),
+            (120_000, vec![120_000, 144_000, 168_000]),
+        ] {
+            let viewport = Viewport {
+                start,
+                length: 72_000,
+            };
+            let ticks = ruler_candidates(
+                editor.project(),
+                viewport,
+                viewport.end().unwrap(),
+                editor.project().tempo_map().frame_to_beat(start).unwrap(),
+                editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat(viewport.end().unwrap() - 1)
+                    .unwrap(),
+                8,
+                LandmarkDensity::Meter,
+            )
+            .ticks;
+            let mut frames = ticks.iter().map(|tick| tick.frame).collect::<Vec<_>>();
+            frames.sort_unstable();
+            frames.dedup();
+            assert_eq!(frames, expected_frames);
+            assert_eq!(
+                ticks.iter().filter(|tick| tick.meter_marker).count(),
+                usize::from(start <= 96_000)
+            );
+        }
     }
 
     #[test]
