@@ -1,5 +1,5 @@
 //! Bounded native mutable Operator runtime for effective self-feedback.
-use super::{FEEDBACK_COUNT, OperatorSettings, PAYLOAD_BYTES};
+use super::{FEEDBACK_COUNT, FEEDBACK_PAYLOAD_BYTES, OperatorSettings};
 use crate::{
     SineTable,
     fm4::{OPERATORS, OperatorFeedbackRetargetFrame, PreparedOperatorConfiguration},
@@ -21,7 +21,7 @@ pub(super) struct OperatorFeedbackFactory {
     configuration: PreparedOperatorConfiguration,
     sine_table: &'static SineTable,
     feedback_turns: [f64; OPERATORS],
-    compatibility_state: [u8; PAYLOAD_BYTES],
+    compatibility_state: [u8; FEEDBACK_PAYLOAD_BYTES],
     sample_rate: u32,
     release_frames: u64,
 }
@@ -38,8 +38,7 @@ pub(super) fn prepare_factory(
     }
     let feedback_turns = effective.map(f64::from);
     let native_state = settings.to_state()?;
-    let compatibility_state = native_state
-        .payload()
+    let compatibility_state = native_state.payload()[..FEEDBACK_PAYLOAD_BYTES]
         .try_into()
         .map_err(|_| DeviceContractError::MalformedState)?;
     Ok(Some(OperatorFeedbackFactory {
@@ -144,7 +143,7 @@ struct OperatorFeedbackRuntime {
     configuration: PreparedOperatorConfiguration,
     sine_table: &'static SineTable,
     feedback_turns: [f64; OPERATORS],
-    compatibility_state: [u8; PAYLOAD_BYTES],
+    compatibility_state: [u8; FEEDBACK_PAYLOAD_BYTES],
     sample_rate: u32,
     release_frames: u64,
     voices: [VoiceSlot; MAX_VOICES],

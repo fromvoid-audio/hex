@@ -351,3 +351,18 @@ The editor now exposes background, text, primary and secondary RGB roles with
 live preview, reset/cancel/save and independent preferences. All derived UI and
 cached device-control styles follow those roles. Ownership, contrast policy and
 source/native acceptance are in [theme settings](theme-settings.md).
+
+## application build identity — 11 October 2026
+
+The canonical/loading title row shows `0.1.0 · abcdef12` at the far right,
+using the workspace package version and eight characters of the source Git
+revision captured at compilation. Dirty builds append `dirty`; missing Git
+metadata shows `unknown`. Identity refreshes on every Cargo invocation and is
+embedded in the executable, with no runtime Git or filesystem access. Ignored
+artifacts do not affect the dirty marker. Same-revision rebuilds intentionally
+share identity; this identifies source, not a unique build timestamp.
+
+Equal 208 px title insets reserve space for the readout and keep project names
+centered and ellipsized at the 880 px minimum width. The demo header uses the
+same label. Typography and colors follow the bundled font and muted theme token.
+Native visual/resize acceptance remains separate from rendered source tests.

@@ -45,8 +45,8 @@ remains open. Asset relinking is deferred.
 ```sh
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
-# Or create the local development app, then open artifacts/hex.app:
-sh scripts/bundle-macos.sh
+# Optimized stable test delivery after exact-source CI (see docs/test-builds.md):
+sh scripts/bundle-macos.sh --help
 python3 scripts/check-architecture.py
 python3 scripts/check-ui-style.py
 cargo test --workspace
@@ -62,9 +62,12 @@ cargo run -p hex-cli -- render-project artifacts/project.hex artifacts/project.w
 cargo run -p hex-cli -- recover-project artifacts/project.hex artifacts/recovered.hex
 ```
 
-The bundle script refuses to overwrite a running development app, including
-macOS case-insensitive `Hex.app` aliases. Close the development app first or use
-a separately named review bundle to preserve an unsaved project.
+User-test builds use the optimized stable development app at `artifacts/hex.app`,
+with exact-source CI, provenance, guarded replacement and retained rollback. The
+bundle script refuses to overwrite a running app, including macOS case-insensitive
+`Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
+delivery. See [native test builds](docs/test-builds.md) for the required arguments
+and shared merge → delivery → user approval sequence.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by
 seven repetitions of an enveloped 220 Hz tone. Output creation refuses to
@@ -229,14 +232,18 @@ Save Current uses a captured content token, one validated rolling recovery file,
 and atomic replacement; an external content change causes a conflict. If a
 create-new publication succeeds but cleanup or directory synchronization fails,
 the save error names the already-published path and the editor conservatively
-keeps the project marked unsaved. Native Save/Save As interaction acceptance and
-asset relinking remain open. Prepared
+keeps the project marked unsaved. Native Save/Save As interaction acceptance remains open; missing-media relinking
+and explicit journal recovery are source-implemented in Pulse25/PR151. Prepared
 playback handoff connects the canonical editor to CPAL; graph
 retirement and stream disposal stay away from the realtime callback.
 
 `recover-project` explicitly copies a valid recovery sidecar to a new project
 path after validating it. It preserves the existing target and sidecar; there is
-no automatic crash journal or recovery on startup.
+no silent recovery on startup. The native editor checkpoints canonical edits to
+one saved-project journal or the latest-only application untitled slot. Explicit
+File-menu recovery opens dirty without overwriting saved documents; missing media
+can be relinked after rate/length/decode/compile admission. See
+[project recovery](docs/project-recovery.md) for ownership, tests and native gaps.
 
 Opening validates every saved asset before replacing the project; failure leaves
 the current session intact. A nonempty project requires invoking open again to

@@ -1,5 +1,7 @@
 //! Versioned, bounded persistence of canonical metadata; no media or callback work.
 mod files;
+mod journal;
+pub use journal::{Journal, journal_path, load_journal};
 mod replacement;
 mod schema;
 pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};

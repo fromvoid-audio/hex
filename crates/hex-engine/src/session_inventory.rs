@@ -778,6 +778,17 @@ impl PreparedSessionInventory {
                         .as_deref()
                         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
                         .transpose()?;
+                    if mutable_limits.is_some()
+                        && let Some(instrument) = config.config.as_deref()
+                    {
+                        for note in clip.source().notes() {
+                            instrument
+                                .validate_event_note(note.pitch(), note.velocity())
+                                .map_err(|_| {
+                                    crate::Invalid("mutable Session instrument note is unsupported")
+                                })?;
+                        }
+                    }
                     let instrument_id = config.device_id;
                     let instrument_state = config.state.clone();
                     let instrument_enabled = config.config.is_some() && !config.bypassed;

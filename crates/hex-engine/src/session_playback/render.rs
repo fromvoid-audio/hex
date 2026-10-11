@@ -636,6 +636,7 @@ impl SessionPlayback {
                         &mut self.mutable_events,
                         performance_frame,
                         tail_output,
+                        &timing,
                     )?;
                 }
             }
@@ -701,6 +702,7 @@ impl SessionPlayback {
                 &mut self.mutable_events,
                 performance_frame,
                 tail_output,
+                &timing,
             )?;
             let chain = self
                 .tail_groups
@@ -847,16 +849,17 @@ impl SessionPlayback {
     }
 }
 
-fn process_mutable_tail(
+fn process_mutable_tail<T: MidiTiming + ?Sized>(
     tail: &mut super::MutableInstrumentTail,
     onsets: &mut MutableOnsetBuffer,
     events: &mut Vec<hex_lattice::NativeInstrumentEvent>,
     performance_frame: u64,
     output: &mut [Frame],
+    timing: &T,
 ) -> Result<(), SessionPlaybackError> {
     onsets.clear();
     tail.runtime
-        .process_segment(
+        .process_segment_with_clock(
             tail.track_id,
             performance_frame,
             performance_frame,
@@ -864,6 +867,10 @@ fn process_mutable_tail(
             onsets,
             &[],
             events,
+            Some(&InstrumentClock {
+                timing,
+                start: performance_frame,
+            }),
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
@@ -1026,7 +1033,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
         .and_then(Option::as_mut)
         .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
     runtime
-        .process_segment(
+        .process_segment_with_clock(
             routes[index].id,
             performance_frame,
             match routes[index].owner {
@@ -1037,6 +1044,10 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
             onsets,
             suppressions,
             events,
+            Some(&InstrumentClock {
+                timing,
+                start: performance_frame,
+            }),
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
@@ -1313,4 +1324,16 @@ fn normalize_loop_cursor(
         region.start() + (frame - region.start()) % length,
         loop_pass,
     ))
+}
+
+/// One borrowed effective performance timeline shared by every voice in a chunk.
+struct InstrumentClock<'a, T: ?Sized> {
+    timing: &'a T,
+    start: u64,
+}
+impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentClock<'_, T> {
+    fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+        let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
+        self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
+    }
 }
