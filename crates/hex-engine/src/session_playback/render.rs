@@ -29,7 +29,7 @@ impl SessionPlayback {
         if self.playing && !output.is_empty() && contains_streamed_sources {
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
-        self.render_internal::<dyn MediaPages>(output, None, observer)
+        self.render_internal::<dyn MediaPages>(output, None, observer, None)
     }
 
     /// Render with a borrowed page view. Misses silence only the unavailable
@@ -40,7 +40,53 @@ impl SessionPlayback {
         pages: &mut P,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        self.render_internal(output, Some(pages), None)
+        self.render_internal(output, Some(pages), None, None)
+    }
+
+    /// Capture selected canonical outputs from the same complete linear pass.
+    /// Preflight precedes runtime mutation; buffers are invalid on every error.
+    pub fn render_with_capture(
+        &mut self,
+        output: &mut [Frame],
+        capture: &mut OutputCapture<'_, '_>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_captured::<dyn MediaPages>(output, None, capture)
+    }
+
+    /// Streamed counterpart of `render_with_capture`; page misses keep their
+    /// existing source-local silence policy. No second source render occurs.
+    pub fn render_with_pages_and_capture<P: MediaPages>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        capture: &mut OutputCapture<'_, '_>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_captured(output, Some(pages), capture)
+    }
+
+    fn render_captured<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        capture: &mut OutputCapture<'_, '_>,
+    ) -> Result<(), SessionPlaybackError> {
+        if let Err(error) = capture.validate(self, output.len()) {
+            output.fill([0.0; 2]);
+            capture.invalidate();
+            return Err(SessionPlaybackError::Capture(error));
+        }
+        if pages.is_none()
+            && self.playing
+            && !output.is_empty()
+            && self.revision.arrangement().contains_streamed_sources()
+        {
+            output.fill([0.0; 2]);
+            capture.invalidate();
+            return Err(SessionPlaybackError::MediaPagesUnavailable);
+        }
+        capture.invalidate();
+        self.candidate_admission_open = false;
+        self.render_internal(output, pages, None, Some(capture))
     }
 
     fn render_internal<P: MediaPages + ?Sized>(
@@ -48,13 +94,17 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::PostNodeObserver<'_>>,
+        mut capture: Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
         if output.is_empty() || !self.playing {
+            if let Some(capture) = capture.as_mut() {
+                capture.commit(output.len());
+            }
             return Ok(());
         }
         let mut observer = observer;
-        let result = self.render_playing(output, pages, &mut observer);
+        let result = self.render_playing(output, pages, &mut observer, &mut capture);
         if result.is_err() {
             output.fill([0.0; 2]);
             for runtime in self.mutable_instruments.iter_mut().flatten() {
@@ -64,6 +114,11 @@ impl SessionPlayback {
                 tail.runtime.rollback_block();
             }
             self.return_effect_tails.rollback_block();
+            if let Some(capture) = capture.as_mut() {
+                capture.invalidate();
+            }
+        } else if let Some(capture) = capture.as_mut() {
+            capture.commit(output.len());
         }
         result
     }
@@ -73,6 +128,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
         observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -167,6 +223,7 @@ impl SessionPlayback {
                 pages.as_deref_mut(),
                 output_offset,
                 observer,
+                capture,
             )?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -277,6 +334,7 @@ impl SessionPlayback {
         mut pages: Option<&mut P>,
         frame_offset: usize,
         observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         let tracks = self.revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
@@ -290,6 +348,7 @@ impl SessionPlayback {
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let mix = track.mix();
+            let capture_id = OutputCaptureId::Track(self.route_scratch[index].id);
             let stateful_effects = self
                 .device_chains
                 .get(index)
@@ -540,16 +599,57 @@ impl SessionPlayback {
                         }
                     }
                 }
+                if let Some(capture) = capture.as_mut() {
+                    for frame in render_output.iter_mut() {
+                        *frame = mix.apply_frame(*frame);
+                    }
+                    capture.add(capture_id, frame_offset, render_output)?;
+                }
             } else {
+                let selected = capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.selects(capture_id));
+                if selected {
+                    let mut captured = [[0.0; 2]; 256];
+                    for release in &self.release_scratch[first_release..release_cursor] {
+                        if release.tail_group.is_none() {
+                            render_release_captured(
+                                release,
+                                table,
+                                self.revision.arrangement().shared_contexts(),
+                                &self.retained_contexts,
+                                performance_frame,
+                                output,
+                                Some(&mut captured[..output.len()]),
+                            )?;
+                        }
+                    }
+
+                    track
+                        .render_additive_captured(
+                            arrangement_frame,
+                            performance_frame,
+                            output,
+                            &self.suppression_scratch,
+                            pages.as_deref_mut(),
+                            &mut captured[..output.len()],
+                        )
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    if let Some(capture) = capture.as_mut() {
+                        capture.add(capture_id, frame_offset, &captured[..output.len()])?;
+                    }
+                    continue;
+                }
                 for release in &self.release_scratch[first_release..release_cursor] {
                     if release.tail_group.is_none() {
-                        render_release(
+                        render_release_captured(
                             release,
                             table,
                             self.revision.arrangement().shared_contexts(),
                             &self.retained_contexts,
                             performance_frame,
                             output,
+                            None,
                         )?;
                     }
                 }
@@ -583,14 +683,28 @@ impl SessionPlayback {
                 .get(tail_cursor)
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             let Some(group) = release.tail_group else {
-                render_release(
+                let mut captured = [[0.0; 2]; 256];
+                render_release_captured(
                     release,
                     table,
                     self.revision.arrangement().shared_contexts(),
                     &self.retained_contexts,
                     performance_frame,
                     output,
+                    capture
+                        .as_ref()
+                        .is_some_and(|capture| {
+                            capture.selects(OutputCaptureId::Track(release.track_id))
+                        })
+                        .then_some(&mut captured[..output.len()]),
                 )?;
+                if let Some(capture) = capture.as_mut() {
+                    capture.add(
+                        OutputCaptureId::Track(release.track_id),
+                        frame_offset,
+                        &captured[..output.len()],
+                    )?;
+                }
                 tail_cursor += 1;
                 continue;
             };
@@ -674,6 +788,14 @@ impl SessionPlayback {
             for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
                 mix.add_frame(destination, source);
             }
+            if let Some(capture) = capture.as_mut() {
+                let owner =
+                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
+                for frame in tail_output.iter_mut() {
+                    *frame = mix.apply_frame(*frame);
+                }
+                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
+            }
         }
         for group_index in 0..self.tail_mutable_instruments.len() {
             if rendered_mutable_tails
@@ -742,6 +864,14 @@ impl SessionPlayback {
             for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
                 mix.add_frame(destination, source);
             }
+            if let Some(capture) = capture.as_mut() {
+                let owner =
+                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
+                for frame in tail_output.iter_mut() {
+                    *frame = mix.apply_frame(*frame);
+                }
+                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
+            }
         }
         // Once an old source has stopped, its committed effect history still
         // owns output. Advance that suffix exactly once per render chunk using
@@ -799,6 +929,14 @@ impl SessionPlayback {
             for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
                 mix.add_frame(destination, source);
             }
+            if let Some(capture) = capture.as_mut() {
+                let owner =
+                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
+                for frame in tail_output.iter_mut() {
+                    *frame = mix.apply_frame(*frame);
+                }
+                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
+            }
         }
         for (index, bus) in self
             .revision
@@ -841,8 +979,19 @@ impl SessionPlayback {
                     destination[1] += source[1] * bus.gain;
                 }
             }
+            if let Some(capture) = capture.as_mut() {
+                for frame in frames.iter_mut() {
+                    *frame = if bus.muted {
+                        [0.0; 2]
+                    } else {
+                        [frame[0] * bus.gain, frame[1] * bus.gain]
+                    };
+                }
+                capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
+            }
         }
-        self.return_effect_tails.render_chunk(output);
+        self.return_effect_tails
+            .render_chunk(output, frame_offset, capture)?;
         Ok(())
     }
 }
@@ -1240,13 +1389,15 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
     Ok(())
 }
 
-fn render_release(
+#[allow(clippy::too_many_arguments)]
+fn render_release_captured(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     performance_frame: u64,
     output: &mut [Frame],
+    mut capture: Option<&mut [Frame]>,
 ) -> Result<(), SessionPlaybackError> {
     for (offset, frame) in output.iter_mut().enumerate() {
         let relative =
@@ -1255,7 +1406,16 @@ fn render_release(
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(sample) = release.voice.sample_at(absolute, contexts, retained) {
-            release.mix.add_frame(frame, sample);
+            let contribution = release.mix.apply_frame(sample);
+            frame[0] += contribution[0];
+            frame[1] += contribution[1];
+            if let Some(captured) = capture
+                .as_deref_mut()
+                .and_then(|frames| frames.get_mut(offset))
+            {
+                captured[0] += contribution[0];
+                captured[1] += contribution[1];
+            }
         }
     }
     Ok(())
