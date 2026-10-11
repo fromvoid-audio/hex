@@ -162,3 +162,20 @@ Private references `user-wavetable-raised-tabs-selected.png` and
 `user-wavetable-floating-tabs.png` preserve the new user crops. Prior `6790769`
 app/CI are superseded for this candidate. Renewed source/targeted/build/full-CI
 evidence and native visual acceptance remain pending.
+
+### Raised-tab junction / mixed-input correction — 11 October 2026
+
+User confirms the removed cyan display outline, removed white device focus
+outline, and disabled activator/content appearance. Those fixes are accepted.
+The latest raised-tab request concerns inward corners at the tab/screen junction,
+which ordinary convex tab rounding did not provide. Fixture-owned inverse corner
+cutouts now curve into the screen. Tab labels are vertically/horizontally centered
+with an explicit line height; inactive buttons remain separated from the screen.
+
+Stable tabs previously painted both the retained mouse selection and a different
+keyboard focus as active. Stable-tab navigation now moves one committed active
+page and renders only that page as active; disabled navigation cannot activate
+a page. A mixed mouse/arrow/Tab/Shift-Tab regression covers the reported sequence.
+The page geometry regression additionally checks label containment and both
+inward junctions before/after switching. Prior `aebc618` CI/app are superseded;
+renewed checks/build and user confirmation of these remaining fixes are pending.

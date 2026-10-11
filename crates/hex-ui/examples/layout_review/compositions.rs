@@ -145,9 +145,17 @@ impl Gallery {
                         .border_color(gpui::rgba(0))
                         .child(
                             div()
-                                .h(px(if active_page { 20.0 } else { 12.0 }))
+                                .h(px(if active_page { 20.0 } else { 14.0 }))
                                 .mt(px(if active_page { 0.0 } else { 2.0 }))
-                                .rounded(px(if active_page { 4.0 } else { 2.0 }))
+                                .rounded_tl(px(if active_page { 4.0 } else { 2.0 }))
+                                .rounded_tr(px(if active_page { 4.0 } else { 2.0 }))
+                                .when(!active_page, |shape| {
+                                    shape.rounded_bl(px(2.0)).rounded_br(px(2.0))
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .line_height(px(12.0))
                                 .when(live, |shape| {
                                     shape.debug_selector(move || {
                                         if index == 1 {
@@ -161,7 +169,20 @@ impl Gallery {
                                 .bg(rgb(if active_page { DISPLAY } else { DARK }))
                                 .text_color(rgb(style(state_at(index), false).text))
                                 .px(px(3.0))
-                                .child(theme::text(label)),
+                                .child(
+                                    div()
+                                        .when(live, |label| {
+                                            label.debug_selector(move || {
+                                                if index == 1 {
+                                                    "page-a-label"
+                                                } else {
+                                                    "page-b-label"
+                                                }
+                                                .into()
+                                            })
+                                        })
+                                        .child(theme::text(label)),
+                                ),
                         );
                     tabs = tabs.child(self.target(tab, index, live, window, cx));
                 }
@@ -189,7 +210,49 @@ impl Gallery {
                             MUTED
                         },
                     )));
-                host = host.child(screen).child(tabs);
+                // Inverse corners join the raised tab to the screen: a dark
+                // square behind a rounded header-colored cutout creates the
+                // inward curve that ordinary tab corner rounding cannot draw.
+                let active_left = 71.0 + (active - 1) as f32 * 70.0;
+                let header_fill = if header_state == State::Selected {
+                    SELECTED
+                } else {
+                    BACKGROUND
+                };
+                let junction = |left: bool| {
+                    div()
+                        .absolute()
+                        .top(px(17.0))
+                        .left(px(if left {
+                            active_left - 4.0
+                        } else {
+                            active_left + 66.0
+                        }))
+                        .size(px(4.0))
+                        .bg(rgb(DISPLAY))
+                        .when(live, |corner| {
+                            corner.debug_selector(move || {
+                                if left {
+                                    "tab-junction-left"
+                                } else {
+                                    "tab-junction-right"
+                                }
+                                .into()
+                            })
+                        })
+                        .child(
+                            div()
+                                .size_full()
+                                .bg(rgb(header_fill))
+                                .when(left, |cutout| cutout.rounded_br(px(4.0)))
+                                .when(!left, |cutout| cutout.rounded_bl(px(4.0))),
+                        )
+                };
+                host = host
+                    .child(screen)
+                    .child(tabs)
+                    .child(junction(true))
+                    .child(junction(false));
             }
             Family::SplitScreen => {
                 let upper = div()

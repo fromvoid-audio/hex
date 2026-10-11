@@ -178,8 +178,17 @@ impl Gallery {
                     (index + 1) % count
                 };
                 self.focus[next].focus(window);
+                if self.family == Family::Tabs && !self.disabled {
+                    self.select(next);
+                }
             }
-            "left" | "up" => self.focus[(index + count - 1) % count].focus(window),
+            "left" | "up" => {
+                let next = (index + count - 1) % count;
+                self.focus[next].focus(window);
+                if self.family == Family::Tabs && !self.disabled {
+                    self.select(next);
+                }
+            }
             "enter" | "space" if !self.disabled => self.select(index),
             "escape" => {
                 self.selected = None;
@@ -233,6 +242,15 @@ impl Gallery {
         }
         if self.disabled {
             return State::Disabled;
+        }
+        // Stable tabs have one active page. Keyboard navigation moves that page,
+        // rather than painting both the old mouse selection and the new focus.
+        if self.family == Family::Tabs {
+            return if self.selected == Some(index) {
+                State::Selected
+            } else {
+                State::Idle
+            };
         }
         let device_focused = self.family.is_composition()
             && index == 0
@@ -666,6 +684,23 @@ mod page_tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let screen = visual.debug_bounds("tabbed-screen").expect("screen");
+        let check_tab_shapes = |visual: &mut VisualTestContext| {
+            for (shape, label) in [
+                ("page-a-shape", "page-a-label"),
+                ("page-b-shape", "page-b-label"),
+            ] {
+                let shape = visual.debug_bounds(shape).expect("tab shape");
+                let label = visual.debug_bounds(label).expect("tab label");
+                assert!(label.origin.x >= shape.origin.x && label.origin.y >= shape.origin.y);
+                assert!(label.origin.x + label.size.width <= shape.origin.x + shape.size.width);
+                assert!(label.origin.y + label.size.height <= shape.origin.y + shape.size.height);
+            }
+            for name in ["tab-junction-left", "tab-junction-right"] {
+                let junction = visual.debug_bounds(name).expect("inward corner");
+                assert_eq!(junction.origin.y + junction.size.height, screen.origin.y);
+            }
+        };
+        check_tab_shapes(&mut visual);
         let floating = visual
             .debug_bounds("page-b-shape")
             .expect("inactive page b");
@@ -678,6 +713,7 @@ mod page_tests {
             assert!(!view.device_selected);
         });
         visual.run_until_parked();
+        check_tab_shapes(&mut visual);
         let floating = visual
             .debug_bounds("page-a-shape")
             .expect("inactive page a");
@@ -756,5 +792,50 @@ mod accepted_state_tests {
             visual.debug_bounds("target-0").expect("stable header"),
             header
         );
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod stable_tab_tests {
+    use super::*;
+    use gpui::{AppContext, Empty, Modifiers, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn mouse_and_keyboard_move_one_active_stable_tab(cx: &mut TestAppContext) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let view = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |_, cx| {
+                    let mut view = Gallery::new(cx);
+                    view.family = Family::Tabs;
+                    view
+                })
+            })
+            .expect("gallery");
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let first = visual.debug_bounds("target-0").expect("first tab");
+        visual.simulate_click(first.center(), Modifiers::default());
+        for (keys, expected) in [("right", 1), ("tab", 2), ("left", 1), ("shift-tab", 0)] {
+            visual.simulate_keystrokes(keys);
+            visual.update(|window, cx| {
+                view.read_with(cx, |view, _| {
+                    assert_eq!(view.selected, Some(expected));
+                    for index in 0..3 {
+                        assert_eq!(
+                            view.visual_state(index, None, window),
+                            if index == expected {
+                                State::Selected
+                            } else {
+                                State::Idle
+                            }
+                        );
+                    }
+                })
+            });
+        }
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("target-0").expect("stable tab"), first);
     }
 }

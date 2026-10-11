@@ -2120,3 +2120,14 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   rectangles float in header space, preserving fixed targets/page ownership.
 - Existing page regression checks visible separation before/after page switches.
   Prior `6790769` app/CI are superseded; renewed checks/native acceptance pending.
+
+### Gallery inward corners / stable-tab input — 11 October 2026
+
+- User confirms dark display, device focus outline and disabled styling fixes.
+- Raised tabs now use inverse corner cutouts at the tab/screen junction and
+  centered labels. Existing geometry regression checks junctions/label bounds.
+- Stable tabs share one active-page selection across mouse and keyboard
+  navigation instead of retaining an old mouse highlight alongside focus.
+  Mixed-input regression added; disabled activation stays refused.
+- Prior `aebc618` app/CI are superseded; renewed source/build validation and user
+  confirmation of these remaining changes are pending.
