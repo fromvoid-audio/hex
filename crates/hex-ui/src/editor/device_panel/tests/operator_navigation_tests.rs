@@ -220,15 +220,26 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    let focus = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&device]
+    visual.simulate_click(envelope.center(), Modifiers::default());
+    let fine = visual
+        .debug_bounds(selector(format!(
+            "operator-preview-{}-11-knob",
+            device.value()
+        )))
+        .unwrap();
+    visual.simulate_click(fine.center(), Modifiers::default());
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, app| editor.read_with(app, |view, _| view
+            .device_panel
+            .operator_previews[&device]
             .routing_focus
             .as_ref()
             .unwrap()
-            .clone()
-    });
-    visual.simulate_click(envelope.center(), Modifiers::default());
-    visual.update(|window, _| focus.focus(window));
+            .is_focused(window))),
+        "tab from a device widget discovers the routing rail"
+    );
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {

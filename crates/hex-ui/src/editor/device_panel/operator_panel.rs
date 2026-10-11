@@ -151,6 +151,25 @@ pub(super) fn render_body(
                 ),
         )
         .child(preview::render(view, cx, device))
+        .on_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab"
+                    && !event.keystroke.modifiers.shift
+                    && owner.is_some_and(|owner| owner.is_current(view))
+                {
+                    if finalize_controls(view, cx)
+                        && let Some(focus) = view
+                            .device_panel
+                            .operator_previews
+                            .get(&device)
+                            .and_then(|state| state.routing_focus.as_ref())
+                    {
+                        focus.focus(window);
+                    }
+                    cx.stop_propagation();
+                }
+            }),
+        )
 }
 
 fn page_tabs(

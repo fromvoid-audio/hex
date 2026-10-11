@@ -352,7 +352,8 @@ fn row(
             .tab_index(0)
             .tooltip(|_, cx| {
                 cx.new(|_| super::super::super::transport::MiniTooltip {
-                    description: "routing and global context · enter or space".into(),
+                    description:
+                        "routing and global context · tab from device, then enter or space".into(),
                 })
                 .into()
             })
