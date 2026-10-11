@@ -23,8 +23,12 @@ gain. Bypass advances this state while returning input samples bit for bit.
 This design deliberately uses original threshold, hysteresis, hold and linear
 ramp semantics. It is not a measured recreation of Ableton Live's Gate detector,
 timing, response, or visual controls. There is no sidechain, detector filter,
-RMS mode, lookahead, meter, or dedicated device panel in this slice. The shared
-native device panel remains responsible for presenting the generic descriptors.
+RMS mode, lookahead, or meter. The compact native device panel presents
+threshold, return, and floor in the left column, with attack, hold, and release
+in the right column. It uses shared Lattice dial controls and the same rendering
+path for Track and Return devices; it adds no Gate-specific widget or alternate
+parameter path. Source-level layout and gesture tests cover both owners, but
+native pointer and appearance acceptance remain open.
 
 The processor declares zero algorithmic latency and zero output tail: it scales
 only the current input frame, so silence cannot produce sound. Stored latch and
