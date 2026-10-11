@@ -8,7 +8,10 @@ Reference/native method and pending exact-source/native gates are in
 [operator navigation evidence](research/observations/operator-navigation-003.md).
 Full Oscillator/harmonic functionality belongs to2342/PR158. Baseline native
 preview-source error is tracked separately as2347; retest blocks acceptance if
-still reproducible. No full CI or native-after acceptance is claimed here yet.
+still reproducible. All16 local CI steps pass on clean ec871d1; same-size native pointer captures
+confirm fixed positions and context selection without view-only revision drift.
+Native keyboard acceptance remains inconclusive and blocks task completion/merge;
+PR156 stays draft. Crowded routing readouts are separate Pulse2352.
 
 ## 100-track Lattice effects profile — pulse2317
 
