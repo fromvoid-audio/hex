@@ -45,6 +45,7 @@ mod mixer;
 mod musical_time;
 mod overview;
 mod play_intent;
+mod project_recovery;
 mod recent_projects;
 mod recovery;
 mod recovery_state;
@@ -156,6 +157,10 @@ actions!(
         Stop,
         ImportAudio,
         OpenProject,
+        OpenRelinkedProject,
+        RecoverUntitledProject,
+        RecoverSavedProject,
+        RecoverPreviousSave,
         OpenSettings,
         SaveProject,
         SaveAsProject,
@@ -214,6 +219,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 }
 
 fn bind_editor_keys(cx: &mut App) {
+    device_panel::bind_operator_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some("hex_editor")),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -356,11 +362,16 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
     });
 }
 
+fn recovery_service(sample_rate: u32) -> Result<Service, String> {
+    let path = hex_session::service::untitled_recovery_path()?;
+    Service::with_recovery(sample_rate, 32, MAX_RESIDENT_FRAMES, path)
+        .map_err(|error| error.to_string().to_lowercase())
+}
+
 pub(super) fn open(cx: &mut App, output: Result<PreparedOutput, String>) -> Result<(), String> {
     configure_editor_app(cx)?;
     let sample_rate = output.as_ref().map_or(48_000, |audio| audio.sample_rate);
-    let service = Service::new(sample_rate, 32, MAX_RESIDENT_FRAMES)
-        .map_err(|error| error.to_string().to_lowercase())?;
+    let service = recovery_service(sample_rate)?;
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new(window, cx, service, output));
         install_close_guard(window, cx, view.downgrade());

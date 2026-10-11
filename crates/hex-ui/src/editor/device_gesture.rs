@@ -47,7 +47,7 @@ fn retire_failed_finalize_barriers(deferred: &mut VecDeque<Request>) -> FailedBa
             Request::SaveNew(_) | Request::SaveCurrent => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
             Request::Undo | Request::Redo => {}
-            Request::Open(_) => kept.push_back(request),
+            Request::Open(_) | Request::OpenWith { .. } => kept.push_back(request),
             request => kept.push_back(request),
         }
     }
@@ -368,7 +368,10 @@ mod tests {
         );
         assert_eq!(deferred.len(), 2);
         assert!(matches!(deferred.pop_front(), Some(Request::Edit(_))));
-        assert!(matches!(deferred.pop_front(), Some(Request::Open(_))));
+        assert!(matches!(
+            deferred.pop_front(),
+            Some(Request::Open(_) | Request::OpenWith { .. })
+        ));
     }
 
     fn ack_without_reason() -> hex_session::device_gesture::GestureAck {

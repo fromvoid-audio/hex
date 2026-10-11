@@ -11,8 +11,8 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), 320);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 77);
+    assert_eq!(original.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), PARAMETER_COUNT);
     assert_eq!(
         OPERATOR_METADATA
             .migrate_state(&original)
@@ -71,7 +71,7 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
             ParameterKind::Choice { labels } => {
                 if descriptor.id == parameter::routing_preset() {
                     assert_eq!(labels, &ROUTING_PRESET_LABELS);
-                } else {
+                } else if descriptor.id.value() < 82 {
                     assert_eq!(labels, OperatorWaveform::labels());
                 }
                 for choice in 0..labels.len() as u32 {
@@ -776,7 +776,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(82),
+        ParameterId::from_static(93),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());
@@ -1032,7 +1032,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
     let state = definition.default_state().expect("Operator defaults");
-    assert_eq!(definition.descriptors().len(), 77);
+    assert_eq!(definition.descriptors().len(), PARAMETER_COUNT);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
         .expect("prepared Operator configuration");
@@ -1139,7 +1139,7 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
         (2, WAVEFORM_PAYLOAD_BYTES),
         (3, TUNING_PAYLOAD_BYTES),
         (4, VELOCITY_PAYLOAD_BYTES),
-        (5, PAYLOAD_BYTES),
+        (5, FEEDBACK_PAYLOAD_BYTES),
     ] {
         let mut bytes = original.payload()[..len].to_vec();
         for operator in 0..OPERATORS {
@@ -1181,7 +1181,7 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
             2 => WAVEFORM_PAYLOAD_BYTES,
             3 => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
-            _ => PAYLOAD_BYTES,
+            _ => FEEDBACK_PAYLOAD_BYTES,
         };
         let mut bytes = original.payload()[..len].to_vec();
         for operator in 0..OPERATORS {
