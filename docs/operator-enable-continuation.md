@@ -270,3 +270,25 @@ stops at workspace tests: Operator native admission's catalog count expects88,
 actual92, outcome10pass/1fail. The integration fixture nowchecks92 plus all four
 exact enable IDs, Boolean kinds and true defaults, retaining independent PCM
 assertions. Fresh exact/full validation is pending; no full pass is claimed.
+
+
+The70a631b native-admission integration passes11/11, but subsequent full16
+step6 Session integration stops at inherited tail occupancy (31pass/1fail,
+expected64, actual0). Source digest457de6803aa1dea8522d064ea3d91a03704940f7fc273ac56291621e7df3a565
+is clean and unchanged. A finite architecture audit distinguishes the cause:
+Session exact-onset cancellation is deliberately NEW in this PR atc9432c8,
+absent in baselinesaa6a1d4/5a7161b. Arrangement's equivalent guard predates it at
+aa1052b7. Cancelling before an onset sample renders must not fabricate a release
+occurrence. This lifecycle correction supports current/detached continuation;
+it is not a claim that Session already behaved this way.
+
+Only three fixtures require correction/strengthening in the audited set:
+the integration occupancy fixture must render before each cut while retaining
+64/65 live tails, pending192000 and final192001, audible early tails and silent
+expiry; the adjacent ordering fixture must create16tails before retaining its
+whole/31-frame-partition PCM comparison; the reduced-bank fixture must prove an
+unheard same-boundary Stop succeeds without changing the existing full-bank
+release gate/end or clock before proving sounded Stop refusal and recovery.
+Other reviewed immediate-Stop/count fixtures render first, cut later or seed
+a different ownership boundary. Exact Session integration and reduced-bank
+regressions then full16 must validate these changes. Provider handoff remains held.

@@ -2165,3 +2165,10 @@ Operator-enable27d08de focused release/stack3, engine245 and audio136tests pass.
 FullCI stops on a second stale88→92 Operator catalog assertion in native
 admission integration; exact four Boolean IDs/defaults are added alongside the
 updated count, with all musical oracle assertions preserved. FullCI remains open.
+
+
+Operator-enable70a631b native admission11passes; fullCI stops at Session64-tail
+occupancy. Architect baseline audit confirms NEW Session unheard-onset
+cancellation (c9432c8), matching olderArrangement behavior. Finite3fixture repair
+preserves64/65and16soundedtails, pending/finalclock andPCM oracle; strengthens
+full-bank unheard-stop positivecontrol versus soundedrefusal. Fullvalidationpending.

@@ -8443,6 +8443,10 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
     assert_eq!(playback.release_voice_count(), 1);
+    let old_release_boundaries = (
+        playback.releases[0].voice.gate_end_frame(),
+        playback.releases[0].voice.end_frame(),
+    );
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
             clip,
@@ -8450,8 +8454,32 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
 
-    // Sound the relaunched occurrence before cutting it; a stop at its exact
-    // onset cancels an unheard note without requiring another release slot.
+    // A full bank still permits cancelling an unheard exact-onset occurrence.
+    let unheard_frame = playback.performance_frame();
+    playback
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert_eq!(playback.performance_frame(), unheard_frame);
+    assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
+    assert_eq!(playback.owner(track), Some(SessionPlaybackOwner::Silence));
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+
+    // Once that occurrence has sounded, its tail needs another release slot.
     let mut relaunched = [[0.0; 2]; 1];
     playback.render(&mut relaunched).unwrap();
     let cut_frame = playback.performance_frame();
@@ -8464,6 +8492,13 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
     );
     assert_eq!(playback.performance_frame(), cut_frame);
     assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
     assert_eq!(
         playback.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
