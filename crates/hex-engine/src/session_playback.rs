@@ -1118,6 +1118,8 @@ pub use preroll::{
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]
+mod harmonic_accounting;
+#[cfg(test)]
 mod tests;
 
 fn append_release(

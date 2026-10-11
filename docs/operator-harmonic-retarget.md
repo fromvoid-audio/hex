@@ -614,3 +614,45 @@ test platform, not macOS/native painting, reference or listening acceptance.
 The prior three-arm UI compile failure is repaired on the new source; final
 exact-source full local CI must be rerun before reporting this checkpoint valid.
 PR164 shared provider/context remains held pending its validated handoff.
+
+## Analytic transition pool: compiled design gate
+
+The validated PR164 dependency is now consumed at `26f5b92`; its provider
+handoff hold is resolved. First-paint admission must preserve the actual
+64-voice analytic ceiling, rather than convert those voices into the existing
+16-voice feedback/LFO runtime. The primary approved the advisor's bounded
+host-owned transition-pool direction as a candidate, subject to accounting and
+lifecycle proof. Feedback/LFO activation keeps its existing admission rules.
+
+The independently compiled example
+`crates/hex-engine/examples/harmonic_transition_layout.rs` proves on Rust 1.94,
+x86_64 that the proposed source record is 2,256 bytes, explicit metadata 48,
+slot 2,304/alignment 8, handle 16/alignment 8, and store header 96. Field-offset
+assertions cover the source coefficient/builtin/level/identity/time boundaries
+and metadata/header boundaries. The candidate sampler enum with a harmonic
+handle is 344 bytes; the actual unchanged engine sampler separately remains
+344. This does not prove an integrated sampler's future representation.
+
+The complete proposed store charge is 1,142 slots plus two 256-handle maps and
+its header: 2,639,456 bytes per playback, 5,278,912 across active and candidate.
+The proof tests check actual context-byte admission: 630 retained recipes with
+1,024-byte contexts cost 2,096,640 bytes; with 4,096-byte contexts only 327 fit
+the unchanged 2 MiB budget. Different recipes targeting one context are charged
+separately. Checked overflow and the exact 32 MiB playback boundary are tested.
+
+A separate read-only engine accounting fixture constructs all 256 tracks with
+active LFO factories, 16,384 track effects, all 16 Returns with 1,024 additional
+effects, and the normal release/context/scratch capacities. Actual existing
+runtime is 26,255,336 bytes; conservative construction preflight 26,257,384.
+Adding the proposed pool yields 28,894,792 actual and 28,896,840 preflight,
+below 33,554,432. The effects in this fixture are memoryless Utility defaults.
+It does **not** establish a universal maximum with stateful effects and retained
+effect/mutable tails. It allocates no harmonic pool and changes no production
+constructor or callback.
+
+These are design proofs, not a bridge implementation. Whole-handoff admission,
+actual context leases, generation/refcount transactions, control retirement,
+interrupted source capture, provider sampling and complete runtime accounting
+with retained tails remain required before connecting the painter. No native
+candidate, musical parity, callback allocation or CPU acceptance follows from
+the layout/fixture results.
