@@ -2074,3 +2074,14 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   11 October the user reported native arrow/hidden/restored pointer behavior,
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
+
+## 11 October 2026 — native layout review gallery (Pulse2355 / PR163)
+
+- Source candidate: isolated `hex-ui/examples/layout_review` Rust/GPUI catalog
+  with seven device-layout families, labelled state previews and disposable
+  pointer/keyboard selection. Reuses shared frames/tabs without production
+  Operator/knob/harmonic changes. See `docs/layout-review.md` for inventory,
+  provenance and finite acceptance.
+- Initial checks, separate native bundle, retained screenshots, user visual
+  acceptance and exact final full local CI remain pending. Mac builds wait for
+  the coordinating thread's lease; no native input automation performed.
