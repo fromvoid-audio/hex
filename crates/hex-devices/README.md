@@ -5,6 +5,7 @@
 Implement original native device DSP, including a linear stereo Utility processor,
 the stateless nonlinear [Saturator](../../docs/saturator.md),
 the stereo-linked [Compressor](../../docs/compressor.md),
+the original hysteresis [Gate](../../docs/gate.md),
 the registered eight-band stateful [eq eight](../../docs/eq-eight.md) effect,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
@@ -45,7 +46,10 @@ validated settings are prepared on the control side; its runtime has no history,
 latency, or output tail. Compressor timing and smoothing coefficients are
 prepared on the control side; its fixed audio-owned envelope and gain histories
 are carried across compatible live parameter revisions. Standalone stateful
-filters have validated control-prepared coefficients and fixed audio-owned
+Gate thresholds, floor gains and frame durations are prepared on the control
+side; its fixed latch, hold and gain-ramp state is carried across compatible
+same-rate revisions. Gate processing adds no lookahead or output tail.
+Standalone stateful filters have validated control-prepared coefficients and fixed audio-owned
 histories. Utility version 2 exposes these
 through generic descriptors and runtime preparation; version 1 receives neutral
 filter defaults. Its prepared filter processors declare zero algorithmic
