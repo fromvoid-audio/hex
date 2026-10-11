@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-live-set': {'hex-project', 'hex-media', 'hex-engine'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract'},
@@ -24,12 +25,13 @@ ALLOWED = {
     'hex-audio': {'hex-engine', 'hex-stream'},
     'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
-    'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
+    'hex-cli': {'hex-live-set', 'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    'hex-live-set': {'hex-storage'},
     'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
 }

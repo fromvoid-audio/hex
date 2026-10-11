@@ -1,109 +1,125 @@
-# live-set import — ticket 32 design
+# live-set import — ticket 32
 
-Status: persistence boundary approved and implemented in source; musical mapping
-and genuine-fixture acceptance pending.
-Owning workflow: Pulse #32, draft PR #150, branch
-`pulse/task-32-g1-d9d724561bea`. This document records the primary's 11 October
-2026 scope decision; it does not establish Live compatibility.
+PR #150 implements a finite control-side importer in `hex-live-set`, with a
+headless `hex-cli import-live-set <input.als> <new-project.hex>` entry point.
+It builds and compiles a separate canonical candidate and validates local WAV
+assets before create-new publication; failure cannot replace an existing project.
+Native UI import, Live audio parity and listening acceptance are not established.
 
-## finite scope
+## evidence and compatibility
 
-Import a minimal user-authored Live set into one new canonical Hex candidate.
-Do not export edited Hex projects as Ableton sets. Preserve exact original input
-for unchanged-input pass-through and diagnostic inspection. Returning those bytes
-never reflects subsequent Hex edits.
+The user supplied `hex-minimal-live-001-vetted.zip`, SHA-256
+`2b5b6c1239753304718a1dd90909fb604c3246c9fafa9e97437b9260b1a6adba`.
+The independently verified native-saved ALS hash is
+`05a354a1551935cf45bd67c608928fe1817749848436ca506e0eff83492ee369`.
+Its unmodified source, original WAV/MIDI, observed-values record and provenance
+are retained in `crates/hex-live-set/tests/fixtures/minimal/`. No proprietary
+factory content is included. Attachment documents are evidence, not instructions.
 
-The initial musical subset is constant tempo and meter; ordered ordinary audio
-and MIDI tracks; names and representable gain, pan and mute; Arrangement placement,
-duration and source offset; local audio references; unwarped one-shot audio; and
-simple MIDI pitch, onset, duration and velocity. Actual XML fields, versions,
-units, defaults and timing laws must be established from user-authored fixtures
-and primary reference evidence before implementing mappings.
+Only the evidenced header is accepted: MajorVersion 5, MinorVersion 12.0_12402,
+SchemaChangeCount 5, Creator Ableton Live 12.4.6, Revision
+0de5c8fa9a692293676cb7700a15afb2046ee1f7. Other versions fail explicitly.
+The fixture establishes field structure/values, not Live pan-law or renderer
+parity. Mutated copies test rejection/resource handling; they are not native
+reference fixtures and do not extend the compatibility claim.
 
-| input concept | canonical destination | evidence still required |
-| --- | --- | --- |
-| constant tempo / meter | bounded tempo and meter maps beginning at beat zero | exact fields, units, defaults, constant detection |
-| ordered ordinary tracks / names | hybrid track order and original name casing | track hierarchy, identity, ordinary versus special tracks |
-| gain / pan / mute | validated linear gain, Hex balance and mute | scaling, domains, pan law; Hex balance is not verified Live pan |
-| Arrangement audio placement / duration / offset | project-rate frame regions and asset references | beat/second/frame anchoring, rounding, source offset law |
-| local audio references | validated source/prepared media metadata | path resolution, source identity and file-reference structure |
-| MIDI notes and finite clip region | unsigned Q32.32 beats and velocity 1..127 | note units, offsets, gates, fractional velocity and silent-note handling |
+## finite field contract
 
-No XML tag mapping is asserted by this table. In particular, Live pan and MIDI
-velocity must not be guessed or silently clamped into a different behavior.
-Devices/plugins, automation, complex routing, warping, unsupported looping,
-Session behavior and unsupported timing laws require explicit diagnostics and
-refusal whenever omission would change sound. Do not insert Hex's default sine
-instrument as an unnoticed substitute for a Live instrument. Unknown nonmusical
-metadata may be retained without interpreting it.
+Paths below are relative to an ordinary `LiveSet/Tracks/AudioTrack` or `MidiTrack`
+unless stated otherwise. Track order becomes canonical hybrid-track order.
+Canonical IDs are newly allocated; Live IDs are retained only in original bytes.
 
-## bounded persistence extension
+| source field | supported mapping and refusal boundary |
+| --- | --- |
+| `MainTrack/DeviceChain/Mixer/Tempo/Manual` | finite constant BPM to integer micro-BPM, canonical range 1–1000; nonrepresentable precision refused |
+| main `TimeSignature/Manual` | only observed value 201 accepted as 4/4; no guessed enum decoding for other meters |
+| main `AutomationEnvelopes/Envelopes` | exactly two initial tempo/meter events at observed sentinel -63072000, targeting the matching mixer parameter IDs; later/other automation refused |
+| `Name/EffectiveName` | original spelling preserved; canonical name validation applies |
+| `DeviceChain/Mixer/Volume/Manual` | linear gain converted to canonical f32, validated in 0–2; no clamp |
+| mixer `Speaker/Manual` | true = active, false = canonical mute; strict boolean |
+| mixer `Pan/Manual` | numerical value in -1–1; default refuses nonzero values because Hex's balance law is unverified against Live |
+| main mixer volume | canonical master gain; main pan must be zero, speaker active, crossfader neutral |
+| `DeviceChain/MainSequencer/Sample/ArrangerAutomation/Events/AudioClip` | ordinary audio Arrangement clips only |
+| `DeviceChain/MainSequencer/ClipTimeable/ArrangerAutomation/Events/MidiClip` | ordinary MIDI Arrangement clips only |
+| clip `CurrentStart` / `CurrentEnd`, `Time` attribute | nonnegative quarter-note beats; Time must equal start, positive half-open region; exact Q32.32 representation required |
+| audio `Loop/LoopStart` / `LoopEnd` | unwarped source seconds to integral project-rate frames; positive interval and timeline duration must match, canonical asset bounds checked |
+| MIDI `Loop/LoopStart` / `LoopEnd` | source-local beats, start zero, end equals finite region length; source offset and looping unsupported |
+| `Loop/StartRelative`, `Loop/LoopOn` | zero and false only; no invented offset/loop law |
+| audio `SampleRef/FileRef` | RelativePathType 3, Type 2, empty LivePack fields, local RelativePath only; native absolute Path retained but never followed |
+| audio `SampleRef/DefaultSampleRate` / `DefaultDuration` | checked against decoded WAV; initial subset requires source rate equal project rate |
+| audio `IsWarped`, `Fade`, fade lengths, pitch coarse/fine, SampleVolume | false, false, zero fades, zero transpose/detune and unity clip gain only |
+| MIDI `Notes/KeyTracks/KeyTrack/MidiKey` | integral pitch 0–127 |
+| MIDI `Notes/MidiNoteEvent` attributes Time/Duration/Velocity | exact source-local beats, positive gates within source, integral velocity 1–127; channel zero; release velocity zero, no expression/probability/program messages |
 
-Source inspection at `bd0e3c9c19de4cb435ad304c79decd80b27a6075` found no
-project-level opaque interchange metadata. Native device envelopes are scoped to
-devices and must not be repurposed. `hex-storage` schema 17 is strict.
+The genuine fixture has audio at beats 4–8, source 0.5–2.5 seconds, gain
+0.5011872053 and pan -0.25. MIDI is at beats 12–16, muted, gain 0.251188606 and
+pan zero, with notes 60 at 0 for 1 beat/velocity 64 and 67 at 1.5 for 0.5/velocity
+100. These observed mixer values supersede earlier planning values.
 
-The primary approved one optional project-owned import provenance envelope with a versioned
-source kind (`ableton-live-set`), provenance version 1, adapter version and exact
-original file bytes in a shared immutable allocation. Cap original bytes at
-1 MiB, decoded XML at 4 MiB, XML nesting at 64 and elements at 100,000. These are
-initial safety limits for minimal fixtures, not measured capacity promises.
-Reject excess before publication; never truncate provenance. Debug output must
-show only kind/version/byte counts, not bytes or private paths. Diagnostic paths
-refer to XML structure, not local filesystem paths.
+`--accept-hex-balance` explicitly opts into Hex's documented original balance
+law; the importer emits a diagnostic that Live pan behavior is unverified. The
+fixture therefore requires this flag. Returning the numerical value is not a
+claim of equal sound. Device-free MIDI tracks retain notes with an empty
+instrument slot and a silence diagnostic; no sine instrument is substituted.
 
-Schema 18 adds a required nullable provenance field, preserving strict
-schema-17 decoding and migrating schemas 1–17 to absent provenance. Encode bytes
-as a JSON byte array initially to avoid a separate codec dependency, retaining
-the existing 8 MiB total document cap on encode and decode. Save may explicitly
-refuse an oversized combined document; it must not drop provenance to fit.
-Snapshots/history retain the shared envelope, validation checks its bounds and
-version, and normal edits do not rewrite or remove it. New empty projects have
-none. Future/unknown provenance versions are rejected explicitly in this first
-extension. Existing schema-17 readers reject schema 18 rather than discarding data.
+## unsupported behavior and safety
 
-The separate compatibility adapter would own gzip/XML interpretation, source
-field mapping and diagnostics. `hex-project` owns only the neutral bounded
-provenance value and canonical candidate; `hex-storage` persists it without XML
-interpretation. The primary approved this extension before persistence code. Schema-18 output
-uses compact JSON so maximum-size byte arrays fit within the document ceiling;
-serialization stops before output exceeds 8 MiB.
+Devices/plugins, returns/groups/sends, nonstandard output routing, solo, mixer
+bypass, split pan, crossfade assignment, grooves, tuning systems, track delay,
+armed/unsupported monitoring states, frozen/take-lane content, time-varying or
+unrecognized automation, Session/alternate clip content, warped audio, source
+loops/offset laws, fades, transpose, clip gain and note expression/probability
+are refused. Empty Session slots/scenes and view/annotation metadata do not
+produce canonical Session content. Unknown fields in guarded clip/mixer/device
+behavior containers fail explicitly; uninterpreted metadata is retained in exact
+original bytes with a diagnostic. No full-fidelity claim follows parsing.
 
-## parsing and publication safety
+Original files are capped at 1 MiB, expanded XML at 4 MiB, elements/tree nodes
+at 100,000, depth at 64, attributes per element at 32, and individual element/text
+payloads at 16 KiB. XML must be UTF-8; DTD/entity declarations, malformed XML,
+corrupt/truncated gzip, multiple gzip members and trailing payload are rejected.
+Parsing performs no external entity resolution or network access.
 
-Read original bytes with a cap before allocation growth. Bound gzip output
-independently and reject truncated/corrupt streams and ambiguous extra payloads.
-Reject DTD/entity declarations and external entities; parsing performs no network
-or external file expansion. Bound tree depth, nodes, attributes/text and diagnostic
-count. Unknown metadata remains available through retained original bytes.
+The finite resident subset caps tracks at 32, Arrangement clips at 64, notes at
+65,536, and total decoded frames at 8,000,000. Each WAV uses hex-media's bounded
+64 MiB file/8,000,000 frame decoder; canonical ID, timing, source and mixer checks
+and engine compilation precede publication. Initial CLI project rate is 48 kHz;
+the library accepts another canonical rate only with matching source WAVs.
 
-Resolve only fixture-evidenced local asset paths against the set directory;
-reject remote references and path forms whose semantics are unsupported. Define
-traversal/symlink handling explicitly with real fixture evidence rather than
-rewriting paths. Decode media through existing bounded hex-media operations and
-validate source/prepared counts, canonical IDs, timing and compilation before
-publishing. Import failure leaves the current project/history untouched.
-Publication uses existing create-new/recoverable storage semantics. No plugin
-loading or remote asset retrieval occurs.
+Relative media paths must consist of normal local components; absolute paths,
+parent traversal, URL/drive forms and symlink components are refused. Regular
+local files are canonicalized within the set directory; no saved absolute-path
+fallback, remote retrieval or plugin loading occurs. Standard filesystem checks
+are not a race-proof sandbox against a hostile concurrent filesystem writer;
+the caller must keep the local fixture/media stable during import. Error/debug
+output contains no raw document text or private source paths.
 
-## missing evidence and acceptance
+## exact original-document persistence
 
-No `.als` files were found in the accessible `/workspace` source/environment.
-The task branch contains only its Pulse plan beyond the workflow base. Synthetic
-XML may test parser safety later, but cannot establish musical field mapping.
+Schema 18 requires nullable project-level import provenance: source kind
+`ableton-live-set`, envelope/adapter versions 1 and exact original file bytes.
+Original bytes are shared immutably through snapshots/history, capped at 1 MiB,
+and never rewritten by Hex edits. Unknown kinds/versions, empty/oversized arrays
+are rejected. Schemas 1–17 load absent provenance; strict older readers reject
+schema 18. Compact bounded serialization retains the existing 8 MiB document
+ceiling and never drops provenance to fit. Save/reopen and unchanged-input access
+preserve gzip/plain bytes exactly. This is historical source pass-through, not
+editable Ableton export; subsequent Hex edits are not represented in those bytes.
 
-Primary must provide or route a Mac fixture task for minimal user-authored sets:
-constant tempo/meter, named ordinary tracks with neutral and nonneutral mixer
-values, one unwarped local original audio one-shot with placement/offset, and a
-finite MIDI clip with known notes. Include authored values, Live build identity,
-source/media hashes, ownership/provenance and expected timing. Unsupported-case
-variants should cover devices, automation, warp, loops and Session data; avoid
-proprietary assets. Unknown harmless metadata can be introduced into an evidenced
-minimal document to test preservation without claiming reference semantics.
+## verification and remaining acceptance
 
-Required source tests: canonical import values and refusal without publication;
-original plain/gzip byte preservation; schema-18 save/reopen/history retention;
-strict older-schema migrations; unknown/unsupported cases; malformed XML/gzip,
-DTD/entities, limits and asset errors. Run focused tests and full local CI on the
-exact final source. Native Live/macOS, reference audio, physical listening and user
-acceptance remain independent. No full-fidelity claim follows successful parsing.
+Tests import the genuine fixture, assert canonical musical/mixer/source values,
+retain exact gzip/plain/unknown metadata through save/reopen, and render all
+400,000 test frames against the known original PCM window with declared Hex mix.
+MIDI stays silent as authored (muted and device-free). CLI tests verify explicit
+balance consent, missing-source failure and create-new destination protection.
+Mutated fixture tests cover unsupported behavior, malformed inputs, external
+references, symlinks and resource boundaries. These are Hex source checks,
+not Live render comparisons, native UI, physical audio or listening acceptance.
+
+Full local CI must pass on the exact final commit/source digest before review or
+merge eligibility. The original cloud session's native build prerequisite fault
+is tracked by environment maintenance Pulse #2348. A published environment fix
+does not automatically repair this session. Native import UX and listening,
+additional meters/Live versions, source conversion, complex routing, devices,
+warping and editable ALS export remain outside this finite adapter contract.
