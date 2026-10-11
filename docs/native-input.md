@@ -126,5 +126,6 @@ The narrow native addition remains in platform/mac/platform.rs, with the enum,
 window lifecycle and non-macOS match exhaustiveness in existing patched files.
 Test-platform cursor readout is confined to test support. Regenerated cumulative
 diff/hashes preserve the verified upstream baseline and license. Rendered cursor
-and lifecycle tests pass; physical macOS appearance/event delivery remain required
-before merging PR155. See device-controls.md for the exact native checklist.
+and lifecycle tests pass. On 11 October 2026 the user reported native cursor
+appearance/restoration, typing and Undo passed and requested merging PR155.
+See device-controls.md for the supplied native checklist.

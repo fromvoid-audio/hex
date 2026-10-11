@@ -2055,6 +2055,7 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   cover outside release, cancellation, button loss, blur, deactivation, disable,
   root replacement and window removal. All39 widget tests pass; the hover test
   fails with the original I-beam behavior. Existing gesture/input tests remain.
-- Full local CI, actual macOS cursor appearance/delivery and native one-step Undo
-  remain separate gates. PR155 must remain unmerged until its required native
-  validation passes. The concrete checklist is in docs/device-controls.md.
+- All16 original exact-source local CI checks passed on clean c9219e2. On
+  11 October the user reported native arrow/hidden/restored pointer behavior,
+  typing and Undo passed and requested merge. Main integration is revalidated
+  before merging. The supplied checklist is in docs/device-controls.md.
