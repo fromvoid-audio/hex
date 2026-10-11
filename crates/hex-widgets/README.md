@@ -75,3 +75,10 @@ Compact square switches, directly selectable compact segments and flat panel tab
 are reusable density variants with injected display/style. Shared compact dials
 use open rails, short value arcs and needles; micro dials place labels above and
 readouts beside their lower edge. Owners retain canonical bindings and gestures.
+
+Rectangular numeric readouts retain an arrow pointer during hover and typing.
+On macOS, an active value-field drag requests GPUI's window-scoped invisible
+cursor after the movement threshold. Click-to-type and the insertion caret stay
+available. Release, cancellation, focus/deactivation, disable and removal end
+that override. Control-surface knob/slider cursors remain unchanged. See
+`docs/device-controls.md` for the native acceptance gate and platform limits.

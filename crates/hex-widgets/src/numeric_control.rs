@@ -183,6 +183,7 @@ pub struct NumericControl {
     appearance: NumericControlAppearance,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
+    window_activation: Option<gpui::Subscription>,
 }
 
 impl NumericControl {
@@ -234,6 +235,7 @@ impl NumericControl {
             appearance,
             focus: cx.focus_handle(),
             focus_blur: None,
+            window_activation: None,
         }
     }
 
@@ -415,6 +417,8 @@ impl NumericControl {
         let total_y = f32::from(event.position.y - press.origin.y);
         if !press.dragging && total_x.hypot(total_y) >= 3.0 {
             press.dragging = true;
+            // Cursor visibility changes even at a value bound or on horizontal motion.
+            cx.notify();
             self.editing = false;
             self.invalid_text = false;
             self.text = self.spec.format(press.start_value).unwrap_or_default();
@@ -895,6 +899,13 @@ impl Focusable for NumericControl {
 
 impl gpui::Render for NumericControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self
+            .press
+            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+            && !self.focus.is_focused(window)
+        {
+            self.cancel(cx);
+        }
         let entity = cx.entity();
         let enabled = self.enabled;
         let style = self.style;
@@ -907,8 +918,28 @@ impl gpui::Render for NumericControl {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |control, _, cx| {
-                control.finish_text_edit_on_blur(cx);
+                if control
+                    .press
+                    .is_some_and(|press| matches!(press.target, PressTarget::Value))
+                {
+                    control.cancel(cx);
+                } else {
+                    control.finish_text_edit_on_blur(cx);
+                }
             }));
+        }
+
+        if self.window_activation.is_none() {
+            self.window_activation =
+                Some(cx.observe_window_activation(window, |control, window, cx| {
+                    if !window.is_window_active()
+                        && control
+                            .press
+                            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+                    {
+                        control.cancel(cx);
+                    }
+                }));
         }
 
         let mut root = match (self.kind, self.appearance) {
@@ -1394,8 +1425,17 @@ impl Element for GestureCaptureElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
+        if self
+            .move_entity
+            .read(cx)
+            .press
+            .is_some_and(|press| press.dragging && matches!(press.target, PressTarget::Value))
+            && window.is_window_active()
+        {
+            window.set_window_cursor_style(CursorStyle::Hidden);
+        }
         let move_entity = self.move_entity.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if !phase.capture() {
@@ -1549,11 +1589,7 @@ fn value_field_sized(
         .when(editing || invalid, |field| field.bg(rgb(style.background)))
         .text_size(px(style.font_size))
         .text_color(rgb(if enabled { style.text } else { style.muted }))
-        .cursor(if enabled {
-            CursorStyle::IBeam
-        } else {
-            CursorStyle::Arrow
-        })
+        .cursor(CursorStyle::Arrow)
         .on_mouse_down(MouseButton::Left, on_down)
         .child(child)
 }
