@@ -1,3 +1,44 @@
+## 100-track original Lattice effects — 11 October 2026
+
+Pulse2317/PR140 measures canonical resident Arrangement rendering on Apple M5
+Pro (24 GiB), macOS26.6.2, Rust1.98.1. Each case has100 identical hybrid tracks
+with continuously looping original512-frame stereo audio, track gain0.01,
+48kHz and128-frame blocks. The source alternates high/low amplitude and polarity;
+Saturator uses18db drive/-12db output, Compressor uses-24db threshold, and Gate
+uses-24/-30db threshold/return,1ms hold/release and-36db floor. All other controls
+use defaults. Three release process runs each warm100blocks and measure2000.
+Only the render call is timed; PCM hashing, preparation and verification are outside
+timing. No concurrent Cargo ran during capture; other host load was uncontrolled.
+
+| Case | Processors | p50 range µs | p99 range µs | largest max µs |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 0 | 18.208–18.250 | 28.333–28.417 | 100.417 |
+| saturator | 100 | 54.375–54.458 | 74.875–78.042 | 148.708 |
+| compressor | 100 | 124.041–125.750 | 163.083–195.250 | 289.584 |
+| gate | 100 | 52.125–54.792 | 70.625–80.709 | 462.750 |
+| gate-compressor | 200 | 145.791–146.625 | 189.500–196.083 | 310.667 |
+
+Every sample across warmup and measured blocks matches independent standalone
+registered-processor composition and ordered100-track summation (observed maximum
+error0, allowed2e-6). Timed whole-run hashes match those verified passes and are
+unchanged across repetitions. No sampled block exceeds the nominal2666.667µs
+period. This is short headless throughput evidence for uniform resident audio,
+not physical deadlines, native100-track usability, mutable Operator/plugin
+density, heterogeneous media, transitions/tails or measured Live comparison.
+Parent Pulse2108 remains open.
+
+100 tracks with Gate+Compressor+Saturator (300 processors) are refused explicitly:
+`stateful device runtime exceeds its bounded budget`. The existing256-processor
+and declared-memory admission bounds were not raised. New device availability
+does not establish unrestricted dense-chain capacity.
+
+Captured clean source: `f9fb1e4d8d6609524bb126dbdd4dc38f1385ef6d`.
+Profiler: `cargo run --release -p hex-engine --example profile_lattice_effects`.
+Raw logs, source/hardware/binary hashes and preserved binary:
+`artifacts/worktrees/lattice-effects-profile/artifacts/profiles/lattice-effects-20261011/f9fb1e4/`.
+Later integration changes UI/documentation only; profiler source hash is retained
+in the capture manifest.
+
 ## native Operator periodic waveforms — 10 October 2026
 
 Pulse2183 uses one control-prepared immutable bank and compact notes. Three

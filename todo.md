@@ -1,3 +1,12 @@
+## 100-track Lattice effects profile — pulse2317
+
+Original release profiler now checks whole-run standalone composition and timed
+PCM hashes for100-track resident audio with Saturator, Compressor, Gate and
+Gate+Compressor. Three captured runs and immutable source/binary identities are
+in [performance evidence](docs/performance.md). The300-processor case is refused
+by the existing admission budget; no limit is raised and general dense/native
+performance acceptance remains Pulse2108. Full local CI belongs to the final PR.
+
 # hex todo
 
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
