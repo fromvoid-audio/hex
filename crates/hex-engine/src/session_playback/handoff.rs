@@ -190,6 +190,12 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.analytic_continuations.len() != MAX_TRACKS
+            || self.analytic_continuation_scratch.len() != MAX_TRACKS
+            || previous.analytic_continuations.len() != MAX_TRACKS
+        {
+            return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
         let capture_epoch = self
             .capture_epoch
             .checked_add(1)
@@ -2343,7 +2349,8 @@ impl SessionPlayback {
             }
         }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
-        self.analytic_continuations = self.analytic_continuation_scratch;
+        self.analytic_continuations
+            .copy_from_slice(&self.analytic_continuation_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         self.release_order = next_order;
         self.release_order_scratch = next_order;

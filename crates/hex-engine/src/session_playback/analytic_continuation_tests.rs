@@ -389,7 +389,7 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
         render_checkpoint_prefix(&mut old, 96);
         let mut disabled = handoff(&mut old, &off);
         let routes = disabled.routes.clone();
-        let before = disabled.analytic_continuations;
+        let before = disabled.analytic_continuations.clone();
         let mut output = [[9.0; 2]; 64];
         if session {
             assert!(disabled.render(&mut output).is_err());
@@ -426,6 +426,10 @@ fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
         344
     );
+    assert_eq!(runtime.analytic_continuations.len(), MAX_TRACKS);
+    assert_eq!(runtime.analytic_continuations.capacity(), MAX_TRACKS);
+    assert_eq!(runtime.analytic_continuation_scratch.len(), MAX_TRACKS);
+    assert_eq!(runtime.analytic_continuation_scratch.capacity(), MAX_TRACKS);
     let actual = runtime.accounted_runtime_storage_bytes().unwrap();
     let admitted =
         super::super::preroll::arrangement_runtime_storage_preflight_bytes(&runtime.revision)

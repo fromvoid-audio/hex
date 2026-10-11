@@ -327,9 +327,10 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
-    // Indexed by immutable revision context; charged as inline Self storage.
-    analytic_continuations: [Option<hex_lattice::AnalyticContinuation>; MAX_TRACKS],
-    analytic_continuation_scratch: [Option<hex_lattice::AnalyticContinuation>; MAX_TRACKS],
+    // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
+    // revision context. Actual capacities are charged in preroll accounting.
+    analytic_continuations: Vec<Option<hex_lattice::AnalyticContinuation>>,
+    analytic_continuation_scratch: Vec<Option<hex_lattice::AnalyticContinuation>>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
@@ -782,6 +783,9 @@ impl SessionPlayback {
             .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let analytic_continuations = reserve_analytic_continuations()?;
+        let analytic_continuation_scratch = reserve_analytic_continuations()?;
+
         let mut suppressions = Vec::new();
         suppressions
             .try_reserve_exact(release_capacity)
@@ -820,8 +824,8 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
-            analytic_continuations: [None; MAX_TRACKS],
-            analytic_continuation_scratch: [None; MAX_TRACKS],
+            analytic_continuations,
+            analytic_continuation_scratch,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
@@ -1085,6 +1089,21 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+/// These tables never grow, shrink, swap ownership or allocate in handoff or
+/// rendering. Refusal/destruction of their storage belongs to control.
+fn reserve_analytic_continuations()
+-> Result<Vec<Option<hex_lattice::AnalyticContinuation>>, SessionPlaybackError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_TRACKS)
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    if slots.capacity() != MAX_TRACKS {
+        return Err(SessionPlaybackError::Allocation);
+    }
+    slots.resize(MAX_TRACKS, None);
+    Ok(slots)
+}
+
 mod commands;
 mod handoff;
 mod preroll;
