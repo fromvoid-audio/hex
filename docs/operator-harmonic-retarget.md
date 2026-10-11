@@ -105,3 +105,93 @@ including16voices/all4oscillators/maximum partials, with exact source and binary
 hashes. Existing waveform/LFO regression checks and full local CI must pass on
 the final unchanged tree. Native screenshots, painting/Undo/reopen and listening
 remain required evidence. Missing/failed/blocked checks prevent merge.
+
+## compiled storage feasibility — 11 October 2026
+
+The design-only example `operator_harmonic_layout` compiles concrete `repr(C)`
+types; it does not register or sample a device. Rust1.94.0 on Linux x86_64
+measures the following layout with alignment8. Mac arm64 is not measured here.
+
+| partials per oscillator | twin bytes | pair bytes | under8192 |
+| --- | ---: | ---: | --- |
+|16|3944|7888|yes,304bytes spare per pair|
+|32|4712|9424|no,1232bytes over|
+|64|6248|12496|no,4304bytes over|
+
+For16partials,3932bytes are fields and12bytes are padding. The full inline
+field ledger is calculated by the example. Largest components are16voice
+histories2176bytes, source coefficients512bytes, exact v6 prefix364bytes,
+target coefficients256bytes, envelope timing caches192bytes, existing-waveform
+source weights128bytes, source scalar boundary96bytes and target settings48bytes.
+The separate16-byte velocity array avoids padding every voice. Every voice
+retains four phase steps, four integrated phases, four f64 feedback outputs,
+age, gate, occurrence identity and its own16-byte LFO phase/cycle. The device
+has an additional LFO phase/cycle. Exact canonical bytes include inactive
+fields and signed zeros; there is no compatibility hash.
+
+No owned heap buffers exist. Copy/no-drop checks cover the entire candidate.
+The only references are to the existing process-wide immutable sine/table bank;
+their pointer/slice descriptors are included. Existing static table data remains
+the separately documented process-wide allocation, not per-edit custom data.
+All custom source/target coefficients are inline. The factory/analytic context
+would need separate declaration/accounting at integration; this probe does not
+measure those unimplemented types or whole-host/stack storage. The24-byte
+identity-bound target proof is separate from the pair and contains no source
+owner. Events remain borrowed from the host, with the unchanged256-event
+ceiling; the device does not allocate a redundant event queue. Event preflight
+is not implemented by this example.
+
+Four f64 weights per oscillator retain all four original builtin shapes in an
+interrupted transition. A single source waveform choice would be insufficient
+for rapid builtin/user/builtin edits. The source partial coefficients stay f64,
+including normalized/interpolated values. Target authoring values are f32 with
+a control-prepared f64 normalization scale. This candidate therefore does not
+re-encode the actual source boundary into a lower-precision authoring format.
+It still requires implementation tests for exact boundary/endpoints and all
+existing waveform paths; storage capacity alone cannot prove those laws.
+
+The compact candidate removes duplicated velocity/cap data (reconstructible
+from unchanged voice velocity, phase steps and canonical settings), duplicate
+target scalar arrays and duplicate prepared envelope amplitudes (exact f32
+canonical words converted to f64). This requires preserving current arithmetic
+order when implemented and measuring the additional callback work. No existing
+DSP type or LFO implementation has been changed. The standalone kernel remains
+untouched. This is a feasibility candidate, not a proven replacement.
+
+With this representation,64partials cannot fit: just the voice histories,
+v6 bytes, f32 target and f64 source coefficients require5612bytes per twin,
+before timing caches, clocks and shape/scalar transitions. This is a lower
+bound for this representation only, not a proof that all representations fail.
+The concrete safe candidate is a16-partial authoring ceiling with unchanged
+16voice/256event/memory limits; it is not yet a selected product control set.
+If32/64 editing is required initially, a different bounded representation needs
+its own arithmetic/ownership proof. Raising the pair ceiling, reducing voices,
+requantizing interrupted ramps or hiding buffers behind pointers are not valid
+alternatives under the current authorization.
+
+Three example tests cover owned-buffer/copy accounting, capacities/budget and
+full coefficient/shape-boundary storage. Targeted tests and strict example
+Clippy pass; the initial prototype syntax error was repaired before these runs.
+This is not harmonic DSP, PCM, callback allocation or CPU evidence.
+
+## finite native study handoff
+
+When existing desktop interaction owners release safe reference time, the native
+coordinator should collect only the following missing observations:
+
+1. Recheck installed Live version/hash; capture the selected oscillator's
+   Oscillator tab at known display scale, showing painter/preview/range switches
+   and all companion controls, without altering the user's project.
+2. On an original disposable fixture, record painting readback/domain, dragging
+   across partials, Shift confinement, all/even/odd modes and zeroing a partial.
+3. Record16/32/64 switching and hidden-partial retention, builtin-to-user
+   transition, copy/paste and whether painting changes actual oscillator output.
+4. Record Normalize's displayed defaults/toggle behavior, exact Repeat choices
+   and visible enabled/dependent conditions; do not infer their numeric DSP laws.
+5. Identify phase/retrigger/feedback/frequency-velocity/quantization controls in
+   this tab and their dependencies, separately from existing tuning/envelopes.
+
+The official manual inventory already supports these study questions; no
+installed harmonic-editor observations are claimed. Cloud layout/source checks
+cannot substitute for this study. Later Hex before/after native screenshots,
+painting/Undo/reopen and listening remain separate implementation acceptance.
