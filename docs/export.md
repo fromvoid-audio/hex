@@ -127,7 +127,11 @@ record its actual result in Pulse/todo rather than infer it from focused checks.
 The user tested candidate958d1f2 on11October: Documents export works and the Main
 file looks good; root-volume read-only refusal is accepted. The user requested
 the simpler path/overwrite behavior above. Changed behavior requires a fresh
-exact-source candidate and explicit user correctness confirmation before merge.
+exact-source candidate and explicit user correctness confirmation before Done.
+The latest shared pipeline is required checks, merge, configured post-merge
+action/testable optimized build, explicit user approval, then Done. Failed or
+stale checks still block merge; merge alone does not complete this ticket.
+Pulse2390 owns the common workflow correction; its enforcement is not claimed here.
 Return/stem listening is deferred in Pulse2388 until representative effect devices
 and projects exist; realistic sustained long export is deferred in Pulse2389.
 Finder audio drops2385, disappearing selection highlight2386 and multiple-track
