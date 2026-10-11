@@ -46,6 +46,21 @@ and listening remain user acceptance. DSP/caps and Operator stop2305 are unchang
 
 # hex todo
 
+## cloud environment maintenance — pulse2348
+
+Focused [PR160](https://github.com/PORTALSURFER/hex/pull/160) records reusable
+startup and failure-report guidance in [cloud environment](docs/cloud-environment.md).
+The existing private PORTALSURFER/hex environment was corrected through
+its supported setup workflow. Missing ALSA development metadata, command-level
+network permission and protected-state CLI messaging failures are distinct from
+product source bugs and native-only acceptance. The tested draft was published
+as cecfgver_6acb5120834c819ab3681a5e3f5b46aa; an independent fresh instance
+verified matching hashes, Rust1.94, native libraries, fetch, portable checks and
+CLI round trips. Full PR CI is retained separately as repository merge evidence.
+The reported locked Linux
+xattr/libc compatibility repair was delivered separately by
+[PR161](https://github.com/PORTALSURFER/hex/pull/161) / Pulse2349.
+
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
 This file retains request order and repository evidence; [plan](docs/plan.md)
@@ -2046,3 +2061,16 @@ authoring negative controls fail as expected; full exact-final local CI is the
 merge gate. Native visual, pointer and
 listening acceptance remains with the user, separately from source checks.
 See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
+
+## 11 October 2026 — shared value-field pointer (Pulse2340 / PR155)
+
+- Shared numeric readouts retain arrow hover/typing; active value scrubs request
+  a cached invisible macOS cursor after the existing drag threshold.
+- Frame/window restoration owns no platform hide count. Rendered regressions
+  cover outside release, cancellation, button loss, blur, deactivation, disable,
+  root replacement and window removal. All39 widget tests pass; the hover test
+  fails with the original I-beam behavior. Existing gesture/input tests remain.
+- All16 original exact-source local CI checks passed on clean c9219e2. On
+  11 October the user reported native arrow/hidden/restored pointer behavior,
+  typing and Undo passed and requested merge. Main integration is revalidated
+  before merging. The supplied checklist is in docs/device-controls.md.
