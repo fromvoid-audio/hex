@@ -120,6 +120,12 @@ impl AppContext for TestAppContext {
 }
 
 impl TestAppContext {
+    /// Cursor last delivered to the test platform, independent of hit testing.
+    /// This is not evidence of physical native cursor appearance.
+    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
+        self.test_platform.cursor_style()
+    }
+
     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
         let arc_dispatcher = Arc::new(dispatcher.clone());

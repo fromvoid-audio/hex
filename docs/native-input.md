@@ -110,3 +110,22 @@ two-literal source change; published baseline hashes/license remain unchanged.
 The block/proc-macro-error future-compatibility notices remain open in2143.
 Validation: the provenance guard, full exact-source local CI and a fresh release
 build cover this maintenance change; it introduces no new native interaction.
+
+## value-drag invisible cursor — 11 October 2026
+
+Pulse2340 authorizes a focused safe-widget/excluded-GPUI cursor extension.
+`CursorStyle::Hidden` selects a cached one-pixel transparent AppKit cursor during
+an active shared numeric value drag. It does not use NSCursor hide/unhide or
+cursor warping. The owning Window retains a restoration guard only while the
+rendered override exists and the window is active. Arrow restoration applies
+outside hovered bounds, at deactivation/removal and on guard destruction.
+An inactive window cannot install the override. Other platforms use arrow until
+separately validated. `None` retains its upstream hide-until-movement semantics.
+
+The narrow native addition remains in platform/mac/platform.rs, with the enum,
+window lifecycle and non-macOS match exhaustiveness in existing patched files.
+Test-platform cursor readout is confined to test support. Regenerated cumulative
+diff/hashes preserve the verified upstream baseline and license. Rendered cursor
+and lifecycle tests pass. On 11 October 2026 the user reported native cursor
+appearance/restoration, typing and Undo passed and requested merging PR155.
+See device-controls.md for the supplied native checklist.
