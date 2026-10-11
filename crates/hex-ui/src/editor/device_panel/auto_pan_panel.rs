@@ -10,7 +10,7 @@ use hex_project::DeviceId;
 
 pub(super) const FRAME_WIDTH: f32 = 144.0;
 
-const PARAMETERS: [(ParameterId, &'static str); 3] = [
+const PARAMETERS: [(ParameterId, &str); 3] = [
     (ParameterId::from_static(1), "amount"),
     (ParameterId::from_static(2), "rate"),
     (ParameterId::from_static(3), "phase"),
