@@ -408,6 +408,76 @@ impl Playback {
         self.prepared_revision.as_ref()
     }
 
+    /// Set or smoothly release one transient post-node processor audition on
+    /// the active graph. Retained effect tails are never command targets.
+    pub fn select_processor_audition(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: Option<hex_lattice::ProcessorAuditionSelection>,
+    ) -> bool {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            return runtime.select_processor_audition(identity, selection);
+        }
+        self.linear_runtime.as_mut().is_some_and(|runtime| {
+            runtime.select_processor_audition(&self.project, identity, selection)
+        })
+    }
+
+    /// Transfer only a held transient selector from an instrument-release
+    /// suffix after this graph has inherited its runtime successfully.
+    pub fn transfer_processor_audition_from_release_tail(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: hex_lattice::ProcessorAuditionSelection,
+    ) -> bool {
+        self.session_runtime.as_mut().is_some_and(|runtime| {
+            runtime.transfer_processor_audition_from_release_tail(identity, selection)
+        })
+    }
+
+    pub fn processor_audition_is_active(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: hex_lattice::ProcessorAuditionSelection,
+    ) -> bool {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            return runtime.processor_audition_is_active(identity, selection);
+        }
+        self.linear_runtime.as_mut().is_some_and(|runtime| {
+            runtime.processor_audition_is_active(&self.project, identity, selection)
+        })
+    }
+
+    pub fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            return runtime.cancel_processor_audition(identity);
+        }
+        self.linear_runtime
+            .as_mut()
+            .is_some_and(|runtime| runtime.cancel_processor_audition(&self.project, identity))
+    }
+
+    /// Hard-clear transient audition state at an ownership/lifecycle boundary.
+    /// Session residual tails are included because they can continue processing
+    /// after their original route is replaced.
+    pub fn cancel_all_processor_auditions(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.cancel_all_processor_auditions();
+        }
+        if let Some(runtime) = self.linear_runtime.as_mut() {
+            runtime.cancel_all_processor_auditions();
+        }
+    }
+
+    /// Clear auditions from residual effect chains transferred into this
+    /// candidate after a successful graph handoff. The active route chains are
+    /// left intact so compatible live EQ8 requests survive parameter previews.
+    pub fn cancel_retired_processor_auditions(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.cancel_retired_processor_auditions();
+        }
+    }
+
     pub fn session_capability(&self) -> SessionCapability {
         if self.session_runtime.is_some() {
             SessionCapability::Available

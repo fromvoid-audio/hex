@@ -840,3 +840,165 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
     next.commit_block();
     assert!(output.iter().flatten().all(|sample| sample.is_finite()));
 }
+
+#[test]
+fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twins() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorInstance, ProcessorAuditionSelection,
+        ProcessorChainOwner, StereoMatrix,
+    };
+
+    let mut state = EQ8_DEFINITION.default_state().unwrap();
+    state = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::enabled(0, 2), ParameterValue::Bool(true))
+        .unwrap();
+    let state = Arc::new(state);
+    let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
+        Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
+    let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        owner: ProcessorChainOwner::Return(7),
+        device_id: 19,
+        device_type: EQ8_TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(Arc::clone(&state)),
+        definition: Some(Arc::clone(&definition)),
+    }])
+    .unwrap();
+    let mut bypassed_chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        owner: ProcessorChainOwner::Return(7),
+        device_id: 19,
+        device_type: EQ8_TYPE_ID,
+        matrix: StereoMatrix::identity(),
+        bypassed: true,
+        sample_rate: 48_000,
+        configuration: Some(state),
+        definition: Some(definition),
+    }])
+    .unwrap();
+    let selection = ProcessorAuditionSelection { index: 2, lane: 0 };
+
+    assert!(!chain.select_processor_audition(
+        ProcessorChainOwner::Track(7),
+        19,
+        EQ8_TYPE_ID,
+        Some(selection),
+    ));
+    assert!(!chain.select_processor_audition(
+        ProcessorChainOwner::Return(7),
+        19,
+        DeviceTypeId::from_static("hex.other"),
+        Some(selection),
+    ));
+    assert!(!chain.select_processor_audition(
+        ProcessorChainOwner::Return(7),
+        19,
+        EQ8_TYPE_ID,
+        Some(ProcessorAuditionSelection { index: 3, lane: 0 }),
+    ));
+    assert!(!bypassed_chain.select_processor_audition(
+        ProcessorChainOwner::Return(7),
+        19,
+        EQ8_TYPE_ID,
+        Some(selection),
+    ));
+    assert!(chain.select_processor_audition(
+        ProcessorChainOwner::Return(7),
+        19,
+        EQ8_TYPE_ID,
+        Some(selection),
+    ));
+    assert!(chain.processor_audition_is_active(
+        ProcessorChainOwner::Return(7),
+        19,
+        EQ8_TYPE_ID,
+        selection,
+    ));
+
+    // A smooth release remains legal if the current authored band is disabled
+    // or the device has since become bypassed.
+    assert!(
+        chain.select_processor_audition(ProcessorChainOwner::Return(7), 19, EQ8_TYPE_ID, None,)
+    );
+    assert!(chain.cancel_processor_audition(ProcessorChainOwner::Return(7), 19, EQ8_TYPE_ID,));
+    assert!(!chain.processor_audition_is_active(
+        ProcessorChainOwner::Return(7),
+        19,
+        EQ8_TYPE_ID,
+        selection,
+    ));
+}
+
+#[test]
+fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorInstance, ProcessorAuditionSelection,
+        ProcessorChainOwner, StereoMatrix,
+    };
+
+    let owner = ProcessorChainOwner::Track(7);
+    let selection = ProcessorAuditionSelection { index: 0, lane: 0 };
+    let mut old_state = EQ8_DEFINITION.default_state().unwrap();
+    for bank in 0..2 {
+        old_state = EQ8_DEFINITION
+            .patch_parameter(
+                &old_state,
+                parameter::enabled(bank, 0),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+    }
+    let mut new_state = EQ8_DEFINITION
+        .patch_parameter(
+            &old_state,
+            parameter::gain(0, 0),
+            ParameterValue::Float(6.0),
+        )
+        .unwrap();
+    new_state = EQ8_DEFINITION
+        .patch_parameter(&new_state, parameter::q(0, 0), ParameterValue::Float(1.7))
+        .unwrap();
+
+    let make_chain = |state: hex_lattice_contract::NativeDeviceState| {
+        let state = Arc::new(state);
+        let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
+            Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            owner,
+            device_id: 19,
+            device_type: EQ8_TYPE_ID,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(state),
+            definition: Some(definition),
+        }])
+        .unwrap()
+    };
+
+    let mut old = make_chain(old_state.clone());
+    assert!(old.select_processor_audition(owner, 19, EQ8_TYPE_ID, Some(selection)));
+    let mut candidate = make_chain(new_state.clone());
+    assert!(
+        candidate.transfer_processor_audition_from(&old, owner, 19, EQ8_TYPE_ID, 0, selection,)
+    );
+    assert!(candidate.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+    assert!(old.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+    old.cancel_all_processor_auditions();
+    assert!(!old.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+    assert!(candidate.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+
+    let mut old_for_excluded = make_chain(old_state);
+    assert!(old_for_excluded.select_processor_audition(owner, 19, EQ8_TYPE_ID, Some(selection)));
+    let mut excluded = make_chain(new_state);
+    assert!(!excluded.transfer_processor_audition_from(
+        &old_for_excluded,
+        owner,
+        19,
+        EQ8_TYPE_ID,
+        1,
+        selection,
+    ));
+    assert!(!excluded.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+}

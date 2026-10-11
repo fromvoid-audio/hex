@@ -178,3 +178,16 @@ uncertified effects retain existing tail behavior. This does not transfer ordina
 history out of a separately owned instrument-release suffix. Return adoption uses the same proof and keeps one owner for the old current
 chain, while independently carried tails stay separate. See
 [eq8 parameter history](eq-eight-parameter-history.md).
+
+### optional transient processor audition
+
+The native runtime contract may opt into `NativeProcessorAudition`; its default
+implementation exposes no capability. This controls audio-owned temporary
+monitoring and does not add a descriptor, authored parameter or serialized state.
+The runtime chain validates typed owner/device/type and both transactional twins
+before activating a selector. Smooth release and immediate transient cancellation
+are distinct operations; normal DSP histories remain intact. EQ8 is the first
+implementation. See [the EQ8 host contract](eq-eight-audition.md#transient-host-contract-pulse2253)
+for the bounded audio lease, publication fences, pointer lifecycle and remaining
+native acceptance gates. Adding another capable device does not require a storage
+special case or a mutable type-erased escape hatch.

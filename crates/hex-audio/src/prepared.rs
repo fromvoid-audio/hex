@@ -2,7 +2,7 @@
 //! Control constructs/drops graphs; callback swaps at most one per block and returns
 //! old ownership through a reserved retirement queue. Used by the native prepared output.
 use crate::{
-    spectrum_target,
+    processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
 use hex_engine::{
@@ -141,6 +141,20 @@ fn command_cut(entry_ticket: u64, stop_marker: u64) -> CommandCut {
     CommandCut {
         stop_through,
         process_through: stop_through.map_or(entry_ticket, |stop| stop.max(entry_ticket)),
+    }
+}
+
+fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
+    match action {
+        PlaybackAction::Transport(
+            PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_),
+        )
+        | PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::Stop | hex_engine::SessionPlaybackCommand::Seek(_),
+        ) => true,
+        PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::Pause)
+        | PlaybackAction::Session(_)
+        | PlaybackAction::LaunchAndPlay(_) => false,
     }
 }
 
@@ -605,6 +619,7 @@ pub struct Control {
     publication_pending: Arc<AtomicBool>,
     pub status: Arc<Status>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
+    pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
     rate: u32,
     revision: u64,
     command_ticket: u64,
@@ -622,6 +637,9 @@ pub struct Callback {
     status: Arc<Status>,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
+    processor_audition: processor_audition::ProcessorAuditionTargetCallback,
+    processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
+    processor_audition_rejected_epoch: u64,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stage: SpectrumStage,
     active: Option<Publication>,
@@ -667,6 +685,7 @@ pub fn channel_with_spectrum(
     let publication_pending = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Status::try_new()?);
     let (spectrum_target, callback_target) = spectrum_target::channel();
+    let (processor_audition, callback_audition) = processor_audition::channel();
     Ok((
         Control {
             publications,
@@ -678,6 +697,7 @@ pub fn channel_with_spectrum(
             publication_pending: publication_pending.clone(),
             status: status.clone(),
             spectrum_target,
+            processor_audition,
             rate,
             revision: 0,
             command_ticket: 0,
@@ -694,6 +714,9 @@ pub fn channel_with_spectrum(
             status,
             rate,
             spectrum_target: callback_target,
+            processor_audition: callback_audition,
+            processor_audition_lease: None,
+            processor_audition_rejected_epoch: 0,
             spectrum_capture: capture,
             spectrum_stage: SpectrumStage::default(),
             active: None,
@@ -965,6 +988,9 @@ impl Control {
             .map_err(|PushError::Full(queued)| queued.action)?;
         self.command_ticket = ticket;
         self.admitted_ticket.store(ticket, Release);
+        if action_invalidates_processor_audition(action) {
+            let _ = self.processor_audition.cancel_immediately();
+        }
         Ok(ticket)
     }
     pub fn stop(&self) {
@@ -972,6 +998,7 @@ impl Control {
         // encoding (ticket + 1) is always nonzero and cannot wrap.
         self.pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
+        self.processor_audition.invalidate_current_immediately();
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
@@ -1001,6 +1028,8 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.processor_audition.begin_block();
+        self.apply_processor_audition_boundary();
         self.spectrum_target.begin_block();
         #[cfg(test)]
         if let Some(barrier) = self.test_after_spectrum_target_boundary.take() {
@@ -1036,6 +1065,9 @@ impl Callback {
                 }
             }
             if !self.retired.is_full() {
+                if let Some(active) = self.active.as_mut() {
+                    active.playback.cancel_all_processor_auditions();
+                }
                 if let Some(publication) = self.active.take() {
                     self.return_graph(publication);
                 }
@@ -1190,6 +1222,39 @@ impl Callback {
                         barrier.wait();
                     }
                     let revision = next.revision;
+                    // A held EQ8 selector normally follows the current pair
+                    // through certified parameter retargets. If an active
+                    // instrument note forces its old processor chain into a
+                    // release tail, transfer only the transient selector to
+                    // the matching candidate pair at this no-more-refusals
+                    // point. The tail retains its ordinary filter history.
+                    if let Some(target) = self
+                        .processor_audition_lease
+                        .filter(|target| self.processor_audition.current() == Some(*target))
+                    {
+                        let previous_matches_target = self.active.as_ref().is_some_and(|active| {
+                            active.control_context_generation == target.project_generation
+                                && active.revision >= target.activation_floor
+                                && active.playback.sample_rate() == target.sample_rate_hz
+                                && active.playback.sample_rate() == self.rate
+                        });
+                        let candidate_matches_target = next.control_context_generation
+                            == target.project_generation
+                            && next.revision >= target.activation_floor
+                            && next.playback.sample_rate() == target.sample_rate_hz
+                            && next.playback.sample_rate() == self.rate;
+                        if previous_matches_target && candidate_matches_target {
+                            let _ = next.playback.transfer_processor_audition_from_release_tail(
+                                target.identity,
+                                target.selection,
+                            );
+                        }
+                    }
+                    // This is beyond every fallible handoff decision. Tail
+                    // chains transferred into the candidate have no current
+                    // command target, so remove transient auditions before
+                    // the candidate's first callback render.
+                    next.playback.cancel_retired_processor_auditions();
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
@@ -1213,6 +1278,91 @@ impl Callback {
         self.consume_commands();
     }
 
+    fn apply_processor_audition_boundary(&mut self) {
+        let Some(boundary) = self.processor_audition.take_boundary() else {
+            return;
+        };
+        if let Some(previous) = boundary.previous
+            && let Some(active) = self.active.as_mut()
+        {
+            if active.control_context_generation == previous.project_generation {
+                if boundary.clear_mode == processor_audition::ClearMode::Immediate {
+                    let _ = active.playback.cancel_processor_audition(previous.identity);
+                } else {
+                    let _ = active
+                        .playback
+                        .select_processor_audition(previous.identity, None);
+                }
+            } else if boundary.clear_mode == processor_audition::ClearMode::Immediate {
+                active.playback.cancel_all_processor_auditions();
+            }
+        } else if boundary.clear_mode == processor_audition::ClearMode::Immediate
+            && let Some(active) = self.active.as_mut()
+        {
+            // A prior smooth release already cleared its lease target, but its
+            // fade may still be audible. A later hard lifecycle cancel must
+            // clear that residual transient state too.
+            active.playback.cancel_all_processor_auditions();
+        }
+        self.processor_audition_lease = None;
+        self.processor_audition_rejected_epoch = 0;
+    }
+
+    fn reconcile_processor_audition(&mut self) {
+        let epoch = self.processor_audition.current_epoch();
+        let Some(target) = self.processor_audition.current() else {
+            return;
+        };
+        if self.processor_audition_rejected_epoch == epoch {
+            return;
+        }
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        if active.playback.sample_rate() != target.sample_rate_hz
+            || target.sample_rate_hz != self.rate
+        {
+            active.playback.cancel_all_processor_auditions();
+            self.processor_audition.reject_current(epoch);
+            self.processor_audition_rejected_epoch = epoch;
+            self.processor_audition_lease = None;
+            return;
+        }
+        if active.control_context_generation < target.project_generation
+            || active.revision < target.activation_floor
+        {
+            return;
+        }
+        if active.control_context_generation != target.project_generation {
+            active.playback.cancel_all_processor_auditions();
+            self.processor_audition.reject_current(epoch);
+            self.processor_audition_rejected_epoch = epoch;
+            self.processor_audition_lease = None;
+            return;
+        }
+        if self.processor_audition_lease != Some(target) {
+            if !active
+                .playback
+                .select_processor_audition(target.identity, Some(target.selection))
+            {
+                self.processor_audition.reject_current(epoch);
+                self.processor_audition_rejected_epoch = epoch;
+                self.processor_audition_lease = None;
+                return;
+            }
+            self.processor_audition_lease = Some(target);
+        }
+        if !active
+            .playback
+            .processor_audition_is_active(target.identity, target.selection)
+        {
+            let _ = active.playback.cancel_processor_audition(target.identity);
+            self.processor_audition.reject_current(epoch);
+            self.processor_audition_rejected_epoch = epoch;
+            self.processor_audition_lease = None;
+        }
+    }
+
     fn consume_commands(&mut self) {
         // Capture the published queue prefix before clearing the marker. Later
         // producer admissions stay queued for the next block; a Stop arriving
@@ -1223,10 +1373,11 @@ impl Callback {
     }
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
-        if cut.stop_through.is_some()
-            && let Some(active) = self.active.as_mut()
-        {
-            active.playback.apply(PlaybackCommand::Stop);
+        if cut.stop_through.is_some() {
+            if let Some(active) = self.active.as_mut() {
+                active.playback.apply(PlaybackCommand::Stop);
+            }
+            self.invalidate_processor_audition_request();
         }
         let mut consumed = None;
         for _ in 0..COMMANDS {
@@ -1244,11 +1395,22 @@ impl Callback {
             if !cut
                 .stop_through
                 .is_some_and(|stop_through| queued.ticket <= stop_through)
-                && let Some(active) = self.active.as_mut()
-                && let Err(error) = active.playback.try_apply_action(queued.action)
             {
-                self.status
-                    .publish_rejected_action(queued.ticket, error.telemetry_rejection());
+                let mut invalidate_audition = false;
+                if let Some(active) = self.active.as_mut() {
+                    match active.playback.try_apply_action(queued.action) {
+                        Ok(()) => {
+                            invalidate_audition =
+                                action_invalidates_processor_audition(queued.action);
+                        }
+                        Err(error) => self
+                            .status
+                            .publish_rejected_action(queued.ticket, error.telemetry_rejection()),
+                    }
+                }
+                if invalidate_audition {
+                    self.invalidate_processor_audition_request();
+                }
             }
         }
         self.publish_transport();
@@ -1262,10 +1424,26 @@ impl Callback {
         if let Some(active) = self.active.as_mut() {
             active.playback.apply(PlaybackCommand::Stop);
         }
+        self.processor_audition.invalidate_current_immediately();
+        self.invalidate_processor_audition_request();
         self.publish_transport();
         self.publish_active_routes(false);
     }
+
+    fn invalidate_processor_audition_request(&mut self) {
+        if self.processor_audition.has_request_after_hard_cancel() {
+            return;
+        }
+        let epoch = self.processor_audition.current_epoch();
+        self.processor_audition.reject_current(epoch);
+        self.processor_audition_rejected_epoch = epoch;
+        self.processor_audition_lease = None;
+        if let Some(active) = self.active.as_mut() {
+            active.playback.cancel_all_processor_auditions();
+        }
+    }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.reconcile_processor_audition();
         let Some(target) = self
             .spectrum_capture
             .as_ref()
@@ -1450,6 +1628,27 @@ mod tests {
     }
 
     fn spectrum_eq8_graph() -> (Playback, PostNodeIdentity) {
+        spectrum_eq8_graph_with_playing(true)
+    }
+
+    fn fresh_spectrum_eq8_graph() -> (Playback, PostNodeIdentity) {
+        spectrum_eq8_graph_with_playing(false)
+    }
+
+    fn spectrum_eq8_graph_with_playing(playing: bool) -> (Playback, PostNodeIdentity) {
+        spectrum_eq8_graph_with_mode(playing, 0)
+    }
+
+    fn spectrum_eq8_graph_with_mode(playing: bool, mode: u32) -> (Playback, PostNodeIdentity) {
+        spectrum_eq8_graph_with_params(playing, mode, 0.0, 1.0)
+    }
+
+    fn spectrum_eq8_graph_with_params(
+        playing: bool,
+        mode: u32,
+        gain_db: f32,
+        q: f32,
+    ) -> (Playback, PostNodeIdentity) {
         use hex_lattice_contract::DeviceTypeId;
         use hex_project::{
             AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
@@ -1462,14 +1661,62 @@ mod tests {
         const ASSET_ID: u64 = 4;
         const CLIP_ID: u64 = 5;
         const FRAMES: u64 = 512;
-        let state = hex_engine::default_native_device_state_for_class(
+        let mut state = hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
             DeviceTypeId::from_static("hex.eq8"),
         )
         .unwrap();
+        // The audition contract intentionally refuses disabled bands. Enable
+        // band zero in both stereo banks so this prepared callback fixture
+        // exercises the admitted path rather than only waiting/rejection.
+        for parameter in [1, 41] {
+            state = hex_engine::patch_native_device_parameter(
+                &state,
+                hex_lattice_contract::ParameterId::from_static(parameter),
+                hex_lattice_contract::ParameterValue::Bool(true),
+            )
+            .unwrap();
+        }
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            hex_lattice_contract::ParameterId::from_static(201),
+            hex_lattice_contract::ParameterValue::Choice(mode),
+        )
+        .unwrap();
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            hex_lattice_contract::ParameterId::from_static(4),
+            hex_lattice_contract::ParameterValue::Float(gain_db),
+        )
+        .unwrap();
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            hex_lattice_contract::ParameterId::from_static(5),
+            hex_lattice_contract::ParameterValue::Float(q),
+        )
+        .unwrap();
+        let mut return_state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.eq8"),
+        )
+        .unwrap();
+        for parameter in [1, 41] {
+            return_state = hex_engine::patch_native_device_parameter(
+                &return_state,
+                hex_lattice_contract::ParameterId::from_static(parameter),
+                hex_lattice_contract::ParameterValue::Bool(true),
+            )
+            .unwrap();
+        }
+        return_state = hex_engine::patch_native_device_parameter(
+            &return_state,
+            hex_lattice_contract::ParameterId::from_static(201),
+            hex_lattice_contract::ParameterValue::Choice(mode),
+        )
+        .unwrap();
         let project = CanonicalProject::from_snapshot(Snapshot {
             sample_rate: 48_000,
-            next_id: DEVICE_ID + 1,
+            next_id: DEVICE_ID + 2,
             assets: vec![AssetSnapshot {
                 id: ASSET_ID,
                 path: "analyzer-test.wav".into(),
@@ -1505,7 +1752,17 @@ mod tests {
                 }]),
                 sends: Vec::new(),
             }],
-            return_tracks: Vec::<ReturnTrackSnapshot>::new(),
+            return_tracks: vec![ReturnTrackSnapshot {
+                id: 3,
+                name: "return fixture".into(),
+                gain: 1.0,
+                muted: false,
+                devices: vec![DeviceSnapshot {
+                    id: DEVICE_ID + 1,
+                    bypassed: false,
+                    state: return_state,
+                }],
+            }],
             session: SessionSnapshot::default(),
             loop_region: None,
             master_gain: 1.0,
@@ -1529,7 +1786,9 @@ mod tests {
             .unwrap(),
         );
         let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
-        playback.apply(PlaybackCommand::Play);
+        if playing {
+            playback.apply(PlaybackCommand::Play);
+        }
         (
             playback,
             PostNodeIdentity::new(
@@ -1538,6 +1797,454 @@ mod tests {
                 DeviceTypeId::from_static("hex.eq8"),
             ),
         )
+    }
+
+    #[test]
+    fn seek_cancels_a_waiting_begin_without_blocking_a_later_fresh_press() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let first_revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.active.as_ref().unwrap().revision, first_revision);
+
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 3, 2, 48_000, selection)
+            .unwrap();
+        callback.begin_block();
+        let mut output = [[0.0; 2]; 64];
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert!(callback.processor_audition.current().is_some());
+
+        control.command(PlaybackCommand::Seek(0)).unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition.current(), None);
+
+        let (replacement, replacement_identity) = fresh_spectrum_eq8_graph();
+        assert_eq!(replacement_identity, identity);
+        let second_revision = control
+            .publish_with_policy_and_context_generation(
+                replacement,
+                PublicationPolicy::InheritRuntime,
+                3,
+            )
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(
+            callback.active.as_ref().unwrap().revision,
+            second_revision,
+            "publication rejection: {:?}",
+            callback.status.rejected_revision()
+        );
+        assert_eq!(callback.status.rejected_revision(), None);
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition.current(), None);
+        assert!(
+            !callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        assert_eq!(callback.processor_audition_lease, None);
+        assert!(
+            !callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control
+            .processor_audition
+            .select(identity, 3, second_revision, 48_000, selection)
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(
+            callback.processor_audition_lease,
+            control.processor_audition.desired()
+        );
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn audition_waits_for_actual_generation_and_revision_floor_then_activates() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let first_revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.active.as_ref().unwrap().revision, first_revision);
+
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 3, first_revision + 1, 48_000, selection)
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert!(callback.processor_audition.current().is_some());
+
+        let (replacement, replacement_identity) = fresh_spectrum_eq8_graph();
+        assert_eq!(replacement_identity, identity);
+        let second_revision = control
+            .publish_with_policy_and_context_generation(
+                replacement,
+                PublicationPolicy::InheritRuntime,
+                3,
+            )
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
+        assert_eq!(
+            callback.active.as_ref().unwrap().control_context_generation,
+            3
+        );
+        assert_eq!(
+            callback.processor_audition_lease,
+            control.processor_audition.desired()
+        );
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+        assert!(output.iter().flatten().any(|value| value.abs() > 1.0e-6));
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn compatible_parameter_publications_preserve_the_held_audition() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let first_revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 2, first_revision, 48_000, selection)
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        for (gain, q) in [(6.0, 1.0), (6.0, 2.0)] {
+            let (candidate, candidate_identity) = spectrum_eq8_graph_with_params(false, 0, gain, q);
+            assert_eq!(candidate_identity, identity);
+            let revision = control
+                .publish_with_policy_and_context_generation(
+                    candidate,
+                    PublicationPolicy::InheritRuntime,
+                    2,
+                )
+                .unwrap();
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            assert_eq!(callback.active.as_ref().unwrap().revision, revision);
+            assert_eq!(
+                callback.processor_audition_lease,
+                control.processor_audition.desired()
+            );
+            assert!(
+                callback
+                    .active
+                    .as_mut()
+                    .unwrap()
+                    .playback
+                    .processor_audition_is_active(identity, selection)
+            );
+        }
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn wrong_sample_rate_target_is_rejected_without_replaying() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 2, revision, 44_100, selection)
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        callback.begin_block();
+        let epoch = callback.processor_audition.current_epoch();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition_rejected_epoch, epoch);
+        assert!(
+            !callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn mode_change_invalidates_the_old_audition_epoch_and_needs_a_fresh_press() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let first_revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 2, first_revision, 48_000, selection)
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        callback.begin_block();
+        let epoch = callback.processor_audition.current_epoch();
+        callback.render(&mut output).unwrap();
+        assert_eq!(
+            callback.processor_audition_lease,
+            control.processor_audition.desired()
+        );
+
+        // Stereo -> left/right invalidates the prior transient selection while
+        // keeping the stable device ID. The old held epoch must stay rejected.
+        let (replacement, replacement_identity) = spectrum_eq8_graph_with_mode(false, 1);
+        assert_eq!(replacement_identity, identity);
+        let second_revision = control
+            .publish_with_policy_and_context_generation(
+                replacement,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition_rejected_epoch, epoch);
+        assert!(
+            !callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition_rejected_epoch, epoch);
+
+        control
+            .processor_audition
+            .select(identity, 2, second_revision, 48_000, selection)
+            .unwrap();
+        callback.begin_block();
+        let fresh_epoch = callback.processor_audition.current_epoch();
+        assert!(fresh_epoch > epoch);
+        callback.render(&mut output).unwrap();
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn a_fresh_audition_admitted_after_priority_stop_survives_same_block_consumption() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+
+        control.stop();
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 2, revision, 48_000, selection)
+            .unwrap();
+        callback.begin_block();
+        let mut output = [[0.0; 2]; 64];
+        callback.render(&mut output).unwrap();
+
+        assert!(!callback.active.as_ref().unwrap().playback.playing());
+        assert_eq!(
+            callback.processor_audition_lease,
+            control.processor_audition.desired()
+        );
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn render_fault_fences_a_waiting_begin_before_a_future_graph_is_published() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, identity) = spectrum_eq8_graph();
+        let first_revision = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        callback.begin_block();
+
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        control
+            .processor_audition
+            .select(identity, 3, first_revision + 1, 48_000, selection)
+            .unwrap();
+        callback.begin_block();
+        let mut output = [[0.0; 2]; 64];
+        callback.render(&mut output).unwrap();
+        assert_eq!(callback.processor_audition_lease, None);
+        assert!(callback.processor_audition.current().is_some());
+
+        callback.stop_after_fault();
+        assert_eq!(callback.processor_audition.current(), None);
+        let (replacement, _) = spectrum_eq8_graph();
+        let second_revision = control
+            .publish_with_policy_and_context_generation(
+                replacement,
+                PublicationPolicy::InstallFreshRuntime,
+                3,
+            )
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+
+        assert_eq!(second_revision, first_revision + 1);
+        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
+        assert_eq!(callback.processor_audition_lease, None);
+        assert_eq!(callback.processor_audition.current(), None);
+        assert!(
+            !callback
+                .active
+                .as_mut()
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn playback_audition_routes_to_arrangement_session_runtime_and_return_owner() {
+        let (mut playback, _) = spectrum_eq8_graph();
+        let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
+        let return_identity = PostNodeIdentity::new(
+            hex_engine::ProcessorChainOwner::Return(3),
+            12,
+            hex_engine::DeviceTypeId::from_static("hex.eq8"),
+        );
+        assert!(playback.select_processor_audition(return_identity, Some(selection)));
+        assert!(playback.processor_audition_is_active(return_identity, selection));
+        let wrong_owner = PostNodeIdentity::new(
+            hex_engine::ProcessorChainOwner::Track(3),
+            12,
+            hex_engine::DeviceTypeId::from_static("hex.eq8"),
+        );
+        assert!(!playback.select_processor_audition(wrong_owner, Some(selection)));
+        playback.cancel_all_processor_auditions();
+        assert!(!playback.processor_audition_is_active(return_identity, selection));
     }
 
     fn spectrum_test_channel() -> (

@@ -4269,6 +4269,214 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
 }
 
 #[test]
+fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_filter_history() {
+    use hex_lattice::{ProcessorAuditionSelection, ProcessorChainOwner};
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let id = DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 128,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut source_snapshot = with_test_instrument(&project(0.5, 0, 1 << 32), id, 0).snapshot();
+    let eq8_type = DeviceTypeId::from_static("hex.eq8");
+    let mut eq8_state =
+        crate::default_native_device_state_for_class(crate::NativeDeviceClass::Effect, eq8_type)
+            .unwrap();
+    for parameter in [1, 41] {
+        eq8_state = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Effect,
+            &eq8_state,
+            ParameterId::from_static(parameter),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    }
+    let eq8_id = source_snapshot.next_id;
+    source_snapshot.next_id += 1;
+    source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        id: eq8_id,
+        bypassed: false,
+        state: eq8_state,
+    });
+    source_snapshot.tracks[0].instrument_position = Some(0);
+    let source_project = legacy_project_from_snapshot(source_snapshot).unwrap();
+    let source_revision =
+        revision_with_instrument_registry(&source_project, Arc::clone(&table), &registry);
+    let mut previous = SessionPlayback::new(source_revision).unwrap();
+    let mut reference_previous = SessionPlayback::new(revision_with_instrument_registry(
+        &source_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    reference_previous
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut playing = [[0.0; 2]; 16];
+    let mut reference_playing = playing;
+    previous.render(&mut playing).unwrap();
+    reference_previous.render(&mut reference_playing).unwrap();
+    assert!(playing.iter().any(|frame| frame[0].abs() > 1.0e-6));
+    assert_eq!(
+        playing, reference_playing,
+        "independent source runtimes must begin with matching PCM"
+    );
+
+    let identity = crate::PostNodeIdentity::new(ProcessorChainOwner::Track(1), eq8_id, eq8_type);
+    let selection = ProcessorAuditionSelection { index: 0, lane: 0 };
+    assert!(previous.select_processor_audition(identity, Some(selection)));
+    let mut auditioned = [[0.0; 2]; 16];
+    let mut reference_auditioned = auditioned;
+    previous.render(&mut auditioned).unwrap();
+    reference_previous
+        .render(&mut reference_auditioned)
+        .unwrap();
+    assert!(previous.processor_audition_is_active(identity, selection));
+
+    // Empty the candidate's authored source while preserving the track and
+    // device identities; the old live mutable note and its suffix become a
+    // release owner on the candidate graph.
+    let mut candidate_snapshot = source_project.snapshot();
+    candidate_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    candidate_snapshot.session.cells.clear();
+    let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        &candidate_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    let mut reference_candidate = SessionPlayback::new(revision_with_instrument_registry(
+        &candidate_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    candidate.try_inherit_state_from(&mut previous).unwrap();
+    reference_candidate
+        .try_inherit_state_from(&mut reference_previous)
+        .unwrap();
+    let tail_slot = candidate
+        .tail_mutable_instruments
+        .iter()
+        .position(Option::is_some)
+        .expect("live mutable note should own a release tail");
+    assert_eq!(candidate.tail_suffix_starts[tail_slot], 0);
+    assert!(
+        candidate.tail_groups[tail_slot]
+            .as_mut()
+            .is_some_and(|chain| chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection
+            ))
+    );
+
+    // Place an older same-track tail with no held selector before the freshly
+    // transferred tail. This catches selecting the first track match instead
+    // of the exact current lease owner.
+    let stale_slot = 0;
+    let current_slot = if tail_slot == stale_slot {
+        1
+    } else {
+        tail_slot
+    };
+    let track_id = candidate.tail_mutable_instruments[tail_slot]
+        .as_ref()
+        .expect("mutable release owner")
+        .track_id;
+    let current_chain = candidate.tail_groups[tail_slot]
+        .take()
+        .expect("release suffix chain");
+    let current_mutable_tail = candidate.tail_mutable_instruments[tail_slot]
+        .take()
+        .expect("mutable release tail");
+    let suffix_start = candidate.tail_suffix_starts[tail_slot];
+    candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+    candidate.tail_suffix_starts[stale_slot] = suffix_start;
+    candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
+        track_id,
+        runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
+            &ZeroTailMutableFactory,
+            48_000,
+        )
+        .unwrap(),
+    });
+    candidate.tail_groups[current_slot] = Some(current_chain);
+    candidate.tail_suffix_starts[current_slot] = suffix_start;
+    candidate.tail_mutable_instruments[current_slot] = Some(current_mutable_tail);
+
+    assert!(candidate.transfer_processor_audition_from_release_tail(identity, selection));
+    assert!(candidate.processor_audition_is_active(identity, selection));
+    assert!(
+        candidate.tail_groups[current_slot]
+            .as_mut()
+            .is_some_and(|chain| chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection
+            ))
+    );
+
+    candidate.cancel_retired_processor_auditions();
+    reference_candidate.cancel_retired_processor_auditions();
+    assert!(candidate.processor_audition_is_active(identity, selection));
+    assert!(
+        !candidate.tail_groups[current_slot]
+            .as_mut()
+            .is_some_and(|chain| chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection
+            ))
+    );
+    assert!(
+        !candidate.tail_groups[stale_slot]
+            .as_mut()
+            .is_some_and(|chain| chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection
+            ))
+    );
+    let reference_slot = reference_candidate
+        .tail_groups
+        .iter()
+        .position(Option::is_some)
+        .expect("reference mutable release suffix");
+    let mut actual_tail_pcm = [[0.1, -0.2]; 256];
+    let mut reference_tail_pcm = actual_tail_pcm;
+    let actual_chain = candidate.tail_groups[current_slot]
+        .as_mut()
+        .expect("actual release suffix chain");
+    actual_chain.begin_block();
+    actual_chain.process_block(&mut actual_tail_pcm);
+    actual_chain.commit_block();
+    let reference_chain = reference_candidate.tail_groups[reference_slot]
+        .as_mut()
+        .expect("reference release suffix chain");
+    reference_chain.begin_block();
+    reference_chain.process_block(&mut reference_tail_pcm);
+    reference_chain.commit_block();
+    assert_eq!(
+        actual_tail_pcm, reference_tail_pcm,
+        "hard-clearing the transferred tail selector must preserve ordinary EQ filter history PCM"
+    );
+}
+
+#[test]
 fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_repeated_handoff() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {

@@ -23,9 +23,13 @@ pub struct ResponseGraphNode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseGraphPhase {
     Select,
+    /// Physical pointer press on a node; does not start a parameter edit.
+    Press,
     Begin,
     Change,
     Commit,
+    /// Physical pointer release after either a stationary press or an edit.
+    Release,
     Cancel,
 }
 
@@ -183,8 +187,14 @@ impl ResponseGraph {
                 modifiers: drag.modifiers,
             });
             cx.notify();
-        } else {
-            self.press = None;
+        } else if let Some(press) = self.press.take() {
+            cx.emit(ResponseGraphEvent {
+                phase: ResponseGraphPhase::Cancel,
+                node_id: press.node_id,
+                position: press.node_origin,
+                modifiers: press.modifiers,
+            });
+            cx.notify();
         }
     }
 
@@ -247,6 +257,12 @@ impl ResponseGraph {
             position: node_origin,
             modifiers: event.modifiers,
         });
+        cx.emit(ResponseGraphEvent {
+            phase: ResponseGraphPhase::Press,
+            node_id,
+            position: node_origin,
+            modifiers: event.modifiers,
+        });
         cx.stop_propagation();
         cx.notify();
     }
@@ -257,7 +273,7 @@ impl ResponseGraph {
         };
         if event.pressed_button != Some(MouseButton::Left) {
             if self.press.is_some() {
-                self.press = None;
+                self.cancel(cx);
                 return true;
             }
             let was_dragging = self.drag.is_some();
@@ -310,18 +326,42 @@ impl ResponseGraph {
             return false;
         }
         let Some(drag) = self.drag.take() else {
-            return self.press.take().is_some();
-        };
-        if let Some(position) = self.normalized_position(event.position) {
+            let Some(press) = self.press.take() else {
+                return false;
+            };
+            let inside = point_inside_graph(self.bounds, event.position);
+            let (phase, _) = pointer_end_phases(false, inside);
             cx.emit(ResponseGraphEvent {
-                phase: ResponseGraphPhase::Commit,
+                phase,
+                node_id: press.node_id,
+                position: press.node_origin,
+                modifiers: press.modifiers,
+            });
+            cx.notify();
+            return true;
+        };
+        let normalized = self.normalized_position(event.position);
+        let inside = point_inside_graph(self.bounds, event.position);
+        if let (Some(position), true) = (normalized, inside) {
+            let (first, second) = pointer_end_phases(true, true);
+            cx.emit(ResponseGraphEvent {
+                phase: first,
                 node_id: drag.node_id,
                 position: drag_position(position, drag, self.editable),
                 modifiers: drag.modifiers,
             });
+            if let Some(phase) = second {
+                cx.emit(ResponseGraphEvent {
+                    phase,
+                    node_id: drag.node_id,
+                    position: drag_position(position, drag, self.editable),
+                    modifiers: drag.modifiers,
+                });
+            }
         } else {
+            let (phase, _) = pointer_end_phases(true, false);
             cx.emit(ResponseGraphEvent {
-                phase: ResponseGraphPhase::Cancel,
+                phase,
                 node_id: drag.node_id,
                 position: [0.5, 0.5],
                 modifiers: drag.modifiers,
@@ -403,6 +443,24 @@ impl ResponseGraph {
         }
         cx.notify();
     }
+}
+
+fn pointer_end_phases(
+    dragging: bool,
+    inside: bool,
+) -> (ResponseGraphPhase, Option<ResponseGraphPhase>) {
+    match (dragging, inside) {
+        (false, true) => (ResponseGraphPhase::Release, None),
+        (_, false) => (ResponseGraphPhase::Cancel, None),
+        (true, true) => (
+            ResponseGraphPhase::Commit,
+            Some(ResponseGraphPhase::Release),
+        ),
+    }
+}
+
+fn point_inside_graph(bounds: Option<Bounds<Pixels>>, position: Point<Pixels>) -> bool {
+    bounds.is_some_and(|bounds| bounds.contains(&position))
 }
 
 fn drag_threshold_crossed(dx: f32, dy: f32) -> bool {
@@ -750,6 +808,51 @@ mod tests {
         assert!((unmodified[0] - 0.65).abs() < 0.00001);
         assert!((unmodified[1] - 0.45).abs() < 0.00001);
         assert_eq!(drag_position([5.0, -2.0], drag, true), [1.0, 0.0]);
+    }
+
+    #[test]
+    fn pointer_press_lifecycle_releases_stationary_holds_and_cancels_outside() {
+        assert_eq!(
+            pointer_end_phases(false, true),
+            (ResponseGraphPhase::Release, None)
+        );
+        assert_eq!(
+            pointer_end_phases(false, false),
+            (ResponseGraphPhase::Cancel, None)
+        );
+        assert_eq!(
+            pointer_end_phases(true, true),
+            (
+                ResponseGraphPhase::Commit,
+                Some(ResponseGraphPhase::Release)
+            )
+        );
+        assert_eq!(
+            pointer_end_phases(true, false),
+            (ResponseGraphPhase::Cancel, None)
+        );
+    }
+
+    #[test]
+    fn release_hit_test_uses_graph_bounds_while_drag_positions_remain_clamped() {
+        let bounds = Bounds {
+            origin: point(px(10.0), px(20.0)),
+            size: gpui::size(px(100.0), px(80.0)),
+        };
+        let inside = point(px(50.0), px(50.0));
+        let outside = point(px(150.0), px(50.0));
+
+        assert!(point_inside_graph(Some(bounds), inside));
+        assert!(!point_inside_graph(Some(bounds), outside));
+        assert!(!point_inside_graph(None, inside));
+        assert_eq!(
+            pointer_end_phases(true, point_inside_graph(Some(bounds), inside)).1,
+            Some(ResponseGraphPhase::Release)
+        );
+        assert_eq!(
+            pointer_end_phases(true, point_inside_graph(Some(bounds), outside)),
+            (ResponseGraphPhase::Cancel, None)
+        );
     }
 
     #[test]

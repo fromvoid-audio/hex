@@ -92,8 +92,10 @@ impl EditorView {
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         visible_change |= self.retire_stale_spectrum_target();
+        visible_change |= self.retire_stale_processor_audition_target();
         if let Some(audio) = self.audio.as_mut() {
             let _ = audio.control.spectrum_target.retry_pending();
+            let _ = audio.control.processor_audition.retry_pending();
             let desired_spectrum = audio.control.spectrum_target.desired();
             let spectrum = audio
                 .spectrum
@@ -530,6 +532,81 @@ impl EditorView {
             return true;
         }
         if target.is_none() && self.device_panel.spectrum_result.take().is_some() {
+            return true;
+        }
+        false
+    }
+
+    fn processor_audition_target_is_visible_and_current(
+        &self,
+        target: hex_audio::processor_audition::ProcessorAuditionTarget,
+    ) -> bool {
+        if !self.clip_view_open
+            || !self.device_panel_active
+            || self.project_generation != target.project_generation
+            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+        {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let focused_owner = self
+            .focused_return
+            .filter(|id| {
+                state
+                    .project
+                    .return_tracks()
+                    .iter()
+                    .any(|track| track.id() == *id)
+            })
+            .map(super::device_panel::DevicePanelOwner::Return)
+            .or_else(|| {
+                self.selected_track
+                    .map(super::device_panel::DevicePanelOwner::Track)
+            });
+        match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Track(track_id)),
+                hex_engine::ProcessorChainOwner::Track(owner_id),
+            ) if track_id.value() == owner_id => {
+                state.project.track(track_id).is_some_and(|track| {
+                    track.devices().iter().any(|device| {
+                        device.id().value() == target.identity.device_id
+                            && device.state().type_id() == target.identity.device_type
+                    })
+                })
+            }
+            (
+                Some(super::device_panel::DevicePanelOwner::Return(return_id)),
+                hex_engine::ProcessorChainOwner::Return(owner_id),
+            ) if return_id.value() == owner_id => state
+                .project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == return_id)
+                .is_some_and(|track| {
+                    track.devices().iter().any(|device| {
+                        device.id().value() == target.identity.device_id
+                            && device.state().type_id() == target.identity.device_type
+                    })
+                }),
+            _ => false,
+        }
+    }
+
+    fn retire_stale_processor_audition_target(&mut self) -> bool {
+        let target = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.processor_audition.desired());
+        if target
+            .is_some_and(|target| !self.processor_audition_target_is_visible_and_current(target))
+        {
+            if let Some(audio) = self.audio.as_mut() {
+                let _ = audio.control.processor_audition.cancel_immediately();
+            }
+            super::device_panel::clear_eq8_audition_gesture_flags(self);
             return true;
         }
         false
