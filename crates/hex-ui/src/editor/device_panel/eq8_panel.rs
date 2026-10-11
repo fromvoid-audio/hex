@@ -12,7 +12,10 @@ use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView}
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
-use hex_widgets::{ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode};
+use hex_widgets::{
+    DiscreteControlAppearance, ResponseGraph, ResponseGraphEvent, ResponseGraphModel,
+    ResponseGraphNode, Toggle, ToggleChanged, ToggleConfig,
+};
 
 pub(super) const FRAME_WIDTH: f32 = 600.0;
 const BODY_HEIGHT: f32 = super::UTILITY_FRAME_BODY_HEIGHT;
@@ -29,6 +32,8 @@ const MAX_Q: f32 = 18.0;
 pub(super) struct Eq8PanelState {
     pub(super) selected_band: usize,
     pub(super) selected_lane: usize,
+    pub(super) audition_armed: bool,
+    pub(super) audition_gesture_active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -143,6 +148,7 @@ pub(super) fn render_body(
         owner,
         device_view.type_id,
     ));
+    toolbar = toolbar.child(audition_toggle(view, cx, device));
     toolbar = toolbar
         .child(div().flex_1())
         .child(theme::text(format!(
@@ -167,7 +173,7 @@ pub(super) fn render_body(
         },
     );
     let graph = if let Some(model) = graph_model {
-        graph_entity(view, cx, device, model)
+        graph_entity(view, cx, device, owner, model)
     } else {
         return div()
             .id(ElementId::Name(
@@ -257,6 +263,78 @@ pub(super) fn render_body(
                 .child(div().w_full().flex_1().min_h_0().child(graph))
                 .child(controls),
         )
+}
+
+fn audition_toggle(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+) -> Stateful<Div> {
+    let armed = view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .is_some_and(|panel| panel.audition_armed);
+    if let std::collections::hash_map::Entry::Vacant(entry) =
+        view.device_panel.eq8_audition_toggles.entry(device)
+    {
+        let Ok(config) = ToggleConfig::new(
+            format!("eq8-audition-arm-{}", device.value()),
+            "",
+            armed,
+            super::control_style(),
+        ) else {
+            return div()
+                .id(ElementId::Name("eq8-audition-unavailable".into()))
+                .child(unavailable("audition toggle unavailable"));
+        };
+        let config = config.with_appearance(DiscreteControlAppearance::CompactIconButton);
+        let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
+        let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
+            if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+                panel.audition_armed = event.checked;
+                if !event.checked {
+                    panel.audition_gesture_active = false;
+                }
+            }
+            if !event.checked
+                && let Some(audio) = view.audio.as_mut()
+            {
+                let _ = audio.control.processor_audition.cancel_immediately();
+            }
+            cx.notify();
+        });
+        entry.insert(super::Eq8AuditionToggle {
+            entity,
+            _subscription: subscription,
+        });
+    }
+    let Some(control) = view.device_panel.eq8_audition_toggles.get(&device) else {
+        return div()
+            .id(ElementId::Name("eq8-audition-unavailable".into()))
+            .child(unavailable("audition toggle unavailable"));
+    };
+    let entity = control.entity.clone();
+    entity.update(cx, |toggle, cx| toggle.set_checked(armed, cx));
+    div()
+        .id(ElementId::Name(
+            format!("eq8-audition-arm-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("eq8-audition-arm-{}", device.value()))
+        .w(px(18.0))
+        .h(px(15.0))
+        .flex_shrink_0()
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::super::transport::MiniTooltip {
+                description: if armed {
+                    "eq8 band audition armed".into()
+                } else {
+                    "arm eq8 band audition".into()
+                },
+            })
+            .into()
+        })
+        .child(entity.clone())
 }
 
 fn spectrum_toggle(

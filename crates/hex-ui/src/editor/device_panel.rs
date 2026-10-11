@@ -64,6 +64,11 @@ struct SendControl {
     _subscription: Subscription,
 }
 
+struct Eq8AuditionToggle {
+    entity: Entity<Toggle>,
+    _subscription: Subscription,
+}
+
 #[derive(Clone, Copy)]
 struct DeviceControlIdentity {
     class: NativeDeviceClass,
@@ -133,6 +138,7 @@ pub(super) struct DevicePanelState {
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
+    eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
     add_menu_open: bool,
     message: Option<String>,
@@ -329,12 +335,14 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.operator_pages.clear();
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
             let _ = audio.control.spectrum_target.clear();
+            let _ = audio.control.processor_audition.cancel_immediately();
         }
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
@@ -356,6 +364,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
     if desired_owner != view.device_panel.owner {
         if let Some(audio) = view.audio.as_mut() {
             let _ = audio.control.spectrum_target.clear();
+            let _ = audio.control.processor_audition.cancel_immediately();
         }
         if let Some(previous) = view.device_panel.owner {
             if !owner_exists(&state, previous) {
@@ -382,6 +391,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.operator_pages.clear();
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.eq8_graph_gestures.clear();
@@ -395,6 +405,12 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
             return_view::render(view, cx, &state, return_track)
         }
         None => empty_panel("select a track or return to view devices"),
+    }
+}
+
+pub(super) fn clear_eq8_audition_gesture_flags(view: &mut EditorView) {
+    for panel in view.device_panel.eq8_panels.values_mut() {
+        panel.audition_gesture_active = false;
     }
 }
 
@@ -454,6 +470,7 @@ pub(super) fn retire_removed_eq8_graphs(
         }
         view.device_panel.eq8_responses.remove(&device);
         view.device_panel.eq8_panels.remove(&device);
+        view.device_panel.eq8_audition_toggles.remove(&device);
         view.device_panel.eq8_graph_gestures.remove(&device);
     }
 }
@@ -477,6 +494,27 @@ fn clear_removed_spectrum_target(
     if stale && let Some(audio) = view.audio.as_mut() {
         let _ = audio.control.spectrum_target.clear();
         view.device_panel.spectrum_result = None;
+    }
+}
+
+fn clear_removed_processor_audition_target(
+    view: &mut EditorView,
+    owner: hex_engine::ProcessorChainOwner,
+    identities: &HashMap<DeviceId, DeviceControlIdentity>,
+) {
+    let stale = view.audio.as_ref().and_then(|audio| {
+        audio.control.processor_audition.desired().map(|target| {
+            target.identity.owner == owner
+                && !identities.iter().any(|(device, identity)| {
+                    device.value() == target.identity.device_id
+                        && identity.class == NativeDeviceClass::Effect
+                        && identity.type_id == target.identity.device_type
+                        && identity.type_id.as_str() == Ok("hex.eq8")
+                })
+        })
+    }) == Some(true);
+    if stale && let Some(audio) = view.audio.as_mut() {
+        let _ = audio.control.processor_audition.cancel_immediately();
     }
 }
 
@@ -519,6 +557,11 @@ fn render_track(
         .collect();
     let alive: HashSet<_> = identities.keys().copied().collect();
     clear_removed_spectrum_target(
+        view,
+        hex_engine::ProcessorChainOwner::Track(track_id.value()),
+        &identities,
+    );
+    clear_removed_processor_audition_target(
         view,
         hex_engine::ProcessorChainOwner::Track(track_id.value()),
         &identities,

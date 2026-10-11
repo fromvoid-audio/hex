@@ -2,6 +2,7 @@ mod device;
 pub use device::PreparedOutput;
 pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
 mod lifecycle;
+pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
 pub mod spectrum_worker;

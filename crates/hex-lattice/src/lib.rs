@@ -140,6 +140,40 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         false
     }
     fn as_any(&self) -> &dyn StdAny;
+    /// Optional, transient live-audition controls. These are audio-owned and
+    /// deliberately excluded from persisted device state.
+    fn transient_audition(&mut self) -> Option<&mut dyn NativeProcessorAudition> {
+        None
+    }
+    /// Read the currently requested transient selector without borrowing a
+    /// mutable processor capability. Used only to transfer a held audition
+    /// across a successful graph handoff; implementations must not expose
+    /// authored state or mutate processing history here.
+    fn transient_audition_requested_selection(&self) -> Option<ProcessorAuditionSelection> {
+        None
+    }
+}
+
+/// Device-neutral selector for a transient processor audition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessorAuditionSelection {
+    pub index: u8,
+    pub lane: u8,
+}
+
+/// Optional capability implemented by processors that can audition a
+/// sub-component without changing their authored state.
+pub trait NativeProcessorAudition: Send {
+    /// Check whether this selector can be activated in the current runtime.
+    fn can_select(&self, selection: ProcessorAuditionSelection) -> bool;
+    /// Return the last accepted selector (which may be fading out).
+    fn requested_selection(&self) -> Option<ProcessorAuditionSelection>;
+    /// Apply a previously preflighted selection or a smooth release.
+    /// `can_select` is the complete admission check: after both twins pass it,
+    /// this operation must be infallible and `None` must always be accepted.
+    fn select(&mut self, selection: Option<ProcessorAuditionSelection>);
+    /// Immediately clear transient state for lifecycle invalidation.
+    fn cancel_immediately(&mut self);
 }
 
 /// Maximum admitted stateful instances in one runtime bank.
@@ -343,6 +377,174 @@ impl NativeRuntimeChain {
 
     pub fn has_stateful_processors(&self) -> bool {
         self.entries.iter().any(|entry| entry.primary.is_some())
+    }
+
+    /// Preflight and apply a transient audition to the exact current processor
+    /// in both transactional twins. No mutation happens when either twin
+    /// refuses the request. The target never resolves against retained tails.
+    pub fn select_processor_audition(
+        &mut self,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+        selection: Option<ProcessorAuditionSelection>,
+    ) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| {
+            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
+        }) else {
+            return false;
+        };
+        let (Some(primary), Some(scratch)) =
+            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
+        else {
+            return false;
+        };
+        let (Some(primary_audition), Some(scratch_audition)) =
+            (primary.transient_audition(), scratch.transient_audition())
+        else {
+            return false;
+        };
+        if selection.is_some_and(|selection| {
+            entry.bypassed
+                || !primary_audition.can_select(selection)
+                || !scratch_audition.can_select(selection)
+        }) {
+            return false;
+        }
+        // A release is deliberately valid for a bypassed or now-disabled
+        // device so an existing fade cannot get stuck.
+        primary_audition.select(selection);
+        scratch_audition.select(selection);
+        true
+    }
+
+    /// Copy only a held transient audition selector from a matching old chain
+    /// entry after a successful ownership handoff. Normal DSP history remains
+    /// with the previous chain's release tail. The selector is applied only
+    /// after both old twins agree and the candidate pair proves compatible
+    /// parameter retargeting; `select_processor_audition` preflights both
+    /// candidate twins before either is changed.
+    pub fn transfer_processor_audition_from(
+        &mut self,
+        previous: &Self,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+        minimum_entry: usize,
+        expected_selection: ProcessorAuditionSelection,
+    ) -> bool {
+        let Some(index) = previous.entries.iter().position(|entry| {
+            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
+        }) else {
+            return false;
+        };
+        if index < minimum_entry {
+            return false;
+        }
+        let Some(old) = previous.entries.get(index) else {
+            return false;
+        };
+        let (Some(old_primary), Some(old_scratch)) =
+            (old.primary.as_deref(), old.scratch.as_deref())
+        else {
+            return false;
+        };
+        if old_primary.transient_audition_requested_selection() != Some(expected_selection)
+            || old_scratch.transient_audition_requested_selection() != Some(expected_selection)
+            || index
+                .checked_add(1)
+                .is_none_or(|end| !self.can_retarget_parameters_from_range(previous, index..end))
+        {
+            return false;
+        }
+        self.select_processor_audition(owner, device_id, device_type, Some(expected_selection))
+    }
+
+    /// Immediately remove transient audition state from the exact current
+    /// processor, regardless of bypass or current band enablement.
+    pub fn cancel_processor_audition(
+        &mut self,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+    ) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| {
+            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
+        }) else {
+            return false;
+        };
+        let (Some(primary), Some(scratch)) =
+            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
+        else {
+            return false;
+        };
+        let (Some(primary_audition), Some(scratch_audition)) =
+            (primary.transient_audition(), scratch.transient_audition())
+        else {
+            return false;
+        };
+        primary_audition.cancel_immediately();
+        scratch_audition.cancel_immediately();
+        true
+    }
+
+    /// Immediately clear one exact current processor's transient state.
+    pub fn cancel_processor_audition_for_identity(
+        &mut self,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+    ) -> bool {
+        self.cancel_processor_audition(owner, device_id, device_type)
+    }
+
+    /// Clear every transient audition in this chain. Used when a prepared
+    /// graph becomes a residual tail, which no longer has a control target.
+    pub fn cancel_all_processor_auditions(&mut self) {
+        for entry in &mut self.entries {
+            if let Some(runtime) = entry.primary.as_deref_mut()
+                && let Some(audition) = runtime.transient_audition()
+            {
+                audition.cancel_immediately();
+            }
+            if let Some(runtime) = entry.scratch.as_deref_mut()
+                && let Some(audition) = runtime.transient_audition()
+            {
+                audition.cancel_immediately();
+            }
+        }
+    }
+
+    /// Whether both twins currently retain the requested transient selection.
+    /// This is a bounded read-only lease check for the audio callback.
+    pub fn processor_audition_is_active(
+        &mut self,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        device_type: DeviceTypeId,
+        selection: ProcessorAuditionSelection,
+    ) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| {
+            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
+        }) else {
+            return false;
+        };
+        if entry.bypassed {
+            return false;
+        }
+        let (Some(primary), Some(scratch)) =
+            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
+        else {
+            return false;
+        };
+        matches!(
+            (primary.transient_audition(), scratch.transient_audition()),
+            (Some(primary), Some(scratch))
+                if primary.requested_selection() == Some(selection)
+                    && scratch.requested_selection() == Some(selection)
+                    && primary.can_select(selection)
+                    && scratch.can_select(selection)
+        )
     }
 
     pub const fn stateful_count(&self) -> usize {
@@ -977,6 +1179,106 @@ mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 
+    struct SplitAuditionPrepared(std::sync::atomic::AtomicUsize);
+
+    struct SplitAuditionRuntime {
+        accepts: bool,
+        requested: Option<ProcessorAuditionSelection>,
+    }
+
+    impl PreparedNativeProcessor for SplitAuditionPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<SplitAuditionRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            let index = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::new(SplitAuditionRuntime {
+                accepts: index == 0,
+                requested: None,
+            })
+        }
+    }
+
+    impl NativeProcessorRuntime for SplitAuditionRuntime {
+        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+
+        fn reset(&mut self) {
+            self.requested = None;
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+
+        fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+
+        fn transient_audition(&mut self) -> Option<&mut dyn NativeProcessorAudition> {
+            Some(self)
+        }
+    }
+
+    impl NativeProcessorAudition for SplitAuditionRuntime {
+        fn can_select(&self, _selection: ProcessorAuditionSelection) -> bool {
+            self.accepts
+        }
+
+        fn requested_selection(&self) -> Option<ProcessorAuditionSelection> {
+            self.requested
+        }
+
+        fn select(&mut self, selection: Option<ProcessorAuditionSelection>) {
+            self.requested = selection;
+        }
+
+        fn cancel_immediately(&mut self) {
+            self.requested = None;
+        }
+    }
+
+    #[test]
+    fn audition_preflights_both_twins_before_mutating_either() {
+        use std::sync::atomic::AtomicUsize;
+
+        let device_type = DeviceTypeId::from_static("test.split-audition");
+        let definition: std::sync::Arc<dyn PreparedNativeProcessor> =
+            std::sync::Arc::new(SplitAuditionPrepared(AtomicUsize::new(0)));
+        let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            owner: ProcessorChainOwner::Track(3),
+            device_id: 9,
+            device_type,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: Some(definition),
+        }])
+        .expect("prepared twins");
+        let selection = ProcessorAuditionSelection { index: 2, lane: 0 };
+
+        assert!(!chain.select_processor_audition(
+            ProcessorChainOwner::Track(3),
+            9,
+            device_type,
+            Some(selection),
+        ));
+        let entry = &mut chain.entries[0];
+        let primary = entry.primary.as_deref_mut().expect("primary runtime");
+        let primary_audition = primary.transient_audition().expect("primary capability");
+        assert_eq!(primary_audition.requested_selection(), None);
+        let scratch = entry.scratch.as_deref_mut().expect("scratch runtime");
+        let scratch_audition = scratch.transient_audition().expect("scratch capability");
+        assert_eq!(scratch_audition.requested_selection(), None);
+    }
+
     #[test]
     fn identity_is_a_zero_latency_bit_preserving_fast_path() {
         let identity = StereoMatrix::identity();
@@ -1226,6 +1528,12 @@ mod tests {
             instance(3, std::sync::Arc::clone(&finite)),
         ])
         .unwrap();
+        assert!(!chain.select_processor_audition(
+            ProcessorChainOwner::Track(3),
+            1,
+            DeviceTypeId::from_static("test.matrix"),
+            Some(ProcessorAuditionSelection { index: 0, lane: 0 }),
+        ));
         assert_eq!(
             chain.output_tail_for_range(0..3),
             Some(OutputTail::Finite { max_tail_frames: 6 })

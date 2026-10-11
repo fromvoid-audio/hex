@@ -102,6 +102,12 @@ impl ReturnEffectTailBank {
         }
     }
 
+    pub(super) fn cancel_all_processor_auditions(&mut self) {
+        for tail in self.slots.iter_mut().flatten() {
+            tail.chain.cancel_all_processor_auditions();
+        }
+    }
+
     /// Render each active old bus exactly once, with zero input, into Main.
     /// The caller invokes this once after current Return processing and before
     /// the current master mix. The reusable chain owns all callback state.

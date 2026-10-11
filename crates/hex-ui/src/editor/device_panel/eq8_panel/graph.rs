@@ -5,6 +5,7 @@ pub(super) fn graph_entity(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    owner: hex_engine::ProcessorChainOwner,
     model: ResponseGraphModel,
 ) -> Stateful<Div> {
     view.device_panel
@@ -17,7 +18,7 @@ pub(super) fn graph_entity(
             });
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
-                    handle_graph_event(view, device, *event, cx);
+                    handle_graph_event(view, device, owner, *event, cx);
                 });
             GraphControl {
                 entity,
@@ -49,6 +50,7 @@ pub(super) fn graph_entity(
 fn handle_graph_event(
     view: &mut EditorView,
     device: DeviceId,
+    owner: hex_engine::ProcessorChainOwner,
     event: ResponseGraphEvent,
     cx: &mut Context<EditorView>,
 ) {
@@ -64,6 +66,47 @@ fn handle_graph_event(
             panel.selected_band = band;
         }
         cx.notify();
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Press {
+        begin_band_audition(view, device, owner, band);
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Release {
+        if view
+            .device_panel
+            .eq8_panels
+            .get(&device)
+            .is_some_and(|panel| panel.audition_gesture_active)
+        {
+            if let Some(audio) = view.audio.as_mut() {
+                let _ = audio.control.processor_audition.release();
+            }
+            if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+                panel.audition_gesture_active = false;
+            }
+        }
+        return;
+    }
+    if matches!(
+        event.phase,
+        hex_widgets::ResponseGraphPhase::Cancel | hex_widgets::ResponseGraphPhase::ReleaseOutside
+    ) && view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .is_some_and(|panel| panel.audition_gesture_active)
+    {
+        if let Some(audio) = view.audio.as_mut() {
+            let _ = audio.control.processor_audition.cancel_immediately();
+        }
+        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+            panel.audition_gesture_active = false;
+        }
+    }
+    // Physical release never edits the authored parameter preview. A Commit
+    // may still be awaiting the worker-backed gesture barrier.
+    if event.phase == hex_widgets::ResponseGraphPhase::ReleaseOutside {
         return;
     }
     let Some(snapshot) = view.device_gesture.snapshot() else {
@@ -238,6 +281,78 @@ fn handle_graph_event(
         _ => {}
     }
     cx.notify();
+}
+
+fn begin_band_audition(
+    view: &mut EditorView,
+    device: DeviceId,
+    owner: hex_engine::ProcessorChainOwner,
+    band: usize,
+) {
+    if !view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .is_some_and(|panel| panel.audition_armed)
+    {
+        return;
+    }
+    let Some(device_view) = view
+        .device_panel
+        .views
+        .get(&device)
+        .and_then(|(_, _, view)| view.as_ref().ok())
+        .cloned()
+    else {
+        return;
+    };
+    let mode = value(view, device, &device_view, id(201))
+        .and_then(choice)
+        .unwrap_or(0)
+        .min(2);
+    let lane = view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .map_or(0, |panel| panel.selected_lane)
+        .min(if mode == 0 { 0 } else { 1 });
+    let generation = view.project_generation;
+    let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let Some(floor) = view
+        .audio_admission
+        .published_audio_revision(generation, project_revision)
+    else {
+        view.device_panel.message =
+            Some("wait for the current eq8 revision before auditioning".into());
+        return;
+    };
+    let Some(audio) = view.audio.as_mut() else {
+        view.device_panel.message = Some("audio output is unavailable".into());
+        return;
+    };
+    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_view.type_id);
+    let selection = hex_engine::ProcessorAuditionSelection {
+        index: band as u8,
+        lane: lane as u8,
+    };
+    match audio.control.processor_audition.select(
+        identity,
+        generation,
+        floor,
+        audio.sample_rate,
+        selection,
+    ) {
+        Ok(_) => {
+            if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+                panel.audition_gesture_active = true;
+            }
+            view.device_panel.message = None;
+        }
+        Err(_) => {
+            view.device_panel.message =
+                Some("eq8 band audition is unavailable for this target".into());
+        }
+    }
 }
 
 pub(super) struct GraphModelRequest<'a> {

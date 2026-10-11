@@ -5,6 +5,13 @@ use gpui::{Context, Div, div, prelude::*, px, rgb};
 
 pub(super) const CLIP_DETAIL_BODY_HEIGHT: f32 = 228.0;
 
+fn cancel_eq8_audition(view: &mut EditorView) {
+    if let Some(audio) = view.audio.as_mut() {
+        let _ = audio.control.processor_audition.cancel_immediately();
+    }
+    super::device_panel::clear_eq8_audition_gesture_flags(view);
+}
+
 impl EditorView {
     /// Change the detail content in response to explicit clip focus. Pane
     /// visibility is a separate user choice and is intentionally untouched.
@@ -17,6 +24,7 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
+        cancel_eq8_audition(self);
         self.device_panel_active = false;
         if self.midi_focus.is_focused(window) {
             self.focus.focus(window);
@@ -27,6 +35,7 @@ impl EditorView {
     /// Track focus selects devices without implicitly opening a closed pane.
     pub(super) fn focus_track_details(&mut self, window: &mut gpui::Window) {
         self.cancel_midi_note_gesture();
+        cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
         if self.midi_focus.is_focused(window) {
@@ -46,6 +55,7 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
+        cancel_eq8_audition(self);
         self.focused_return = Some(return_track);
         self.device_panel_active = true;
         if self.midi_focus.is_focused(window) {
@@ -158,6 +168,7 @@ impl EditorView {
                     view.clip_view_open = !view.clip_view_open;
                     if !view.clip_view_open {
                         view.cancel_midi_note_gesture();
+                        cancel_eq8_audition(view);
                         if view.midi_focus.is_focused(window) {
                             view.focus.focus(window);
                         }

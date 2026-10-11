@@ -129,6 +129,17 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
         activation_floor: 1,
         sample_rate_hz: 48_000,
     };
+    let audition_target = hex_audio::processor_audition::ProcessorAuditionTarget {
+        identity: hex_engine::PostNodeIdentity::new(
+            hex_engine::ProcessorChainOwner::Track(track.value()),
+            device.value(),
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+        ),
+        project_generation: 1,
+        activation_floor: 1,
+        sample_rate_hz: 48_000,
+        selection: hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 },
+    };
 
     window
         .update(cx, |view, _, cx| {
@@ -138,16 +149,20 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             view.clip_view_open = true;
             view.device_panel_active = true;
             assert!(view.spectrum_target_is_visible_and_current(target));
+            assert!(view.processor_audition_target_is_visible_and_current(audition_target));
 
             view.clip_view_open = false;
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
             view.clip_view_open = true;
             view.device_panel_active = false;
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
             view.device_panel_active = true;
 
             view.selected_track = Some(other_track);
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
             view.selected_track = Some(track);
 
             let mut without_eq8 = Editor::new((*project).clone(), 8).expect("editor");
@@ -156,6 +171,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                 .expect("remove eq8");
             view.state = Some(event(Arc::new(without_eq8.project().clone()), 2, false).state);
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
             view.state = Some(event(Arc::clone(&project), 3, false).state);
 
             let mut replaced_eq8 = Editor::new((*project).clone(), 8).expect("editor");
@@ -171,6 +187,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                 .expect("replace eq8 type");
             view.state = Some(event(Arc::new(replaced_eq8.project().clone()), 4, false).state);
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
             view.state = Some(event(Arc::clone(&project), 5, false).state);
 
             // Reopening the same project preserves numeric IDs but advances the
@@ -178,6 +195,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             view.receive(event(Arc::clone(&project), 2, true));
             assert_ne!(view.project_generation, target.project_generation);
             assert!(!view.spectrum_target_is_visible_and_current(target));
+            assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
 
             view.device_panel.spectrum_result =
                 Some(hex_audio::spectrum_worker::PublishedSpectrum {

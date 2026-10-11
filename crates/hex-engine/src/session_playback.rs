@@ -351,6 +351,179 @@ impl SessionPlayback {
         Self::new_with_policy(revision, false)
     }
 
+    pub(crate) fn select_processor_audition(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: Option<hex_lattice::ProcessorAuditionSelection>,
+    ) -> bool {
+        let project = self.revision.arrangement();
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.select_processor_audition(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.select_processor_audition(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+        }
+    }
+
+    /// Move only the held selector from an instrument-release suffix into the
+    /// matching current track chain. The old suffix keeps its normal processor
+    /// history and is hard-cancelled by the caller before this graph renders.
+    pub(crate) fn transfer_processor_audition_from_release_tail(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: hex_lattice::ProcessorAuditionSelection,
+    ) -> bool {
+        let hex_lattice::ProcessorChainOwner::Track(owner) = identity.owner else {
+            return false;
+        };
+        let tracks = self.revision.arrangement().tracks();
+        let Some(track_index) = tracks
+            .iter()
+            .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+        else {
+            return false;
+        };
+        let slots = self.tail_mutable_instruments.len();
+        for slot in 0..slots {
+            let matching_owner = self
+                .tail_mutable_instruments
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|tail| tail.track_id.value() == owner);
+            if !matching_owner {
+                continue;
+            }
+            let Some(previous) = self.tail_groups.get(slot).and_then(Option::as_ref) else {
+                continue;
+            };
+            let Some(suffix_start) = self.tail_suffix_starts.get(slot).copied() else {
+                continue;
+            };
+            let Some(candidate) = self.device_chains.get_mut(track_index) else {
+                return false;
+            };
+            if candidate.transfer_processor_audition_from(
+                previous,
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                suffix_start,
+                selection,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn processor_audition_is_active(
+        &mut self,
+        identity: crate::PostNodeIdentity,
+        selection: hex_lattice::ProcessorAuditionSelection,
+    ) -> bool {
+        let project = self.revision.arrangement();
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.processor_audition_is_active(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.processor_audition_is_active(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+        }
+    }
+
+    pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
+        let project = self.revision.arrangement();
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.cancel_processor_audition_for_identity(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.cancel_processor_audition_for_identity(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                    )
+                }),
+        }
+    }
+
+    pub(crate) fn cancel_all_processor_auditions(&mut self) {
+        for chain in &mut self.device_chains {
+            chain.cancel_all_processor_auditions();
+        }
+        for chain in &mut self.return_chains {
+            chain.cancel_all_processor_auditions();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.cancel_all_processor_auditions();
+        }
+        self.return_effect_tails.cancel_all_processor_auditions();
+    }
+
+    pub(crate) fn cancel_retired_processor_auditions(&mut self) {
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.cancel_all_processor_auditions();
+        }
+        self.return_effect_tails.cancel_all_processor_auditions();
+    }
+
     /// Prepare the shared renderer for finite, linear Arrangement export.
     /// Session route actions are refused, Session-only tempo/loop inventory
     /// does not affect this owner, and the authored Arrangement tempo map is

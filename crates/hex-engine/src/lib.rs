@@ -1,6 +1,7 @@
 //! Deterministic, sample-rate-locked stereo arrangement rendering.
 //! This is an original prototype, not a verified Live-compatible engine.
 pub use hex_devices::SineTable;
+pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
@@ -1509,6 +1510,120 @@ impl RendererRuntime {
         }
         for chain in &mut self.return_chains {
             chain.reset();
+        }
+    }
+
+    pub(crate) fn select_processor_audition(
+        &mut self,
+        project: &Project,
+        identity: crate::PostNodeIdentity,
+        selection: Option<hex_lattice::ProcessorAuditionSelection>,
+    ) -> bool {
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.select_processor_audition(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.select_processor_audition(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+        }
+    }
+
+    pub(crate) fn processor_audition_is_active(
+        &mut self,
+        project: &Project,
+        identity: crate::PostNodeIdentity,
+        selection: hex_lattice::ProcessorAuditionSelection,
+    ) -> bool {
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.processor_audition_is_active(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.processor_audition_is_active(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                        selection,
+                    )
+                }),
+        }
+    }
+
+    pub(crate) fn cancel_processor_audition(
+        &mut self,
+        project: &Project,
+        identity: crate::PostNodeIdentity,
+    ) -> bool {
+        match identity.owner {
+            hex_lattice::ProcessorChainOwner::Track(owner) => project
+                .tracks()
+                .iter()
+                .position(|track| track.canonical_track_id().map(|id| id.value()) == Some(owner))
+                .and_then(|index| self.device_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.cancel_processor_audition_for_identity(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                    )
+                }),
+            hex_lattice::ProcessorChainOwner::Return(owner) => project
+                .return_buses()
+                .iter()
+                .position(|bus| bus.id.value() == owner)
+                .and_then(|index| self.return_chains.get_mut(index))
+                .is_some_and(|chain| {
+                    chain.cancel_processor_audition_for_identity(
+                        identity.owner,
+                        identity.device_id,
+                        identity.device_type,
+                    )
+                }),
+        }
+    }
+
+    pub(crate) fn cancel_all_processor_auditions(&mut self) {
+        for chain in &mut self.device_chains {
+            chain.cancel_all_processor_auditions();
+        }
+        for chain in &mut self.return_chains {
+            chain.cancel_all_processor_auditions();
         }
     }
 

@@ -4,8 +4,8 @@
 //! cookbook equations. The callback owns only a fixed coefficient bank and
 //! transposed-direct-form-II histories.
 use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
-    StereoFrame, StereoMatrix,
+    NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
+    PreparedNativeProcessor, ProcessorAuditionSelection, StereoFrame, StereoMatrix,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -804,6 +804,41 @@ impl NativeProcessorRuntime for Eq8Runtime {
     }
     fn as_any(&self) -> &dyn StdAny {
         self
+    }
+    fn transient_audition(&mut self) -> Option<&mut dyn NativeProcessorAudition> {
+        Some(self)
+    }
+    fn transient_audition_requested_selection(&self) -> Option<ProcessorAuditionSelection> {
+        NativeProcessorAudition::requested_selection(self)
+    }
+}
+
+impl NativeProcessorAudition for Eq8Runtime {
+    fn can_select(&self, selection: ProcessorAuditionSelection) -> bool {
+        Eq8AuditionSelection::new(usize::from(selection.index), usize::from(selection.lane))
+            .is_ok_and(|selection| self.selection_is_enabled(selection))
+    }
+
+    fn requested_selection(&self) -> Option<ProcessorAuditionSelection> {
+        self.audition_request
+            .map(|selection| ProcessorAuditionSelection {
+                index: selection.band,
+                lane: selection.edit_lane,
+            })
+    }
+
+    fn select(&mut self, selection: Option<ProcessorAuditionSelection>) {
+        // `can_select` preflights this exact stable mapping on both twins;
+        // the host then dispatches infallibly before either twin is rendered.
+        let selection = selection.map(|selection| Eq8AuditionSelection {
+            band: selection.index,
+            edit_lane: selection.lane,
+        });
+        self.audition_request = selection;
+    }
+
+    fn cancel_immediately(&mut self) {
+        self.clear_audition();
     }
 }
 

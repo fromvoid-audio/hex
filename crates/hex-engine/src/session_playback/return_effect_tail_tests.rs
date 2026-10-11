@@ -526,6 +526,47 @@ fn eq8_return_parameter_edits_inherit_history_once_without_a_duplicate_tail() {
 }
 
 #[test]
+fn held_eq8_return_audition_survives_compatible_gain_q_and_filter_type_edits() {
+    use crate::PostNodeIdentity;
+    use hex_lattice::{ProcessorAuditionSelection, ProcessorChainOwner};
+
+    let initial = eq8_return_project(3.0, 1.0, 0);
+    let return_track = &initial.return_tracks()[0];
+    let device_id = return_track.devices()[0].id().value();
+    let identity = PostNodeIdentity::new(
+        ProcessorChainOwner::Return(return_track.id().value()),
+        device_id,
+        DeviceTypeId::from_static("hex.eq8"),
+    );
+    let selection = ProcessorAuditionSelection { index: 0, lane: 0 };
+    let mut previous = playback(&initial);
+    warm(&mut previous);
+    assert!(previous.select_processor_audition(identity, Some(selection)));
+    let mut output = [[0.0; 2]; 128];
+    previous.render(&mut output).unwrap();
+    assert!(previous.processor_audition_is_active(identity, selection));
+    assert!(output.iter().flatten().any(|sample| sample.is_finite()));
+
+    for (gain_db, q, kind) in [(6.0, 1.0, 0), (6.0, 2.0, 0), (6.0, 2.0, 1)] {
+        let mut candidate = playback(&eq8_return_project(gain_db, q, kind));
+        candidate.try_inherit_state_from(&mut previous).unwrap();
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none),
+            "compatible EQ8 return retarget must not duplicate its current chain into a tail"
+        );
+        assert!(candidate.processor_audition_is_active(identity, selection));
+        candidate.render(&mut output).unwrap();
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        previous = candidate;
+    }
+}
+
+#[test]
 fn gain_only_bus_edit_inherits_history_under_new_controls() {
     let old_project = prepared_return_project_with_bus(true, 1.0, 0.75, false);
     let new_project = prepared_return_project_with_bus(true, 0.5, 0.25, false);

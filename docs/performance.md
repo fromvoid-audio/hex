@@ -2284,3 +2284,42 @@ process snapshots are retained. This is not a quiet-machine certificate, native
 listening acceptance, physical callback deadline proof or 100-track benchmark.
 The large render difference reflects removed accumulation of old configuration
 tails in this rapid-edit workload, not faster EQ coefficient mathematics.
+
+## eq8 transient audition host — 11 october 2026
+
+Pulse2253 actual prepared callback measurements use clean implementation commit
+`3e13a01ef1361c6249ee59ccb6826e047f3c96c3`, Apple M5 Pro/macOS26.6.2 and
+rustc1.98.1, 48 khz, 128/256 frames, 200 warm-up and 4000 measured blocks.
+Three runs per block size compare two-band normal, held, released and cancelled
+audition against independently advanced Playback/normal PCM oracles outside
+timing. Every actual callback block matches its oracle; measured release/cancel
+PCM equals normal exactly, and held audition differs.
+
+| Two-band mode | 128-frame p50 μs | 256-frame p50 μs |
+| --- | ---: | ---: |
+| Normal |5.042|9.083–9.125|
+| Held audition |6.459–6.500|11.917–12.000|
+| Released |5.042–5.083|9.083–9.125|
+| Hard-cancelled |5.042–5.083|9.083–9.125|
+
+Alternating one-band spectrum baseline/current runs retain exact normal PCM
+across no-worker, worker-off and enabled-capture scenarios. Baseline no-worker
+p50 is3.167–3.208 μs at128frames and5.417 μs at256frames; current is3.250 μs and
+5.541–5.542 μs. Enabled-capture p50 is3.541–3.542/6.042–6.084 μs before and
+3.583–3.584/6.167–6.250 μs after. The preserved baseline source `b0f0f8f` predates
+additional prerequisites; this is an observed combined comparison, not proof
+that the lease alone causes every timing difference. It shows no speedup claim.
+
+Raw p95/max, checksums, full source/tree hashes, binaries and environment are in
+`artifacts/profiles/eq8-audition-host-2253/3e13a01/summary.json` and18logs.
+Before spectrum executable SHA256:
+`2ef523eb82a0ca51bc5bedf98aaaf94f6533ea5040925214c738e15bfbbd05d0`;
+current spectrum:
+`53389870a5fdc8e27e09efc098510436e4c765f96805674062b8954340a03535`;
+current audition:
+`1412e683cf7787bd10951094c132e0c42033850edc5b5f3181b5614e1dacd9d6`.
+Timed window2026-10-11 00:05:25–00:05:30 UTC had no other Hex Cargo/profile,
+but an external Yield app was active; scheduling was uncontrolled. These short,
+unpaced headless workloads do not certify physical deadlines, quiet-machine
+performance, 100-track density or Ableton parity. Callback allocation coverage
+and its Return-owner limitation are in [audition](eq-eight-audition.md).

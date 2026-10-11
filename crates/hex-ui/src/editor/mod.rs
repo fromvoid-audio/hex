@@ -626,13 +626,21 @@ impl EditorView {
         let focus = cx.focus_handle();
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
-            if view.cancel_midi_note_gesture() {
+            let midi_cancelled = view.cancel_midi_note_gesture();
+            if midi_cancelled {
                 cx.notify();
             }
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
-            if !window.is_window_active() && view.cancel_midi_note_gesture() {
-                cx.notify();
+            if !window.is_window_active() {
+                let midi_cancelled = view.cancel_midi_note_gesture();
+                if let Some(audio) = view.audio.as_mut() {
+                    let _ = audio.control.processor_audition.cancel_immediately();
+                }
+                device_panel::clear_eq8_audition_gesture_flags(view);
+                if midi_cancelled {
+                    cx.notify();
+                }
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
