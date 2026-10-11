@@ -30,6 +30,13 @@ choices and do not claim Ableton transfer-law parity. Root owns full local CI,
 PR review and merge. Shared-panel appearance and native listening remain user
 acceptance. See [Saturator](docs/saturator.md).
 
+## lattice saturator panel — pulse 2312
+
+Pulse 2312 adds a compact Saturator composition with shared selector/dials and
+transfer plot, cached original processing-law preview and local draft updates.
+The PR records source checks and local CI; native appearance/listening remains
+user acceptance. See [Saturator](docs/saturator.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets

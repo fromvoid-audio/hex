@@ -7,6 +7,20 @@ use gpui::{Div, PathBuilder, canvas, div, point, prelude::*, px, rgb};
 /// The caller owns the musical meaning of each point. Invalid, unordered or
 /// non-finite coordinates are refused instead of producing malformed geometry.
 pub fn curve_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) -> Option<Div> {
+    plot(points, style, false)
+}
+
+/// Read-only normalized transfer curve with centered input/output axes.
+/// The caller supplies the data and owns the axis ranges and musical meaning.
+pub fn transfer_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) -> Option<Div> {
+    plot(points, style, true)
+}
+
+fn plot<const N: usize>(
+    points: [[f32; 2]; N],
+    style: ControlStyle,
+    centered_axes: bool,
+) -> Option<Div> {
     if !(2..=256).contains(&N)
         || points.iter().any(|[x, y]| {
             !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(x) || !(0.0..=1.0).contains(y)
@@ -35,9 +49,26 @@ pub fn curve_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) ->
                         let y = bounds.origin.y + px(height * division as f32 / 4.0);
                         grid.move_to(point(bounds.origin.x, y));
                         grid.line_to(point(bounds.origin.x + bounds.size.width, y));
+                        if centered_axes {
+                            let x = bounds.origin.x + px(width * division as f32 / 4.0);
+                            grid.move_to(point(x, bounds.origin.y));
+                            grid.line_to(point(x, bounds.origin.y + bounds.size.height));
+                        }
                     }
                     if let Ok(grid) = grid.build() {
                         window.paint_path(grid, rgb(style.rail));
+                    }
+                    if centered_axes {
+                        let mut axes = PathBuilder::stroke(px(0.5));
+                        let x = bounds.origin.x + px(width * 0.5);
+                        let y = bounds.origin.y + px(height * 0.5);
+                        axes.move_to(point(bounds.origin.x, y));
+                        axes.line_to(point(bounds.origin.x + bounds.size.width, y));
+                        axes.move_to(point(x, bounds.origin.y));
+                        axes.line_to(point(x, bounds.origin.y + bounds.size.height));
+                        if let Ok(axes) = axes.build() {
+                            window.paint_path(axes, rgb(style.border));
+                        }
                     }
                     let mut curve = PathBuilder::stroke(px(1.0));
                     for (index, [x, y]) in points.iter().enumerate() {
@@ -61,7 +92,7 @@ pub fn curve_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) ->
 
 #[cfg(test)]
 mod tests {
-    use super::curve_plot;
+    use super::{curve_plot, transfer_plot};
     use crate::ControlStyle;
 
     const STYLE: ControlStyle = ControlStyle {
@@ -79,6 +110,8 @@ mod tests {
 
     #[test]
     fn curve_plot_accepts_normalized_ordered_points_and_refuses_invalid_data() {
+        assert!(transfer_plot([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]], STYLE).is_some());
+        assert!(transfer_plot([[0.0, 0.0], [1.0, f32::INFINITY]], STYLE).is_none());
         assert!(curve_plot([[0.0, 0.0]], STYLE).is_none());
         assert!(curve_plot([[0.5, 0.5]; 257], STYLE).is_none());
         assert!(

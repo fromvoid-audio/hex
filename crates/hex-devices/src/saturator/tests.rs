@@ -331,3 +331,37 @@ fn non_finite_inputs_remain_visible_to_the_audio_fault_boundary() {
     assert_eq!(frames[1][0], f32::NEG_INFINITY);
     assert_eq!(frames[1][1], 0.5);
 }
+
+#[test]
+fn transfer_preview_matches_runtime_and_exposes_output_axis_without_clipping() {
+    let default = SATURATOR_DEFINITION.default_state().expect("default state");
+    for curve in [0, 1] {
+        for (drive, output, wet) in [(0.0, 0.0, 1.0), (24.0, 6.0, 0.75), (-12.0, -6.0, 0.0)] {
+            let state = patch(&default, parameter::CURVE, ParameterValue::Choice(curve));
+            let state = patch(&state, parameter::DRIVE, ParameterValue::Float(drive));
+            let state = patch(&state, parameter::OUTPUT, ParameterValue::Float(output));
+            let state = patch(&state, parameter::DRY_WET, ParameterValue::Float(wet));
+            let preview = transfer_curve(&state).expect("valid preview");
+            let mut signal = std::array::from_fn::<_, 129, _>(|index| {
+                let input = index as f32 / 64.0 - 1.0;
+                [input, input]
+            });
+            render(&state, &mut signal);
+            for ([x, y], frame) in preview.points.iter().zip(signal) {
+                assert!((0.0..=1.0).contains(x) && (0.0..=1.0).contains(y));
+                let represented = (y * 2.0 - 1.0) * preview.output_peak;
+                assert!((represented - frame[0]).abs() < 3.0e-7);
+            }
+            assert_eq!(preview.points[64], [0.5, 0.5]);
+            assert!(preview.output_peak >= 1.0);
+            if output > 0.0 {
+                assert!(preview.output_peak > 1.0);
+            }
+        }
+    }
+    let malformed = NativeDeviceState::new(SATURATOR_TYPE_ID, 1, vec![0]).expect("state");
+    assert_eq!(
+        transfer_curve(&malformed),
+        Err(DeviceContractError::MalformedState)
+    );
+}

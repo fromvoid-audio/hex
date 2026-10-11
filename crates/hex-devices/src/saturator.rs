@@ -394,5 +394,36 @@ fn process_sample(
     }
 }
 
+/// Bounded control-side view of the actual sample-processing law.
+/// Coordinates are normalized; the horizontal input range is ±1 and the
+/// vertical output range is ±`output_peak`. No audio history is inspected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SaturatorTransferCurve {
+    pub points: [[f32; 2]; 129],
+    pub output_peak: f32,
+}
+
+/// Sample the current drive, curve, output and mix through the same law as DSP.
+/// The output axis expands for positive output gain rather than hiding peaks.
+pub fn transfer_curve(
+    state: &NativeDeviceState,
+) -> Result<SaturatorTransferCurve, DeviceContractError> {
+    let settings = decode(state)?;
+    let drive = 10.0_f64.powf(f64::from(settings.drive_db) / 20.0);
+    let output = 10.0_f64.powf(f64::from(settings.output_db) / 20.0);
+    let peak = output.max(1.0);
+    let wet = f64::from(settings.dry_wet);
+    let points = std::array::from_fn(|index| {
+        let x = index as f64 / 128.0;
+        let input = x * 2.0 - 1.0;
+        let value = process_sample(input, settings, drive, output, wet);
+        [x as f32, ((value / peak + 1.0) * 0.5) as f32]
+    });
+    Ok(SaturatorTransferCurve {
+        points,
+        output_peak: peak as f32,
+    })
+}
+
 #[cfg(test)]
 mod tests;
