@@ -2078,3 +2078,11 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   final full local CI remains required. Actual-device narrow/wide review and Live endpoint sequence
   and exact pan/Return reference remain open; this is implementation evidence,
   not completed acceptance.
+
+- Pulse2345 later native checkpoint: v2 complete Mini label, typed12345.67 Enter,
+  caret/corners and pan triangle neutral-up reset captured. CUA drag delivery is
+  inconclusive; manual held/drag/narrowwide and actual-device acceptance remain.
+  Current Live is the user E05 set and was observed read-only; endpoint study
+  waits for a safe disposable window.156 gray-rail/black-center source integrated;
+  final fullCI must pass on that tree. Prior4f0c4c4 fullCI passed all16; later
+  gray integration run stopped at disk floor, with only own inactive cache cleared.

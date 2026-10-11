@@ -104,3 +104,42 @@ open review app. Native review must establish:
 Full final-commit local CI and dependency PR155/156 acceptance are required
 separately. This source evidence does not establish native event delivery, exact
 Live geometry, reference transfer laws, listening or physical audio deadlines.
+
+## later integrated native checkpoint
+
+The published navigation dependency's gray outer rails and explicit black center
+are integrated from5cc328f. Its coordinating chat retains separate acceptance
+ownership. Shared knob metrics/semantics remain the only PR157 runtime additions.
+
+Updated v2 idle capture SHA256
+`0f775c90fa4dc7b2ccc3ceb25fdfc290a36eaffb5d54a63e67a9fb1642faf7fb`
+shows the complete Mini amount label, generic headings and distinct semantic
+rails. After explicitly approved isolated input, native typed12345.67 commits
+with Enter; caret and four corner marks remain visible. The pan marker resets
+76.08 to0 with a vertical upward needle and no center fill. Captures are in
+`research/private/knob-focus-20261011/hex-v2-typed.png` and
+`hex-v2-pan-reset.png`. CUA knob/readout drag delivery did not reliably change
+values, so native held/drag acceptance is inconclusive; manual repetition is
+requested. These states do not prove every gesture or narrow/wide acceptance.
+
+The current Live binding exposes the user's E05 set, not the disposable fixture.
+Only read-only AX/screenshot observation was performed. No open/switch/save,
+parameter, transport or audio changes were made. The visible Arrangement numeric
+mixer is insufficient for the required knob endpoint comparison. The copied
+fixture remains private, but its safe active window must be established by the
+human before Live endpoint/Return/pan/Mini interaction research can continue.
+
+A separate actual-device no-audio review wrapper uses the existing public
+hex_ui::open_editor entry point with unavailable audio, and does not change
+production sources. Its ignored package shares every dependency version/checksum
+with workspace Cargo.lock; only the fixture package is added. The unlaunched
+4f0c4c4 actual-device bundle must be refreshed to the final integrated source
+before actual-device screenshots are accepted.
+
+All16 localCI steps passed on prior4f0c4c4 and unchanged source digest. The
+later gray-rail integration run20261011T091500Z-3c0104ce stopped after workspace
+tests at the2GiB disk floor; it is incomplete evidence. Only this chat's inactive
+incremental cache was removed after verifying sole target ownership and no
+active build. Final exact-source CI remains required after black-center
+integration. PR157 stays draft until required native/reference and dependency
+acceptance gates are met.
