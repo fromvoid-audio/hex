@@ -71,6 +71,16 @@ ignored at `artifacts/operator-curve-profile/`. Native drag/audio latency and
 percentiles still require user acceptance; do not call the editor lightning fast
 based on these numbers.
 
+## rectangular field gesture correction
+
+The user reported left/right adjustment in the rectangular fields. Shared
+NumericControl formerly chose the drag axis solely from its underlying kind;
+InlineValue uses HorizontalSlider and inherited that horizontal axis. Value
+hit targets now scrub vertically, while horizontal slider tracks retain their
+existing axis. A rendered regression fails before the change on horizontal
+motion, then checks horizontal/no-change and up/increase, down/decrease and
+release. Existing click-to-type, Shift sensitivity and gesture tests remain.
+
 ## validation
 
 Focused native GPUI source tests cover badge/row geometry, page placement, dB

@@ -432,10 +432,15 @@ impl NumericControl {
         press.last_position = event.position;
         self.press = Some(press);
         let shift = event.modifiers.shift;
-        let primary_delta = match self.kind {
-            NumericControlKind::HorizontalSlider => delta_x,
-            NumericControlKind::Knob | NumericControlKind::VerticalSlider => -delta_y,
+        let primary_delta = match (press.target, self.kind) {
+            (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
+            // Rectangular readouts always scrub vertically, independent of the
+            // track/dial presentation their owner uses.
+            _ => -delta_y,
         };
+        if primary_delta == 0.0 {
+            return (true, false);
+        }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
         let next = match self
             .spec

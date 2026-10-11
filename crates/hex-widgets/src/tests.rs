@@ -397,6 +397,40 @@ fn rendered_drag_captures_outside_release_and_emits_one_complete_gesture(cx: &mu
 }
 
 #[gpui::test]
+fn rectangular_value_fields_drag_vertically_without_horizontal_adjustment(cx: &mut TestAppContext) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds("test-control-value")
+        .expect("rectangular field");
+    let initial = control.read_with(cx, |control, _| control.value());
+    let start = field.center();
+    let sideways = point(start.x + px(12.0), start.y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(sideways, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert_eq!(
+            control.value(),
+            initial,
+            "horizontal motion does not adjust a value field"
+        )
+    });
+    let up = point(sideways.x, start.y - px(24.0));
+    visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert!(control.value() > initial, "up increases")
+    });
+    let down = point(sideways.x, start.y + px(12.0));
+    visual.simulate_mouse_move(down, Some(MouseButton::Left), Modifiers::default());
+    control.read_with(cx, |control, _| {
+        assert!(control.value() < initial, "down decreases")
+    });
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    control.read_with(cx, |control, _| assert!(!control.is_interacting()));
+}
+
+#[gpui::test]
 fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let mut visual = VisualTestContext::from_window(handle, cx);

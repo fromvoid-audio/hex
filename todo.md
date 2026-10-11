@@ -2011,7 +2011,9 @@ construction. User clarified slow pointer following; drag Change now updates
 retained graph and numeric entities immediately, avoiding a whole-editor notify
 per successful movement. Its focused regression checks feedback before another
 layout/worker pump while canonical state is still unchanged. Focused Operator
-source tests pass. Full local CI remains the
+source tests pass. Rectangular value fields now scrub vertically, with actual
+horizontal slider tracks preserved; its rendered regression fails before the fix.
+Full local CI remains the
 merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).

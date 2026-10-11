@@ -10,7 +10,7 @@ use hex_widgets::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const PANEL_WIDTH: f32 = 244.0;
+const PANEL_WIDTH: f32 = 228.0;
 const FIELD_WIDTH: f32 = 46.0;
 const ROW_HEIGHT: f32 = 40.0;
 
@@ -282,7 +282,7 @@ fn row(
     // the enable/routing icon, so their labels align directly above the dials.
     let selector_row = !choices.is_empty();
     let mut left = div()
-        .w(px(if selector_row { 96.0 } else { 22.0 }))
+        .w(px(if selector_row { 96.0 } else { 44.0 }))
         .flex_shrink_0()
         .h_full()
         .flex()

@@ -971,7 +971,8 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
             ))
             .expect("three-dial row starts next to its icon");
-        assert!(control.origin.x - preview.origin.x < px(30.0));
+        assert!(control.origin.x - preview.origin.x >= px(40.0));
+        assert!(control.origin.x - preview.origin.x < px(50.0));
     }
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),

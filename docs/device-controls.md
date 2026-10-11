@@ -275,7 +275,10 @@ The reference pass in Pulse2332 uses 12px A/B/C/D selection badges, 9px fixed
 markers inside 14px hit regions, and open 270-degree shared dial rails with a
 short value arc and needle. Micro-dial labels sit above the dial, with smaller
 values beside its lower edge. Idle readouts have no field border; focused and
-invalid editors retain their visible feedback. Compact selectors fit their 14px
+invalid editors retain their visible feedback. Rectangular value fields scrub
+vertically (up increases, down decreases); horizontal slider tracks keep their
+horizontal gesture. Click-to-type and fine sensitivity remain available.
+Compact selectors fit their 14px
 frames; the filter slope uses directly selectable 12/24 segments. LFO/filter
 rows reserve a selector column, while pitch/global reserve only a narrow icon
 column beside three dials. Those preview controls still own local state only.

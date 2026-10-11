@@ -319,7 +319,7 @@ fn update_drag_display(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor::device_panel) fn dispatch_change(
     view: &mut EditorView,
     device: DeviceId,
@@ -341,7 +341,7 @@ pub(in crate::editor::device_panel) fn dispatch_change(
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor::device_panel) fn displayed_node(
     view: &EditorView,
     device: DeviceId,
