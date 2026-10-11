@@ -226,6 +226,58 @@ mod tests {
     }
 
     #[test]
+    fn opaque_saturator_state_survives_project_save_and_load() {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, DeviceSnapshot, Editor};
+
+        let dir = TestDir::new();
+        let path = dir.0.join("saturator.hex");
+        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
+        let track = match editor
+            .execute(Command::AddMidiTrack {
+                name: "saturator persistence".into(),
+            })
+            .expect("track")
+        {
+            Created::Track(track) => track,
+            _ => panic!("add midi track returned another entity"),
+        };
+        let mut snapshot = editor.project().snapshot();
+        let device_id = snapshot.next_id;
+        let mut payload = Vec::with_capacity(13);
+        payload.extend_from_slice(&36.0_f32.to_le_bytes());
+        payload.extend_from_slice(&0.0_f32.to_le_bytes());
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.push(1);
+        let track_snapshot = snapshot
+            .tracks
+            .iter_mut()
+            .find(|candidate| candidate.id == track.value())
+            .expect("new track");
+        track_snapshot.devices.push(DeviceSnapshot {
+            id: device_id,
+            bypassed: false,
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.saturator"), 1, payload)
+                .expect("bounded opaque native state"),
+        });
+        snapshot.next_id = device_id + 1;
+        let project = Project::from_snapshot(snapshot).expect("valid project state");
+
+        save_new(&path, &project).expect("save project");
+        let loaded = load(&path).expect("load project");
+        assert_eq!(loaded, project);
+        let device = loaded
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.id().value() == track.value())
+            .and_then(|candidate| candidate.devices().first())
+            .expect("saved Saturator");
+        assert_eq!(device.state().type_id().as_str(), Ok("hex.saturator"));
+        assert_eq!(device.state().state_version(), 1);
+        assert_eq!(device.state().payload()[12], 1);
+    }
+
+    #[test]
     fn legacy_token_checks_original_schema_bytes_instead_of_migrated_encoding() {
         let dir = TestDir::new();
         let path = dir.0.join("legacy.hex");

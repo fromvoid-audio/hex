@@ -25,7 +25,8 @@ bytes so project/history clones retain state without copying each payload.
 State parsing and replacement allocations belong on control workers.
 
 `hex-lattice` owns the native processing-definition and registry seam;
-`hex-devices` implements and registers Utility and eq eight. A device definition supplies
+`hex-devices` implements and registers Utility, eq eight, and the original
+nonlinear [Saturator](saturator.md). A device definition supplies
 defaults, validation, state migration, parameter access/patching and preparation.
 Its codec interprets its own payload. Adding a device means implementing this
 contract and registering it, without adding a per-device storage DTO or engine
