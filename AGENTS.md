@@ -321,7 +321,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p hex-desktop                 # desktop/backend changes
 cargo run --release -p hex-engine --example profile  # demo-render hot path
-sh scripts/bundle-macos.sh                # when checking the development app
+sh scripts/bundle-macos.sh --help         # exact CI/revisions/checklist required; docs/test-builds.md
 ```
 
 The full local runner is the default PR validation path. A quick run is useful
@@ -403,6 +403,23 @@ never bypass this workflow without an explicit user instruction.
 
 This is a repository workflow rule; it does not claim that GitHub branch
 protection or automated review enforcement is configured.
+
+## Stable optimized native test builds
+
+All Hex user-test builds use the supported `scripts/bundle-macos.sh` delivery
+with exact candidate full local-CI evidence, included ticket/PR revisions and a
+finite checklist; see `docs/test-builds.md`. It builds the optimized desktop and
+replaces only the configured development app, by default
+`/Users/portalsurfer/dev/hex/artifacts/hex.app`, preserving
+`org.portalsurfer.hex.dev`, user data and historical bundles. Do not create
+revision-named review copies for future testing. Unoptimized debug builds require
+a specific stated debugging need. Save/quit/retry when the target is running;
+never force-quit or claim disk replacement reloads an active process.
+
+Follow the shared exact local checks → authorized merge → guarded post-merge
+stable delivery → ready_for_review → explicit exact-build owner approval → Done
+sequence. Retain receipts/rollback, report failures and native gaps in Pulse, and
+use supported reconciliation/completion gates. Merge alone is not acceptance.
 
 ## 6. Parallel agents
 

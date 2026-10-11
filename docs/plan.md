@@ -3827,3 +3827,11 @@ round-trip boundary, failure/restart tests and manual acceptance are specified i
 transport or processor-runtime recovery is claimed. Linux source evidence cannot
 prove macOS dialogs/compilation or listening; the full exact-source runner and
 native checks remain separate gates. No merge is authorized by this task.
+
+## stable optimized test delivery — Pulse #2408
+
+The existing native bundler now delegates to the guarded optimized delivery
+workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
+action supplies one stable app plus exact-source CI/included revisions/checklist
+and retains prior-bundle rollback. Source/packaging evidence and native owner
+approval remain separate gates on Pulse #2408.
