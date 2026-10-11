@@ -1,4 +1,7 @@
-use hex_devices::utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter};
+use hex_devices::{
+    auto_pan::AUTO_PAN_DEFINITION,
+    utility::{UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter},
+};
 use hex_engine::{
     Audio, PlaybackAction, PlaybackCommand, PreparedRevision, Renderer, compile, playback::Playback,
 };
@@ -641,6 +644,39 @@ fn typed_utility_filter_edit_round_trips_and_undoes_as_one_project_command() {
         editor.project().track(track).unwrap().devices()[0].state(),
         &changed_state
     );
+}
+
+#[test]
+fn auto_pan_state_round_trips_through_project_snapshot_and_undoes_as_one_edit() {
+    let (mut editor, asset, track) = imported_audio_project();
+    let state = AUTO_PAN_DEFINITION.default_state().unwrap();
+    let device = add_device(&mut editor, track, state.clone());
+    assert_eq!(rendered(editor.project(), asset), [0.1875, -0.375]);
+
+    let loaded_snapshot = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    assert_eq!(loaded_snapshot, *editor.project());
+    assert_eq!(loaded_snapshot.device(device).unwrap().state(), &state);
+
+    let changed = AUTO_PAN_DEFINITION
+        .patch_parameter(
+            &state,
+            hex_devices::auto_pan::parameter::AMOUNT,
+            ParameterValue::Float(0.0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: changed.clone(),
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [0.25, -0.5]);
+    assert!(editor.undo());
+    assert_eq!(editor.project().device(device).unwrap().state(), &state);
+    assert_eq!(rendered(editor.project(), asset), [0.1875, -0.375]);
+    assert!(editor.redo());
+    assert_eq!(editor.project().device(device).unwrap().state(), &changed);
+    assert_eq!(rendered(editor.project(), asset), [0.25, -0.5]);
 }
 
 #[test]

@@ -6,6 +6,7 @@ Implement original native device DSP, including a linear stereo Utility processo
 the stateless nonlinear [Saturator](../../docs/saturator.md),
 the stereo-linked [Compressor](../../docs/compressor.md),
 the original hysteresis [Gate](../../docs/gate.md),
+the free-running stereo [Auto Pan](../../docs/auto-pan.md),
 the registered eight-band stateful [eq eight](../../docs/eq-eight.md) effect,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
