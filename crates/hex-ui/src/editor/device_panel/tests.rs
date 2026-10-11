@@ -2346,11 +2346,27 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                     <= row_bounds.origin.x + row_bounds.size.width
             );
         }
+        let lfo = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("native LFO row");
+        for parameter in [82, 83, 85, 87] {
+            let control = visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .expect("native LFO control");
+            assert!(control.origin.x >= lfo.origin.x + px(4.0));
+            assert!(
+                control.origin.x + control.size.width <= lfo.origin.x + lfo.size.width - px(4.0)
+            );
+        }
         for (title, fields) in [
-            ("lfo", vec![0, 1]),
-            ("filter", vec![2, 3]),
-            ("pitch env", vec![4, 5, 6]),
-            ("global", vec![7, 8, 9]),
+            ("filter", vec![0, 1]),
+            ("pitch env", vec![2, 3, 4]),
+            ("global", vec![5, 6, 7]),
         ] {
             let row = visual
                 .debug_bounds(Box::leak(

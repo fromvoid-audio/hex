@@ -927,18 +927,9 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
-    content
-        .id(ElementId::Name(
-            format!("operator-lfo-detail-{}", device.value()).into(),
-        ))
-        .child(page_tabs(
-            cx,
-            device,
-            OperatorPanelState {
-                selected_operator: 0,
-                page: OperatorPage::Lfo,
-            },
-        ))
+    content.id(ElementId::Name(
+        format!("operator-lfo-detail-{}", device.value()).into(),
+    ))
 }
 
 pub(super) fn lfo_summary(
@@ -962,6 +953,9 @@ pub(super) fn lfo_summary(
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
+        .px(px(4.0))
+        .bg(rgb(RAIL_BACKGROUND))
+        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .flex()
         .items_center()
