@@ -1,0 +1,8 @@
+[package]
+name="hex-warning-consumer"
+version="0.0.0"
+edition="2021"
+[features]
+default=["hex-warning-macros/default"]
+[dependencies]
+hex-warning-macros={path="../macros",default-features=false}

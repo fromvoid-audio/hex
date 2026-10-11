@@ -35,6 +35,7 @@ class Step:
 QUICK_STEPS = (
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
+    Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
     Step("ui-style", ("python3", "scripts/check-ui-style.py")),
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
@@ -44,8 +45,8 @@ FULL_STEPS = (
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_local_ci.py"),
     ),
-    *QUICK_STEPS[:3],
-    QUICK_STEPS[3],
+    *QUICK_STEPS,
+    Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py")),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
