@@ -17,8 +17,9 @@ fn live_import_requires_balance_consent_and_preserves_existing_output() {
     let output = dir.join("import.hex");
     let run = |extra: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_hex-cli"))
+            .current_dir(input.parent().unwrap())
             .arg("import-live-set")
-            .arg(&input)
+            .arg(input.file_name().unwrap())
             .arg(&output)
             .args(extra)
             .output()

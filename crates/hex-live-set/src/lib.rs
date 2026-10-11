@@ -84,7 +84,8 @@ pub fn import_file(path: &Path, sample_rate: u32, options: Options) -> Result<Im
         .map_err(|_| Error::Invalid("source cannot be read"))?;
     let base = path
         .parent()
-        .ok_or(Error::Asset("source directory missing"))?;
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     import_bytes(&bytes, base, sample_rate, options)
 }
 
