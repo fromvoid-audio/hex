@@ -37,7 +37,9 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
             );
             assert_eq!(
                 view.device_panel.operator_pages[&device].page,
-                operator_panel::OperatorPage::Oscillator
+                // Existing navigation keeps the open envelope page while
+                // selecting the matching oscillator and changing its enable.
+                operator_panel::OperatorPage::Envelope
             );
         });
         visual.run_until_parked();
