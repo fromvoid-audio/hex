@@ -105,6 +105,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
                 && view.state.as_ref().is_some_and(|state| {
                     operator_parameter_value(state, track, device, 513 + operator)
                         == ParameterValue::Bool(false)
@@ -116,6 +117,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
                 && view.state.as_ref().is_some_and(|state| {
                     operator_parameter_value(state, track, device, 513 + operator)
                         == ParameterValue::Bool(true)
@@ -319,12 +321,17 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    for operator in [1, 2, 3, 0] {
+    for (operator, field) in [
+        (1, Field::FineB),
+        (2, Field::FineC),
+        (3, Field::FineD),
+        (0, Field::FineA),
+    ] {
         let fine = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-{}-knob",
                 device.value(),
-                Field::FineA as usize + operator
+                field as usize
             )))
             .unwrap();
         visual.simulate_click(fine.center(), Modifiers::default());
