@@ -656,3 +656,27 @@ interrupted source capture, provider sampling and complete runtime accounting
 with retained tails remain required before connecting the painter. No native
 candidate, musical parity, callback allocation or CPU acceptance follows from
 the layout/fixture results.
+
+### Retained-tail counterexample: pool contract not admitted
+
+The subsequent `candidate_pool_accounting_includes_detached_mutable_tail_ledgers`
+test uses the real existing publication path. An old playback has 256 LFO
+tracks, each with one held note and no effects. After 96 rendered frames,
+a candidate replaces those track identities with 256 fresh LFO tracks and
+the maximum memoryless-effect/Return inventory above. Existing handoff succeeds
+and retains all 256 original mutable release-tail owners. No private tail
+insertion, synthetic DSP, cap changes or missed tails are used.
+
+Actual existing candidate storage is **31,715,304 bytes**, below the unchanged
+33,554,432-byte limit. Adding the required constructor pool gives
+**34,354,760 bytes**, exceeding that limit by **800,328 bytes**. Tail runtime
+accounting includes both occurrence-ledger buffers, not only DSP pair bytes.
+The negative proof test passes by asserting this measured conflict; it does not
+add an admission refusal or change any production audio behavior.
+
+Consequently the full constructor-allocated pool proposal is **not admitted**
+under the current contract. Bridge integration must stop for the primary's
+explicit revised accounting/ownership decision. A separately proven equivalent
+representation or lease-store ownership may resolve the conflict; neither is
+implemented or claimed safe. Reducing recipe capacity, dropping notes/tails,
+delaying until silence, and raising the budget are not authorized substitutes.
