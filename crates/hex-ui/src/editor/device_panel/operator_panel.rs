@@ -945,6 +945,7 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
+    let owner = context::Owner::capture(view, device);
     let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
     for ids in [
         &[82, 83, 84][..],
@@ -989,6 +990,7 @@ fn lfo_detail(
         .child(page_tabs(
             cx,
             device,
+            owner,
             OperatorPanelState {
                 selected_operator: 0,
                 page: OperatorPage::Lfo,
