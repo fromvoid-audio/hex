@@ -625,11 +625,11 @@ fn render_track(
         }
     }
     view.device_panel.views.retain(|id, _| alive.contains(id));
-    view.device_panel.saturator_previews.retain(|device, _| {
-        identities.get(device).is_some_and(|identity| {
-            identity.class == NativeDeviceClass::Effect
-                && identity.type_id.as_str().ok() == Some("hex.saturator")
-        })
+    retire_transfer_previews(&mut view.device_panel, |device| {
+        identities
+            .get(&device)
+            .filter(|identity| identity.class == NativeDeviceClass::Effect)
+            .map(|identity| identity.type_id)
     });
     view.device_panel
         .pending_values
@@ -860,6 +860,16 @@ struct DeviceCardDropGeometry {
     next: Option<DeviceId>,
     first: Option<DeviceId>,
     visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+}
+
+/// Keep only previews belonging to live effects of the matching registered type.
+fn retire_transfer_previews(
+    panel: &mut DevicePanelState,
+    type_of: impl Fn(DeviceId) -> Option<hex_lattice_contract::DeviceTypeId>,
+) {
+    panel.saturator_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
+    });
 }
 
 fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
