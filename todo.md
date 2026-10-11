@@ -27,6 +27,7 @@ versions change. See [dependency boundary and evidence](docs/xattr-compatibility
 Full exact-commit local CI and final PR review are delivery gates; cross checks
 do not prove a complete Linux desktop or native Linux syscall execution.
 
+
 ## 100-track Lattice effects profile — pulse2317
 
 Original release profiler now checks whole-run standalone composition and timed
@@ -2106,6 +2107,44 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
 
+- 11 October2026 — Pulse2345 / PR157: shared gray focus corners and normalized
+  progressive knob arcs with the observed lower-right opening. Source widget
+  regressions cover focus corners, fixed press/drag/type geometry and pan reset;
+  corner and wobble regressions fail against their original behavior.
+  Isolated same-size native before/after clicked/typed/dragged captures retained.
+  Micro/Mini58x40/18px shared metrics, visible labels and explicit semantic dial
+  layouts and Operator shared-metric integration are implemented.44widget and
+  399UI-feature tests pass (2existingignored), strict targeted Clippy/guards pass;
+  final full local CI remains required. Actual-device narrow/wide review and Live endpoint sequence
+  and exact pan/Return reference remain open; this is implementation evidence,
+  not completed acceptance.
+
+- Pulse2345 later native checkpoint: v2 complete Mini label, typed12345.67 Enter,
+  caret/corners and pan triangle neutral-up reset captured. CUA drag delivery is
+  inconclusive; manual held/drag/narrowwide and actual-device acceptance remain.
+  Current Live is the user E05 set and was observed read-only; endpoint study
+  waits for a safe disposable window.156 gray-rail/black-center source integrated;
+  final fullCI must pass on that tree. Prior4f0c4c4 fullCI passed all16; later
+  gray integration run stopped at disk floor, with only own inactive cache cleared.
+
+
+- Pulse2345 human confirms v2 stable geometry and complete labels across repeated
+  press/hold/drag/release and long typing. Clean6fceb49 full localCI passed all16
+  with unchanged digest; actual-device wrapper refreshed but remains unlaunched.
+  Disposable Live Untitled stopped/audioOff is verified; fresh user-input guard
+  paused endpoint study. PR156 keyboard repair and revised dark-gray panels from
+  68e25a1 are integrated preserving shared metrics. Combined-tree CI, actual-device
+  narrow/wide and Live endpoint/reference gates remain open. Separate layout
+  fixture work is Pulse2355; PR157 remains draft.
+
+
+- Pulse2345 disposable Live evidence: pan50L/50R and triangle resetC; SendA
+  minimum/maximum plus uncalibrated intermediate; Coarse0.5/48, all same2xscale.
+  Pan/send restored; Coarse48 remains in disposable unsaved set. Fresh user-input
+  guard stopped middle typing. Pointer occlusion limits exact geometry evidence.
+  Clean5b0c6f7 all16 fullCI passed, unchanged digest;155 merged/nativeaccepted,
+  156 Routing accepted/final appearance revision pending. Actual-device and
+  remaining reference acceptance plus final changed-sourceCI are still required.
 
 11 October 2026 follow-up native feedback: the human reports the connected001 appearance is generally correct, but rail/center content needs more space from section edges and the dark separator between rails and center must go. The focused correction removes the two explicit dark rail borders and adds four logical pixels of horizontal content inset to both rail rows and the center/tab content. It preserves the compact frame/body height, forty-pixel controls, two-pixel row gutters, exact outer-gray selected backgrounds, and accepted Routing activation. Strengthened rendered row/control containment checks cover the inset requirement; updated validation and native appearance remain pending.
 

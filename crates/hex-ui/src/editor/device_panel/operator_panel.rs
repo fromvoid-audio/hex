@@ -13,9 +13,11 @@ pub(super) mod context;
 pub(super) mod envelope;
 pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 = 760.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 =
+    SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
 const BODY_HEIGHT: f32 = 168.0;
-const SHELL_WIDTH: f32 = 210.0;
+// Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
+const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
 // Neutral colors based on the user-supplied Operator reference crops.

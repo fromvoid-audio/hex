@@ -10,8 +10,9 @@ use hex_widgets::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const PANEL_WIDTH: f32 = 228.0;
-const FIELD_WIDTH: f32 = 46.0;
+// Preserve selector-column space while accepting the wider shared dial tile.
+pub(super) const PANEL_WIDTH: f32 = 2.0 * FIELD_WIDTH + 148.0;
+const FIELD_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH;
 const ROW_HEIGHT: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
