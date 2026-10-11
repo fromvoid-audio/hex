@@ -151,7 +151,6 @@ fn graph_model(values: [f32; 6], selected: u32) -> ResponseGraphModel {
     append_decay(&mut points, x_attack, x_decay, peak, sustain);
     points.push([x_release, sustain.clamp(0.0, 1.0)]);
     append_decay(&mut points, x_release, x_end, sustain, 0.0);
-    points.push([1.0, 0.0]);
     ResponseGraphModel {
         primary: points.clone(),
         secondary: points,
@@ -707,6 +706,11 @@ mod tests {
         );
         for model in [min, max] {
             model.validate().unwrap();
+            assert_eq!(
+                model.primary.last().copied(),
+                Some(model.nodes[3].position),
+                "curve stops at the release handle, including minimum times"
+            );
         }
     }
 
