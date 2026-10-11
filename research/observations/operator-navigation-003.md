@@ -155,7 +155,8 @@ comparison and exact final-commit CI remain pending; this is not visual acceptan
 
 The subsequent direct human request explicitly sets the center field to black,
 not dark blue. Operator's own display background is now `0x000000`, with neutral
-dark grid rails; the shared product constant and other devices are unchanged.
+dark grid rails; other devices are unchanged. The previous global display constant had no
+remaining consumer and was removed to keep strict Clippy clean.
 Gray outer surfaces, accent readouts, fixed geometry and bindings remain intact.
 This supersedes inferring the center color from the Live sample or Hex theme.
 
@@ -168,3 +169,27 @@ before this new source edit; it is not passing evidence. No floor was weakened,
 other worktrees/caches were preserved, and final full CI/native color/physical
 keyboard acceptance remain required. All 13 tests passed on the gray correction;
 the black-center change currently has source preflight only.
+
+
+## corrected native color evidence
+
+The 5cc328f black-center review binary SHA256 is
+`77a7cff678e65b0df4132ecaf13b1c3e39ea2a4618475bce54a6092ed587a9b7`.
+New same-size captures are `after-black-envelope-a.png`,
+`after-black-oscillator-a.png`, `after-black-fine-b.png`,
+`after-black-routing.png`. At identical blank-background points (left unselected
+930,1160; left selected 930,1400; right 2080,1318; center 1600,1320), the rejected
+capture samples RGB (24,25,30), (33,36,43), (24,25,30), (24,25,30). The corrected
+capture samples (39,39,39), (51,51,51), (44,44,44), (0,0,0). This confirms neutral
+gray outer hierarchy and the explicitly black center in this native fixture;
+these screenshot samples are retained as JSON alongside their inputs.
+
+Envelope/Oscillator navigation, Fine B and whole Time/global Routing access
+were rechecked by pointer in that fixture without moving the tabs, advancing
+its revision 3, or showing the preview-source error. Automation has stopped.
+A direct human question asks for Fine B → Tab → Enter and gray/black color
+acceptance in the isolated review app. Its result is pending; headless coverage
+is not substituted for that required physical check. The unused-constant removal
+and evidence-only follow-up do not change the captured widget rendering.
+Final exact-commit full CI must be recorded in PR156/Pulse2341 after the shared
+Mac build lease is released; prior or interrupted reports do not qualify.
