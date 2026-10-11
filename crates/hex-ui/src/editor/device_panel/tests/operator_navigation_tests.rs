@@ -102,6 +102,25 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .unwrap();
         visual.simulate_click(badge.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        // Badges now make a canonical enable edit as well as selecting context.
+        // Undo that edit before testing that subsequent navigation preserves sound.
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(true)
+                })
+        });
         visual.run_until_parked();
         assert!(
             visual
@@ -388,7 +407,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values[11],
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
             12.0
         )
     });
@@ -404,7 +423,8 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values[11], 12.0,
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
+            12.0,
             "hidden owner cannot receive stale numeric input"
         )
     });

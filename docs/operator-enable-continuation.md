@@ -183,3 +183,15 @@ LFO row and updated descriptor inventory are source-only and await rerun.
 Evidence: `artifacts/local-ci/operator-enable-ui-expectation-20261011/summary.json`.
 All focused runs are partial; full final exact-source CI and native/listening
 acceptance remain open. The Mac build lease was explicitly released.
+
+At clean `81080c6`, the feature-enabled broader Operator subset actually ran
+fifteen tests: thirteen passed, including canonical enable, LFO inset and panel
+inventory. Both navigation fixtures then exposed remaining obsolete assumptions:
+Fine value assertions still used numeric slot11, and badge clicks were assumed
+to preserve the canonical enable flags. The source-only fixture correction uses
+`Field::FineB` and explicitly awaits/Undo's each badge Boolean edit before the
+strict original-state navigation assertion. All owner/page/keyboard/geometry and
+unchanged sound-state assertions remain. Retained failed evidence:
+`artifacts/local-ci/operator-enable-integrated-ui-20261011/summary.json`.
+These corrections and full final CI remain pending; the stopped build lease was
+released with no native input or app opening.
