@@ -306,3 +306,52 @@ fn invalid_frames_are_visible_and_do_not_poison_valid_following_history() {
     valid_only.process_block(&mut b);
     assert_eq!(a, b);
 }
+
+#[test]
+fn static_transfer_preview_matches_known_knee_anchors_and_validates_state() {
+    let defaults = COMPRESSOR_DEFINITION.default_state().expect("defaults");
+    let hard = patch(
+        &patch(&defaults, parameter::THRESHOLD, -30.0),
+        parameter::KNEE,
+        0.0,
+    );
+    let hard_curve = transfer_curve(&hard).expect("hard curve");
+    for (index, output_db) in [(0, -60.0), (64, -30.0), (128, -22.5)] {
+        assert!((f64::from(hard_curve.points[index][1]) * 90.0 - 66.0 - output_db).abs() < 3.0e-6);
+    }
+    let soft = patch(&hard, parameter::KNEE, 12.0);
+    let soft_curve = transfer_curve(&soft).expect("soft curve");
+    assert!((f64::from(soft_curve.points[64][1]) * 90.0 - 66.0 + 31.125).abs() < 3.0e-6);
+    let unity = patch(
+        &patch(&soft, parameter::RATIO, 1.0),
+        parameter::MAKEUP,
+        24.0,
+    );
+    let curve = transfer_curve(&unity).expect("boosted unity curve");
+    assert_eq!(curve.points[128], [1.0, 1.0]);
+    for [x, y] in curve.points {
+        assert!((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
+    }
+    let extreme = patch(
+        &patch(
+            &patch(&defaults, parameter::THRESHOLD, -60.0),
+            parameter::RATIO,
+            20.0,
+        ),
+        parameter::KNEE,
+        12.0,
+    );
+    let extreme_curve = transfer_curve(&extreme).expect("lowest threshold knee");
+    assert!((f64::from(extreme_curve.points[0][1]) * 90.0 - 66.0 + 61.425).abs() < 3.0e-6);
+    assert!(
+        extreme_curve
+            .points
+            .iter()
+            .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+    );
+    let malformed = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0]).expect("state");
+    assert_eq!(
+        transfer_curve(&malformed),
+        Err(DeviceContractError::MalformedState)
+    );
+}

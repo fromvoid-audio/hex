@@ -32,8 +32,8 @@ Finite values that overflow during gain multiplication are not silently clipped.
 
 The processor uses an original standard soft-knee law; settings and numeric
 responses have not been measured against Ableton Live's Compressor. There is no
-lookahead, external sidechain, detector filter, auto mode, RMS path, metering, or
-dedicated panel in this slice. It uses the generic shared native-device panel;
+lookahead, external sidechain, detector filter, auto mode, RMS path or metering
+in this DSP slice. The dedicated compact panel uses shared native controls;
 native pointer and listening acceptance remain open.
 
 ## verification
@@ -47,3 +47,20 @@ undo/redo, and opaque save/load. The audio callback allocation probe checks
 initial and edited revisions, observes routed PCM, and measures admission plus
 render for zero total and signed-net allocations. These source tests do not
 establish native UI or listening acceptance.
+
+## compact panel — pulse2314
+
+The 326px panel uses the shared rounded fixed-height frame and shared editable
+controls. Ratio, attack and release form the left column; threshold and manual
+output (makeup) are inline fields above the curve, with knee below. Ratio uses
+the shared typed `n:1` display/parse codec; plain numeric entry remains accepted. The read-only
+static curve comes from the actual original gain-reduction law at steady detector
+levels. Input is -60..0 db and output is -66..24 db, including the soft-knee
+dip at the lowest threshold. It is explicitly a static preview, not a live
+gain-reduction meter or timing display. No unsupported modes or lookahead
+controls are drawn. Track and Return instances share the same body.
+
+Curve samples are bounded and cached by device state and effective local values;
+drafts update before worker acknowledgement. Owner/project/removal retire cached
+state. Headless tests cover Track/Return dimensions, a real Undoable parameter
+drag and pending-draft retirement; visual/listening acceptance awaits the user.
