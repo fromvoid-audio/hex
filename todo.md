@@ -1968,3 +1968,21 @@ remains open; service-level Operator gesture coverage is follow-up2320.
 - Pulse2322 owns the dedicated compact panel. Full exact local CI and final diff
   review are merge gates; native listening and appearance remain pending. The
   unreproduced Operator stop in Pulse2305 remains open.
+
+## 11 october 2026 — pulse2324: Operator face-value layout
+
+The fixed-height Operator card now follows the reference's left oscillator,
+center detail and right LFO/filter/pitch/global arrangement. Amp envelope is the
+default center page. The right-shell controls are real shared widgets with local
+view state only; they do not yet alter DSP or saved project state. The colored
+global routing icon opens the existing canonical routing page. Ten Operator-
+focused UI tests passed, covering compact and wide geometry, local control edits,
+owner-switch cancellation, and existing envelope/routing behavior. Full local CI
+remains a review gate; native visual acceptance remains with the user. Check
+three-column spacing at the fixed rail height, visit amp envelope and routing,
+and confirm right-shell controls respond after switching tracks. DSP and
+canonical binding for LFO (Pulse2325), filter (Pulse2326), pitch/fine tuning
+(Pulse2327) and global controls (Pulse2328) remain separate work. Pulse2305's
+reported parameter-triggered playback stop remains unconfirmed and undiagnosed.
+The reported B-oscillator mixing behavior is a separate, unconfirmed observation.
+See [device controls](docs/device-controls.md).

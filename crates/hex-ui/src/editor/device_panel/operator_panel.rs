@@ -11,10 +11,12 @@ use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
 pub(super) mod envelope;
+pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 = 580.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 = 760.0;
 const BODY_HEIGHT: f32 = 168.0;
 const SHELL_WIDTH: f32 = 210.0;
+const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,8 +27,8 @@ pub(super) struct OperatorPanelState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum OperatorPage {
-    #[default]
     Oscillator,
+    #[default]
     Envelope,
     Routing,
 }
@@ -62,6 +64,7 @@ pub(super) fn render_body(
         ))
         .debug_selector(move || format!("operator-shell-{}", device.value()))
         .w(px(SHELL_WIDTH))
+        .flex_shrink_0()
         .h_full()
         .flex()
         .flex_col()
@@ -98,7 +101,7 @@ pub(super) fn render_body(
             cx,
             device,
             OperatorPage::Envelope,
-            "env",
+            "amp env",
             state.page,
         ))
         .child(page_tab(
@@ -153,6 +156,7 @@ pub(super) fn render_body(
                 ))
                 .debug_selector(move || format!("operator-detail-{}", device.value()))
                 .flex_1()
+                .w(px(DETAIL_WIDTH))
                 .min_w_0()
                 .h_full()
                 .flex()
@@ -161,6 +165,7 @@ pub(super) fn render_body(
                 .child(page_tabs)
                 .child(detail),
         )
+        .child(preview::render(view, cx, device))
 }
 
 fn operator_row(
@@ -177,18 +182,6 @@ fn operator_row(
     let fixed_value = value(view, device, parameters, id(fixed_id));
     let fixed = matches!(fixed_value, Some(ParameterValue::Bool(true)));
     let primary_id = if fixed { fixed_id + 1 } else { base };
-    let multiplier_id = fixed_id + 2;
-    let level = shell_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        operator,
-        id(base + 1),
-        ControlPresentation::MiniDial,
-        Some("level"),
-    );
     let primary = shell_control(
         view,
         cx,
@@ -197,8 +190,30 @@ fn operator_row(
         parameters,
         operator,
         id(primary_id),
-        ControlPresentation::MiniDial,
-        Some(if fixed { "freq" } else { "ratio" }),
+        ControlPresentation::MicroDial,
+        Some(if fixed { "freq" } else { "coarse" }),
+    );
+    let fine = preview::control(
+        view,
+        cx,
+        device,
+        [
+            preview::Field::FineA,
+            preview::Field::FineB,
+            preview::Field::FineC,
+            preview::Field::FineD,
+        ][operator],
+    );
+    let level = shell_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        operator,
+        id(base + 1),
+        ControlPresentation::MicroDial,
+        Some("level"),
     );
     let mut row = div()
         .id(ElementId::Name(
@@ -217,23 +232,8 @@ fn operator_row(
         } else {
             theme::color(theme::PaletteRole::Background)
         }))
-        .child(operator_label(cx, device, operator, selected))
-        .child(level)
         .child(primary);
-    if fixed {
-        let multiplier = shell_control(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            operator,
-            id(multiplier_id),
-            ControlPresentation::MiniDial,
-            Some("multi"),
-        );
-        row = row.child(multiplier);
-    }
+    row = row.child(fine);
     let fixed_control = shell_control(
         view,
         cx,
@@ -246,6 +246,9 @@ fn operator_row(
         Some("fix"),
     );
     row = row.child(fixed_control);
+    row = row
+        .child(level)
+        .child(operator_label(cx, device, operator, selected));
     row
 }
 
@@ -260,16 +263,28 @@ fn operator_label(
             format!("operator-select-{}-{operator}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
-        .w(px(11.0))
+        .w(px(18.0))
+        .h(px(18.0))
         .flex()
         .items_center()
         .justify_center()
         .text_size(px(9.0))
-        .text_color(rgb(theme::color(if selected {
-            theme::PaletteRole::Secondary
-        } else {
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(rgb(theme::color(if selected {
             theme::PaletteRole::Text
+        } else {
+            theme::PaletteRole::Border
         })))
+        .bg(rgb(theme::color(
+            [
+                theme::PaletteRole::Primary,
+                theme::PaletteRole::Secondary,
+                theme::PaletteRole::ClipFill,
+                theme::PaletteRole::ClipSelected,
+            ][operator],
+        )))
+        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
         .cursor(gpui::CursorStyle::PointingHand)
         .child(theme::text(["a", "b", "c", "d"][operator]))
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -277,7 +292,9 @@ fn operator_label(
                 view.focus.focus(window);
                 let state = view.device_panel.operator_pages.entry(device).or_default();
                 state.selected_operator = operator;
-                state.page = OperatorPage::Oscillator;
+                if state.page != OperatorPage::Envelope {
+                    state.page = OperatorPage::Oscillator;
+                }
                 cx.notify();
             }
         }))
@@ -350,7 +367,7 @@ fn oscillator_detail(
         identity,
         parameters,
         id(operator as u32 * 3 + 3),
-        ControlPresentation::MiniDial,
+        ControlPresentation::MicroDial,
         Some("phase"),
     );
     let velocity = compact_control_with_codec(
@@ -374,6 +391,22 @@ fn oscillator_detail(
         ControlPresentation::MiniDial,
         Some("feedback"),
     );
+    let fixed = matches!(
+        value(view, device, parameters, id(62 + operator as u32 * 3)),
+        Some(ParameterValue::Bool(true))
+    );
+    let multiplier = fixed.then(|| {
+        compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(64 + operator as u32 * 3),
+            ControlPresentation::MiniDial,
+            Some("multi"),
+        )
+    });
     let waveform_choice =
         value(view, device, parameters, id(56 + one_based)).and_then(|value| match value {
             ParameterValue::Choice(choice) => Some(choice),
@@ -419,7 +452,8 @@ fn oscillator_detail(
                 .gap(px(2.0))
                 .child(phase)
                 .child(velocity)
-                .child(feedback),
+                .child(feedback)
+                .children(multiplier),
         )
 }
 
@@ -676,13 +710,24 @@ fn shell_control(
         device,
         parameter: parameter_id,
     };
-    let target = OperatorPanelState {
-        selected_operator: operator,
-        page: OperatorPage::Oscillator,
-    };
     control.on_mouse_down(
         gpui::MouseButton::Left,
         cx.listener(move |view, _, _, cx| {
+            let current_page = view
+                .device_panel
+                .operator_pages
+                .get(&device)
+                .copied()
+                .unwrap_or_default()
+                .page;
+            let target = OperatorPanelState {
+                selected_operator: operator,
+                page: if current_page == OperatorPage::Envelope {
+                    OperatorPage::Envelope
+                } else {
+                    OperatorPage::Oscillator
+                },
+            };
             if view
                 .device_panel
                 .operator_pages

@@ -17,6 +17,9 @@ widgets = (
     # `theme::text` at their component boundary.
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'control)',
+    'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
+    'routing_link(', 'selector(',
+    'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
     'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(',
     'routing_header_cell(',
