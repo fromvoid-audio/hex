@@ -26,10 +26,41 @@ PR157 owns knobs/shared control styling, and PR158 owns harmonic editing.
 | Standard device frame/header | User whole-device crop; production shared frame | Idle/focused/selected/disabled. Only the header selects the device; cyan selected header is independent of section selection. |
 | Compact device frame/header | Existing production compact frame | Same fixture interaction; compact header density is a Hex variant, not independently verified Live geometry. |
 | Rounded dark display | User dark-gray center crop | Neutral `0x191919` center; rounded outline; static guide only. Focus/selection border are fixture inspection aids, not claimed Live behavior. |
-| Section rail | User left/right crops; PR156 source tokens | Rectangular `0x363636` rows, `0x474747` gutters; Focused and selected rows merge into `0x474747` outer background; focus retains a border marker. Two-logical-pixel gutters (four physical pixels at scale 2). Single selected section. |
+| Section rail | User left/right crops; PR156 source tokens | Rounded `0x363636` sections, `0x474747` gutters; Focused and selected rows merge into `0x474747` outer background; focus retains a border marker. Two-logical-pixel gutters (four physical pixels at scale 2). Single selected section. |
 | Grouped rows | User oscillator rows | Fixed labels/readout footprint; focus and selection merge the first row into the outer background in previews. No numeric control or oscillator semantics. |
 | Stable tabs | User center crop; shared `panel_tab` | Fixed three-tab footprint, independent focus versus active page; changing page does not change panel size. Exact Live tab marker/underline geometry remains unverified. |
 | Compact grouped sections | User modulation/filter/pitch/global section crop | Dense separated sections, shared row state policy. Text-only layout placeholders have no audio effect. |
+
+Four additional composition families follow the direct user explanation and
+Operator/Wavetable attachments from 11 October 2026:
+
+| Family | Composition and independent interaction |
+| --- | --- |
+| Inset inspector | Deep-dark screen protrudes into the header; a host-colored surround cuts into the adjacent rounded sections. Screen occludes header input. Header and section selection have separate ownership. |
+| Raised screen tabs | Active rounded tab protrudes into the header alongside compact page tabs; switching pages retains screen and hitbox geometry. Header selection does not reset the active page. |
+| Joined screen / section | Deep-dark upper screen and lighter-dark lower control section meet at a straight seam and share a rounded outer silhouette. Lower section focus removes only its darker fill. |
+| Split tall / short sections | Independently rounded long and short sections separated by a host-colored gutter; each can merge into the host independently. |
+
+Every device host now has a light-in-context rounded outer surface, with an idle
+header of the same color. Normal section focus/selection uses exactly the host
+fill, while inspector screens retain their deep-dark fill. Whole-device header
+selection remains cyan, independent of section selection or active screen page.
+These are fixture-owned compositions; this PR does not alter production device
+layouts. The palette currently uses neutral reference-review roles; arbitrary
+user theme preferences are not loaded by this disposable example.
+
+The earlier `35c6541` report incorrectly stated that focused rows already used
+the exact host fill: source inspection found the residual `0x414141` branch.
+This update corrects that branch and replaces the old app/CI evidence. Geometry
+and interaction tests do not prove painted colors: GPUI's test platform discards
+raster output. Native reference comparison remains an explicit acceptance gate
+on Pulse2355, including this focused-fill regression.
+
+New private copies in this checkout at
+`research/private/layout-review-20261011/` retain the user attachments:
+`user-wavetable-composition.png`, `user-operator-inspector.png`, and
+`user-operator-selected-header.png`. Appearance and composition are directly
+observed/provided; keyboard behavior is still the fixture's original contract.
 
 User-supplied crops were preserved by the navigation coordinator at
 `research/private/operator-navigation-20261011/` in its `bd8f` checkout:
@@ -56,7 +87,7 @@ preview changes target zero; disabled previews affect all targets.
 
 ## Acceptance checklist and evidence
 
-- [x] Targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
+- [ ] Updated targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
   transitions, disabled refusal, state geometry, preview containment/non-overlap
   at 760×660 and 1320×660 logical pixels.
 - Full local CI must pass on the final exact commit/unchanged source digest;
@@ -65,14 +96,15 @@ preview changes target zero; disabled previews affect all targets.
   the final native build; its path and binary hash are recorded on PR #163.
 - [ ] Retain native screenshots beside private reference crops and record scale,
   window bounds, source/binary hashes and user comparison findings.
-- [ ] User checks all seven families, click/Tab/Shift-Tab/arrows/Enter/Space/Escape,
+- [ ] User checks all eleven families, click/Tab/Shift-Tab/arrows/Enter/Space/Escape,
   header versus body clicks, disable/enable, narrow/wide resize and available
   display scales. No automated desktop input runs alongside the user's testing.
 
 GPUI's test platform uses scale 2; source/rendered tests do not prove native
 raster appearance, physical input or other display scales. Screenshot/native
-acceptance remain pending. Four example tests (including two rendered gallery
-regressions) pass; targeted strict Clippy and the native example build pass.
+acceptance remain pending. The previous four-test pass and native build apply to the superseded
+`35c6541` source. Updated composition/selection regressions, strict checks, native
+build and final full CI are pending the coordinated build lease.
 The first compile exposed the pinned GPUI one-argument focus API; the fixture
 was corrected before these passes. Final local CI results live with the retained
 commit/digest evidence rather than being inferred from the targeted checks.
@@ -82,6 +114,6 @@ Remaining reference families are explicit gaps: racks/chains and nested headers,
 folded devices, plugin windows, browser/mixer/Arrangement/Session/clip-editor
 surfaces, popups and parameter controls, disabled/bypassed reference transitions,
 accessibility and exact per-device display geometry. This extensible catalog
-covers the currently requested device-layout families; it does not claim every
+covers the currently requested device-layout and composite families; it does not claim every
 Live screen or musical behavior. Add a family only with bounded evidence and
 acceptance, rather than silently expanding this PR.

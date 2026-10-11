@@ -1,3 +1,5 @@
+#[path = "compositions.rs"]
+mod compositions;
 use crate::theme;
 use gpui::{
     AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb,
@@ -23,8 +25,12 @@ enum Family {
     Rows,
     Tabs,
     Sections,
+    Inspector,
+    RaisedTabs,
+    SplitScreen,
+    SplitSections,
 }
-const FAMILIES: [Family; 7] = [
+const FAMILIES: [Family; 11] = [
     Family::Device,
     Family::CompactDevice,
     Family::Display,
@@ -32,6 +38,10 @@ const FAMILIES: [Family; 7] = [
     Family::Rows,
     Family::Tabs,
     Family::Sections,
+    Family::Inspector,
+    Family::RaisedTabs,
+    Family::SplitScreen,
+    Family::SplitSections,
 ];
 impl Family {
     fn label(self) -> &'static str {
@@ -43,7 +53,17 @@ impl Family {
             Self::Rows => "grouped rows",
             Self::Tabs => "stable tabs",
             Self::Sections => "compact sections",
+            Self::Inspector => "inset inspector",
+            Self::RaisedTabs => "raised screen tabs",
+            Self::SplitScreen => "joined screen / section",
+            Self::SplitSections => "split tall / short sections",
         }
+    }
+    fn is_composition(self) -> bool {
+        matches!(
+            self,
+            Self::Inspector | Self::RaisedTabs | Self::SplitScreen | Self::SplitSections
+        )
     }
     fn target_count(self) -> usize {
         if matches!(self, Self::Device | Self::CompactDevice | Self::Display) {
@@ -87,7 +107,7 @@ impl State {
 fn style(state: State, header: bool) -> ControlStyle {
     ControlStyle {
         background: BACKGROUND,
-        surface: DARK,
+        surface: if header { BACKGROUND } else { DARK },
         raised: if header && state == State::Selected {
             SELECTED
         } else {
@@ -117,6 +137,8 @@ pub(super) struct Gallery {
     family: Family,
     selected: Option<usize>,
     disabled: bool,
+    device_selected: bool,
+    active_tab: usize,
     focus: [FocusHandle; 3],
 }
 impl Gallery {
@@ -125,11 +147,22 @@ impl Gallery {
             family: Family::Device,
             selected: None,
             disabled: false,
+            device_selected: false,
+            active_tab: 1,
             focus: std::array::from_fn(|_| cx.focus_handle()),
         }
     }
     pub(super) fn focus_first(&self, window: &mut Window, _cx: &mut Context<Self>) {
         self.focus[0].focus(window);
+    }
+    fn select(&mut self, index: usize) {
+        self.selected = Some(index);
+        if self.family.is_composition() && index == 0 {
+            self.device_selected = true;
+        }
+        if self.family == Family::RaisedTabs && index > 0 {
+            self.active_tab = index;
+        }
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self
@@ -151,8 +184,11 @@ impl Gallery {
                 self.focus[next].focus(window);
             }
             "left" | "up" => self.focus[(index + count - 1) % count].focus(window),
-            "enter" | "space" if !self.disabled => self.selected = Some(index),
-            "escape" => self.selected = None,
+            "enter" | "space" if !self.disabled => self.select(index),
+            "escape" => {
+                self.selected = None;
+                self.device_selected = false;
+            }
             _ => return,
         }
         cx.stop_propagation();
@@ -182,7 +218,7 @@ impl Gallery {
                 cx.listener(move |view, _, window, cx| {
                     if !view.disabled {
                         view.focus[index].focus(window);
-                        view.selected = Some(index);
+                        view.select(index);
                         cx.notify();
                     }
                     cx.stop_propagation();
@@ -193,14 +229,16 @@ impl Gallery {
     fn sample(&self, state: State, live: bool, window: &Window, cx: &mut Context<Self>) -> Div {
         let state_at = |i| {
             if !live {
-                if i == 0 || state == State::Disabled {
+                if state == State::Disabled || i == 0 || (self.family.is_composition() && i == 1) {
                     state
                 } else {
                     State::Idle
                 }
             } else if self.disabled {
                 State::Disabled
-            } else if self.selected == Some(i) {
+            } else if (self.family.is_composition() && i == 0 && self.device_selected)
+                || self.selected == Some(i)
+            {
                 State::Selected
             } else if self.focus[i].is_focused(window) {
                 State::Focused
@@ -213,10 +251,14 @@ impl Gallery {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
                 let frame_style = style(current, true);
-                let contents = div()
-                    .h(px(92.0))
-                    .p(px(6.0))
-                    .child(theme::text("shared frame · no audio"));
+                let contents = div().h(px(92.0)).p(px(6.0)).child(
+                    div()
+                        .size_full()
+                        .rounded(px(3.0))
+                        .bg(rgb(DARK))
+                        .p(px(3.0))
+                        .child(theme::text("layout section · no audio")),
+                );
                 let frame = if self.family == Family::Device {
                     device_frame(theme::text("device header"), frame_style, div(), contents)
                 } else {
@@ -281,13 +323,14 @@ impl Gallery {
                         .items_center()
                         .px(px(4.0))
                         .gap(px(6.0))
-                        .bg(rgb(if current == State::Selected {
-                            BACKGROUND
-                        } else if current == State::Focused {
-                            LIGHT
-                        } else {
-                            DARK
-                        }))
+                        .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
+                        .bg(rgb(
+                            if matches!(current, State::Focused | State::Selected) {
+                                BACKGROUND
+                            } else {
+                                DARK
+                            },
+                        ))
                         .border_1()
                         .border_color(rgb(if current == State::Focused {
                             TEXT
@@ -305,6 +348,12 @@ impl Gallery {
                     };
                     body = body.child(self.target(row, i, live, window, cx));
                 }
+            }
+            Family::Inspector
+            | Family::RaisedTabs
+            | Family::SplitScreen
+            | Family::SplitSections => {
+                return self.composition(&state_at, live, window, cx);
             }
             Family::Tabs => {
                 let mut tabs = div().flex().gap(px(2.0));
@@ -359,6 +408,8 @@ impl Render for Gallery {
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.family = family;
                         view.selected = None;
+                        view.device_selected = false;
+                        view.active_tab = 1;
                         view.disabled = false;
                         view.focus_first(window, cx);
                         cx.notify();
@@ -394,7 +445,7 @@ impl Render for Gallery {
                 .child(div().id("disable-sample").debug_selector(|| "disable-sample".into()).h(px(22.0)).cursor_pointer().child(theme::text(if self.disabled { "enable sample" } else { "disable sample" }))
                     .on_click(cx.listener(|view, _, window, cx| { view.disabled = !view.disabled; view.focus_first(window, cx); cx.notify(); })))
                 .child(theme::text("click selects · tab/arrows focus · enter/space selects · escape clears"))
-                .child(theme::text("reference state previews · first target varies; disabled applies to all"))
+                .child(theme::text("reference states · host and section selection are separate"))
                 .child(states)))
             .child(theme::text("bounded catalog · reference appearance / inferred keyboard behavior · no audio"))
     }
@@ -449,7 +500,12 @@ mod tests {
                 assert!(
                     bounds.origin.y + bounds.size.height <= before.origin.y + before.size.height
                 );
-                visual.simulate_click(bounds.center(), Modifiers::default());
+                let click = if family.is_composition() && index == 0 {
+                    gpui::point(bounds.origin.x + px(12.0), bounds.origin.y + px(8.0))
+                } else {
+                    bounds.center()
+                };
+                visual.simulate_click(click, Modifiers::default());
                 view.read_with(cx, |view, _| assert_eq!(view.selected, Some(index)));
                 visual.simulate_keystrokes("escape");
                 view.read_with(cx, |view, _| assert_eq!(view.selected, None));
@@ -523,5 +579,110 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod composition_tests {
+    use super::*;
+    use gpui::{AppContext, Empty, Modifiers, TestAppContext, VisualTestContext, point, size};
+
+    #[gpui::test]
+    fn inspector_intrudes_into_header_with_surround_and_independent_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let view = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |_, cx| {
+                    let mut view = Gallery::new(cx);
+                    view.family = Family::Inspector;
+                    view
+                })
+            })
+            .expect("gallery");
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(760.0), px(660.0)));
+        visual.run_until_parked();
+        let header = visual.debug_bounds("target-0").expect("header");
+        let surround = visual.debug_bounds("inspector-surround").expect("surround");
+        let screen = visual.debug_bounds("inspector-screen").expect("screen");
+        assert!(
+            surround.intersects(&header),
+            "inspector must extend into the header"
+        );
+        assert!(screen.origin.x > surround.origin.x && screen.origin.y > surround.origin.y);
+        assert!(screen.origin.x + screen.size.width < surround.origin.x + surround.size.width);
+        let header_click = point(header.origin.x + px(12.0), header.origin.y + px(8.0));
+        visual.simulate_click(screen.center(), Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert!(!view.device_selected, "screen must occlude header input")
+        });
+        visual.simulate_click(header_click, Modifiers::default());
+        let section = visual.debug_bounds("target-1").expect("section");
+        visual.simulate_click(section.center(), Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert!(view.device_selected);
+            assert_eq!(view.selected, Some(1));
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("inspector-screen")
+                .expect("stable inspector"),
+            screen
+        );
+        assert_eq!(
+            visual.debug_bounds("target-1").expect("stable section"),
+            section
+        );
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod page_tests {
+    use super::*;
+    use gpui::{AppContext, Empty, Modifiers, TestAppContext, VisualTestContext, point};
+
+    #[gpui::test]
+    fn raised_page_tabs_keep_screen_geometry_and_header_selection_does_not_reset_page(
+        cx: &mut TestAppContext,
+    ) {
+        let bootstrap = cx.add_window(|_, _| Empty);
+        let handle = *bootstrap;
+        let view = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |_, cx| {
+                    let mut view = Gallery::new(cx);
+                    view.family = Family::RaisedTabs;
+                    view
+                })
+            })
+            .expect("gallery");
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let screen = visual.debug_bounds("tabbed-screen").expect("screen");
+        let tab = visual.debug_bounds("target-2").expect("page b");
+        visual.simulate_click(tab.center(), Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.active_tab, 2);
+            assert!(!view.device_selected);
+        });
+        let header = visual.debug_bounds("target-0").expect("header");
+        visual.simulate_click(
+            point(header.origin.x + px(12.0), header.origin.y + px(8.0)),
+            Modifiers::default(),
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.device_selected);
+            assert_eq!(view.active_tab, 2);
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("tabbed-screen").expect("stable screen"),
+            screen
+        );
+        assert_eq!(visual.debug_bounds("target-2").expect("stable tab"), tab);
     }
 }

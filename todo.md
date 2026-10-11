@@ -2086,3 +2086,14 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   strict Clippy and a native example build. Final exact-commit local CI evidence
   is recorded on PR163/Pulse2355. Separate native screenshots and user visual
   acceptance remain open; no native input automation or app launch performed.
+
+### Gallery composition refinement — 11 October 2026
+
+- Direct user Operator/Wavetable examples add light rounded hosts with matching
+  idle headers, rounded darker sections merging on focus, header-intruding
+  inspector screens with host-colored surrounds, raised screen tabs, joined
+  screen/control silhouettes and separate tall/short sections. Eleven bounded
+  families; independent device-header/section/page selection.
+- Prior `35c6541` app/CI are superseded. Its focused-row fill report was incorrect;
+  the residual darker focus branch is corrected in the expanded source. Updated
+  checks/native build/fullCI and user reference comparison remain required.
