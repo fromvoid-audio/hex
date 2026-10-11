@@ -1806,3 +1806,10 @@ native visual acceptance remain pending. See [Operator shell context contract]
   speedup. Runtime change stays offmain. Retained source hashes, timing ranges and
   limits are in docs/performance.md; higher-polyphony/native deadline gates remain
   Pulse2226/2108. Next target requires CPU call-tree attribution.
+
+
+-11 October2026: Pulse2300 adds measured inline hints to existing Operator
+  envelope queries, preserving exact arithmetic/PCM,4032B/twin and16voices.
+  Three matched rounds improve single-track steady5.7–7.7% and post-retarget
+  render20.6–22.1%; dense results/ranges and limitations are in docs/performance.md.
+  Dense native deadlines/higher polyphony remain open in Pulse2226/2108.

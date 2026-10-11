@@ -2373,3 +2373,40 @@ source-grounded investigation targets, not percentage speedups or exclusive
 function costs. First candidate: controlled inlining of the small envelope
 queries, preserving all arithmetic and checked public semantics; separate PR and
 matched measurements required.
+
+
+## Operator envelope-query inlining (11 October2026, Pulse2300)
+
+Following the statistical baseline sample above, two inline hints were added to
+`PreparedOperatorEnvelope::level` and `PreparedOperatorEnvelopes::levels`. No
+arithmetic, branches, state, layout, public signatures or capacity changed.
+Baseline581bcfa executable SHA256
+`4da41d8d7803dd6341f16670157a71d025a9f56c9b969ba1359646588a77bbb3`;
+candidate3550f64 SHA256
+`85134c61dc25edd43b9165470e036376f40fd67731cca5d367a62b81537842ce`.
+
+Three alternating matched rounds retain24logs/source/tree/hardware/process
+metadata in `artifacts/profiles/operator-envelope-inline/3550f64/summary.json`.
+Same48kHz workloads and warmup/sample counts as the expiry experiment above.
+Every exact old/new checksum, independent partition check, finite/audible output
+and17-voice refusal passes. Existing five owning envelope tests include note-off
+in every stage, zero-duration stages, independent reordered/partitioned queries
+and malformed/frame-rounding boundaries.
+
+| Workload | Baseline p50 range | Candidate p50 range | Paired p50 reduction |
+| --- | ---: | ---: | ---: |
+|1x16,128 steady |29.375–29.750µs |27.459–27.708µs |5.7–7.7% |
+|1x16,128 following retarget |93.667–99.292µs |74.416–77.333µs |20.6–22.1% |
+|100x16,128 steady |2.996–3.159ms |2.811–3.152ms |0.2–7.0% |
+|100x16,512 steady |11.775–12.563ms |10.974–11.022ms |6.7–12.6% |
+|100x16,128 following retarget |3.226–3.300ms |3.005–3.051ms |6.0–7.6% |
+
+Dense handoff p50 remains4.316–4.391ms versus4.321–4.384ms baseline: no handoff
+speedup claim. Construction and sample/ramp/ownership validation remain intact.
+Timing window00:27:04–00:30:21 UTC, Apple M5 Pro/24GiB, macOS26.6.2, rustc1.98.1;
+no concurrent Hex Cargo/profile. External Yield app/OS scheduling uncontrolled.
+One128-frame dense pair was nearly neutral; this is a short unpaced headless
+comparison, not a fixed improvement guarantee, quiet-machine certificate or
+physical native deadline. Dense128-frame render still exceeds its2.667ms nominal
+block duration;512-frame medians also exceed10.667ms.16-voice storage/admission
+bounds and Pulse2226/2108 native/higher-capacity gates remain unchanged.
