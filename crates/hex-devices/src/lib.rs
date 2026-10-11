@@ -1,9 +1,10 @@
-//! Original native DSP: registered sine/FM4/Operator instruments and Utility/EQ eight effects.
+//! Original native DSP: registered instruments and native Lattice effects.
 pub mod eq8;
 pub mod fm4;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
+pub mod saturator;
 pub mod utility;
 pub mod utility_filters;
 
@@ -16,8 +17,11 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 2] =
-    [&utility::UTILITY_DEFINITION, &eq8::EQ8_DEFINITION];
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 3] = [
+    &utility::UTILITY_DEFINITION,
+    &eq8::EQ8_DEFINITION,
+    &saturator::SATURATOR_DEFINITION,
+];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
     &SINE_INSTRUMENT,
     &fm4::device::FM4_DEFINITION,
