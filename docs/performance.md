@@ -2410,3 +2410,56 @@ comparison, not a fixed improvement guarantee, quiet-machine certificate or
 physical native deadline. Dense128-frame render still exceeds its2.667ms nominal
 block duration;512-frame medians also exceed10.667ms.16-voice storage/admission
 bounds and Pulse2226/2108 native/higher-capacity gates remain unchanged.
+
+
+## Rejected Operator envelope-query mask (11 October2026, Pulse2302)
+
+Statistical attribution from Pulse2299 motivated a second envelope experiment
+after the accepted inlining2300: omit analytic envelope queries for current
+zero-level oscillators, retaining the original global-silence/signed-zero check
+on a cold path. Dynamic ramps used current levels, not original prepared levels.
+The candidate added no state, approximation, layout, capacity or unsafe code.
+128 device tests, independent sparse/current-level PCM oracles, strict owning
+clippy and the actual Operator feedback/release callback allocation probe pass.
+Nevertheless, the runtime change is **rejected and stays off main** because it
+consistently slows single-track live-parameter rendering. Source16a98ae is
+retained on local `codex/operator-masked-envelopes`; this PR ships only reusable
+profiling support and evidence.
+
+The profiler now accepts `--all-operators`: B/C/D have nonzero levels and carrier
+weights, preserving them through every retarget. Default sparse workloads stay
+unchanged. This prevents zero-level pruning from hiding fully active costs.
+Baseline688179e contains only this same profiling control on main2eef23b; DSP
+is unchanged. Executable SHA256s: baseline
+`b3f464b2b0cd3a06e1d90ba3093d46ac6fca4a514aad45a562ac8cff21d523bd`,
+candidate `e6b5e9918a57639fd5fb810286c6c8877e06599a569ff84b5319c59953cdbbb1`.
+
+Three alternating matched rounds retain36 logs and source/tree/argv/system
+metadata in `artifacts/profiles/operator-masked-envelopes/16a98ae/summary.json`.
+48kHz; each steady workload has100 warmup/2000 measured blocks, except the dense
+all-active control has100/1000. Single-track retarget has100/2000 and dense
+retarget20/100. Every whole-run old/new checksum, independent partition guard,
+finite/audible PCM and17-voice refusal passes; storage remains4032B/twin,8064B
+pair and112B target proof.
+
+| Workload | Baseline p50 range | Candidate p50 range | Paired result |
+| --- | ---: | ---: | --- |
+|1x16,128 sparse steady |29.000–30.709µs |28.250–28.500µs |2.6–7.2% faster |
+|1x16,128 sparse following retarget |77.959–81.667µs |87.375–90.333µs |10.6–12.1% slower |
+|100x16,128 sparse steady |3.114–3.200ms |2.850–3.072ms |3.8–8.5% faster |
+|100x16,512 sparse steady |11.874–13.024ms |10.746–11.864ms |5.0–9.6% faster |
+|1x16,128 all-active following retarget |74.292–83.125µs |83.875–91.291µs |5.6–12.9% slower |
+|100x16,128 all-active steady |7.470–8.444ms |7.455–8.744ms |0.3% faster to3.5% slower |
+
+Dense sparse following-retarget results are noisy (3.3% slower to16.0% faster);
+all-active single-track steady is also mixed. No handoff speedup claim. Window
+00:53:58–00:58:24 UTC, M5 Pro/24GiB, macOS26.6.2, rustc1.98.1. No other Hex
+Cargo/profile during measurement; unrelated Yield build/app and OS scheduling
+remain uncontrolled. These are short unpaced offline comparisons, not quiet
+machine/native deadlines, Live parity or a universal regression magnitude.
+The repeatable live-edit slowdown outweighs the sparse steady benefit. The
+all-active baseline additionally exceeds the128-frame2.667ms nominal budget
+substantially. Higher-capacity admission remains blocked on actual throughput
+and native evidence in Pulse2226/2108; no ceiling is raised. Future optimization
+needs to preserve both steady and retarget performance, with this all-active
+control included.

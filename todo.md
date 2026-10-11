@@ -1820,3 +1820,11 @@ native visual acceptance remain pending. See [Operator shell context contract]
   source removal, release, cancel and shutdown. A second nonneutral band makes
   activation audibly distinguishable; separate Playback PCM oracles validate
   both target kinds through lifecycle transitions. Native testing remains2253.
+
+
+-11 October2026: Pulse2302 rejects a zero-level Operator envelope-query mask:
+  sparse steady improves, but all three single-track live-edit rounds slow down
+  (10.6–12.1% sparse,5.6–12.9% all-active). Runtime candidate16a98ae stays offmain.
+  Reusable all-active profiler control and36 matched logs expose the tradeoff;
+  exact PCM, partition,17-voice refusal and callback allocation guards pass.
+  Measurements/hashes/limits are in docs/performance.md;2226/2108 stay open.
