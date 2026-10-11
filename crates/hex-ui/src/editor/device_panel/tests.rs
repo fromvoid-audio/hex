@@ -6,6 +6,7 @@ use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
 
+mod gate_ui_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {

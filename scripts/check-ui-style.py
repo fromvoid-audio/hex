@@ -54,6 +54,8 @@ widgets = (
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
     'plot)', 'chooser)', 'drive)', 'wet)',
+    # Gate composition contains already-themed compact dial child controls.
+    'gate_column(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

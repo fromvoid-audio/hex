@@ -21,6 +21,7 @@ use hex_widgets::{
 use std::collections::{HashMap, HashSet};
 
 mod eq8_panel;
+mod gate_panel;
 mod numeric_display;
 mod operator_panel;
 mod saturator_panel;
@@ -880,6 +881,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     }
 }
@@ -1237,7 +1239,7 @@ fn render_effect(
         view.state.as_ref().map_or(0, |state| state.revision),
         matches!(
             device.state().type_id().as_str(),
-            Ok("hex.utility" | "hex.saturator")
+            Ok("hex.utility" | "hex.saturator" | "hex.gate")
         ),
         cx,
     ));
@@ -1247,6 +1249,8 @@ fn render_effect(
                 utility_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.gate") {
+                gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 let sample_rate = view
                     .state
@@ -1292,7 +1296,7 @@ fn render_effect(
             };
             if matches!(
                 device_view.type_id.as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.gate")
             ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
@@ -1312,7 +1316,7 @@ fn render_effect(
         Err(error) => {
             let compact = matches!(
                 device.state().type_id().as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.gate")
             );
             let body = div()
                 .id(ElementId::Name(
@@ -1358,6 +1362,7 @@ fn render_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
+        Ok("hex.gate") => gate_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     div()
@@ -1972,7 +1977,7 @@ fn device_actions(
     let id = device.id();
     let action_size = if matches!(
         device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator")
+        Ok("hex.utility" | "hex.saturator" | "hex.gate")
     ) {
         12.0
     } else {
