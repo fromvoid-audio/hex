@@ -1813,3 +1813,10 @@ native visual acceptance remain pending. See [Operator shell context contract]
   Three matched rounds improve single-track steady5.7–7.7% and post-retarget
   render20.6–22.1%; dense results/ranges and limitations are in docs/performance.md.
   Dense native deadlines/higher polyphony remain open in Pulse2226/2108.
+
+
+-11 October2026: Pulse2301 extends the shared EQ8 audition callback fixture to
+  Return targets with zero total/net allocations through Begin, compatible edits,
+  source removal, release, cancel and shutdown. A second nonneutral band makes
+  activation audibly distinguishable; separate Playback PCM oracles validate
+  both target kinds through lifecycle transitions. Native testing remains2253.
