@@ -47,7 +47,7 @@ Every decode, migration and patch validates all fields and the acyclic routing
 graph. Unknown types/versions, wrong lengths, nonfinite values, invalid ranges,
 invalid diagonal routing and cycles are refused. Patches return a new opaque state, leaving
 the original intact on failure. Migration accepts versions1–7. Versions1–3
-preserve their full existing prefix byte-for-byte and append neutral amplitude-
+preserve their in-range existing prefix byte-for-byte and append neutral amplitude-
 velocity amounts; version3 fixed tuning remains intact. Version4 is validated
 as an exact 304-byte prefix and migrates with neutral feedback. Version5 validates
 and preserves in-range fields in the 320-byte prefix, then appends neutral LFO defaults.

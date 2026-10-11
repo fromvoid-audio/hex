@@ -927,7 +927,7 @@ fn lfo_detail(
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
-) -> Div {
+) -> Stateful<Div> {
     let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
     for ids in [
         &[82, 83, 84][..],
@@ -961,14 +961,18 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
-    content.child(page_tabs(
-        cx,
-        device,
-        OperatorPanelState {
-            selected_operator: 0,
-            page: OperatorPage::Lfo,
-        },
-    ))
+    content
+        .id(ElementId::Name(
+            format!("operator-lfo-detail-{}", device.value()).into(),
+        ))
+        .child(page_tabs(
+            cx,
+            device,
+            OperatorPanelState {
+                selected_operator: 0,
+                page: OperatorPage::Lfo,
+            },
+        ))
 }
 
 pub(super) fn lfo_summary(
