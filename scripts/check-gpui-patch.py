@@ -44,6 +44,7 @@ expected_changes = {
     "src/platform/linux/wayland.rs",
     "src/platform/windows/util.rs",
     "src/app/test_context.rs",
+    "src/platform/test/platform.rs",
     "src/window.rs",
     "src/taffy.rs",
 }

@@ -14,7 +14,7 @@ use crate::CursorStyle;
 impl CursorStyle {
     pub(super) fn to_shape(self) -> Shape {
         match self {
-            CursorStyle::Arrow => Shape::Default,
+            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
             CursorStyle::IBeam => Shape::Text,
             CursorStyle::Crosshair => Shape::Crosshair,
             CursorStyle::ClosedHand => Shape::Grabbing,

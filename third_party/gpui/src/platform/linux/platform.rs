@@ -702,7 +702,7 @@ impl CursorStyle {
         // Based on cursor names from chromium:
         // https://github.com/chromium/chromium/blob/d3069cf9c973dc3627fa75f64085c6a86c8f41bf/ui/base/cursor/cursor_factory.cc#L113
         match self {
-            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
+            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
             CursorStyle::IBeam => &["text", "xterm"],
             CursorStyle::Crosshair => &["crosshair", "cross"],
             CursorStyle::ClosedHand => &["closedhand", "grabbing", "hand2"],
