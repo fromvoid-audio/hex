@@ -82,7 +82,7 @@ impl EditorView {
                         self.saving_project = false;
                     }
                     visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if matches!(request, Request::Open(_)) {
+                    if matches!(request, Request::Open(_) | Request::OpenWith { .. }) {
                         self.opening_project = false;
                     }
                     clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
@@ -1153,7 +1153,7 @@ impl EditorView {
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
-        if !matches!(&request, Request::Open(_))
+        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
             && !allows_non_open_request(
                 self.close_prompt_open,
                 self.opening_project,
@@ -1167,7 +1167,7 @@ impl EditorView {
             });
             return false;
         }
-        if !matches!(&request, Request::Open(_)) {
+        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. }) {
             self.pending_open_path = None;
         }
         if matches!(
@@ -1183,6 +1183,7 @@ impl EditorView {
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
                 | Request::Open(_)
+                | Request::OpenWith { .. }
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
@@ -1196,6 +1197,7 @@ impl EditorView {
         if matches!(
             &request,
             Request::Open(_)
+                | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
