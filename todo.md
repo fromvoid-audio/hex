@@ -46,6 +46,21 @@ and listening remain user acceptance. DSP/caps and Operator stop2305 are unchang
 
 # hex todo
 
+## cloud environment maintenance — pulse2348
+
+Focused [PR160](https://github.com/PORTALSURFER/hex/pull/160) records reusable
+startup and failure-report guidance in [cloud environment](docs/cloud-environment.md).
+The existing private PORTALSURFER/hex environment was corrected through
+its supported setup workflow. Missing ALSA development metadata, command-level
+network permission and protected-state CLI messaging failures are distinct from
+product source bugs and native-only acceptance. The tested draft was published
+as cecfgver_6acb5120834c819ab3681a5e3f5b46aa; an independent fresh instance
+verified matching hashes, Rust1.94, native libraries, fetch, portable checks and
+CLI round trips. Full PR CI is retained separately as repository merge evidence.
+The reported locked Linux
+xattr/libc compatibility repair was delivered separately by
+[PR161](https://github.com/PORTALSURFER/hex/pull/161) / Pulse2349.
+
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
 This file retains request order and repository evidence; [plan](docs/plan.md)
