@@ -9,7 +9,12 @@ use crate::Invalid;
 pub const OPERATOR_ENVELOPES: usize = 4;
 /// Continuous curve's relative distance at its configured endpoint.
 pub const RELATIVE_CUTOFF: f64 = 1.0e-5;
-const MAX_SECONDS: f64 = 120.0;
+/// Maximum authored attack duration.
+pub const MAX_ATTACK_SECONDS: f64 = 20.0;
+/// Maximum authored decay duration.
+pub const MAX_DECAY_SECONDS: f64 = 60.0;
+/// Maximum authored release duration, including direct kernel construction.
+pub const MAX_RELEASE_SECONDS: f64 = 60.0;
 
 /// Validated authoring values. Each oscillator owns an independent instance.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,12 +42,15 @@ impl OperatorEnvelope {
         {
             return Err(Invalid("operator envelope levels must be finite in [0, 1]"));
         }
-        if [attack_seconds, decay_seconds, release_seconds]
-            .iter()
-            .any(|seconds| !seconds.is_finite() || !(0.0..=MAX_SECONDS).contains(seconds))
-        {
+        if !attack_seconds.is_finite() || !(0.0..=MAX_ATTACK_SECONDS).contains(&attack_seconds) {
+            return Err(Invalid("operator attack must be finite in [0, 20] seconds"));
+        }
+        if !decay_seconds.is_finite() || !(0.0..=MAX_DECAY_SECONDS).contains(&decay_seconds) {
+            return Err(Invalid("operator decay must be finite in [0, 60] seconds"));
+        }
+        if !release_seconds.is_finite() || !(0.0..=MAX_RELEASE_SECONDS).contains(&release_seconds) {
             return Err(Invalid(
-                "operator envelope times must be finite in [0, 120] seconds",
+                "operator release must be finite in [0, 60] seconds",
             ));
         }
         Ok(Self {
@@ -62,7 +70,7 @@ impl OperatorEnvelope {
                 "operator envelope sample rate must be between 8000 and 192000 hz",
             ));
         }
-        // Validated domains bound each conversion to 23,040,000 frames.
+        // Validated domains bound each conversion to 11,520,000 frames.
         let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
         let attack = frames(self.attack_seconds);
         let decay = frames(self.decay_seconds);
@@ -276,13 +284,13 @@ mod tests {
     fn frame_rounding_and_maximum_release_are_bounded_at_supported_rates() {
         for rate in [8_000, 44_100, 48_000, 192_000] {
             let envelope =
-                OperatorEnvelope::new(0.0, 1.0, 0.5, 2.5 / rate as f64, 0.49 / rate as f64, 120.0)
+                OperatorEnvelope::new(0.0, 1.0, 0.5, 2.5 / rate as f64, 0.49 / rate as f64, 60.0)
                     .expect("valid times")
                     .prepare(rate)
                     .expect("supported rate");
             assert_eq!(envelope.attack_frames(), 3);
             assert_eq!(envelope.decay_frames(), 0);
-            assert_eq!(envelope.release_frames(), 120 * u64::from(rate));
+            assert_eq!(envelope.release_frames(), 60 * u64::from(rate));
             assert_eq!(envelope.level(u64::MAX, 0), 0.0);
             assert!(envelope.level(u64::MAX, u64::MAX).is_finite());
         }
@@ -297,7 +305,13 @@ mod tests {
                 f64::INFINITY,
                 f64::NEG_INFINITY,
                 -0.01,
-                if index < 3 { 1.01 } else { 120.01 },
+                if index < 3 {
+                    1.01
+                } else if index == 3 {
+                    20.01
+                } else {
+                    60.01
+                },
             ] {
                 let mut values = base;
                 values[index] = invalid;

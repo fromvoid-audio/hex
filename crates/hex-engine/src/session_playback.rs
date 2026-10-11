@@ -95,6 +95,7 @@ pub struct SessionPendingRouteStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackError {
+    Capture(capture::OutputCaptureError),
     RevisionTrackMismatch,
     RevisionSampleRateMismatch,
     Allocation,
@@ -129,6 +130,7 @@ impl SessionPlaybackError {
     /// in the audio callback. Detailed numeric timing formatting stays on control.
     pub(crate) fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::Capture(error) => error.message(),
             Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
             Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
             Self::Allocation => "could not reserve session playback runtime storage",
@@ -295,6 +297,8 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    capture_runtime: u64,
+    capture_epoch: u64,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -310,6 +314,9 @@ pub struct SessionPlayback {
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    // Immutable original ownership, including effect-only suffixes. Inline
+    // slots are charged by size_of::<Self>() in actual and paired preflight.
+    tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -782,6 +789,8 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
         Ok(Self {
+            capture_runtime: capture::next_runtime()?,
+            capture_epoch: 0,
             revision,
             periodic_tempo,
             anchor: None,
@@ -797,6 +806,7 @@ impl SessionPlayback {
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
+            tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -1069,10 +1079,15 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod capture;
 mod commands;
 mod handoff;
 mod preroll;
 mod render;
+pub use capture::{
+    MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
+    OutputCaptureId, OutputCapturePlan,
+};
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,

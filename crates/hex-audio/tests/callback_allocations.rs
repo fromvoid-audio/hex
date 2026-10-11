@@ -1,6 +1,8 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 #![cfg(feature = "allocation-probe")]
 
+#[path = "callback_allocations/output_capture.rs"]
+mod output_capture;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
@@ -313,6 +315,9 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        if output_capture::refuse_gateoff(events) {
+            return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
         for event in events {
             let (offset, id, on) = match *event {
                 hex_lattice::NativeInstrumentEvent::NoteOn {
@@ -2526,7 +2531,7 @@ fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dy
         (34, 1.0),
         (35, 1.0),
         (36, 0.0),
-        (37, 0.0),
+        (37, 0.001),
         (78, 0.25),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(

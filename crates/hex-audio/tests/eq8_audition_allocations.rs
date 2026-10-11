@@ -93,7 +93,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
         (34, ParameterValue::Float(1.0)),
         (35, ParameterValue::Float(1.0)),
         (36, ParameterValue::Float(0.0)),
-        (37, ParameterValue::Float(0.0)),
+        (37, ParameterValue::Float(0.001)),
         (38, ParameterValue::Float(0.005)),
         (78, ParameterValue::Float(0.4)),
     ] {

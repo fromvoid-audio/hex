@@ -2,8 +2,9 @@
 
 Pulse2247 owns the first editable envelope graph in the native Lattice UI. The
 graph reuses `hex-widgets::ResponseGraph`; EQ8 retains its existing pointer
-editing behavior and does not opt into the new keyboard/fine-drag mode. This is UI gesture work only: the canonical Operator
-parameter descriptors, saved schema, DSP and envelope law do not change.
+editing behavior and does not opt into the new keyboard/fine-drag mode.
+Pulse2337 updates the display mapping and authoring bounds; the envelope DSP
+laws and audio ownership remain unchanged.
 
 Each graph is keyed by the stable `(DeviceId, operator index)` pair. The four
 visible handles edit all six canonical values through the device-gesture actor:
@@ -13,15 +14,24 @@ visible handles edit all six canonical values through the device-gesture actor:
 | initial | initial level |
 | peak | peak level and attack time |
 | sustain | sustain level and decay time |
-| release end | release time; the held sustain-to-release segment remains fixed at 0.25 seconds |
+| release end | release time; sustain extends to the fixed final-third release anchor |
 
-Levels remain in their descriptor's linear `[0, 1]` domain and stage times in
-seconds `[0, 120]`. The horizontal graph window is `max(1.5 × (attack + decay +
-release + 0.25), 0.5)` seconds. It is captured once at gesture start, so changing
-one stage cannot move the time axis under the pointer. Time edits clamp against
-the other current stages and the fixed hold interval; the view may contain
-unused horizontal headroom. This is an original interaction mapping, not a
-measured Ableton Live parity claim.
+Levels remain in their descriptor's linear `[0, 1]` domain. Attack authors
+0–20 seconds; decay/release1ms–60 seconds. The fixed plot gives attack and
+decay up to one third each, with decay starting after attack; release starts
+at two thirds and ends at up to the full width. Sustain fills the gap. Maximum
+20/60/60s produces node positions1/3,2/3,1. Minimum0/1ms/1ms produces0,0,2/3,
+matching the endpoints of two user-supplied Live screenshots on11October2026.
+Their private copies are `research/private/operator-envelope-2337/{maximum,minimum}.png`;
+the screenshot app/build identity was not independently established by this chat.
+
+An original invertible logarithmic mapping keeps short times usable: attack
+uses a1ms log1p pivot; decay/release use a1ms lower endpoint. No parameter edit,
+Commit/Cancel, Undo, page change or reopen automatically zooms or fits the plot.
+Attack moves decay cumulatively; release stays in its own section. Intermediate
+numerical mapping and native Live parity remain unverified. Version6 state
+strictly validates the new bounds; valid old1–5 times clamp without notice.
+See [state](operator-state.md) and [controls](device-controls.md).
 
 Pointer drags, Shift-fine drags, and focused keyboard selection/editing map to
 one scalar or paired canonical gesture. Existing numeric fields read the same
@@ -48,3 +58,9 @@ recorded in Pulse2247. Source checks and native visual acceptance are tracked se
 window feel or audible behavior. The user should review all four handles,
 Shift-fine movement, keyboard editing, numeric synchronization, Escape/outside
 release, one-step Undo and saved-project reopen in a development build.
+
+Pulse2337 focused checks cover reference endpoint geometry, inverse mapping,
+canonical keyboard commit/Undo/save, immediate pointer/readout feedback and
+cancellation/outside release at the60s cap. Before-fix negative controls fail
+for the original auto-fit geometry and120s authoring bounds. Full exact-final
+local CI remains required before merge; native testing belongs to the user.
