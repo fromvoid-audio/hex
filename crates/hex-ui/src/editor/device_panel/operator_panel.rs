@@ -943,7 +943,11 @@ fn lfo_detail(
                 identity,
                 parameters,
                 id(*parameter),
-                ControlPresentation::MicroDial,
+                match *parameter {
+                    82 | 84 | 88..=92 => ControlPresentation::CompactButton,
+                    83 | 86 => ControlPresentation::CompactSelector,
+                    _ => ControlPresentation::MicroDial,
+                },
                 Some(match *parameter {
                     82 => "on",
                     83 => "wave",
@@ -1022,7 +1026,11 @@ pub(super) fn lfo_summary(
             identity,
             parameters,
             id(parameter),
-            ControlPresentation::MicroDial,
+            if matches!(parameter, 83 | 86) {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
             Some(label),
         ));
     }

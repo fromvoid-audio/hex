@@ -1024,7 +1024,13 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let wave_bounds = visual
         .debug_bounds(wave_selector)
         .expect("local filter waveform selector");
-    visual.simulate_click(wave_bounds.center(), Modifiers::default());
+    visual.simulate_click(
+        point(
+            wave_bounds.origin.x + px(5.0),
+            wave_bounds.origin.y + px(4.0),
+        ),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let wave_option = Box::leak(
         format!(
@@ -1101,7 +1107,13 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             [operator_panel::preview::Field::FilterFrequency as usize]
     });
     let wave_bounds = visual.debug_bounds(wave_selector).expect("wave selector");
-    visual.simulate_click(wave_bounds.center(), Modifiers::default());
+    visual.simulate_click(
+        point(
+            wave_bounds.origin.x + px(5.0),
+            wave_bounds.origin.y + px(4.0),
+        ),
+        Modifiers::default(),
+    );
     visual.run_until_parked();
     let rate_bounds = visual
         .debug_bounds(rate_knob)
