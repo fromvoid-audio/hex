@@ -137,6 +137,7 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
     operator_envelope_graphs:
@@ -350,6 +351,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
@@ -448,6 +450,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
@@ -706,6 +709,9 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
+    view.device_panel
+        .operator_context_focus
+        .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     let alive_eq8: HashSet<_> = identities
         .iter()
@@ -2270,7 +2276,16 @@ fn parameter_control_with_presentation(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> Div {
-    let style = control_style();
+    let mut style = if identity.type_id.as_str() == Ok("hex.instrument.operator") {
+        operator_panel::display_style()
+    } else {
+        control_style()
+    };
+    if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && presentation == ControlPresentation::InlineValue
+    {
+        style.text = style.accent;
+    }
     let display_label = display.label;
     let key = ParameterKey {
         device,
@@ -2423,11 +2438,12 @@ fn create_parameter_control(
 ) -> Option<()> {
     let descriptor = parameter.descriptor;
     let value = parameter.value;
-    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && presentation == ControlPresentation::InlineValue
-    {
+    let operator_context_owner = operator_panel::context::Owner::capture(view, key.device);
+    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator") {
         let mut style = operator_panel::display_style();
-        style.text = style.accent;
+        if presentation == ControlPresentation::InlineValue {
+            style.text = style.accent;
+        }
         style
     } else {
         control_style()
@@ -2503,31 +2519,14 @@ fn create_parameter_control(
                         && let Some(operator) =
                             operator_panel::shell_operator_for_numeric_parameter(key.parameter)
                     {
-                        let current_page = view
-                            .device_panel
-                            .operator_pages
-                            .get(&key.device)
-                            .copied()
-                            .unwrap_or_default()
-                            .page;
-                        let context = operator_panel::OperatorPanelState {
-                            selected_operator: operator,
-                            page: if current_page == operator_panel::OperatorPage::Envelope {
-                                operator_panel::OperatorPage::Envelope
-                            } else {
-                                operator_panel::OperatorPage::Oscillator
-                            },
-                        };
-                        if view
-                            .device_panel
-                            .operator_pages
-                            .get(&key.device)
-                            .copied()
-                            .unwrap_or_default()
-                            != context
-                            && finalize_controls_except(view, cx, &[key])
-                        {
-                            view.device_panel.operator_pages.insert(key.device, context);
+                        if let Some(owner) = operator_context_owner {
+                            operator_panel::context::select_oscillator(
+                                view,
+                                cx,
+                                owner,
+                                operator,
+                                &[key],
+                            );
                         }
                     }
                     let value = ParameterValue::Float(event.value as f32);

@@ -346,3 +346,16 @@ code. The rendered regression covers valid and invalid input, no-change reset,
 post-reset movement, external synchronization and keyboard adjustment. Native
 pointer sanity acceptance remains for the user; this is not an Operator playback
 stop diagnosis.
+
+
+## Operator navigation and context — pulse2341
+
+Envelope and Oscillator navigation now has one stable slot below the graph;
+routing remains canonical and is reached through the entire global rail.
+Every supported oscillator shell control, including view-only Fine, follows its
+stable project/track/device context on pointer, focus and keyboard adjustment.
+Canonical parameters, shared widgets and draft/history contracts remain intact.
+See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
+The harmonic painter is a separate2342feature; this layout does not claim
+complete Oscillator-view parity. Native after review and final full localCI
+remain pending at the documented source checkpoint.
