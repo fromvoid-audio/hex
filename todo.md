@@ -1,6 +1,6 @@
 # hex todo
 
-Updated 10 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
+Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
 This file retains request order and repository evidence; [plan](docs/plan.md)
 owns milestone gates and [features](docs/features.md) owns capability assessment.
@@ -1777,3 +1777,25 @@ native visual acceptance remain pending. See [Operator shell context contract]
 - Pulse2297's proposed contributor signature is unnecessary: filter residual
   history remains valid across input changes. Cancellation/correction is pending
   live tracker recovery; do not implement that speculative subsystem.
+
+### 11 october 2026 — pulse2253: native eq8 band audition
+
+- Added the shared headphone toggle and physical filter-dot hold/drag audition.
+  Arming/keyboard selection never starts audio; inside release fades normally,
+  outside release/blur/disarm/lifecycle changes hard-cancel. Transient state is
+  not saved and does not create an authored edit when held stationary.
+- Separate bounded eight-command lease checks actual publication context, rate
+  and revision floor; priority Stop/fault fences remain effective under pressure.
+- Compatible Track/Return edits preserve held selection. Mutable release suffixes
+  keep ordinary history exclusively; a separate both-twin-certified bridge moves
+  only the exact held audition before all retired auditions are cleared.
+- Source regressions cover stale same-track tails with ordinary PCM oracle,
+  Return gain/Q/type handoffs and actual outside-release geometry. Actual Track
+  callback allocation probes have zero total/net counts/bytes; separate Return
+  audition callback allocation coverage is not claimed.
+- Release measurements at source3e13a01 retain60scenario rows and exact per-block
+  PCM oracles. See docs/eq-eight-audition.md and docs/performance.md for scope,
+  hashes and timing/environment limits. Full final-tree local CI/review are the
+  merge gates; native headphone/pointer/listening acceptance remains open.
+- Pulse live access is currently failing. Latest2296completion,2297correction
+  and2253review-state updates are queued temporarily, not saved to another tracker.

@@ -1,4 +1,4 @@
-# eq eight band audition kernel
+# eq eight band audition kernel and host
 
 Pulse2292 adds a transient DSP primitive for monitoring one enabled EQ band in
 isolation. The selection is an ephemeral `(band, edit lane)` value with checked
@@ -123,5 +123,51 @@ the existing control-side reclamation ownership.
 
 This contract is source integration, not proof of Ableton parity or physical-device
 performance. Native hold/drag/release, focus and listening acceptance remain open
-in Pulse2253. Automated callback and release-profile evidence will be recorded
-with the final validated source commit separately from that acceptance.
+in Pulse2253. Automated callback and release-profile evidence is recorded below, separately
+from that acceptance.
+
+## local host evidence (11 october)
+
+Source `3e13a01ef1361c6249ee59ccb6826e047f3c96c3` includes the bounded
+lease, native headphone/physical-press plumbing and transient release-tail bridge.
+Focused Lattice, device, engine, audio and response-graph tests pass. Repeated
+Track callback publications preserve the held selector; engine Return gain/Q/type
+publications preserve it without duplicating the current Return chain. A retiring
+mutable-instrument suffix retains its independently checked ordinary EQ PCM after
+hard-cancellation; an older same-track tail cannot mask the current held owner.
+The pointer-up geometry regression distinguishes actual graph bounds from clamped
+drag coordinates. No native interaction or listening test was performed.
+
+The actual Track callback allocation fixture exercises Begin, repeated parameter
+publications, instrument-release-tail transfer, smooth release, hard cancellation
+and shutdown. Measured scopes have zero total allocations and zero signed-net
+counts/bytes. Separate source tests cover priority Stop, seek, render faults,
+publication generation/rate/floor fences, queue saturation, idle boundaries and
+both-twin refusal. These do not establish that every fault or native API path is
+allocation-free. Return audition continuity is engine-tested; a separate Return
+audition callback allocation probe remains unmeasured. PR125 separately measures
+non-audition Return parameter-history handoff.
+
+The checked-in `hex-audio` example `profile_eq8_audition` times actual prepared
+callback Begin/render/spectrum-finish calls. It renders an original held sine
+note through two non-neutral EQ bands, compares every block exactly with a
+separate Playback oracle outside timing, and checks that held audition differs
+from normal output. Release and cancellation occur halfway through warm-up;
+all measured post-warm blocks equal an independently advanced normal oracle.
+Construction, control reclamation, checksums and destruction are outside timing.
+
+Three runs each at 48 khz and 128/256 frames use 200 warm-up and 4000 measured
+blocks on Apple M5 Pro/macOS 26.6.2/rustc 1.98.1. Normal/released/cancelled p50
+ranges are 5.042–5.083 μs at 128 frames and 9.083–9.125 μs at 256 frames; held
+audition is 6.459–6.500 μs and 11.917–12.000 μs respectively. These are short,
+unpaced headless runs, not physical device deadlines or reference listening.
+No other Hex Cargo/profile ran during the timed window; an external Yield app
+was active and OS scheduling was uncontrolled. Raw p95/max outliers are retained.
+
+`artifacts/profiles/eq8-audition-host-2253/3e13a01/` retains three executables,
+18 raw logs, 60 scenario rows, source/tree/hardware/process metadata and SHA256
+hashes in `summary.json`. The separate one-band spectrum comparison retains
+exact old/new PCM across all scenarios; its older baseline includes fewer
+prerequisites and is not an isolated measurement of just this lease. See
+[performance](performance.md#eq8-transient-audition-host--11-october-2026).
+Full final-tree local CI and final diff review remain the PR merge gates.
