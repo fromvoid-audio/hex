@@ -17,6 +17,7 @@ use std::{
 
 pub mod arrangement_seek;
 pub mod device_gesture;
+mod device_snapshot;
 pub mod service;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
 

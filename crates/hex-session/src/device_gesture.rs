@@ -3,8 +3,12 @@ use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_project::{DeviceId, Project, ReturnId, TrackId};
 use std::sync::Arc;
+#[cfg(test)]
+mod snapshot_tests;
 
-pub use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+pub use hex_lattice_contract::{
+    DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,
+};
 
 /// Tokens are monotonic within a project-open generation; zero is invalid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +27,9 @@ pub enum GestureTarget {
         device: DeviceId,
         first: ParameterId,
         second: ParameterId,
+    },
+    DeviceParameterSnapshot {
+        device: DeviceId,
     },
     ReturnSend {
         track: TrackId,
@@ -62,6 +69,21 @@ pub enum GestureRequest {
         sequence: u64,
         value: ParameterPairValue,
     },
+    BeginSnapshot {
+        key: GestureKey,
+        device: DeviceId,
+        snapshot: DeviceParameterSnapshot,
+    },
+    ChangeSnapshot {
+        key: GestureKey,
+        sequence: u64,
+        snapshot: DeviceParameterSnapshot,
+    },
+    CommitSnapshot {
+        key: GestureKey,
+        sequence: u64,
+        snapshot: DeviceParameterSnapshot,
+    },
     Cancel {
         key: GestureKey,
     },
@@ -91,6 +113,7 @@ pub struct GestureSnapshot {
     pub sequence: u64,
     pub value: ParameterValue,
     pub secondary_value: Option<ParameterValue>,
+    pub parameters: Option<DeviceParameterSnapshot>,
 }
 
 /// UI-side coalescer. It owns one in-flight request, one replaceable transient,
@@ -127,6 +150,7 @@ impl GestureClient {
             sequence: 0,
             value: initial,
             secondary_value: None,
+            parameters: None,
         });
         self.pending_begin = Some(GestureRequest::Begin { key, target });
         Ok(key)
@@ -162,9 +186,77 @@ impl GestureClient {
             sequence: 0,
             value: initial.first,
             secondary_value: Some(initial.second),
+            parameters: None,
         });
         self.pending_begin = Some(GestureRequest::Begin { key, target });
         Ok(key)
+    }
+
+    pub fn begin_snapshot(
+        &mut self,
+        generation: u64,
+        device: DeviceId,
+        initial: DeviceParameterSnapshot,
+    ) -> Result<GestureKey, &'static str> {
+        let key = self.begin(
+            generation,
+            GestureTarget::DeviceParameterSnapshot { device },
+            ParameterValue::Float(0.0),
+        )?;
+        self.active.as_mut().unwrap().parameters = Some(initial);
+        self.pending_begin = Some(GestureRequest::BeginSnapshot {
+            key,
+            device,
+            snapshot: initial,
+        });
+        Ok(key)
+    }
+
+    pub fn change_snapshot(&mut self, value: DeviceParameterSnapshot) -> Result<u64, &'static str> {
+        self.update_snapshot(value, false)
+    }
+
+    pub fn finish_snapshot(&mut self, value: DeviceParameterSnapshot) -> Result<(), &'static str> {
+        self.update_snapshot(value, true).map(|_| ())
+    }
+
+    fn update_snapshot(
+        &mut self,
+        value: DeviceParameterSnapshot,
+        terminal: bool,
+    ) -> Result<u64, &'static str> {
+        if self.has_pending_terminal() {
+            return Err("device gesture is finishing");
+        }
+        let active = self.active.as_mut().ok_or("no device gesture is active")?;
+        if !active
+            .parameters
+            .is_some_and(|initial| initial.same_parameters(&value))
+        {
+            return Err("snapshot gesture parameters changed");
+        }
+        active.sequence = active.sequence.saturating_add(1).max(1);
+        active.parameters = Some(value);
+        let request = if terminal {
+            GestureRequest::CommitSnapshot {
+                key: active.key,
+                sequence: active.sequence,
+                snapshot: value,
+            }
+        } else {
+            GestureRequest::ChangeSnapshot {
+                key: active.key,
+                sequence: active.sequence,
+                snapshot: value,
+            }
+        };
+        if terminal {
+            self.latest_change = None;
+            self.terminal = Some(request);
+        } else {
+            self.latest_change = Some(request);
+        }
+        Ok(active.sequence)
     }
 
     pub fn change(&mut self, value: ParameterValue) -> Result<u64, &'static str> {
@@ -174,7 +266,11 @@ impl GestureClient {
         let Some(snapshot) = self.active.as_mut() else {
             return Err("no device gesture is active");
         };
-        if matches!(snapshot.target, GestureTarget::DeviceParameterPair { .. }) {
+        if matches!(
+            snapshot.target,
+            GestureTarget::DeviceParameterPair { .. }
+                | GestureTarget::DeviceParameterSnapshot { .. }
+        ) {
             return Err("active gesture requires paired values");
         }
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
@@ -216,7 +312,11 @@ impl GestureClient {
         let Some(snapshot) = self.active.as_mut() else {
             return Err("no device gesture is active");
         };
-        if matches!(snapshot.target, GestureTarget::DeviceParameterPair { .. }) {
+        if matches!(
+            snapshot.target,
+            GestureTarget::DeviceParameterPair { .. }
+                | GestureTarget::DeviceParameterSnapshot { .. }
+        ) {
             return Err("active gesture requires paired values");
         }
         snapshot.sequence = snapshot.sequence.saturating_add(1).max(1);
@@ -723,16 +823,19 @@ impl GestureRequest {
             | Self::ChangePair { key, .. }
             | Self::Commit { key, .. }
             | Self::CommitPair { key, .. }
+            | Self::BeginSnapshot { key, .. }
+            | Self::ChangeSnapshot { key, .. }
+            | Self::CommitSnapshot { key, .. }
             | Self::Cancel { key } => key,
         }
     }
     pub fn phase(self) -> GesturePhase {
         match self {
-            Self::Begin { .. } => GesturePhase::Begin,
+            Self::Begin { .. } | Self::BeginSnapshot { .. } => GesturePhase::Begin,
             Self::Change { .. } => GesturePhase::Change,
-            Self::ChangePair { .. } => GesturePhase::Change,
+            Self::ChangePair { .. } | Self::ChangeSnapshot { .. } => GesturePhase::Change,
             Self::Commit { .. } => GesturePhase::Commit,
-            Self::CommitPair { .. } => GesturePhase::Commit,
+            Self::CommitPair { .. } | Self::CommitSnapshot { .. } => GesturePhase::Commit,
             Self::Cancel { .. } => GesturePhase::Cancel,
         }
     }
@@ -741,7 +844,9 @@ impl GestureRequest {
             Self::Change { sequence, .. }
             | Self::ChangePair { sequence, .. }
             | Self::Commit { sequence, .. }
-            | Self::CommitPair { sequence, .. } => sequence,
+            | Self::CommitPair { sequence, .. }
+            | Self::ChangeSnapshot { sequence, .. }
+            | Self::CommitSnapshot { sequence, .. } => sequence,
             _ => 0,
         }
     }
@@ -812,6 +917,95 @@ impl GestureMachine {
             ));
         }
         match request {
+            GestureRequest::BeginSnapshot {
+                device, snapshot, ..
+            } => {
+                if self.active.is_some()
+                    || self.last_key.is_some_and(|last| {
+                        last.generation == generation && key.token <= last.token
+                    })
+                {
+                    return Err(SessionError::Invalid("snapshot gesture is active or stale"));
+                }
+                let class = session.native_device_class(device)?;
+                let state = session
+                    .project()
+                    .device(device)
+                    .ok_or(SessionError::Invalid("device no longer exists"))?
+                    .state();
+                // Read canonical values rather than trusting caller's begin values.
+                let mut entries = [(ParameterId::from_static(1), ParameterValue::Float(0.0)); 64];
+                for (index, &(id, _)) in snapshot.entries().iter().enumerate() {
+                    entries[index] = (
+                        id,
+                        hex_engine::native_device_parameter_for_class(class, state, id)?,
+                    );
+                }
+                let initial = DeviceParameterSnapshot::new(&entries[..snapshot.entries().len()])
+                    .map_err(|_| SessionError::Invalid("invalid snapshot parameters"))?;
+                // Validate caller values before accepting ownership, without publication.
+                hex_engine::patch_native_device_snapshot_for_class(class, state, &snapshot)?;
+                self.active = Some(Active {
+                    snapshot: GestureSnapshot {
+                        key,
+                        target: GestureTarget::DeviceParameterSnapshot { device },
+                        sequence: 0,
+                        value: ParameterValue::Float(0.0),
+                        secondary_value: None,
+                        parameters: Some(initial),
+                    },
+                    kind: ActiveKind::Device {
+                        class,
+                        type_id: state.type_id(),
+                    },
+                });
+                self.last_key = Some(key);
+            }
+            GestureRequest::ChangeSnapshot {
+                sequence, snapshot, ..
+            }
+            | GestureRequest::CommitSnapshot {
+                sequence, snapshot, ..
+            } => {
+                let active = self.checked_active(session, key)?;
+                let terminal = request.phase() == GesturePhase::Commit;
+                if sequence == 0
+                    || sequence < active.sequence
+                    || (!terminal && sequence == active.sequence)
+                {
+                    return Err(SessionError::Invalid("snapshot gesture update is stale"));
+                }
+                if !active
+                    .parameters
+                    .is_some_and(|value| value.same_parameters(&snapshot))
+                {
+                    return Err(SessionError::Invalid("snapshot gesture parameters changed"));
+                }
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot gesture target changed"));
+                };
+                if terminal {
+                    let before = session.project().clone();
+                    outcome.playback = Some(session.commit_device_snapshot(
+                        device,
+                        &snapshot,
+                        previous.map(Arc::as_ref),
+                    )?);
+                    outcome.canonical_changed = session.project() != &before;
+                    self.active = None;
+                } else {
+                    let (project, prepared) = session.preview_device_snapshot(
+                        device,
+                        &snapshot,
+                        previous.map(Arc::as_ref),
+                    )?;
+                    let current = self.active.as_mut().unwrap();
+                    current.snapshot.sequence = sequence;
+                    current.snapshot.parameters = Some(snapshot);
+                    outcome.preview_project = Some(project);
+                    outcome.playback = Some(prepared);
+                }
+            }
             GestureRequest::Begin { target, .. } => {
                 if self.active.is_some() {
                     return Err(SessionError::Invalid("another device gesture is active"));
@@ -823,6 +1017,11 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture token is stale"));
                 }
                 let (kind, value, secondary_value) = match target {
+                    GestureTarget::DeviceParameterSnapshot { .. } => {
+                        return Err(SessionError::Invalid(
+                            "snapshot gesture requires initial parameters",
+                        ));
+                    }
                     GestureTarget::DeviceParameter { device, parameter } => {
                         let class = session.native_device_class(device)?;
                         let device_state = session
@@ -910,6 +1109,7 @@ impl GestureMachine {
                         sequence: 0,
                         value,
                         secondary_value,
+                        parameters: None,
                     },
                     kind,
                 });
@@ -1002,6 +1202,32 @@ impl GestureMachine {
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         match (snapshot.target, active.kind) {
             (
+                GestureTarget::DeviceParameterSnapshot { device },
+                ActiveKind::Device { class, type_id },
+            ) => {
+                let state = session
+                    .project()
+                    .device(device)
+                    .filter(|device| device.state().type_id() == type_id)
+                    .ok_or(SessionError::Invalid(
+                        "device gesture target was removed or replaced",
+                    ))?
+                    .state();
+                if session.native_device_class(device)? != class {
+                    return Err(SessionError::Invalid(
+                        "device gesture target changed native class",
+                    ));
+                }
+                for &(id, _) in snapshot
+                    .parameters
+                    .ok_or(SessionError::Invalid("missing snapshot parameters"))?
+                    .entries()
+                {
+                    hex_engine::native_device_parameter_for_class(class, state, id)?;
+                }
+            }
+
+            (
                 GestureTarget::DeviceParameter { device, parameter },
                 ActiveKind::Device { class, type_id },
             ) => {
@@ -1081,7 +1307,12 @@ impl GestureMachine {
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
         let result = self.checked_active(session, active.key).and_then(|_| {
-            if let Some(second) = active.secondary_value {
+            if let Some(parameters) = active.parameters {
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot target changed"));
+                };
+                session.preview_device_snapshot(device, &parameters, previous.map(Arc::as_ref))
+            } else if let Some(second) = active.secondary_value {
                 preview_pair_target(
                     session,
                     active.target,
@@ -1133,7 +1364,13 @@ impl GestureMachine {
         generation: u64,
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
-        let request = if let Some(second) = active.secondary_value {
+        let request = if let Some(snapshot) = active.parameters {
+            GestureRequest::CommitSnapshot {
+                key: active.key,
+                sequence: active.sequence.max(1),
+                snapshot,
+            }
+        } else if let Some(second) = active.secondary_value {
             GestureRequest::CommitPair {
                 key: active.key,
                 sequence: active.sequence.max(1),
@@ -1163,7 +1400,8 @@ fn preview_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.preview_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. } => Err(SessionError::Invalid(
+        GestureTarget::DeviceParameterPair { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",
         )),
         GestureTarget::ReturnSend {
@@ -1183,7 +1421,8 @@ fn commit_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.commit_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. } => Err(SessionError::Invalid(
+        GestureTarget::DeviceParameterPair { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",
         )),
         GestureTarget::ReturnSend {

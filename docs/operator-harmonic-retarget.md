@@ -470,8 +470,9 @@ next strictboolsuffix, proposedv8/380B(4u32); harmonics thenv9. No shared Operat
 writes until owners publish agreed exact versions. Reserve harmonicIDs93–512
 (256 coefficients93–348, ranges349–352; remaining IDs merely reserved), enable
 IDs513–516. Current descriptor count limit256 does not admit the combined352
-parameters; primary has a concrete512control-side limit versus bounded spectrum
-parameter alternative to select. No admission limit changed yet.
+parameters. The primary has now approved the finite512 control-side descriptor
+limit and maximum64 snapshot transaction described below. This does not change
+audio admission, processor, voice or event limits.
 
 PR164's parent-approved direction is a separate bounded analytic effective-level
 continuation with exact provider/provenance and owned held/release/tail snapshots,
@@ -532,3 +533,66 @@ of making a competing repair. Its unchanged fix is included through the frozen
 LFO dependency above; the new combined source requires its own fullCI result.
 The tested native helper removes ALSA setup as a blocker in this old instance.
 No native Mac input/screenshot/listening or new published-environment claim.
+
+
+## Approved bounded canonical snapshot implementation checkpoint
+
+The primary approved option A on 11 October 2026: retain scalar parameter types,
+raise only descriptor admission to512, and introduce `DeviceParameterSnapshot`.
+It owns inline storage for at most64 distinct ID/value pairs; its private
+constructor rejects empty/oversized input, invalid/duplicate IDs and nonfinite
+floats. Unused entries are initialized canonically. Descriptor validation checks
+every ID/type/domain before any private patch. Metadata provides a default
+bounded batch patch; Operator must override it to decode/encode once and make
+all64 values and the User-waveform transition atomic. That override is not yet
+implemented. There is no65th gesture item or spectrum variant in scalar values.
+
+Both registries validate the complete batch against current migrated state and
+validate the resulting state. Session preview and commit patch the latest
+canonical state, preserving unrelated values, prepare one candidate graph, and
+use existing `ReplaceDeviceState` publication/history. Failed candidate work
+cannot publish a partially patched state. Existing editor no-op detection is
+retained. The default batch may construct up to64 private states on control;
+production Operator must use the one-decode/encode override before acceptance.
+
+The worker gesture path carries BeginSnapshot/ChangeSnapshot/CommitSnapshot,
+using existing generation/token/sequence acknowledgments, latest-change
+coalescing and reserved terminal slot. Initial canonical values are read on
+control; begin input is validated before ownership. Updates must keep identical
+ordered IDs. Rebase applies the current snapshot over the latest canonical state;
+removed/replaced owners retire the overlay. Cancel restores the canonical
+prepared revision. Audio adoption/reversal must still use the paired actual
+applied boundary; these control tests do not establish that unintegrated law.
+
+The existing service policy explicitly finalizes an active gesture before Save,
+Export, Undo, Redo or Open. A refused finalization refuses that barrier and
+restores canonical publication. Snapshot finish participates in this policy;
+previews are never silently serialized. Tests exercise the same finish method
+and encode/decode result, but a real service save-during-harmonic-stroke test is
+still required after integration.
+
+Rust1.94 x86_64 actual implementation sizes: snapshot772B, gesture request800B,
+overlay840B, client4056B, service request800B. The32-slot worker queue therefore
+holds at most25,600 request payload bytes, excluding channel bookkeeping. No
+hidden boxed snapshot or unbounded list exists. One debug cloud measurement of
+100,000 full64 updates was230,467,304ns; it includes same-ID validation/copies,
+is noisy control-side evidence only and is not a timing gate or callback claim.
+The release version of the same test measured5,528,478ns for100,000 updates
+(about55ns/update); one cloud trial is not a sustained performance guarantee.
+The actual32-slot queue test also returns identical terminal payloads on full
+and closed queues, then retries after drainage without losing any values.
+
+Targeted tests cover canonical padding, count/ID/type/domain rejection including
+late validation before private patching; private patch failure without source
+mutation; atomic preview/commit and one-step Undo/Redo/no-op; encode/decode;
+explicit save finalization with unrelated bypass/rebase preservation; stale
+key/sequence/changed-ID refusal; removed owner and rapid control reversal;
+latest full snapshot coalescing and unsubmitted queue retry preserving terminal.
+Generic tests use existing EQ8 and synthetic metadata, not an invented harmonic
+DSP. Full64 harmonic history/reopen, actual preparation failure/publication,
+service queue/save, native editing and callback audio acceptance remain open.
+
+UI compilation currently requires three additive snapshot match arms in
+PR156-owned removal/numeric guards. These hunks were requested for freeze/release
+in PR156 comments6108174405 and6108202914 and have not been edited concurrently.
+PR164 provider/context hunks also remain held pending its validated checkpoint.

@@ -271,6 +271,20 @@ impl<'a> NativeInstrumentRegistry<'a> {
         self.validate_current(definition, definition.migrate_state(state)?)
     }
 
+    pub fn patch_parameters(
+        &self,
+        state: &NativeDeviceState,
+        snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        snapshot.validate(definition.descriptors())?;
+        let patched = definition.patch_parameters(&current, snapshot)?;
+        self.validate_current(definition, definition.migrate_state(&patched)?)
+    }
+
     pub fn patch_parameter(
         &self,
         state: &NativeDeviceState,
