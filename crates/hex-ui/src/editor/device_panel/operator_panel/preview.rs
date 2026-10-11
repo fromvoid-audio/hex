@@ -479,7 +479,7 @@ fn toggle(
             .device_panel
             .operator_previews
             .get(&device)
-            .map_or(true, |state| state.enabled[switch.index()]);
+            .is_none_or(|state| state.enabled[switch.index()]);
         let config = match ToggleConfig::new(
             format!(
                 "operator-preview-{}-toggle-{}",
@@ -567,7 +567,7 @@ fn selector(
                 device.value(),
                 choice.index()
             ),
-            choice.choices().iter().map(|label| theme::text(label)),
+            choice.choices().iter().map(theme::text),
             selected,
             control_style(),
         ) {
