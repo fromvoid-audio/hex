@@ -69,7 +69,9 @@ recorded and stops the run before any build or cleanup.
 Build phases on macOS/Linux use a nonblocking cooperative file lock keyed by that canonical
 target path. It covers cache ownership checks, handoff cleanup and every
 target-using Cargo step in the runner. Formatting and other commands that do not
-use build artifacts stay outside this lock. A second local-CI run targeting the same directory fails
+use build artifacts stay outside this lock. Python wrapper steps that invoke
+Cargo must explicitly declare target use; the dependency future-lint step does
+so and receives the same claimed, pinned target before it can create artifacts. A second local-CI run targeting the same directory fails
 immediately with the current holder when available; it does not wait or remove
 the persistent lock file. The lock is advisory: direct Cargo invocations and
 other tools do not participate. Operators must avoid running raw Cargo commands,

@@ -34,7 +34,11 @@ run this guard. The independent GPUI guard is unchanged. Full local CI also runs
 `check-dependency-future-lints.py`: the actual block source must compile under
 its denied lint, and a downstream macro consumer must expand/run with the
 actual proc-macro patch under its denied lint, default and no-default features.
-These standalone fixtures are not shipped application crates.
+These standalone fixtures are not shipped application crates. The provenance
+guard uses only Python 3.9 standard-library APIs, matching documented `python3`;
+it does not require `tomllib` or a backport. The Python Cargo regression step is
+explicitly marked as target-using, so the runner claims and locks a fresh target
+before invoking it. Unknown nonempty targets still fail closed without adoption.
 
 Primary sources inspected before choosing these changes:
 

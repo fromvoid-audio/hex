@@ -4,7 +4,7 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
-import tomllib
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 PATCHES = {
@@ -27,10 +27,20 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def section(source, name):
+    match = re.search(r"(?ms)^\[" + re.escape(name) + r"\]\s*\n(.*?)(?=^\[|\Z)", source)
+    return match.group(1) if match else ""
+
+
+def string_value(source, key):
+    match = re.search(r'(?m)^\s*' + re.escape(key) + r'\s*=\s*"([^"\n]*)"', source)
+    return match.group(1) if match else None
+
+
 def check():
-    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
-    lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
-    assert workspace["workspace"]["lints"]["rust"]["unsafe_code"] == "forbid"
+    workspace = (ROOT / "Cargo.toml").read_text()
+    lock = re.split(r"(?m)^\[\[package\]\]\s*\n", (ROOT / "Cargo.lock").read_text())
+    assert string_value(section(workspace, "workspace.lints.rust"), "unsafe_code") == "forbid"
     for name, (version, checksum, old, new) in PATCHES.items():
         relative = f"third_party/{name}"
         vendor = ROOT / relative
@@ -38,13 +48,17 @@ def check():
         assert manifest["package"] == name and manifest["version"] == version
         assert manifest["archive_sha256"] == checksum
         assert manifest["archive_url"] == f"https://static.crates.io/crates/{name}/{name}-{version}.crate"
-        assert workspace["patch"]["crates-io"][name] == {"path": relative}
-        assert relative in workspace["workspace"]["exclude"]
-        package = tomllib.loads((vendor / "Cargo.toml").read_text())["package"]
-        assert package["name"] == name and package["version"] == version
-        entries = [entry for entry in lock["package"] if entry["name"] == name]
-        assert len(entries) == 1 and entries[0]["version"] == version
-        assert "source" not in entries[0] and "checksum" not in entries[0]
+        assert re.search(
+            r'(?m)^' + re.escape(name) + r'\s*=\s*\{\s*path\s*=\s*"'
+            + re.escape(relative) + r'"\s*\}\s*$', section(workspace, "patch.crates-io"),
+        )
+        excluded = re.search(r"(?s)exclude\s*=\s*(\[.*?\])", section(workspace, "workspace"))
+        assert excluded and relative in json.loads(excluded.group(1))
+        package = section((vendor / "Cargo.toml").read_text(), "package")
+        assert string_value(package, "name") == name and string_value(package, "version") == version
+        entries = [entry for entry in lock if string_value(entry, "name") == name]
+        assert len(entries) == 1 and string_value(entries[0], "version") == version
+        assert string_value(entries[0], "source") is None and string_value(entries[0], "checksum") is None
         assert set(manifest["patched_files"]) == {"src/lib.rs"}
         metadata = {"HEX-PATCHES.md", "hex-provenance.json", "hex-patches.diff"}
         actual = {str(path.relative_to(vendor)) for path in vendor.rglob("*") if path.is_file()}

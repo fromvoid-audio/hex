@@ -3,7 +3,9 @@
 Pinned block0.1.6 and proc-macro-error2 2.0.1 now have excluded, checksum-verified
 external patches: inhabited opaque Class address marker and public proc_macro
 import. Published files/licenses and exact patch provenance are retained; the
-new guard joins local CI. [Rationale and native scratch evidence](docs/dependency-warnings.md)
+new guard joins local CI. The guard supports documented Python3.9 without
+tomllib; the Python Cargo regression step declares target use so a normal fresh
+target is claimed before fixture compilation, without automatic adoption. [Rationale and native scratch evidence](docs/dependency-warnings.md)
 record the bounded arm64 macOS proof and other-target limits. Cloud regression
 results belong to Pulse2143/PR153; full final-commit Mac CI and a warning-free
 release build remain pending. Existing GPUI literal fix is unchanged.

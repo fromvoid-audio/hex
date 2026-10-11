@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import hashlib
 import json
 import os
@@ -275,6 +276,45 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(cargo_identity["target_source"], "environment")
         self.assertEqual(cargo_identity["configured_target_value"], "relative/ignored-by-metadata")
         self.assertIn(f"[target={expected_target}]", self.call_log.read_text())
+
+    def test_dependency_guard_runs_without_python311_tomllib(self) -> None:
+        guard = SCRIPT.with_name("check-dependency-patches.py")
+        ast.parse(guard.read_text(), feature_version=(3, 9))
+        # Python 3.9 has no tomllib. An isolated stdlib-only subprocess with that
+        # import unavailable reproduces the original guard failure on any host.
+        code = """import builtins, runpy, sys
+original_import = builtins.__import__
+def without_tomllib(name, *args, **kwargs):
+    if name == 'tomllib':
+        raise ModuleNotFoundError('No module named tomllib')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = without_tomllib
+runpy.run_path(sys.argv[1], run_name='__main__')
+"""
+        result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(guard)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("dependency patches passed", result.stdout)
+
+    def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
+        python = self.bin / "python3"
+        python.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = scripts/check-dependency-future-lints.py ]; then\n'
+            '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
+            '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
+            '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
+            'fi\necho "completed $tool $*"',
+        ))
+        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
+                             steps=local_ci.FULL_STEPS)
+        self.assertEqual(runner.run(), 0)
+        summary = self.summary("python-cargo")
+        self.assertEqual(summary["target_cache"]["action"], "claim-empty")
+        self.assertTrue((target / "debug/fixture.rlib").is_file())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
 
     def test_unknown_nonempty_target_fails_closed_without_removing_or_using_it(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
