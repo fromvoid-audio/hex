@@ -25,6 +25,16 @@ const DISPLAY_BACKGROUND: u32 = 0x191919;
 const RAIL_BACKGROUND: u32 = 0x363636;
 const RAIL_GUTTER: u32 = 0x474747;
 
+pub(super) fn frame_style() -> hex_widgets::ControlStyle {
+    hex_widgets::ControlStyle {
+        background: RAIL_GUTTER,
+        surface: RAIL_GUTTER,
+        raised: RAIL_GUTTER,
+        border: RAIL_GUTTER,
+        ..super::control_style()
+    }
+}
+
 gpui::actions!(hex_operator, [ActivateRouting]);
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
@@ -85,7 +95,7 @@ pub(super) fn render_body(
         .bg(rgb(RAIL_GUTTER))
         .flex()
         .flex_col()
-        .gap(px(1.0))
+        .gap(px(2.0))
         .pr(px(4.0))
         .border_r_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -138,7 +148,9 @@ pub(super) fn render_body(
         .overflow_hidden()
         .flex()
         .gap(px(4.0))
-        .p(px(3.0))
+        .bg(rgb(RAIL_GUTTER))
+        .px(px(3.0))
+        .py(px(1.0))
         .child(shell)
         .child(
             div()
@@ -279,7 +291,11 @@ fn operator_row(
         .gap(px(2.0))
         .px(px(2.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(if selected { 0x414141 } else { RAIL_BACKGROUND }))
+        .bg(rgb(if selected {
+            RAIL_GUTTER
+        } else {
+            RAIL_BACKGROUND
+        }))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(

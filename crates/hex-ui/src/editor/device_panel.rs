@@ -1811,7 +1811,7 @@ fn render_instrument(
                 let body = operator_panel::render_body(view, cx, device_id, device_view);
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    operator_panel::frame_style(),
                     header_actions,
                     body,
                 )

@@ -213,3 +213,20 @@ user-dark-gray-center.png and user-selected-device.png. Source colors are based
 on these crops; full changed-tree local CI and new native visual/keyboard
 acceptance remain open. These are source results, not native acceptance. The
 separate native layout-gallery request must not expand this navigation PR.
+
+## human Routing pass and connected header correction
+
+Human tested the gray68 app and confirmed “Routing opens.” This accepts the
+repaired native keyboard path. Appearance remains unaccepted: the header should
+merge into the light gray outer background without a separating dark border,
+row gaps should increase slightly, and selected rows must equal the outer
+background exactly rather than retaining a slightly darker rectangle. The new
+Live crop is retained privately as `user-merged-header.png`.
+
+The focused revision overrides only Operator frame caller colors: header, body
+surface and border all use the outer gray. Selected oscillator and focused/active
+Routing rows share that exact color. Gaps increase from 1 to 2 logical pixels;
+vertical outer padding decreases from 3 to 1 so four 40px rows and three 2px
+gaps fit within the unchanged 168px body. Shared frame geometry, controls,
+canonical parameters and accepted keyboard behavior remain intact. New source
+checks and native appearance acceptance are required for this changed tree.

@@ -258,7 +258,7 @@ pub(super) fn render(
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(2.0));
     for row in rows {
         content = content.child(row);
     }
@@ -340,7 +340,19 @@ fn row(
     }
     row = row.child(dials);
     row = row
-        .bg(rgb(super::RAIL_BACKGROUND))
+        .bg(rgb(
+            if title == "global"
+                && view
+                    .device_panel
+                    .operator_pages
+                    .get(&device)
+                    .is_some_and(|state| state.page == super::OperatorPage::Routing)
+            {
+                super::RAIL_GUTTER
+            } else {
+                super::RAIL_BACKGROUND
+            },
+        ))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
         let focus = view
@@ -354,7 +366,7 @@ fn row(
         row = row
             .track_focus(&focus)
             .key_context("hex_operator_routing")
-            .focus(|style| style.bg(rgb(0x414141)))
+            .focus(|style| style.bg(rgb(super::RAIL_GUTTER)))
             .tab_index(0)
             .tooltip(|_, cx| {
                 cx.new(|_| super::super::super::transport::MiniTooltip {
