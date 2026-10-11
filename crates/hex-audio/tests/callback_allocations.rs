@@ -1284,6 +1284,124 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 }
 
 #[test]
+fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let track = match editor.execute(Command::AddTrack {
+        name: "auto pan allocation probe".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected audio track".into()),
+    };
+    let asset = match editor.execute(Command::AddAsset {
+        path: "memory/auto-pan-callback.wav".into(),
+        sample_rate: RATE,
+        frames: (BLOCK * 3) as u64,
+    })? {
+        Created::Asset(asset) => asset,
+        _ => return Err("expected audio asset".into()),
+    };
+    editor.execute(Command::PlaceClip {
+        track,
+        asset,
+        start: 0,
+        duration: (BLOCK * 3) as u64,
+        source_offset: 0,
+        source_length: (BLOCK * 3) as u64,
+        looping: false,
+    })?;
+    let type_id = DeviceTypeId::from_static("hex.auto-pan");
+    let state = hex_engine::default_native_device_state(type_id)?;
+    let device = match editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: state.clone(),
+    })? {
+        Created::Device(device) => device,
+        _ => return Err("expected Auto Pan device".into()),
+    };
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..BLOCK * 3)
+                .map(|frame| {
+                    let sample = (frame % 47) as f32 / 64.0 - 0.25;
+                    [sample, sample * -0.75]
+                })
+                .collect(),
+        )?,
+    )]);
+    let first_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let mut oracle = Renderer::new(first_revision.arrangement());
+    oracle.play();
+    let mut expected = [[0.0; 2]; BLOCK];
+    oracle.render(&mut expected)?;
+
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&first_revision))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial playback publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "Play command admission failed")?;
+    let mut actual = [[0.0; 2]; BLOCK];
+    measured_block(&mut callback, &mut actual);
+    compare_output(&actual, &expected);
+
+    let changed = hex_engine::patch_native_device_parameter(
+        &state,
+        ParameterId::from_static(1),
+        ParameterValue::Float(0.8),
+    )?;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: changed,
+    })?;
+    let second_revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        Some(first_revision.session()),
+    )?);
+    let replacement = Playback::try_from_prepared_with_session(Arc::clone(&second_revision))?;
+    control
+        .publish(replacement)
+        .map_err(|_| "edited playback publication failed")?;
+    measured_block(&mut callback, &mut actual);
+    assert!(control.status.rejected_revision().is_none());
+    let ramp_frames = (f64::from(RATE) * 0.005).ceil() as usize;
+    let amount_target = f64::from(0.8_f32);
+    for (index, actual_frame) in actual.iter().enumerate() {
+        let amount =
+            0.5 + (amount_target - 0.5) * (index + 1).min(ramp_frames) as f64 / ramp_frames as f64;
+        let phase = (BLOCK + index) as f64 / f64::from(RATE);
+        let left_lfo = (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5;
+        let right_lfo = (1.0 + (std::f64::consts::TAU * (phase + 0.5).rem_euclid(1.0)).sin()) * 0.5;
+        let base_gain = 1.0 - amount;
+        let source_index = BLOCK + index;
+        let source = (source_index % 47) as f32 / 64.0 - 0.25;
+        let expected = [
+            (f64::from(source) * (base_gain + amount * left_lfo)) as f32,
+            (f64::from(source * -0.75) * (base_gain + amount * right_lfo)) as f32,
+        ];
+        assert_eq!(*actual_frame, expected, "edited frame {index}");
+    }
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn play_from_callback_is_allocation_free_and_renders_from_requested_frame()
 -> Result<(), Box<dyn Error>> {
     let workload = fixture::fixture(false)?;

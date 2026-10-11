@@ -1948,3 +1948,23 @@ before the fix. Valid text's first-click blur commit stays intact. Full exact
 local CI and source review are merge gates; native pointer acceptance remains
 open. See [shared device controls](docs/device-controls.md). Operator stop2305
 remains open; service-level Operator gesture coverage is follow-up2320.
+
+## 11 october 2026 — pulse2321: original free-running Auto Pan
+
+- Registered `hex.auto-pan` version 1 with amount, rate, and right-channel phase
+  metadata, opaque validated state, and the generic native effect catalog.
+- Added a sine-only stereo amplitude modulator with fixed scalar clock/ramp
+  history, exact unity at zero amount, dry bypass with advancing clock, and
+  non-finite frame preservation. Compatible same-rate runtime handoffs retain
+  phase and unchanged in-flight ramps; edited targets ramp independently over
+  five milliseconds.
+- Regression coverage includes quarter-cycle stereo behavior, complementary
+  pan, zero-offset tremolo, reset/partition behavior, finite-state validation,
+  live handoff, generic catalog/project state, save/load, undo/redo, and the
+  prepared audio callback allocation probe.
+- This is an original implementation using public control vocabulary, not
+  measured Live numerical parity. Additional modes and a dedicated compact panel
+  remain separate; native UI/listening acceptance is open.
+- Pulse2322 owns the dedicated compact panel. Full exact local CI and final diff
+  review are merge gates; native listening and appearance remain pending. The
+  unreproduced Operator stop in Pulse2305 remains open.
