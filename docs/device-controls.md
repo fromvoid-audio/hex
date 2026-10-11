@@ -429,5 +429,9 @@ stable project/track/device context on pointer, focus and keyboard adjustment.
 Canonical parameters, shared widgets and draft/history contracts remain intact.
 See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
 The harmonic painter is a separate2342feature; this layout does not claim
-complete Oscillator-view parity. Native after review and final full localCI
-remain pending at the documented source checkpoint.
+complete Oscillator-view parity. Full local CI and native pointer comparison pass at the documented checkpoint.
+Native keyboard activation remains inconclusive and is a required open acceptance
+gate; PR156 stays draft. Human rejected the initial dark outer rails; gray
+Background/Hover left and Surface right now surround the dark center, with
+corrected native comparison and final CI pending. Crowded matrix readouts are
+tracked separately as2352.

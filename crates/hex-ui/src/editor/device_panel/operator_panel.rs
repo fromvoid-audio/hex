@@ -69,7 +69,7 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(theme::DEVICE_DISPLAY_BACKGROUND))
+        .bg(rgb(theme::color(theme::PaletteRole::Background)))
         .flex()
         .flex_col()
         .gap(px(0.0))
@@ -264,11 +264,11 @@ fn operator_row(
         .gap(px(2.0))
         .px(px(2.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(if selected {
-            0x20242c
+        .bg(rgb(theme::color(if selected {
+            theme::PaletteRole::Hover
         } else {
-            theme::DEVICE_DISPLAY_BACKGROUND
-        }))
+            theme::PaletteRole::Background
+        })))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(

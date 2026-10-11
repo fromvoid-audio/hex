@@ -18,7 +18,7 @@ shows the Envelope graph, not a harmonic editing experiment. Exact numeric
 transfer laws and complete oscillator content are not inferred from that image.
 
 Acceptance for this PR is fixed section navigation, routing access from the
-existing global rail, darker rail/detail surfaces, and context following every
+existing global rail, gray outer rails/darker center, and context following every
 supported oscillator-rail control. Actual harmonic painting/custom waveforms
 remain Pulse2342/PR158; enableDSP2335 and activeLFO2325/PR154 are separate.
 Hex retains lowercase Ioskeley Mono and its theme. Full Operator parity is not
@@ -82,11 +82,72 @@ That independent investigation is Pulse2347; this PR does not repair the
 preview-source lifecycle. Native post-patch navigation must explicitly retest
 canonical revision/history and that status before acceptance or merge.
 
-Native after comparison, final exact-commit full local CI and shared-patch
-integration are pending at this checkpoint. Required native failure or unavailable
-reference evidence remains visible rather than being treated as visual parity.
+Shared-patch integration and native keyboard acceptance remain open. Required
+missing or inconclusive evidence is not treated as complete visual acceptance.
 User checklist: switch Envelope/Oscillator repeatedly onA–D; use coarse/fine,
 level and fixed/ratio fields; inspect correct center values; click the whole
 routing/Time/Tone/Volume rail and activate it by keyboard; type/cancel/Undo/save
 without unintended parameter changes. Listening and harmonic painter acceptance
 remain with their owning tickets.
+
+
+## post-patch native checkpoint
+
+Source `ec871d1afc73fc6acc831fd6edc17bc6680fe6ce` passed all 16 local CI steps
+in 268.373 seconds, clean and unchanged, `stale=false`. Report:
+`artifacts/local-ci/20261011T085821Z-ffac53aa/summary.json`; source digest
+`4a71eea7137d168b21ca530a13ef3765450444cafd11fe09b9aef12647abd946`.
+The separately identified after app uses its actual `CFBundleExecutable` (`hex`),
+SHA256 `3847c15e288b8921264a2bf628d7fa274f67e7191f9db6ebedd9ddbbe656a54c`.
+An earlier preparation copied the binary to the wrong executable name; that run
+was discarded, the correct executable replaced, and the app restarted before
+these captures. No result from the interrupted preparation is counted.
+
+After captures in the same ignored evidence directory are 2480x1522:
+`after-envelope-a.png`, `after-oscillator-a.png`, `after-fine-b.png`,
+`after-routing-rail.png`, `after-envelope-c.png`,
+`after-oscillator-d-fixed.png`, `after-envelope-a-undo.png`.
+Compared with the before captures, the navigation stays at the same graph-bottom
+position across Envelope/Oscillator, A–D selection and fixed mode. Compared with
+the actual Live reference, labels/order and the dark central display follow
+the observed layout. The blanket dark outer rails in this checkpoint were
+subsequently rejected by the human; these images do not accept their color. Hex uses its own typography, wider compact fields and
+limited supported controls; exact Live pixel/content parity is not established.
+
+Pointer checks selected B from Fine, C from coarse, D from fixed, and A from
+level, and opened Routing through the Time rail. The empty fixture was created
+by adding one track, removing its default Sine, then adding Operator. Canonical
+revision stayed 3 through view-only navigation; fixed D intentionally advanced
+it to 4 and Undo to 5. No preview-source error appeared in this run. The owned
+session log is retained as `after-session.log`. This does not close Pulse2347
+or establish why the baseline error occurred.
+
+Native keyboard input remains inconclusive: an Up/Tab/Return automation batch
+opened an unexpected discard dialog (cancelled), and a separate Tab/Return
+attempt did not visibly open Routing. A simultaneously started unrelated review
+app was detected in the diagnostic inventory; its log is not this fixture's
+provenance. Headless GPUI keyboard/focus regressions pass, but a human check in
+the isolated app is still required before this task's native gate is accepted.
+No save/reopen or listening acceptance is inferred from these pointer captures.
+The existing matrix unit readouts visibly crowd adjacent cells; separate
+Pulse2352 owns their compact formatting, without expanding this navigation PR.
+PR156 remains draft with required native keyboard acceptance pending.
+
+
+## human color correction
+
+The human rejected dark-blue left and right sections after the pointer checkpoint.
+Re-reading the actual native Live reference confirms a neutral-gray left rail,
+a somewhat brighter gray right rail and darker center. Original image coordinates
+(left 865,1775 / 900,1890 / 1270,1800; center 1582,1757;
+right 2021,1880 / 1940,1770) sample RGB 55/55/55, 54/54/54,
+54/54/54, 24/24/24, 70/70/70 and 77/77/77 respectively. These are
+observed pixels, not claimed universal Live theme constants.
+
+The blanket `DEVICE_DISPLAY_BACKGROUND` on the shell/preview rows and dark
+widget style caused the rejected sides. The correction restores Hex's existing
+Background on the left, Hover for its selected row, Surface on the right,
+and standard rail control styles, keeping the center inset dark and its
+canonical readouts accented. No new palette or preference overwrite is added.
+All 13 Operator source tests pass after the correction. Corrected native color
+comparison and exact final-commit CI remain pending; this is not visual acceptance.

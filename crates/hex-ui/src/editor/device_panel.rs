@@ -2278,16 +2278,15 @@ fn parameter_control_with_presentation(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> Div {
-    let mut style = if identity.type_id.as_str() == Ok("hex.instrument.operator") {
-        operator_panel::display_style()
+    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && presentation == ControlPresentation::InlineValue
+    {
+        let mut style = operator_panel::display_style();
+        style.text = style.accent;
+        style
     } else {
         control_style()
     };
-    if identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && presentation == ControlPresentation::InlineValue
-    {
-        style.text = style.accent;
-    }
     let display_label = display.label;
     let key = ParameterKey {
         device,
@@ -2443,11 +2442,11 @@ fn create_parameter_control(
     let descriptor = parameter.descriptor;
     let value = parameter.value;
     let operator_context_owner = operator_panel::context::Owner::capture(view, key.device);
-    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator") {
+    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && presentation == ControlPresentation::InlineValue
+    {
         let mut style = operator_panel::display_style();
-        if presentation == ControlPresentation::InlineValue {
-            style.text = style.accent;
-        }
+        style.text = style.accent;
         style
     } else {
         control_style()
