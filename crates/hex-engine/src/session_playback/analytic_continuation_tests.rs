@@ -434,6 +434,19 @@ fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
     let admitted =
         super::super::preroll::arrangement_runtime_storage_preflight_bytes(&runtime.revision)
             .unwrap();
+    eprintln!(
+        "enable storage: sampler={} continuation_slot={} current_capacity={} scratch_capacity={} table_payload_bytes={} actual={} admitted={} cap={}",
+        std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
+        std::mem::size_of::<Option<hex_lattice::AnalyticContinuation>>(),
+        runtime.analytic_continuations.capacity(),
+        runtime.analytic_continuation_scratch.capacity(),
+        (runtime.analytic_continuations.capacity()
+            + runtime.analytic_continuation_scratch.capacity())
+            * std::mem::size_of::<Option<hex_lattice::AnalyticContinuation>>(),
+        actual,
+        admitted,
+        super::super::preroll::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    );
     assert!(actual <= admitted);
     assert!(admitted <= super::super::preroll::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
