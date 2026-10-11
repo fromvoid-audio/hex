@@ -75,6 +75,7 @@ pub enum NumericControlAppearance {
     Standard,
     CompactDial,
     MiniDial,
+    MicroDial,
     InlineValue,
 }
 
@@ -1007,17 +1008,27 @@ impl gpui::Render for NumericControl {
                             )),
                     )
             }
-            (NumericControlKind::Knob, NumericControlAppearance::CompactDial) => {
-                let width = 64.0;
-                let height = 52.0;
-                let label_height = 10.0;
-                let label_size = 9.0;
-                let knob_size = 26.0;
+            (
+                NumericControlKind::Knob,
+                NumericControlAppearance::CompactDial | NumericControlAppearance::MicroDial,
+            ) => {
+                let (
+                    width,
+                    height,
+                    label_height,
+                    label_size,
+                    knob_size,
+                    needle_radius,
+                    marker_top,
+                    marker_length,
+                    value_height,
+                    gap,
+                ) = if self.appearance == NumericControlAppearance::MicroDial {
+                    (46.0, 40.0, 8.0, 7.0, 18.0, 5.5, 1.0, 2.0, 12.0, 0.0)
+                } else {
+                    (64.0, 52.0, 10.0, 9.0, 26.0, 9.0, 2.0, 3.0, 14.0, 1.0)
+                };
                 let center_px = knob_size / 2.0;
-                let needle_radius = 9.0;
-                let marker_top = 2.0;
-                let marker_length = 3.0;
-                let value_height = 14.0;
                 let quarter_turn = std::f32::consts::FRAC_PI_4;
                 let angle = (-5.0 * quarter_turn + value * 6.0 * quarter_turn)
                     .clamp(-5.0 * quarter_turn, quarter_turn);
@@ -1027,7 +1038,7 @@ impl gpui::Render for NumericControl {
                     .flex_col()
                     .w(px(width))
                     .h(px(height))
-                    .gap(px(1.0))
+                    .gap(px(gap))
                     .items_center()
                     .track_focus(&self.focus)
                     .key_context("hex_numeric_control")

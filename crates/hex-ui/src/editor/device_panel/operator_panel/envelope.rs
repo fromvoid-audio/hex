@@ -83,7 +83,7 @@ pub(super) fn graph(
         .debug_selector(|| "operator-envelope-graph".into())
         .relative()
         .w_full()
-        .h(px(72.0))
+        .h(px(86.0))
         .child(graph_entity)
 }
 

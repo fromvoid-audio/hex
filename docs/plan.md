@@ -19,6 +19,11 @@ Operator (19). Each deliverable has a focused PR. The finite contracts and
 stateful dependencies are in [lattice](lattice.md). Pending native acceptance
 for earlier UI PRs stays open; it does not block independent source work.
 Widget/controller contracts are in [device controls](device-controls.md).
+Operator panel follow-up2324 reorders the fixed-width device into oscillator,
+detail and right-shell columns. Amp envelope is the default detail page. The
+right-side LFO/filter/pitch/global widgets are local-only display state; separate
+Pulse work tracks DSP and canonical binding. The global algorithm icon opens the
+existing routing page to avoid mounting its canonical selector twice.
 Toolkit 44 passed all 14 local CI steps on clean `7f0bdea`
 ([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Gesture 65 passed all 14 local CI steps on clean `d48ad24` in 172.917 s
 ([PR #25](https://github.com/PORTALSURFER/hex/pull/25)). Panel 17 passed all 14 clean CI
