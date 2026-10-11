@@ -2323,3 +2323,53 @@ but an external Yield app was active; scheduling was uncontrolled. These short,
 unpaced headless workloads do not certify physical deadlines, quiet-machine
 performance, 100-track density or Ableton parity. Callback allocation coverage
 and its Return-owner limitation are in [audition](eq-eight-audition.md).
+
+
+## Operator held-only expiry-scan experiment (11 October2026)
+
+Pulse2299 under2226 measured a conservative block-local expiry predicate: skip
+per-sample slot scans only when no voice is releasing and no NoteOff is admitted.
+The candidate remains unmerged because measured benefit was not established.
+Main keeps its existing runtime,4032B/twin,8064B/pair,16voices/256events and
+independent effect/Return limits. No capacity or physical deadline claim follows.
+
+Matched executables: baseline3cd1548 (SHA256
+`4da41d8d7803dd6341f16670157a71d025a9f56c9b969ba1359646588a77bbb3`),
+experimental sourcee294e00 (SHA256
+`25fd65088888026b9261fa0f0b6721707066a717dd615908ece620ebf1b10204`).
+Raw24logs, source/tree/hardware/process metadata and summary are retained in
+`artifacts/profiles/operator-expiry-scan/e294e00/`. Three alternating old/new
+rounds at48kHz used100warm/2000measured blocks for steady and one-track combined
+scenarios; dense retarget used20warm/100measured blocks. All runs passed exact
+old/new PCM checksums, whole512-vs-four128 partition checks, audible finite output
+and the17-voice refusal guard. Focused runtime tests additionally passed release
+expiry/quiescence followed by a new note across six partitions.
+
+| Workload | Baseline p50 range | Candidate p50 range |
+| --- | ---: | ---: |
+|1track x16voices,128frames steady |29.459–30.083µs |30.416–38.625µs |
+|100tracks x16voices,128frames steady |3.131–3.207ms |3.175–3.346ms |
+|100tracks x16voices,512frames steady |12.331–13.515ms |12.554–12.665ms |
+|100tracks x16voices,128frames handoff |4.588–4.647ms |4.581–5.553ms |
+
+Apple M5 Pro/24GiB, macOS26.6.2, rustc1.98.1; registered offline SessionPlayback,
+unpaced. No concurrent Hex Cargo/profile ran during timing; an external Yield
+app and uncontrolled OS scheduling remained. These ranges do not prove a
+regression magnitude or quiet/native deadlines, and512-frame results are mixed.
+There is no consistent improvement supporting shipment. Next work requires
+statistical CPU call-tree attribution before another hot-path change; aggregate
+wall-clock measurements alone do not establish the responsible function.
+
+
+A separate5s `/usr/bin/sample` capture at1ms intervals of the preserved baseline
+100x16/128-frame steady workload produced4183 main-thread samples. Collapsed
+top-of-stack counts include1658 in `PreparedOperatorEnvelope::level`,912 in
+`routed_output_with_feedback`,619 in the registered `process_block`,569 in
+`sample_with_feedback` and210 in `note_matches_configuration`. Retained report,
+argv/source metadata and successful12000-block workload log are in
+`artifacts/profiles/operator-expiry-scan/cpu-baseline/`. Sampling began at startup
+and includes guards/warmup; inlining affects symbol attribution. Counts identify
+source-grounded investigation targets, not percentage speedups or exclusive
+function costs. First candidate: controlled inlining of the small envelope
+queries, preserving all arithmetic and checked public semantics; separate PR and
+matched measurements required.
