@@ -57,6 +57,12 @@ Dedicated compact shared-widget composition and cached static knee-law preview;
 source and exact local CI evidence recorded in PR137. Native appearance and
 listening remain user acceptance. See [Compressor](docs/compressor.md).
 
+## native preview retirement — pulse2315
+
+Shared typed live-effect cleanup now covers Return as well as Track preview
+entries. Actual Return device removal regression failed before the fix; final
+checks and full local CI are recorded with PR138. Native sanity check pending.
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets

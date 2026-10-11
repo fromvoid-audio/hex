@@ -50,6 +50,12 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    retire_transfer_previews(&mut view.device_panel, |id| {
+        devices
+            .iter()
+            .find(|device| device.id() == id)
+            .map(|device| device.state().type_id())
+    });
     retire_removed_eq8_graphs(view, cx, &alive);
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.spectrum_target.desired()

@@ -235,3 +235,49 @@ fn compressor_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
         assert!(compressor_panel::cached_curve(view, device).is_none())
     });
 }
+
+#[gpui::test]
+fn removing_return_compressor_retires_preview_without_changing_owner(cx: &mut TestAppContext) {
+    let (service, _, track, return_track, device, _) = actor_return_utility_fixture();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+            )
+            .expect("compressor"),
+        }))
+        .expect("replace utility");
+    let state = receive_service_event(&service).state;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(compressor_panel::cached_curve(view, device).is_some());
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))));
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.focused_return, Some(return_track));
+        assert!(
+            compressor_panel::cached_curve(view, device).is_none(),
+            "removed Return preview must retire immediately"
+        );
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("effect-device-{}", device.value()).into_boxed_str()
+            ))
+            .is_none()
+    );
+}
