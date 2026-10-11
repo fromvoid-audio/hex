@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
 mod gate_ui_tests;
+mod operator_navigation_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {
@@ -924,7 +925,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     );
     let tab = visual
         .debug_bounds(Box::leak(
-            format!("operator-page-{}-amp env", instrument_id.value()).into_boxed_str(),
+            format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str(),
         ))
         .expect("flat envelope tab");
     assert!(
@@ -990,7 +991,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         );
     });
     let envelope_tab =
-        Box::leak(format!("operator-page-{}-amp env", instrument_id.value()).into_boxed_str());
+        Box::leak(format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str());
     let envelope_bounds = visual.debug_bounds(envelope_tab).expect("amp envelope tab");
     visual.simulate_click(envelope_bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1188,9 +1189,9 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
 
     let envelope_tab =
-        Box::leak(format!("operator-page-{}-amp env", instrument_id.value()).into_boxed_str());
+        Box::leak(format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str());
     let oscillator_tab =
-        Box::leak(format!("operator-page-{}-osc", instrument_id.value()).into_boxed_str());
+        Box::leak(format!("operator-page-{}-oscillator", instrument_id.value()).into_boxed_str());
     let oscillator_tab_bounds = visual
         .debug_bounds(oscillator_tab)
         .expect("oscillator detail remains available");
@@ -1200,7 +1201,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         .debug_bounds("operator-waveform-cycle")
         .expect("selected oscillator cycle preview");
     assert!(waveform_preview.size.width > px(240.0));
-    assert_eq!(waveform_preview.size.height, px(76.0));
+    assert_eq!(waveform_preview.size.height, px(86.0));
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
     enter_typed_value(&mut visual, instrument_id, ratio, "invalid");
     let fix_selector =
@@ -1318,7 +1319,14 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
 
     let routing_tab =
         Box::leak(format!("operator-page-{}-routing", instrument_id.value()).into_boxed_str());
-    let tab_bounds = visual.debug_bounds(routing_tab).expect("routing tab");
+    assert!(
+        visual.debug_bounds(routing_tab).is_none(),
+        "routing has no standalone tab"
+    );
+    let routing_rail = Box::leak(
+        format!("operator-preview-row-{}-global", instrument_id.value()).into_boxed_str(),
+    );
+    let tab_bounds = visual.debug_bounds(routing_rail).expect("routing rail");
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
@@ -1515,7 +1523,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
-    let env_tab = Box::leak(format!("operator-page-{}-amp env", device.value()).into_boxed_str());
+    let env_tab = Box::leak(format!("operator-page-{}-envelope", device.value()).into_boxed_str());
     let tab_bounds = visual.debug_bounds(env_tab).expect("envelope tab");
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1695,7 +1703,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let env_tab = Box::leak(format!("operator-page-{}-amp env", device.value()).into_boxed_str());
+    let env_tab = Box::leak(format!("operator-page-{}-envelope", device.value()).into_boxed_str());
     let tab = visual.debug_bounds(env_tab).expect("envelope tab");
     visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1966,7 +1974,7 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     });
     visual.run_until_parked();
     let oscillator_tab =
-        Box::leak(format!("operator-page-{}-osc", operator.value()).into_boxed_str());
+        Box::leak(format!("operator-page-{}-oscillator", operator.value()).into_boxed_str());
     let tab = visual
         .debug_bounds(oscillator_tab)
         .expect("oscillator page tab");

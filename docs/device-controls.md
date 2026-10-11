@@ -416,3 +416,15 @@ triangle behavior, not pixel equivalence.
 Reference provenance, before/after native captures, regression sensitivity and
 remaining actual-device/reference acceptance are recorded in
 [knob focus observation](../research/observations/knob-focus-001.md).
+
+## Operator navigation and context — pulse2341
+
+Envelope and Oscillator navigation now has one stable slot below the graph;
+routing remains canonical and is reached through the entire global rail.
+Every supported oscillator shell control, including view-only Fine, follows its
+stable project/track/device context on pointer, focus and keyboard adjustment.
+Canonical parameters, shared widgets and draft/history contracts remain intact.
+See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
+The harmonic painter is a separate2342feature; this layout does not claim
+complete Oscillator-view parity. Native after review and final full localCI
+remain pending at the documented source checkpoint.

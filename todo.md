@@ -1,3 +1,15 @@
+## Operator fixed navigation and rail context — pulse2341 / PR156
+
+Fixed Envelope-left/Oscillator-right section bounds, routing via the whole
+bottom-right global rail, dark panel surfaces and owner-guarded context selection
+including FineB are implemented. Original rendered regressions fail before the
+repair (54px tab jump; FineB keepsA); all13targeted Operator tests pass afterward.
+Reference/native method and pending exact-source/native gates are in
+[operator navigation evidence](research/observations/operator-navigation-003.md).
+Full Oscillator/harmonic functionality belongs to2342/PR158. Baseline native
+preview-source error is tracked separately as2347; retest blocks acceptance if
+still reproducible. No full CI or native-after acceptance is claimed here yet.
+
 ## 100-track Lattice effects profile — pulse2317
 
 Original release profiler now checks whole-run standalone composition and timed
