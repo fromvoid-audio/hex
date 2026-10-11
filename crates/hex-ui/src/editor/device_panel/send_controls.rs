@@ -202,6 +202,9 @@ pub fn commit_owned_numeric_edit(
             GestureTarget::DeviceParameterPair { .. } => {
                 return Err("paired parameter edits use the graph gesture");
             }
+            GestureTarget::DeviceParameterSnapshot { .. } => {
+                return Err("snapshot parameter edits use the harmonic gesture");
+            }
             GestureTarget::ReturnSend {
                 track,
                 return_track,

@@ -28,9 +28,11 @@ pub(super) fn render(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
+    super::snapshot::retire_invalid_owner(view, &alive);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(

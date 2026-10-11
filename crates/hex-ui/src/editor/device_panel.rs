@@ -31,6 +31,7 @@ mod numeric_display;
 mod operator_panel;
 mod saturator_panel;
 mod send_controls;
+mod snapshot;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{
@@ -652,9 +653,11 @@ fn render_track(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
+    snapshot::retire_invalid_owner(view, &alive);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -2226,6 +2229,17 @@ pub(super) fn effective_parameter_value(
         .device_gesture
         .snapshot()
         .and_then(|snapshot| match snapshot.target {
+            GestureTarget::DeviceParameterSnapshot { device }
+                if device == key.device && snapshot.key.generation == view.project_generation =>
+            {
+                snapshot.parameters.and_then(|parameters| {
+                    parameters
+                        .entries()
+                        .iter()
+                        .find(|(id, _)| *id == key.parameter)
+                        .map(|(_, value)| *value)
+                })
+            }
             GestureTarget::DeviceParameter { device, parameter }
                 if device == key.device && parameter == key.parameter =>
             {

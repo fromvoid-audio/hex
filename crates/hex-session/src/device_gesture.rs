@@ -365,6 +365,21 @@ impl GestureClient {
         Ok(())
     }
 
+    /// Finalize the currently authored overlay without dropping compound values.
+    pub fn finish_current(&mut self) -> Result<(), &'static str> {
+        let active = self.active.ok_or("no device gesture is active")?;
+        if let Some(parameters) = active.parameters {
+            self.finish_snapshot(parameters)
+        } else if let Some(second) = active.secondary_value {
+            self.finish_pair(ParameterPairValue {
+                first: active.value,
+                second,
+            })
+        } else {
+            self.finish(active.value)
+        }
+    }
+
     /// Reserve the next protocol request before attempting the bounded service
     /// submit. On queue-full, call this again to retrieve the exact same request.
     pub fn next_request(&mut self) -> Option<GestureRequest> {

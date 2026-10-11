@@ -596,3 +596,21 @@ UI compilation currently requires three additive snapshot match arms in
 PR156-owned removal/numeric guards. These hunks were requested for freeze/release
 in PR156 comments6108174405 and6108202914 and have not been edited concurrently.
 PR164 provider/context hunks also remain held pending its validated checkpoint.
+
+
+PR156 subsequently froze9bbdad8 and explicitly released the three target-kind
+arms plus per-key snapshot lookup. The narrow UI adapter now cancels invalid
+snapshot owners even without cached scalar controls, checks project generation
+as well as exact device/parameter for overlay reads, and refuses scalar numeric
+fallback for snapshot targets. No navigation/geometry/style changes were made.
+A common `GestureClient::finish_current` retains full snapshot or pair values;
+Save/Undo/Open barriers and close finalization use it rather than the dummy
+scalar placeholder. Barrier queue refusal leaves the editable overlay intact.
+
+Three new portable GPUI tests in a separately owned snapshot module pass:
+exact device/parameter/generation overlay, removed-owner cancellation with no
+scalar cache, and full-value save barrier finalization/refusal. This is GPUI's
+test platform, not macOS/native painting, reference or listening acceptance.
+The prior three-arm UI compile failure is repaired on the new source; final
+exact-source full local CI must be rerun before reporting this checkpoint valid.
+PR164 shared provider/context remains held pending its validated handoff.

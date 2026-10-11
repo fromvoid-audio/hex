@@ -209,20 +209,9 @@ impl EditorView {
             return false;
         }
         if !self.device_gesture.has_pending_terminal() {
-            let snapshot = self.device_gesture.snapshot();
-            if let Some(snapshot) = snapshot {
-                let result = if let Some(second) = snapshot.secondary_value {
-                    self.device_gesture.finish_pair(ParameterPairValue {
-                        first: snapshot.value,
-                        second,
-                    })
-                } else {
-                    self.device_gesture.finish(snapshot.value)
-                };
-                if let Err(error) = result {
-                    self.error = Some(error.into());
-                    return false;
-                }
+            if let Err(error) = self.device_gesture.finish_current() {
+                self.error = Some(error.into());
+                return false;
             }
         }
         if defer_request(
