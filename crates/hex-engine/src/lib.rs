@@ -1,6 +1,9 @@
 //! Deterministic, sample-rate-locked stereo arrangement rendering.
 //! This is an original prototype, not a verified Live-compatible engine.
 pub use hex_devices::SineTable;
+pub use hex_devices::saturator::{
+    SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
+};
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;

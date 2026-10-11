@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 mod eq8_panel;
 mod numeric_display;
 mod operator_panel;
+mod saturator_panel;
 mod send_controls;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
@@ -137,6 +138,7 @@ pub(super) struct DevicePanelState {
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
+    saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
@@ -338,6 +340,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
+        view.device_panel.saturator_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
@@ -394,6 +397,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
+        view.device_panel.saturator_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.owner = desired_owner;
@@ -621,6 +625,12 @@ fn render_track(
         }
     }
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    view.device_panel.saturator_previews.retain(|device, _| {
+        identities.get(device).is_some_and(|identity| {
+            identity.class == NativeDeviceClass::Effect
+                && identity.type_id.as_str().ok() == Some("hex.saturator")
+        })
+    });
     view.device_panel
         .pending_values
         .retain(|key, _| alive.contains(&key.device) && !changed_device_ids.contains(&key.device));
@@ -859,6 +869,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     }
 }
@@ -1214,13 +1225,18 @@ fn render_effect(
         NativeDeviceClass::Effect,
         view.project_generation,
         view.state.as_ref().map_or(0, |state| state.revision),
-        device.state().type_id().as_str() == Ok("hex.utility"),
+        matches!(
+            device.state().type_id().as_str(),
+            Ok("hex.utility" | "hex.saturator")
+        ),
         cx,
     ));
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.saturator") {
+                saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 let sample_rate = view
                     .state
@@ -1264,7 +1280,10 @@ fn render_effect(
                 }
                 body
             };
-            if matches!(device_view.type_id.as_str(), Ok("hex.utility" | "hex.eq8")) {
+            if matches!(
+                device_view.type_id.as_str(),
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+            ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
@@ -1283,7 +1302,7 @@ fn render_effect(
         Err(error) => {
             let compact = matches!(
                 device.state().type_id().as_str(),
-                Ok("hex.utility" | "hex.eq8")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
             );
             let body = div()
                 .id(ElementId::Name(
@@ -1328,6 +1347,7 @@ fn render_effect(
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
+        Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     div()
@@ -1940,7 +1960,10 @@ fn device_actions(
 ) -> Div {
     let device = &devices[index];
     let id = device.id();
-    let action_size = if device.state().type_id().as_str() == Ok("hex.utility") {
+    let action_size = if matches!(
+        device.state().type_id().as_str(),
+        Ok("hex.utility" | "hex.saturator")
+    ) {
         12.0
     } else {
         14.0
@@ -2091,6 +2114,7 @@ enum ControlPresentation {
     InlineValue,
     CompactButton,
     CompactSelector,
+    CompactWideSelector,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2282,10 +2306,10 @@ fn parameter_control_with_presentation(
                     control.set_enabled(enabled, cx);
                 });
             }
-            let (width, height) = if presentation == ControlPresentation::CompactSelector {
-                (64.0, 14.0)
-            } else {
-                (136.0, 22.0)
+            let (width, height) = match presentation {
+                ControlPresentation::CompactSelector => (64.0, 14.0),
+                ControlPresentation::CompactWideSelector => (120.0, 14.0),
+                _ => (136.0, 22.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
@@ -2489,7 +2513,10 @@ fn create_parameter_control(
         }
         (ParameterKind::Choice { labels }, ParameterValue::Choice(value)) => {
             let choices = labels.iter().copied().map(theme::text);
-            let appearance = if presentation == ControlPresentation::CompactSelector {
+            let appearance = if matches!(
+                presentation,
+                ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
+            ) {
                 DiscreteControlAppearance::CompactSelector
             } else {
                 DiscreteControlAppearance::Standard
