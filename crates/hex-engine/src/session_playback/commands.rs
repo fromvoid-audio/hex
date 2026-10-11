@@ -723,7 +723,7 @@ fn is_suppressed_in(
                 entry.loop_pass,
             ) == target
         })
-        .any(|entry| entry.mutable_signature.is_none() && entry.until_frame > frame)
+        .any(|entry| entry.mutable_signature().is_none() && entry.until_frame > frame)
 }
 
 pub(super) fn transition_captures(owner: RouteOwner, target: RouteTarget) -> bool {

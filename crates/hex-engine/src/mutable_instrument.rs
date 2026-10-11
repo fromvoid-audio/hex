@@ -91,6 +91,16 @@ impl MutableOccurrenceSignature {
     pub(crate) const fn key(self) -> MutableOccurrenceKey {
         self.key
     }
+
+    pub(crate) const fn details(self) -> (BeatTime, BeatTime, u8, u8, u8) {
+        (
+            self.onset_beat,
+            self.gate_end_beat,
+            self.pitch,
+            self.channel,
+            self.velocity,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -773,7 +783,7 @@ fn has_mutable_suppression(
             ) == target
         });
     suppressions[start..end]
-        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature)
+        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature())
         .ok()
         .and_then(|offset| suppressions.get(start + offset))
         .is_some_and(|entry| entry.until_frame > onset_frame)

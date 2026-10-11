@@ -689,7 +689,7 @@ impl SessionPlayback {
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
                 let exact = mutable_proof_deadline(previous, new_route.id, candidate.signature);
                 let carried = previous.suppressions.iter().any(|entry| {
-                    entry.mutable_signature == Some(candidate.signature)
+                    entry.mutable_signature() == Some(candidate.signature)
                         && entry.until_frame > previous.performance_frame
                 });
                 let same_key =
@@ -703,7 +703,7 @@ impl SessionPlayback {
                                         candidate.signature.key().iteration,
                                     )
                                 && entry.until_frame > previous.performance_frame
-                                && entry.mutable_signature.is_some()
+                                && entry.mutable_signature().is_some()
                         });
                 if candidate.source_frame < source_frame && exact.is_none() && !carried {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
@@ -1083,7 +1083,7 @@ impl SessionPlayback {
                                             entry.note,
                                             entry.iteration,
                                             entry.loop_pass,
-                                            entry.mutable_signature,
+                                            entry.mutable_signature(),
                                         )
                                     },
                                 )
@@ -1202,18 +1202,18 @@ impl SessionPlayback {
                             && let Err(error) = add_or_extend_suppression(
                                 &mut self.suppression_scratch,
                                 self.release_capacity,
-                                MidiOccurrenceSuppression {
-                                    track: old_route.id,
-                                    clip: span.clip,
-                                    note: span.note,
-                                    iteration: span.iteration,
-                                    loop_pass: 0,
-                                    until_frame: candidate_end_frame
-                                        .map_or(voice.end_frame(), |end| {
-                                            end.max(voice.end_frame())
-                                        }),
-                                    mutable_signature: None,
-                                },
+                                MidiOccurrenceSuppression::analytic(
+                                    crate::mutable_instrument::MutableOccurrenceKey {
+                                        track: old_route.id,
+                                        clip: span.clip,
+                                        note: span.note,
+                                        iteration: span.iteration,
+                                        loop_pass: 0,
+                                    },
+                                    candidate_end_frame.map_or(voice.end_frame(), |end| {
+                                        end.max(voice.end_frame())
+                                    }),
+                                ),
                             )
                         {
                             failure = Some(error);
@@ -1245,15 +1245,16 @@ impl SessionPlayback {
                         if let Err(error) = add_or_extend_suppression(
                             &mut self.suppression_scratch,
                             self.release_capacity,
-                            MidiOccurrenceSuppression {
-                                track: old_route.id,
-                                clip: span.clip,
-                                note: span.note,
-                                iteration: span.iteration,
-                                loop_pass: 0,
+                            MidiOccurrenceSuppression::analytic(
+                                crate::mutable_instrument::MutableOccurrenceKey {
+                                    track: old_route.id,
+                                    clip: span.clip,
+                                    note: span.note,
+                                    iteration: span.iteration,
+                                    loop_pass: 0,
+                                },
                                 until_frame,
-                                mutable_signature: None,
-                            },
+                            ),
                         ) {
                             failure = Some(error);
                         }
@@ -1293,7 +1294,7 @@ impl SessionPlayback {
                     .suppressions
                     .iter()
                     .filter(|entry| {
-                        entry.mutable_signature == Some(candidate.signature)
+                        entry.mutable_signature() == Some(candidate.signature)
                             && entry.until_frame > previous.performance_frame
                     })
                     .map(|entry| entry.until_frame)
@@ -1302,19 +1303,13 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
-                let key = candidate.signature.key();
                 add_or_extend_suppression(
                     &mut self.suppression_scratch,
                     self.release_capacity,
-                    MidiOccurrenceSuppression {
-                        track: key.track,
-                        clip: key.clip,
-                        note: key.note,
-                        iteration: key.iteration,
-                        loop_pass: key.loop_pass,
-                        until_frame: old_deadline.max(candidate.end_frame),
-                        mutable_signature: Some(candidate.signature),
-                    },
+                    MidiOccurrenceSuppression::mutable(
+                        candidate.signature,
+                        old_deadline.max(candidate.end_frame),
+                    ),
                 )?;
             }
         }
@@ -1368,15 +1363,17 @@ impl SessionPlayback {
                 if self.suppression_scratch.len() >= self.release_capacity {
                     return Err(SessionPlaybackError::ReleaseBankFull);
                 }
-                self.suppression_scratch.push(MidiOccurrenceSuppression {
-                    track: entry.track_id,
-                    clip: continuation.key.clip,
-                    note: continuation.key.note,
-                    iteration: continuation.key.iteration,
-                    loop_pass: 0,
-                    until_frame: voice.end_frame(),
-                    mutable_signature: None,
-                });
+                self.suppression_scratch
+                    .push(MidiOccurrenceSuppression::analytic(
+                        crate::mutable_instrument::MutableOccurrenceKey {
+                            track: entry.track_id,
+                            clip: continuation.key.clip,
+                            note: continuation.key.note,
+                            iteration: continuation.key.iteration,
+                            loop_pass: 0,
+                        },
+                        voice.end_frame(),
+                    ));
             }
         }
 
@@ -1522,15 +1519,17 @@ impl SessionPlayback {
                         if self.suppression_scratch.len() >= self.release_capacity {
                             return Err(SessionPlaybackError::ReleaseBankFull);
                         }
-                        self.suppression_scratch.push(MidiOccurrenceSuppression {
-                            track: old_route.id,
-                            clip: key.clip,
-                            note: key.note,
-                            iteration: key.iteration,
-                            loop_pass: 0,
-                            until_frame: voice.end_frame(),
-                            mutable_signature: None,
-                        });
+                        self.suppression_scratch
+                            .push(MidiOccurrenceSuppression::analytic(
+                                crate::mutable_instrument::MutableOccurrenceKey {
+                                    track: old_route.id,
+                                    clip: key.clip,
+                                    note: key.note,
+                                    iteration: key.iteration,
+                                    loop_pass: 0,
+                                },
+                                voice.end_frame(),
+                            ));
                     }
                 }
             }
@@ -1544,7 +1543,7 @@ impl SessionPlayback {
                 entry.note,
                 entry.iteration,
                 entry.loop_pass,
-                entry.mutable_signature,
+                entry.mutable_signature(),
             )
         });
 
@@ -2510,7 +2509,7 @@ fn is_suppressed(playback: &SessionPlayback, track: TrackId, key: ContinuationKe
             ) == target
         })
         .any(|entry| {
-            entry.mutable_signature.is_none() && entry.until_frame > playback.performance_frame
+            entry.mutable_signature().is_none() && entry.until_frame > playback.performance_frame
         })
 }
 
@@ -2595,14 +2594,14 @@ fn add_or_extend_suppression(
             existing.note,
             existing.iteration,
             existing.loop_pass,
-            existing.mutable_signature,
+            existing.mutable_signature(),
         ) == (
             entry.track,
             entry.clip,
             entry.note,
             entry.iteration,
             entry.loop_pass,
-            entry.mutable_signature,
+            entry.mutable_signature(),
         )
     }) {
         existing.until_frame = existing.until_frame.max(entry.until_frame);

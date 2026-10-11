@@ -7,6 +7,15 @@ use std::collections::BTreeMap;
 mod layout;
 
 fn inventory(effect_count: usize, held: bool, first_id: u64) -> Arc<PreparedRevision> {
+    inventory_with_eq(effect_count, held, first_id, false)
+}
+
+fn inventory_with_eq(
+    effect_count: usize,
+    held: bool,
+    first_id: u64,
+    eq: bool,
+) -> Arc<PreparedRevision> {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
         .execute(Command::AddTrack {
@@ -24,11 +33,21 @@ fn inventory(effect_count: usize, held: bool, first_id: u64) -> Arc<PreparedRevi
         crate::NativeDeviceClass::Instrument,
         &operator,
         hex_lattice_contract::ParameterId::from_static(82),
-        hex_lattice_contract::ParameterValue::Bool(true),
+        hex_lattice_contract::ParameterValue::Bool(!eq),
     )
     .unwrap();
     let utility = crate::default_native_device_state(
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let equalizer = crate::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
+    )
+    .unwrap();
+    let equalizer = crate::patch_native_device_parameter(
+        &equalizer,
+        hex_devices::eq8::parameter::enabled(0, 0),
+        hex_lattice_contract::ParameterValue::Bool(true),
     )
     .unwrap();
     let mut next = first_id;
@@ -39,10 +58,17 @@ fn inventory(effect_count: usize, held: bool, first_id: u64) -> Arc<PreparedRevi
         track.instrument.as_mut().unwrap().id = next;
         track.instrument.as_mut().unwrap().state = operator.clone();
         next += 1;
-        for _ in 0..effect_count {
+        if eq {
+            track.instrument_position = Some(48);
+        }
+        for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
                 id: next,
-                state: utility.clone(),
+                state: if eq && effect + 1 == effect_count {
+                    equalizer.clone()
+                } else {
+                    utility.clone()
+                },
                 bypassed: false,
             });
             next += 1;
@@ -154,7 +180,45 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
     );
     assert_eq!(tails, hex_project::MAX_TRACKS);
     assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    // The approved design is explicitly conditional on complete accounting.
-    // This assertion records a counterexample, not a new admission rule.
+    assert_eq!(existing, 30_142_440);
+    assert_eq!(proposed, 32_781_896);
+    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+}
+
+#[test]
+fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
+    // Each real EQ chain retains 48 prefix and 16 suffix entries. The suffixes
+    // exactly fill the unchanged 4096-entry processing budget; all 16384
+    // allocated entries remain owned and charged across the handoff.
+    let mut old = SessionPlayback::new(inventory_with_eq(64, true, 100_000, true)).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 96]).unwrap();
+    let mut candidate = SessionPlayback::new(inventory_with_eq(64, false, 100, true)).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let tails = candidate.tail_groups.iter().flatten().count();
+    let suffixes: usize = candidate
+        .tail_groups
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, chain)| {
+            chain
+                .as_ref()
+                .map(|chain| chain.len() - candidate.tail_suffix_starts[slot])
+        })
+        .sum();
+    let existing = candidate.accounted_runtime_storage_bytes().unwrap();
+    let proposed = existing.checked_add(2_639_456).unwrap();
+    eprintln!(
+        "harmonic maximum-suffix candidate: tails={tails} suffixes={suffixes} existing={existing} proposed={proposed} cap={} excess={}",
+        MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+        proposed.saturating_sub(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+    );
+    assert_eq!(tails, hex_project::MAX_TRACKS);
+    assert_eq!(suffixes, MAX_RETAINED_SUFFIX_ENTRIES);
+    assert_eq!(existing, 30_990_312);
+    assert_eq!(proposed, 33_629_768);
+    assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    // A negative admission proof is a blocker, not authorization to lower
+    // suffix/voice/recipe capacity or to raise the existing budget.
     assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }

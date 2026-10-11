@@ -3914,15 +3914,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     assert_eq!(proof.quiet_deadline_frame, old_deadline);
     assert!(proof.note_off_sent);
 
-    let suppression = crate::midi_template::MidiOccurrenceSuppression {
-        track: key.track,
-        clip: key.clip,
-        note: key.note,
-        iteration: key.iteration,
-        loop_pass: key.loop_pass,
-        until_frame: old_deadline,
-        mutable_signature: Some(proof.signature),
-    };
+    let suppression =
+        crate::midi_template::MidiOccurrenceSuppression::mutable(proof.signature, old_deadline);
     let mut candidate =
         crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
     candidate.begin_block();
@@ -4520,7 +4513,7 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
     let suppression = candidate
         .suppressions
         .iter()
-        .find(|entry| entry.mutable_signature == Some(proof.signature))
+        .find(|entry| entry.mutable_signature() == Some(proof.signature))
         .copied()
         .expect("exact pre-cut occurrence is suppressed for its full old/candidate tail");
     assert_eq!(suppression.track, track);
@@ -4544,7 +4537,7 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
         1
     );
     assert!(next.suppressions.iter().any(|entry| {
-        entry.mutable_signature == Some(proof.signature)
+        entry.mutable_signature() == Some(proof.signature)
             && entry.until_frame >= suppression.until_frame
     }));
     let mut repeated = [[0.0; 2]; 32];
