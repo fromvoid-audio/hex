@@ -342,6 +342,16 @@ impl NumericControl {
     fn reset(&mut self, cx: &mut Context<Self>) {
         let start = self.draft;
         let value = self.spec.default();
+        // Reset finishes the local edit even when the value is already at its
+        // default. A pending invalid text/IME draft must not retain focus-mode
+        // or pointer capture and block later keyboard/external updates.
+        self.press = None;
+        self.editing = false;
+        self.invalid_text = false;
+        self.selected = 0..0;
+        self.reversed = false;
+        self.marked = None;
+        self.text = self.spec.format(value).unwrap_or_default();
         if start != value {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
@@ -349,7 +359,6 @@ impl NumericControl {
             });
             self.value = value;
             self.draft = value;
-            self.text = self.spec.format(value).unwrap_or_default();
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
@@ -358,8 +367,8 @@ impl NumericControl {
                 phase: NumericEventPhase::Commit,
                 value,
             });
-            cx.notify();
         }
+        cx.notify();
     }
 
     fn value_mouse_down(

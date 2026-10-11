@@ -492,6 +492,73 @@ fn rendered_knob_reset_emits_one_complete_default_gesture(cx: &mut TestAppContex
             (crate::NumericEventPhase::Commit, 0.0),
         ]
     );
+
+    // Reset is also an explicit way out of a pending typed value, including
+    // invalid input and resetting a value that is already at its default.
+    let value_bounds = visual
+        .debug_bounds("test-control-value")
+        .expect("numeric value field");
+    let value_point = value_bounds.center();
+    for (start, pending_text) in [(0.75, "0.5"), (0.0, "invalid")] {
+        control.update(cx, |control, cx| {
+            control
+                .set_external_value(start, cx)
+                .expect("external value");
+        });
+        visual.simulate_click(value_point, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(pending_text);
+        if pending_text == "invalid" {
+            visual.simulate_keystrokes("enter");
+            control.read_with(cx, |control, _| assert!(control.invalid_text));
+        }
+        visual.simulate_click(point, Modifiers::default());
+        // The first click can commit valid text through the existing focus-blur
+        // contract. Invalid text remains pending until the reset discards it.
+        let reset_start = control.read_with(cx, |control, _| control.value());
+        phases.borrow_mut().clear();
+        visual.simulate_event(MouseDownEvent {
+            position: point,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        control.read_with(cx, |control, _| {
+            assert!(!control.is_editing(), "reset must end pending text editing");
+            assert!(!control.invalid_text);
+            assert!(
+                !control.is_interacting(),
+                "reset must release the old press"
+            );
+            assert_eq!(control.display_text(), "0.00");
+            assert_eq!(control.selected, 0..0);
+            assert!(control.marked.is_none());
+        });
+        // Continuing to hold/move after the double-click must not revive the
+        // first click's press or open a second gesture.
+        let moved = gpui::point(point.x, point.y - px(12.0));
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        let expected = if reset_start == 0.0 {
+            Vec::new()
+        } else {
+            vec![
+                (crate::NumericEventPhase::Begin, reset_start),
+                (crate::NumericEventPhase::Change, 0.0),
+                (crate::NumericEventPhase::Commit, 0.0),
+            ]
+        };
+        assert_eq!(*phases.borrow(), expected);
+        control.update(cx, |control, cx| {
+            control
+                .set_external_value(0.25, cx)
+                .expect("external value");
+            assert_eq!(control.value(), 0.25);
+        });
+        visual.simulate_keystrokes("up");
+        control.read_with(cx, |control, _| assert!(control.value() > 0.25));
+    }
 }
 
 #[gpui::test]
