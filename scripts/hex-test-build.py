@@ -150,7 +150,7 @@ def recover(app: Path, journal: Path) -> None:
         # New candidate has been renamed. Complete only if fully verified.
         try:
             verify(app)
-        except (DeliveryError, OSError, ValueError):
+        except (DeliveryError, OSError, ValueError, subprocess.CalledProcessError):
             if not backup.exists():
                 raise
             assert_identity(backup)
@@ -190,7 +190,7 @@ def activate(app: Path, stage: Path, backup: Path | None = None) -> Path | None:
         stage.rename(app)
         sync_directory(app.parent)
         verify(app)
-    except (OSError, DeliveryError, ValueError):
+    except (OSError, DeliveryError, ValueError, subprocess.CalledProcessError):
         # Retain failed candidate for inspection, then restore the intact old app.
         if backup.exists():
             assert_inactive(app)

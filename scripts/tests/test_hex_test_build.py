@@ -108,6 +108,20 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
         self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"broken")
 
+    def test_signature_failure_after_rename_restores_previous_app(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        original = delivery.verify_native_executable
+        def reject_installed(binary):
+            if binary == self.app / "Contents/MacOS/hex":
+                raise subprocess.CalledProcessError(1, ["codesign"])
+            return original(binary)
+        with patch.object(delivery, "verify_native_executable", side_effect=reject_installed):
+            with self.assertRaises(subprocess.CalledProcessError):
+                delivery.activate(self.app, self.stage)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"new")
+
     def test_activation_is_serialized(self):
         with delivery.activation_lock(self.app):
             with self.assertRaisesRegex(delivery.DeliveryError, "another"):
