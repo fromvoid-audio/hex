@@ -72,6 +72,8 @@ project/route/Stop identity. Normally the lane owns one candidate runtime; its
 two fixed retirement slots bound defensive stale-state retirement to at most
 two preroll runtime budgets, with no new preparation until both drain.
 
+Tests use `serde_json` to check saved document version/provenance structurally.
+
 ## Does not own
 
 Serialization formats, durable-write primitives, audio devices or callbacks,

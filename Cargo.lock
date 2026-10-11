@@ -2662,6 +2662,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "serde_json",
 ]
 
 [[package]]
