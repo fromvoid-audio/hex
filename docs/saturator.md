@@ -58,3 +58,8 @@ validation and the required nonlinear preparation refusal. Track/Return project
 render, parameter-publication, and callback allocation probes are covered by the
 integration validation recorded with the Saturator PR; source tests alone do not
 establish native UI or listening acceptance.
+
+Return preview retirement (Pulse2315): both Track and Return render boundaries
+use the same typed live-device retirement helper. Removing a Return device
+retires its preview without needing an owner change; a real Service-backed
+headless removal regression failed before this correction and passes after it.

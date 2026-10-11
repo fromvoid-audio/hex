@@ -51,6 +51,12 @@ format, and the architecture guard pass. It does not claim numeric parity with
 Ableton Live. PR134 merged after all 16 local CI checks passed on the clean unchanged
 final tree. The shared native panel and native listening acceptance remain open. See [Compressor](docs/compressor.md).
 
+## native preview retirement — pulse2315
+
+Shared typed live-effect cleanup now covers Return as well as Track preview
+entries. Actual Return device removal regression failed before the fix; final
+checks and full local CI are recorded with PR138. Native sanity check pending.
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets
