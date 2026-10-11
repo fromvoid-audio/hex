@@ -497,6 +497,10 @@ remain separate from time editing and DSP.
   [page delivery](docs/page-delivery.md) and [performance](docs/performance.md).
 - [ ] **project recovery** — missing-asset relinking, automatic crash journal and
   interrupted-write recovery; broader native Save/Save As/Session round trips.
+  Pulse25/PR151 implements explicit recovery/relinking and automatic canonical
+  checkpoints; untitled retains only the latest project, no history. Headless
+  restart/round-trip tests pass; full local/native gates remain open. Contract:
+  [project recovery](docs/project-recovery.md).
 - [ ] **recording and MIDI I/O** — audio input/monitoring/arming, recoverable recording,
   MIDI controllers/expression/MPE, input/output, capture and Session-to-Arrangement.
 - [ ] **musical editing** — real clip gain/pitch/warp, beat-anchored audio, source

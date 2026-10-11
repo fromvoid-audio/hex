@@ -229,14 +229,18 @@ Save Current uses a captured content token, one validated rolling recovery file,
 and atomic replacement; an external content change causes a conflict. If a
 create-new publication succeeds but cleanup or directory synchronization fails,
 the save error names the already-published path and the editor conservatively
-keeps the project marked unsaved. Native Save/Save As interaction acceptance and
-asset relinking remain open. Prepared
+keeps the project marked unsaved. Native Save/Save As interaction acceptance remains open; missing-media relinking
+and explicit journal recovery are source-implemented in Pulse25/PR151. Prepared
 playback handoff connects the canonical editor to CPAL; graph
 retirement and stream disposal stay away from the realtime callback.
 
 `recover-project` explicitly copies a valid recovery sidecar to a new project
 path after validating it. It preserves the existing target and sidecar; there is
-no automatic crash journal or recovery on startup.
+no silent recovery on startup. The native editor checkpoints canonical edits to
+one saved-project journal or the latest-only application untitled slot. Explicit
+File-menu recovery opens dirty without overwriting saved documents; missing media
+can be relinked after rate/length/decode/compile admission. See
+[project recovery](docs/project-recovery.md) for ownership, tests and native gaps.
 
 Opening validates every saved asset before replacing the project; failure leaves
 the current session intact. A nonempty project requires invoking open again to
