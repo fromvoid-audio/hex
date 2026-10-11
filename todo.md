@@ -1,3 +1,22 @@
+## Operator fixed navigation and rail context — pulse2341 / PR156
+
+Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
+owner-guarded Fine/shell context are implemented. The original rendered
+regressions fail before repair (54px tab jump; Fine B keeps A). Human native
+Fine B → Tab → Enter failed: production editor bindings intercept activation.
+The regression now installs those bindings and fails before the focused Routing
+action repair; all 13 Operator tests pass afterward. Enter/Space use the rail's
+own key context, and focused rail background provides visible feedback.
+Latest user crops supersede black: neutral dark gray rounded center, dark
+rectangular rail rows and lighter gray gutters. Human confirmed Routing opens in gray68. Latest appearance correction merges
+Operator header/border with the outer gray, widens row gaps to 2px and makes
+selected/focused rows exactly that outer gray. Final changed-tree CI and native
+appearance acceptance remain required; PR156 stays draft. Historical exact 9f0ba1a
+all-16 CI passed, but does not validate this newer tree.
+See [operator navigation evidence](research/observations/operator-navigation-003.md).
+Harmonics belong to2342/PR158; preview-source error2347 and crowded routing
+readouts2352 remain separate. The new native layout gallery is separate work.
+
 ## xattr Linux source compatibility — pulse2349
 
 The exact xattr0.2.3/libc0.2.190 Linux ENOATTR failure was reproduced with
@@ -2087,6 +2106,12 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
 
+
+11 October 2026 follow-up native feedback: the human reports the connected001 appearance is generally correct, but rail/center content needs more space from section edges and the dark separator between rails and center must go. The focused correction removes the two explicit dark rail borders and adds four logical pixels of horizontal content inset to both rail rows and the center/tab content. It preserves the compact frame/body height, forty-pixel controls, two-pixel row gutters, exact outer-gray selected backgrounds, and accepted Routing activation. Strengthened rendered row/control containment checks cover the inset requirement; updated validation and native appearance remain pending.
+
+The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
+
+Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
 ## 11 October 2026 — Pulse #2408 stable optimized test delivery
 
 PR #167 adds the native optimized delivery wrapper to the existing bundle entry

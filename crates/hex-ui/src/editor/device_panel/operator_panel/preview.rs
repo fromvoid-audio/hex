@@ -32,6 +32,20 @@ pub(in crate::editor::device_panel) enum Field {
 }
 
 impl Field {
+    pub(super) const fn operator(self) -> Option<usize> {
+        match self {
+            Self::FineA => Some(0),
+            Self::FineB => Some(1),
+            Self::FineC => Some(2),
+            Self::FineD => Some(3),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn is_global(self) -> bool {
+        matches!(self, Self::Time | Self::Tone | Self::Volume)
+    }
+
     const ALL: [Self; 12] = [
         Self::FilterFrequency,
         Self::FilterResonance,
@@ -162,6 +176,7 @@ pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) selectors: HashMap<Choice, SelectorPreview>,
+    pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor::device_panel) values: [f64; 12],
     pub(in crate::editor::device_panel) enabled: [bool; 2],
     pub(in crate::editor::device_panel) selected: [usize; 2],
@@ -176,6 +191,7 @@ impl Default for State {
             values: Field::ALL.map(|field| field.spec().default),
             enabled: [true; 2],
             selected: Choice::ALL.map(Choice::default),
+            routing_focus: None,
         }
     }
 }
@@ -222,7 +238,7 @@ pub(super) fn render(
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
-    let mut content = div().w_full().h_full().flex().flex_col();
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(2.0));
     for row in rows {
         content = content.child(row);
     }
@@ -234,8 +250,7 @@ pub(super) fn render(
         .w(px(PANEL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .border_l_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(super::RAIL_GUTTER))
         .pl(px(2.0))
         .child(content)
 }
@@ -249,6 +264,7 @@ fn row(
     choices: &[Choice],
     fields: &[Field],
 ) -> Stateful<Div> {
+    let owner = super::context::Owner::capture(view, device);
     let mut row = div()
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
@@ -256,6 +272,7 @@ fn row(
         .debug_selector(move || format!("operator-preview-row-{}-{title}", device.value()))
         .w_full()
         .h(px(ROW_HEIGHT))
+        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(1.0));
@@ -288,7 +305,7 @@ fn row(
     } else if let Some(switch) = switch {
         left = left.child(toggle(view, cx, device, switch));
     } else {
-        left = left.child(routing_link(cx, device));
+        left = left.child(routing_link(view, cx, device));
     }
     row = row.child(left);
     let mut dials = div()
@@ -301,10 +318,67 @@ fn row(
         dials = dials.child(control(view, cx, device, *field));
     }
     row = row.child(dials);
+    row = row
+        .bg(rgb(
+            if title == "global"
+                && view
+                    .device_panel
+                    .operator_pages
+                    .get(&device)
+                    .is_some_and(|state| state.page == super::OperatorPage::Routing)
+            {
+                super::RAIL_GUTTER
+            } else {
+                super::RAIL_BACKGROUND
+            },
+        ))
+        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
+    if title == "global" {
+        let focus = view
+            .device_panel
+            .operator_previews
+            .entry(device)
+            .or_default()
+            .routing_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        row = row
+            .track_focus(&focus)
+            .key_context("hex_operator_routing")
+            .focus(|style| style.bg(rgb(super::RAIL_GUTTER)))
+            .tab_index(0)
+            .tooltip(|_, cx| {
+                cx.new(|_| super::super::super::transport::MiniTooltip {
+                    description:
+                        "routing and global context · tab from device, then enter or space".into(),
+                })
+                .into()
+            })
+            .capture_any_mouse_down(cx.listener(
+                move |view, event: &gpui::MouseDownEvent, _, cx| {
+                    if event.button == gpui::MouseButton::Left
+                        && let Some(owner) = owner
+                    {
+                        super::context::select_routing(view, cx, owner);
+                    }
+                },
+            ))
+            .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
+                if let Some(owner) = owner {
+                    super::context::select_routing(view, cx, owner);
+                    cx.stop_propagation();
+                }
+            }));
+    }
     row
 }
 
-fn routing_link(cx: &mut Context<EditorView>, device: hex_project::DeviceId) -> Stateful<Div> {
+fn routing_link(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    device: hex_project::DeviceId,
+) -> Stateful<Div> {
+    let owner = super::context::Owner::capture(view, device);
     let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
     let mut icon = div()
         .w(px(12.0))
@@ -336,7 +410,9 @@ fn routing_link(cx: &mut Context<EditorView>, device: hex_project::DeviceId) -> 
         .cursor(gpui::CursorStyle::PointingHand)
         .child(icon)
         .on_click(cx.listener(move |view, _, window, cx| {
-            if super::finalize_controls(view, cx) {
+            if owner.is_some_and(|owner| owner.is_current(view))
+                && super::finalize_controls(view, cx)
+            {
                 view.focus.focus(window);
                 view.device_panel
                     .operator_pages
@@ -396,8 +472,26 @@ pub(super) fn control(
             Err(error) => return control_error(error),
         };
         let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+        let owner = super::context::Owner::capture(view, device);
         let subscription =
             cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+                if let Some(owner) = owner {
+                    let current = if event.phase == hex_widgets::NumericEventPhase::Cancel {
+                        owner.is_alive(view)
+                    } else {
+                        owner.is_current(view)
+                    };
+                    if !current {
+                        return;
+                    }
+                    if event.phase == hex_widgets::NumericEventPhase::Begin {
+                        if let Some(operator) = field.operator() {
+                            super::context::select_oscillator(view, cx, owner, operator, &[]);
+                        } else if field.is_global() {
+                            super::context::select_routing(view, cx, owner);
+                        }
+                    }
+                }
                 if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
                     state.values[key.1 as usize] = event.value;
                 }
@@ -432,6 +526,7 @@ pub(super) fn control(
     control.entity.update(cx, |control, cx| {
         let _ = control.set_external_value(value, cx);
     });
+    let owner = super::context::Owner::capture(view, device);
     div()
         .id(ElementId::Name(
             format!("operator-preview-{}-{}", device.value(), field as usize).into(),
@@ -441,6 +536,16 @@ pub(super) fn control(
         .h(px(ROW_HEIGHT))
         .flex_shrink_0()
         .child(control.entity.clone())
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |view, _, _, cx| {
+                if let Some(owner) = owner
+                    && let Some(operator) = field.operator()
+                {
+                    super::context::select_oscillator(view, cx, owner, operator, &[]);
+                }
+            }),
+        )
 }
 
 fn toggle(

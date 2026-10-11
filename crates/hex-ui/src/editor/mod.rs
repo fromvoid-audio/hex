@@ -219,6 +219,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 }
 
 fn bind_editor_keys(cx: &mut App) {
+    device_panel::bind_operator_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some("hex_editor")),
         KeyBinding::new("cmd-,", OpenSettings, None),
