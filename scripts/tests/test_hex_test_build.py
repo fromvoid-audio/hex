@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -197,6 +198,41 @@ class DeliveryTests(unittest.TestCase):
             runner.summary["start_tree"] = {**tree, "content_sha256": "changed"}
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
+
+
+@unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
+class NativeSignatureTests(unittest.TestCase):
+    def test_linker_signature_in_unsigned_bundle_and_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            app = root / "hex.app"
+            binary = app / "Contents/MacOS/hex"
+            binary.parent.mkdir(parents=True)
+            resources = app / "Contents/Resources"
+            resources.mkdir()
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n")
+            subprocess.run(["clang", str(source), "-Wl,-adhoc_codesign", "-o", str(binary)], check=True, capture_output=True)
+            with (app / "Contents/Info.plist").open("wb") as output:
+                plistlib.dump({"CFBundleIdentifier": delivery.IDENTITY, "CFBundleExecutable": "hex"}, output)
+            resource = resources / "fixture.txt"
+            resource.write_text("original")
+            receipt = resources / "test-build.json"
+            delivery.write_json(receipt, {"files": delivery.inventory(app)})
+            delivery.verify(app)
+            resource.write_text("tampered")
+            with self.assertRaisesRegex(delivery.DeliveryError, "checksum"):
+                delivery.verify(app)
+            resource.write_text("original")
+            # Rehashing cannot conceal an invalid executable signature.
+            with binary.open("r+b") as output:
+                output.seek(4096)
+                old = output.read(1)
+                output.seek(4096)
+                output.write(bytes([old[0] ^ 1]))
+            delivery.write_json(receipt, {"files": delivery.inventory(app)})
+            with self.assertRaises(subprocess.CalledProcessError):
+                delivery.verify(app)
 
 
 if __name__ == "__main__":
