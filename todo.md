@@ -7,6 +7,20 @@ in [performance evidence](docs/performance.md). The300-processor case is refused
 by the existing admission budget; no limit is raised and general dense/native
 performance acceptance remains Pulse2108. Full local CI belongs to the final PR.
 
+## Operator live gesture route — pulse2320
+
+One focused `hex-session` integration test now drives the registered Operator
+through Service Begin/Change/Commit while one MIDI note plays with oscillator-one
+feedback set to 0.3. It checks the noncanonical preview, compatible active
+runtime handoffs, changed finite PCM against an unchanged twin, one-step commit
+and Undo. After the 240-frame ramp, each output is checked against the twin at
+the same timeline positions, scaled by the expected carrier value. The test
+targets mutable-feedback carrier retargeting; analytic
+zero-feedback notes intentionally keep their immutable active note law. The
+focused test passes. Full exact-source local CI and PR review are delivery gates;
+native audio/UI acceptance remains separate. This coverage does not reproduce or resolve Operator stop issue
+2305. See [device gestures](docs/device-gestures.md).
+
 # hex todo
 
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
