@@ -34,8 +34,21 @@ continue from the actual applied boundary. Its recurrence currently stores shape
 outputs; under a zero level those become zero, rather than freezing an old signal.
 Whether this exact contract carries through the forthcoming LFO/harmonic runtime
 and active analytic notes is an explicit design gate, not an implemented promise.
-Detached old tails keep their owned law and ordinary bounded retirement; deciding
-which still-owned release voices receive a toggle requires owner review.
+Source review confirmed that active analytic notes retain their old sampler on
+both Arrangement and Session publication. A level mask alone therefore fails
+held-note toggling. Resolve this with a deliberately approved provider/engine
+continuation contract or an agreed integrated runtime policy before implementation;
+do not silently convert all Operator notes to the current16-voice mutable class.
+Analytic smoothing also needs a deliberate contract; the mutable ramp does not
+provide it. Compare against the actually applied source, not an intermediate
+canonical revision that may never have reached audio.
+
+Feedback stores the rendered post-level signal, not a hidden unmuted recurrence.
+Existing inaudible-ancestor pruning can also zero enabled upstream histories
+when their last carrier path is disabled. Re-enable must resume continuing
+age/phase without claiming the feedback trajectory of an oscillator left audible.
+Detached old tails keep their owned law and ordinary bounded retirement; toggles
+affect the current owner. Downstream effect tails may remain audible.
 
 ## Shared ownership gates
 
@@ -46,6 +59,11 @@ paired-runtime integration. Main currently has envelope-domain state version6,
 with364 bytes and IDs82–92. Never accept two layouts under one version or assign
 enable IDs inside reserved harmonic fields. Agree the integrated prefix, strict
 version order, descriptor allocation and source freeze before shared-state edits.
+Bound the existing feedback decode slice to its original endpoint before appending
+a suffix; its current open-ended loop would exceed the four-entry array. Freeze
+the old envelope migration cutoff at version6 and remove descriptor validation
+indices relative to the growing descriptor-array tail. Recalculate fixed runtime
+compatibility-payload storage against the final integrated8192-byte pair limit.
 
 No native input or compilation begins while another chat owns its lease.
 
