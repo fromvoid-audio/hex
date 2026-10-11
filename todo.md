@@ -2017,3 +2017,13 @@ Full local CI remains the
 merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).
+
+## Live-set import provenance — ticket 32, 11 October 2026
+
+PR #150 retains the approved import-only boundary. Schema 18 persists exact
+bounded original-document provenance; schemas 1–17 migrate to absent evidence.
+Canonical snapshots/history retain immutable bytes and debug output hides source
+contents. Focused tests cover save/reopen, edit/undo/redo, strict envelopes,
+limits and schema-17 rejection/migration. No musical XML mappings implemented:
+real user-authored minimal `.als` fixtures and observed Live field/unit evidence
+remain required. See `docs/live-set-import.md`; Pulse #32 owns blocked acceptance.

@@ -88,13 +88,38 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
+/// Encode schema 18 without allocating an oversized output document.
+/// Compact JSON keeps a maximum-size provenance byte array within the existing
+/// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    let document = schema::DocumentV17::from_project(project)?;
-    let bytes = serde_json::to_vec_pretty(&document)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
+    struct BoundedOutput {
+        bytes: Vec<u8>,
+        exceeded: bool,
+    }
+    impl io::Write for BoundedOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > MAX_DOCUMENT_BYTES.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(io::Error::other("project document exceeds byte limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let document = schema::provenance::DocumentV18::from_project(project)?;
+    let mut output = BoundedOutput {
+        bytes: Vec::new(),
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut output, &document);
+    if output.exceeded {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
     }
-    Ok(bytes)
+    result?;
+    Ok(output.bytes)
 }
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {

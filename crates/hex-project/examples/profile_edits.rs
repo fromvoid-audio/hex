@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {

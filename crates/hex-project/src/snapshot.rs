@@ -13,6 +13,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
@@ -192,6 +193,7 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
             next_id: self.next_id,
             assets: self
@@ -374,6 +376,7 @@ impl Project {
     /// Validate untrusted snapshot metadata before constructing a live model.
     pub fn from_snapshot(snapshot: Snapshot) -> Result<Self, Invalid> {
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
         project.meter_map = crate::MeterMap::new(snapshot.meter_points)?;
         if snapshot.next_id == 0 {

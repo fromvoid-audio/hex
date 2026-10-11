@@ -120,3 +120,17 @@ during staging refuses the replacement. std does not preserve ACLs or extended
 attributes. Sidecar names must fit a 255-byte
 filesystem component; long names that would exceed that limit are refused
 before publication.
+
+Ticket 32 adds a bounded project-level import provenance envelope independent of
+native device state: exact original input bytes (1 MiB maximum), source kind and
+version, and adapter version. Clones/snapshots/history share immutable evidence;
+normal edits retain it unchanged. Debug output excludes contents and private
+paths. This is unchanged-input pass-through, not editable Ableton export or
+proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+
+Schema 18 requires nullable `import_provenance`. Schemas 1–17 migrate to absent
+provenance; their strict readers reject the new field. Unknown envelope kinds or
+versions, empty input and oversized arrays are rejected. Schema-18 JSON is compact
+and retains the 8 MiB document ceiling, including provenance. Serialization stops
+at that ceiling; saving never drops evidence to fit. The musical adapter and
+real Live-authored fixture acceptance remain blocked.
