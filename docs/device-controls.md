@@ -347,6 +347,32 @@ post-reset movement, external synchronization and keyboard adjustment. Native
 pointer sanity acceptance remains for the user; this is not an Operator playback
 stop diagnosis.
 
+
+## Operator navigation and context — pulse2341
+
+Envelope and Oscillator navigation now has one stable slot below the graph;
+routing remains canonical and is reached through the entire global rail.
+Every supported oscillator shell control, including view-only Fine, follows its
+stable project/track/device context on pointer, focus and keyboard adjustment.
+Canonical parameters, shared widgets and draft/history contracts remain intact.
+See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
+The harmonic painter is a separate2342feature; this layout does not claim
+complete Oscillator-view parity. Full local CI and native pointer comparison pass at the documented checkpoint.
+Human native Tab → Enter acceptance failed because the production editor's
+Session action intercepted Enter. The rendered regression now installs actual
+editor keybindings. The global rail has a dedicated Routing key context/action
+for Enter and Space, plus a lighter focused background. Latest supplied crops
+supersede black with a rounded neutral dark gray center and dark rectangular
+rail rows separated by lighter gray gutters. Updated exact-source CI and native
+acceptance remain required; PR156 stays draft. Crowded matrix readouts are
+tracked separately as2352.
+
+Human confirmed the repaired native Routing keyboard activation in gray68.
+Latest visual correction keeps Operator header, border and outer surface one
+light-gray color; selected/focused rows equal that surface exactly. Dark row
+gutters widen to 2px while the 168px body and shared frame/control dimensions
+remain unchanged. New native appearance acceptance remains required.
+
 ### value-field pointer lifecycle — 11 October 2026
 
 Pulse2340 / [PR155](https://github.com/PORTALSURFER/hex/pull/155) keeps the arrow
@@ -386,3 +412,10 @@ The user explicitly authorized merging PR155. Checklist supplied for testing:
    device removal. Confirm the arrow stays visible afterward in this and another
    window/application. Preserve unsaved user projects; use an isolated fixture or
    review app. Full local CI and native appearance/delivery are separate gates.
+
+
+11 October 2026 follow-up native feedback: the human reports the connected001 appearance is generally correct, but rail/center content needs more space from section edges and the dark separator between rails and center must go. The focused correction removes the two explicit dark rail borders and adds four logical pixels of horizontal content inset to both rail rows and the center/tab content. It preserves the compact frame/body height, forty-pixel controls, two-pixel row gutters, exact outer-gray selected backgrounds, and accepted Routing activation. Strengthened rendered row/control containment checks cover the inset requirement; updated validation and native appearance remain pending.
+
+The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
+
+Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
