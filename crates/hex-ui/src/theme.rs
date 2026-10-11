@@ -212,6 +212,9 @@ pub fn text(value: impl AsRef<str>) -> SharedString {
     value.as_ref().to_lowercase().into()
 }
 
+/// Dark inset surface for native device plots and contextual parameter displays.
+pub const DEVICE_DISPLAY_BACKGROUND: u32 = 0x17191f;
+
 #[cfg(test)]
 mod tests {
     use super::*;

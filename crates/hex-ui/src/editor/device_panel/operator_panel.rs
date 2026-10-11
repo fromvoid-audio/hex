@@ -84,33 +84,6 @@ pub(super) fn render_body(
         ));
     }
 
-    let page_tabs = div()
-        .flex()
-        .w_full()
-        .h(px(16.0))
-        .items_center()
-        .gap(px(3.0))
-        .child(page_tab(
-            cx,
-            device,
-            OperatorPage::Oscillator,
-            "osc",
-            state.page,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            OperatorPage::Envelope,
-            "amp env",
-            state.page,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            OperatorPage::Routing,
-            "routing",
-            state.page,
-        ));
     envelope::retire_hidden(
         view,
         cx,
@@ -158,14 +131,44 @@ pub(super) fn render_body(
                 .flex_1()
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
+                .bg(rgb(theme::DEVICE_DISPLAY_BACKGROUND))
                 .h_full()
                 .flex()
                 .flex_col()
                 .gap(px(3.0))
-                .child(page_tabs)
                 .child(detail),
         )
         .child(preview::render(view, cx, device))
+}
+
+fn page_tabs(cx: &mut Context<EditorView>, device: DeviceId, state: OperatorPanelState) -> Div {
+    div()
+        .flex()
+        .w_full()
+        .h(px(16.0))
+        .items_center()
+        .gap(px(3.0))
+        .child(page_tab(
+            cx,
+            device,
+            OperatorPage::Oscillator,
+            "osc",
+            state.page,
+        ))
+        .child(page_tab(
+            cx,
+            device,
+            OperatorPage::Envelope,
+            "amp env",
+            state.page,
+        ))
+        .child(page_tab(
+            cx,
+            device,
+            OperatorPage::Routing,
+            "routing",
+            state.page,
+        ))
 }
 
 fn operator_row(
@@ -224,6 +227,7 @@ fn operator_row(
         .h(px(40.0))
         .flex()
         .items_center()
+        .justify_between()
         .gap(px(2.0))
         .px(px(2.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
@@ -243,9 +247,19 @@ fn operator_row(
         operator,
         id(fixed_id),
         ControlPresentation::CompactButton,
-        Some("fix"),
+        Some(""),
     );
-    row = row.child(fixed_control);
+    row = row.child(
+        div()
+            .w(px(30.0))
+            .h(px(40.0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(5.0))
+            .child(section_title("fixed"))
+            .child(fixed_control),
+    );
     row = row
         .child(level)
         .child(operator_label(cx, device, operator, selected));
@@ -263,28 +277,21 @@ fn operator_label(
             format!("operator-select-{}-{operator}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
-        .w(px(18.0))
-        .h(px(18.0))
+        .w(px(12.0))
+        .h(px(12.0))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(9.0))
-        .rounded(px(3.0))
+        .text_size(px(8.0))
+        .rounded(px(1.0))
         .border_1()
         .border_color(rgb(theme::color(if selected {
             theme::PaletteRole::Text
         } else {
             theme::PaletteRole::Border
         })))
-        .bg(rgb(theme::color(
-            [
-                theme::PaletteRole::Primary,
-                theme::PaletteRole::Secondary,
-                theme::PaletteRole::ClipFill,
-                theme::PaletteRole::ClipSelected,
-            ][operator],
-        )))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+        .bg(rgb([0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]))
+        .text_color(rgb(0x15171b))
         .cursor(gpui::CursorStyle::PointingHand)
         .child(theme::text(["a", "b", "c", "d"][operator]))
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -307,27 +314,12 @@ fn page_tab(
     label: &'static str,
     active: OperatorPage,
 ) -> Stateful<Div> {
-    div()
+    hex_widgets::panel_tab(theme::text(label), page == active, super::control_style())
         .id(ElementId::Name(
             format!("operator-page-{}-{label}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
-        .h(px(14.0))
-        .px(px(5.0))
-        .flex()
-        .items_center()
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(if page == active {
-            theme::color(theme::PaletteRole::Raised)
-        } else {
-            theme::color(theme::PaletteRole::Surface)
-        }))
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
         .cursor(gpui::CursorStyle::PointingHand)
-        .child(theme::text(label))
         .on_click(cx.listener(move |view, _, window, cx| {
             if finalize_controls(view, cx) {
                 view.focus.focus(window);
@@ -421,7 +413,7 @@ fn oscillator_detail(
         ))
         .debug_selector(move || format!("operator-osc-detail-{}-{operator}", device.value()))
         .w_full()
-        .h(px(143.0))
+        .h(px(160.0))
         .flex()
         .flex_col()
         .gap(px(2.0))
@@ -455,6 +447,14 @@ fn oscillator_detail(
                 .child(feedback)
                 .children(multiplier),
         )
+        .child(page_tabs(
+            cx,
+            device,
+            OperatorPanelState {
+                selected_operator: operator,
+                page: OperatorPage::Oscillator,
+            },
+        ))
 }
 
 fn waveform_cycle(choice: u32) -> Option<[[f32; 2]; 32]> {
@@ -499,25 +499,35 @@ fn envelope_detail(
             .unwrap_or(0.0)
     });
     let graph = envelope::graph(view, cx, device, operator, values);
-    let mut fields = div().w_full().flex().items_center().gap(px(2.0));
-    for (field, label) in labels.iter().enumerate() {
-        fields = fields.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .child(section_title(label))
-                .child(compact_control(
-                    view,
-                    cx,
-                    device,
-                    identity,
-                    parameters,
-                    id(base + field as u32),
-                    ControlPresentation::InlineValue,
-                    None,
-                )),
-        );
+    let mut fields = div().w_full().flex().flex_col().gap(px(2.0));
+    for indices in [[3, 4, 5], [0, 1, 2]] {
+        let mut row = div().w_full().flex().gap(px(3.0));
+        for field in indices {
+            row = row.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.0))
+                    .child(section_title(labels[field]))
+                    .child(compact_control_with_codec(
+                        view,
+                        cx,
+                        device,
+                        identity,
+                        parameters,
+                        id(base + field as u32),
+                        ControlPresentation::InlineValue,
+                        None,
+                        Some(if field < 3 {
+                            super::numeric_display::NumericDisplayCodec::AmplitudeDb
+                        } else {
+                            super::numeric_display::NumericDisplayCodec::Seconds
+                        }),
+                    )),
+            );
+        }
+        fields = fields.child(row);
     }
     div()
         .id(ElementId::Name(
@@ -525,11 +535,19 @@ fn envelope_detail(
         ))
         .debug_selector(move || format!("operator-envelope-{}-{operator}", device.value()))
         .w_full()
-        .h(px(143.0))
+        .h(px(160.0))
         .flex()
         .flex_col()
-        .gap(px(5.0))
+        .gap(px(2.0))
         .child(graph)
+        .child(page_tabs(
+            cx,
+            device,
+            OperatorPanelState {
+                selected_operator: operator,
+                page: OperatorPage::Envelope,
+            },
+        ))
         .child(fields)
 }
 
@@ -623,7 +641,7 @@ fn routing_detail(
         ))
         .debug_selector(move || format!("operator-routing-{}", device.value()))
         .w_full()
-        .h(px(143.0))
+        .h(px(160.0))
         .flex()
         .flex_col()
         .gap(px(3.0))
@@ -638,6 +656,14 @@ fn routing_detail(
         )
         .child(header)
         .child(rows)
+        .child(page_tabs(
+            cx,
+            device,
+            OperatorPanelState {
+                selected_operator: 0,
+                page: OperatorPage::Routing,
+            },
+        ))
 }
 
 fn routing_header_cell(
@@ -696,7 +722,7 @@ fn shell_control(
     presentation: ControlPresentation,
     label: Option<&'static str>,
 ) -> Div {
-    let control = compact_control(
+    let control = compact_control_with_codec(
         view,
         cx,
         device,
@@ -705,6 +731,11 @@ fn shell_control(
         parameter_id,
         presentation,
         label,
+        match label {
+            Some("level") => Some(super::numeric_display::NumericDisplayCodec::AmplitudeDb),
+            Some("coarse") => Some(super::numeric_display::NumericDisplayCodec::Number),
+            _ => None,
+        },
     );
     let key = ParameterKey {
         device,
@@ -797,6 +828,13 @@ fn value(
         },
         parameter.value,
     ))
+}
+
+pub(super) fn display_style() -> hex_widgets::ControlStyle {
+    let mut style = super::control_style();
+    style.background = theme::DEVICE_DISPLAY_BACKGROUND;
+    style.rail = 0x242830;
+    style
 }
 
 fn section_title(label: &'static str) -> Div {
