@@ -8450,6 +8450,11 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
 
+    // Sound the relaunched occurrence before cutting it; a stop at its exact
+    // onset cancels an unheard note without requiring another release slot.
+    let mut relaunched = [[0.0; 2]; 1];
+    playback.render(&mut relaunched).unwrap();
+    let cut_frame = playback.performance_frame();
     assert_eq!(
         playback.apply(SessionPlaybackCommand::StopTrack {
             track,
@@ -8457,6 +8462,7 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         }),
         Err(SessionPlaybackError::ReleaseBankFull)
     );
+    assert_eq!(playback.performance_frame(), cut_frame);
     assert_eq!(playback.release_voice_count(), 1);
     assert_eq!(
         playback.owner(track),

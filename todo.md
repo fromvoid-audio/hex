@@ -2151,3 +2151,11 @@ no stack override or boxing workaround remains. Native facade inventory nowcheck
 all four exact true Boolean defaults. Fresh default-stack/frame/allocation/fullCI
 validation remains pending; see docs/operator-enable-continuation.md for failures,
 measured frames and unmeasured baseline qualifications.
+
+
+Operator-enable5d0ad5b: both original default-stack regressions pass after shared
+scratch reuse; disassembly selected chain subtotals fall below2MiB, with peak
+stack still unmeasured. Unfiltered engine244pass/1fail/3ignored exposes a reduced
+release-bank fixture that stops an unheard exact-onset relaunch. Rendering one
+sample restores its intended two-live-tail refusal scenario without weakening
+assertions. Callback/full final CI and dependency/native gates remain open.

@@ -241,3 +241,21 @@ frames were242,160 and222,784 bytes. Fresh default-stack tests for both original
 failures, capture/transport/refusal/storage/facade coverage, rebuilt frames,
 affected callback probes and full final exact-source CI must establish the root
 repair. No fullCI pass or validated provider handoff is claimed yet.
+
+
+The clean5d0ad5b shared-scratch batch passes both original default-stack
+regressions. Stable rebuilt binary4fc56cb3 reduces the mutable-candidate helper
+reservation237,968→155,040 bytes and removes nested default construction83,440.
+Selected transport-chain reservations nowtotal1,983,568; restored seven-owner
+chain2,004,192. These are selected subtotals, not measured total peak stack.
+Constructor242,160, inheritance245,456 and transport-test1,582,832 are unchanged;
+original mutable-to-analytic test is1,603,456 with no prior measurement.
+Retained before/after evidence remains under artifacts/operator-enable-stack-review.
+
+The unfiltered engine library runs244pass/1fail/3ignored. The reduced release-bank
+fixture immediately stops a just-relaunched occurrence at its exact onset,
+without rendering it. Session nowmatches Arrangement's existing unheard-onset
+rule: that occurrence requires no outgoing release slot. The fixture must render
+one sample before testing a full bank, retaining refusal/count/owner/expiry
+assertions and checking clock atomicity. Callback probes and full CI were not
+reached; no validated final provider handoff is claimed.
