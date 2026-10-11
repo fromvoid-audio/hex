@@ -1799,3 +1799,10 @@ native visual acceptance remain pending. See [Operator shell context contract]
   merge gates; native headphone/pointer/listening acceptance remains open.
 - Pulse live access is currently failing. Latest2296completion,2297correction
   and2253review-state updates are queued temporarily, not saved to another tracker.
+
+
+-11 October2026: Pulse2299 measured and rejected a held-only Operator expiry-scan
+  optimization:24 matched old/new runs preserve PCM, but do not show consistent
+  speedup. Runtime change stays offmain. Retained source hashes, timing ranges and
+  limits are in docs/performance.md; higher-polyphony/native deadline gates remain
+  Pulse2226/2108. Next target requires CPU call-tree attribution.
