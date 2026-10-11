@@ -175,3 +175,43 @@ crops supersede the black-center choice with rounded neutral-dark-gray center
 and dark rail rows. Shared knob metrics and Balance Pan selection are preserved.
 The combined tree requires fresh full CI and native acceptance; the prior green
 run is checkpoint evidence only. Separate layout-family fixture work is Pulse2355.
+
+
+## disposable Live endpoint captures
+
+Following direct human current-idle authorization, the disposable Untitled set
+was inspected with transport stopped and audio off. Track3 pan was moved to
+AX value-1/details50L and value1/details50R. Clicking the observed triangle
+reset value0/detailsC. Its bottom-centered opening and neutral reset behavior
+support the Pan semantic class. SendA reached minimum value0.0003162278/details
+-inf decibels and maximum1/details0.0 decibels; an intermediate value0.462381
+reported-6.7 decibels. That intermediate is not a calibrated normalized midpoint.
+Send and pan were restored to minimum and center, respectively.
+
+Operator D Coarse reached AX value0/details0.5 and value48. An initial upward
+drag reached33; the maximum capture was replaced only after the true48 endpoint
+was verified. These captures support the lower-right opening and black minimum
+rail/full cyan maximum rail. A fresh user-input guard blocked the middle-value
+attempt before delivery, so automation stopped and its native lease was released.
+No project save, playback or audio setup change was performed; Coarse D remained
+48 in the disposable unsaved set. Later passive observation found the human had
+disabled D; no automation attempted to change that state.
+
+Private images and SHA256 inventory are in
+`research/private/knob-focus-20261011/endpoint-captures.json`. Pan left/right/reset
+captures are live-pan-left.png, live-pan-right.png and live-pan-neutral-reset.png;
+send range captures are live-send-minimum.png, live-send-intermediate.png and
+live-send-maximum.png. Coarse captures are live-coarse-minimum.png and
+live-coarse-maximum.png. All are3600x2130 at the same2x scale; cropped inspection
+files preserve scale. The cursor overlaps some needles, preventing precise
+needle-pixel measurements. No exact marker/hitbox/transfer-law parity is claimed.
+Live's visible Operator LFO Amount label is complete; a corresponding enabled
+Mini control endpoint sequence and Hex actual-device review remain open.
+
+All16 combined source checks passed clean5b0c6f76374030c27377380dfdaa839fc04725f8,
+unchanged digest b48d3a30d1ffbdc1e0b95f230e45660668ab0e4cea5cb2e95c12ba8105cf07db,
+report artifacts/local-ci/20261011T094119Z-4d0ecd7d/summary.json. PR155 is merged
+and its human native acceptance is confirmed by its coordinator. PR156 Routing
+keyboard human acceptance passed; its final appearance revision and acceptance
+remain owned there. Final integration CI must run after that revision and this
+evidence update. PR157 retains its required actual-device/reference gates.

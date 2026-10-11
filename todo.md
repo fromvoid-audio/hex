@@ -2095,3 +2095,12 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   68e25a1 are integrated preserving shared metrics. Combined-tree CI, actual-device
   narrow/wide and Live endpoint/reference gates remain open. Separate layout
   fixture work is Pulse2355; PR157 remains draft.
+
+
+- Pulse2345 disposable Live evidence: pan50L/50R and triangle resetC; SendA
+  minimum/maximum plus uncalibrated intermediate; Coarse0.5/48, all same2xscale.
+  Pan/send restored; Coarse48 remains in disposable unsaved set. Fresh user-input
+  guard stopped middle typing. Pointer occlusion limits exact geometry evidence.
+  Clean5b0c6f7 all16 fullCI passed, unchanged digest;155 merged/nativeaccepted,
+  156 Routing accepted/final appearance revision pending. Actual-device and
+  remaining reference acceptance plus final changed-sourceCI are still required.
