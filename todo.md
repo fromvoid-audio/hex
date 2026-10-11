@@ -2082,6 +2082,7 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   pointer/keyboard selection. Reuses shared frames/tabs without production
   Operator/knob/harmonic changes. See `docs/layout-review.md` for inventory,
   provenance and finite acceptance.
-- Initial checks, separate native bundle, retained screenshots, user visual
-  acceptance and exact final full local CI remain pending. Mac builds wait for
-  the coordinating thread's lease; no native input automation performed.
+- Four example tests pass (two rendered gallery regressions), with targeted
+  strict Clippy and a native example build. Final exact-commit local CI evidence
+  is recorded on PR163/Pulse2355. Separate native screenshots and user visual
+  acceptance remain open; no native input automation or app launch performed.

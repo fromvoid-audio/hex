@@ -56,11 +56,13 @@ preview changes target zero; disabled previews affect all targets.
 
 ## Acceptance checklist and evidence
 
-- [ ] Targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
+- [x] Targeted rendered GPUI tests pass: header-only selection, pointer/keyboard
   transitions, disabled refusal, state geometry, preview containment/non-overlap
   at 760×660 and 1320×660 logical pixels.
-- [ ] Full local CI passes on the final exact commit/unchanged source digest.
-- [ ] Separately named native bundle with independent identity is runnable.
+- Full local CI must pass on the final exact commit/unchanged source digest;
+  its retained summary and result are recorded on PR #163 and Pulse #2355.
+- Separately named native bundle with independent identity is prepared after
+  the final native build; its path and binary hash are recorded on PR #163.
 - [ ] Retain native screenshots beside private reference crops and record scale,
   window bounds, source/binary hashes and user comparison findings.
 - [ ] User checks all seven families, click/Tab/Shift-Tab/arrows/Enter/Space/Escape,
@@ -69,7 +71,11 @@ preview changes target zero; disabled previews affect all targets.
 
 GPUI's test platform uses scale 2; source/rendered tests do not prove native
 raster appearance, physical input or other display scales. Screenshot/native
-acceptance and all automated checks are pending at initial source creation.
+acceptance remain pending. Four example tests (including two rendered gallery
+regressions) pass; targeted strict Clippy and the native example build pass.
+The first compile exposed the pinned GPUI one-argument focus API; the fixture
+was corrected before these passes. Final local CI results live with the retained
+commit/digest evidence rather than being inferred from the targeted checks.
 Acceptance required by ticket2355 blocks gallery completion/merge.
 
 Remaining reference families are explicit gaps: racks/chains and nested headers,

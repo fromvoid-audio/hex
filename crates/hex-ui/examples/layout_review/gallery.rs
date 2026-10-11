@@ -1,7 +1,6 @@
 use crate::theme;
 use gpui::{
-    AnyElement, AppContext, Context, Div, FocusHandle, KeyDownEvent, Render, Window, div,
-    prelude::*, px, rgb,
+    AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb,
 };
 use hex_widgets::{ControlStyle, compact_device_frame, device_frame, panel_tab};
 
@@ -129,8 +128,8 @@ impl Gallery {
             focus: std::array::from_fn(|_| cx.focus_handle()),
         }
     }
-    pub(super) fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus[0].focus(window, cx);
+    pub(super) fn focus_first(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        self.focus[0].focus(window);
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self
@@ -149,9 +148,9 @@ impl Gallery {
                 } else {
                     (index + 1) % count
                 };
-                self.focus[next].focus(window, cx);
+                self.focus[next].focus(window);
             }
-            "left" | "up" => self.focus[(index + count - 1) % count].focus(window, cx),
+            "left" | "up" => self.focus[(index + count - 1) % count].focus(window),
             "enter" | "space" if !self.disabled => self.selected = Some(index),
             "escape" => self.selected = None,
             _ => return,
@@ -182,7 +181,7 @@ impl Gallery {
                 gpui::MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
                     if !view.disabled {
-                        view.focus[index].focus(window, cx);
+                        view.focus[index].focus(window);
                         view.selected = Some(index);
                         cx.notify();
                     }
@@ -404,7 +403,7 @@ impl Render for Gallery {
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
-    use gpui::{Empty, Entity, Modifiers, TestAppContext, VisualTestContext, size};
+    use gpui::{AppContext, Empty, Entity, Modifiers, TestAppContext, VisualTestContext, size};
 
     fn open(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Gallery>) {
         let bootstrap = cx.add_window(|_, _| Empty);
@@ -443,8 +442,7 @@ mod tests {
                 assert_eq!(view.selected, None);
             });
             let before = visual.debug_bounds("live-sample").expect("live sample");
-            for index in 0..family.target_count() {
-                let name = TARGET_IDS[index];
+            for (index, &name) in TARGET_IDS.iter().enumerate().take(family.target_count()) {
                 let bounds = visual.debug_bounds(name).expect("target");
                 assert!(bounds.origin.x >= before.origin.x && bounds.origin.y >= before.origin.y);
                 assert!(bounds.origin.x + bounds.size.width <= before.origin.x + before.size.width);
