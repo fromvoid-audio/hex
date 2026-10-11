@@ -2,20 +2,23 @@
 
 Status: narrow contract direction approved by the coordinating parent on
 11October2026; shared PR154/158 ownership/version allocation remains pending.
-No implementation, storage measurement or passing runtime regression is claimed.
+No functional toggle integration, storage measurement or passing runtime regression is claimed.
 
 ## Disjoint source preparation
 
 `crates/hex-lattice/src/analytic_continuation.rs` now contains the proposed
 target-bound eight-word frame, checked absolute transition clock and provider
-interface. It is deliberately not registered/exported until the shared lattice
-registration seam is agreed. Five prepared tests cover independent query order/
+interface. It is now registered/exported through a separate block after lattice's
+imports, preserving the pair owner's existing registration stanzas. Five prepared tests cover independent query order/
 partitions, exact endpoints/overflow/refusal, rate rounding, toy-provider actual
 boundary reversal versus a detached snapshot and incompatible law/frame/note
 refusal. Formatting/whitespace review passes; the module is not yet compiled or
 tested. These fixtures do not verify Operator or engine integration.
 
-No existing engine/provider trait/state/DSP/UI file has changed in this checkpoint.
+The frozen LFO6fba838 dependency has been integrated and the enable version8 codec
+appended at bytes364–380, with IDs513–516 and three strict prefix/malformed/atomic
+tests prepared. It is not yet a functional DSP/UI toggle. No authored engine,
+provider context trait, DSP or UI change has been made in this checkpoint.
 PR159 capture-owner freeze is needed only for its actual overlapping render,
 publication, tail-metadata and storage-accounting hunks. Disjoint contract work
 does not wait on the entire engine PR. Operator suffix work still needs the

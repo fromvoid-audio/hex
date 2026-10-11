@@ -21,10 +21,13 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 7;
+pub const OPERATOR_STATE_VERSION: u32 = 8;
+const ENABLE_STATE_VERSION: u32 = 8;
+const LFO_STATE_VERSION: u32 = 7;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
+mod enable;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
@@ -42,7 +45,8 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + OPERATORS * 3
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
-    + lfo::COUNT;
+    + lfo::COUNT
+    + enable::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -50,7 +54,8 @@ const VELOCITY_PAYLOAD_BYTES: usize =
     TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
-const PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -58,6 +63,11 @@ pub mod parameter {
         carrier, modulation, oscillator_level, oscillator_phase, oscillator_ratio,
     };
     use hex_lattice_contract::ParameterId;
+
+    /// Stable independently persisted enable switch; operators are one-based.
+    pub const fn enabled(operator: u32) -> ParameterId {
+        super::enable::parameter(operator)
+    }
 
     /// Stable per-operator envelope field order in the opaque state.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,7 +346,13 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT - lfo::COUNT - enable::COUNT + offset] = lfo[offset];
+        offset += 1;
+    }
+    let enabled = enable::descriptors();
+    let mut offset = 0;
+    while offset < enable::COUNT {
+        result[PARAMETER_COUNT - enable::COUNT + offset] = enabled[offset];
         offset += 1;
     }
     result
@@ -353,6 +369,7 @@ pub struct OperatorSettings {
     amplitude_velocity: [f32; OPERATORS],
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
+    enabled: enable::EnableSettings,
 }
 
 impl OperatorSettings {
@@ -371,6 +388,7 @@ impl OperatorSettings {
             amplitude_velocity: [0.0; OPERATORS],
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
+            enabled: enable::EnableSettings::default(),
         }
     }
 
@@ -384,6 +402,7 @@ impl OperatorSettings {
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
+            LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -465,10 +484,15 @@ impl OperatorSettings {
                 feedback[index] = f32::from_le_bytes(bytes);
             }
         }
-        let lfo = if state.state_version() >= OPERATOR_STATE_VERSION {
-            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..])?
+        let lfo = if state.state_version() >= LFO_STATE_VERSION {
+            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES])?
         } else {
             lfo::LfoSettings::default()
+        };
+        let enabled = if state.state_version() >= ENABLE_STATE_VERSION {
+            enable::EnableSettings::decode(&state.payload()[LFO_PAYLOAD_BYTES..PAYLOAD_BYTES])?
+        } else {
+            enable::EnableSettings::default()
         };
         let result = Self {
             fields,
@@ -477,6 +501,7 @@ impl OperatorSettings {
             amplitude_velocity,
             feedback,
             lfo,
+            enabled,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -502,6 +527,7 @@ impl OperatorSettings {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
         self.lfo.append(&mut payload);
+        self.enabled.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -524,11 +550,17 @@ impl OperatorSettings {
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - OPERATORS - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::amplitude_velocity(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         for (index, amount) in self.feedback.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::feedback(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -692,6 +724,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.enabled.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.lfo.read(parameter) {
             return Ok(value);
         }
@@ -760,6 +795,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.enabled.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.lfo.patch(parameter, value) {
             return settings.to_state();
         }
@@ -966,6 +1004,8 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
     (index < OPERATORS).then_some(index)
 }
 
+#[cfg(test)]
+mod enable_tests;
 #[cfg(test)]
 mod fixed_tests;
 #[cfg(test)]
