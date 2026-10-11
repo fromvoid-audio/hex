@@ -17,6 +17,17 @@ See [operator navigation evidence](research/observations/operator-navigation-003
 Harmonics belong to2342/PR158; preview-source error2347 and crowded routing
 readouts2352 remain separate. The new native layout gallery is separate work.
 
+## xattr Linux source compatibility — pulse2349
+
+The exact xattr0.2.3/libc0.2.190 Linux ENOATTR failure was reproduced with
+Rust1.94.0's Linux target. A verified, licensed external patch uses ENODATA on
+Linux/Android while preserving macOS/BSD. The locked Linux compile regression
+and macOS path/descriptor missing-attribute/error tests pass. No dependency
+versions change. See [dependency boundary and evidence](docs/xattr-compatibility.md).
+Full exact-commit local CI and final PR review are delivery gates; cross checks
+do not prove a complete Linux desktop or native Linux syscall execution.
+
+
 ## 100-track Lattice effects profile — pulse2317
 
 Original release profiler now checks whole-run standalone composition and timed
@@ -54,6 +65,21 @@ and listening remain user acceptance. DSP/caps and Operator stop2305 are unchang
 [Auto Pan](docs/auto-pan.md).
 
 # hex todo
+
+## cloud environment maintenance — pulse2348
+
+Focused [PR160](https://github.com/PORTALSURFER/hex/pull/160) records reusable
+startup and failure-report guidance in [cloud environment](docs/cloud-environment.md).
+The existing private PORTALSURFER/hex environment was corrected through
+its supported setup workflow. Missing ALSA development metadata, command-level
+network permission and protected-state CLI messaging failures are distinct from
+product source bugs and native-only acceptance. The tested draft was published
+as cecfgver_6acb5120834c819ab3681a5e3f5b46aa; an independent fresh instance
+verified matching hashes, Rust1.94, native libraries, fetch, portable checks and
+CLI round trips. Full PR CI is retained separately as repository merge evidence.
+The reported locked Linux
+xattr/libc compatibility repair was delivered separately by
+[PR161](https://github.com/PORTALSURFER/hex/pull/161) / Pulse2349.
 
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,
 macOS arm64 first. Pulse project **Hex** (project 2, version 0.1) owns active issue planning.
@@ -2064,9 +2090,10 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   cover outside release, cancellation, button loss, blur, deactivation, disable,
   root replacement and window removal. All39 widget tests pass; the hover test
   fails with the original I-beam behavior. Existing gesture/input tests remain.
-- Full local CI, actual macOS cursor appearance/delivery and native one-step Undo
-  remain separate gates. PR155 must remain unmerged until its required native
-  validation passes. The concrete checklist is in docs/device-controls.md.
+- All16 original exact-source local CI checks passed on clean c9219e2. On
+  11 October the user reported native arrow/hidden/restored pointer behavior,
+  typing and Undo passed and requested merge. Main integration is revalidated
+  before merging. The supplied checklist is in docs/device-controls.md.
 
 - 11 October2026 — Pulse2345 / PR157: shared gray focus corners and normalized
   progressive knob arcs with the observed lower-right opening. Source widget
@@ -2106,3 +2133,4 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   Clean5b0c6f7 all16 fullCI passed, unchanged digest;155 merged/nativeaccepted,
   156 Routing accepted/final appearance revision pending. Actual-device and
   remaining reference acceptance plus final changed-sourceCI are still required.
+

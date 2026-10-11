@@ -374,7 +374,9 @@ Existing sensitivity, reset, text/IME validation and gesture-phase tests remain.
 The test-platform readout establishes cursor delivery and override ownership,
 not physical cursor appearance or native event delivery.
 
-Required native acceptance before merging this particular PR remains open:
+Native acceptance reported by the user on 11 October 2026: arrow on value
+fields, hidden during dragging, reliable restoration, typing and Undo all pass.
+The user explicitly authorized merging PR155. Checklist supplied for testing:
 1. Hover and click numeric fields in Utility and Operator: arrow pointer, working
    typing/selection/insertion caret; Enter validates and Escape cancels.
 2. Drag vertically, change Shift during drag, reach a value bound, and release
