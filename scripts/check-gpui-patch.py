@@ -45,6 +45,7 @@ expected_changes = {
     "src/platform/windows/util.rs",
     "src/app/test_context.rs",
     "src/window.rs",
+    "src/taffy.rs",
 }
 if set(manifest["patched_files"]) != expected_changes:
     errors.append("unexpected GPUI patch scope")
@@ -65,4 +66,4 @@ if len(gpui) != 1 or string_value(gpui[0], "source") is not None or string_value
     errors.append("lockfile must resolve exactly the local GPUI 0.2.2 patch")
 if errors:
     raise SystemExit("\n".join(errors))
-print("GPUI patch passed: verified baseline, documented input, cursor, titlebar and test-support deltas, excluded native dependency")
+print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support and explicit grid-literal deltas, excluded native dependency")

@@ -1916,3 +1916,11 @@ native visual acceptance remain pending. See [Operator shell context contract]
   through canonical device gestures. Headless geometry/edit/undo and invalid
   threshold validation are in gate_ui_tests.rs; native appearance/pointer
   acceptance and full integrated local CI remain pending review.
+
+## explicit GPUI grid literals — pulse2318
+
+Type the two existing grid-repeat literals as f32, preserving layout while
+removing the Rust1.98.1 fallback warning. Vendor baseline identity/license stays
+unchanged; regenerated cumulative patch/hash and the narrow guard retain
+provenance. Full exact-source CI and release compilation are acceptance gates.
+Other dependency warnings remain in Pulse2143; see [native boundary](docs/native-input.md).

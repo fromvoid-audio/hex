@@ -98,3 +98,15 @@ cannot expose bounds left over from an earlier frame. Production behavior is
 unchanged because the map and clear are both gated by GPUI's existing test/test-
 support cfg. Hex's device-panel UI test covers a rendered device removal and
 asserts that both its action selector and device-frame selector disappear.
+
+## grid helper compiler compatibility — 11 October 2026
+
+Pulse2318 is a bounded child of dependency-warning follow-up2143. The pinned
+Taffy0.9.0 `style_helpers::{length, fr}` inputs are `Into<f32>`. Explicit f32
+suffixes preserve GPUI's zero minimum/one-fraction grid-repeat values, removing
+Rust1.98.1's float-literal fallback warning without changing layout or adding
+lint suppression. The cumulative vendor diff and patched hash include only this
+two-literal source change; published baseline hashes/license remain unchanged.
+The block/proc-macro-error future-compatibility notices remain open in2143.
+Validation: the provenance guard, full exact-source local CI and a fresh release
+build cover this maintenance change; it introduces no new native interaction.

@@ -405,9 +405,26 @@
          | CursorStyle::ResizeLeftRight
          | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
          CursorStyle::ResizeUp
+--- a/src/taffy.rs
++++ b/src/taffy.rs
+@@ -309,7 +309,7 @@
+             unit: &Option<u16>,
+         ) -> Vec<taffy::GridTemplateComponent<T>> {
+             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
+-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
++            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+                 .unwrap_or_default()
+         }
+
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -754,0 +755,3 @@
+@@ -751,6 +751,9 @@
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
+         self.focus = None;
++
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-+
+
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         {
