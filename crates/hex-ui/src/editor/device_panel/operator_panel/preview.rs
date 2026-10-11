@@ -270,8 +270,6 @@ pub(super) fn render(
         .flex_shrink_0()
         .h_full()
         .bg(rgb(super::RAIL_GUTTER))
-        .border_l_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .pl(px(2.0))
         .child(content)
 }
@@ -293,6 +291,7 @@ fn row(
         .debug_selector(move || format!("operator-preview-row-{}-{title}", device.value()))
         .w_full()
         .h(px(ROW_HEIGHT))
+        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(1.0));

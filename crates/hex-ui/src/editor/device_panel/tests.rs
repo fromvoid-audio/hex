@@ -973,7 +973,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             ))
             .expect("three-dial row starts next to its icon");
         assert!(control.origin.x - preview.origin.x >= px(40.0));
-        assert!(control.origin.x - preview.origin.x < px(50.0));
+        assert!(control.origin.x - preview.origin.x < px(54.0));
     }
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
@@ -2303,8 +2303,11 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             );
             let bounds = visual.debug_bounds(field).expect("fixed-mode control");
             assert_eq!(bounds.size.width, px(46.0));
+            assert!(bounds.origin.x >= row_bounds.origin.x + px(4.0));
             assert!(
-                bounds.origin.x + bounds.size.width <= row_bounds.origin.x + row_bounds.size.width
+                bounds.origin.x + bounds.size.width
+                    <= row_bounds.origin.x + row_bounds.size.width - px(4.0),
+                "oscillator controls need an inset from the dark row edges"
             );
         }
         let toggle = Box::leak(
@@ -2315,6 +2318,30 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
             toggle_bounds.origin.x + toggle_bounds.size.width
                 <= row_bounds.origin.x + row_bounds.size.width
         );
+    }
+    for (title, fields) in [
+        ("lfo", vec![0, 1]),
+        ("filter", vec![2, 3]),
+        ("pitch env", vec![4, 5, 6]),
+        ("global", vec![7, 8, 9]),
+    ] {
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-{title}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("preview row");
+        for field in fields {
+            let control = visual
+                .debug_bounds(Box::leak(
+                    format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+                ))
+                .expect("preview control");
+            assert!(control.origin.x >= row.origin.x + px(4.0));
+            assert!(
+                control.origin.x + control.size.width <= row.origin.x + row.size.width - px(4.0),
+                "preview controls need an inset from the dark row edges"
+            );
+        }
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.

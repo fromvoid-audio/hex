@@ -94,9 +94,7 @@ pub(super) fn render_body(
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .pr(px(4.0))
-        .border_r_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)));
+        .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
             view,
@@ -163,6 +161,7 @@ pub(super) fn render_body(
                 .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
                 .overflow_hidden()
                 .relative()
+                .px(px(4.0))
                 .h_full()
                 .flex()
                 .flex_col()
@@ -174,6 +173,7 @@ pub(super) fn render_body(
                         .top(px(86.0))
                         .left_0()
                         .w_full()
+                        .px(px(4.0))
                         .child(page_tabs(cx, device, owner, state)),
                 ),
         )
@@ -287,7 +287,7 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .px(px(2.0))
+        .px(px(4.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .bg(rgb(if selected {
             RAIL_GUTTER
