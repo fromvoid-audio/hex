@@ -1492,8 +1492,11 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
             _ => panic!("Operator envelope value is not numeric"),
         })
         .collect();
-    let window =
-        ((envelope_values[3] + envelope_values[4] + envelope_values[5] + 0.25) * 1.5).max(0.5);
+    let attack_x = |seconds: f32| {
+        ((f64::from(seconds) / 0.001).ln_1p() / (20.0_f64 / 0.001).ln_1p()) as f32 / 3.0
+    };
+    let stage_x =
+        |seconds: f32| ((f64::from(seconds) / 0.001).ln() / (60.0_f64 / 0.001).ln()) as f32 / 3.0;
     let path = std::env::temp_dir().join(format!(
         "hex-operator-envelope-{}-{}.hex",
         std::process::id(),
@@ -1521,7 +1524,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
         .expect("editable Operator envelope graph");
     let width = graph.size.width - px(14.0);
     let peak = point(
-        graph.origin.x + px(7.0) + width * (envelope_values[3] / window),
+        graph.origin.x + px(7.0) + width * attack_x(envelope_values[3]),
         graph.origin.y + px(7.0),
     );
     visual.simulate_click(peak, Modifiers::default());
@@ -1552,6 +1555,27 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
                 }
         );
         attack
+    });
+
+    // A terminal commit must not fit the changed total duration. Cumulative
+    // decay follows attack while release stays in its fixed final third.
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let peak = operator_panel::envelope::displayed_node(view, device, 0, 1, cx).unwrap();
+        let decay = operator_panel::envelope::displayed_node(view, device, 0, 2, cx).unwrap();
+        let release = operator_panel::envelope::displayed_node(view, device, 0, 3, cx).unwrap();
+        assert!(
+            (peak[0] - attack_x(edited_attack)).abs() < 1e-6,
+            "commit preserves zoom"
+        );
+        assert!(
+            (decay[0] - (attack_x(edited_attack) + stage_x(envelope_values[4]))).abs() < 1e-6,
+            "decay follows cumulative attack"
+        );
+        assert!(
+            (release[0] - (2.0 / 3.0 + stage_x(envelope_values[5]))).abs() < 1e-6,
+            "release stays in fixed final section without fitting"
+        );
     });
 
     editor.update(cx, |view, cx| view.save_project(cx));
@@ -1590,7 +1614,7 @@ fn operator_envelope_graph_keyboard_edit_is_canonical_undoable_and_persistent(
         .debug_bounds("operator-envelope-graph")
         .expect("envelope graph remains visible during numeric draft");
     let peak = point(
-        graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * (envelope_values[3] / window),
+        graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * attack_x(envelope_values[3]),
         graph.origin.y + px(7.0),
     );
     let moved = point(peak.x + px(12.0), peak.y);
@@ -1676,23 +1700,20 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
 
-    let release_endpoint = |visual: &mut VisualTestContext, state: &ViewState| {
+    let release_endpoint = |visual: &mut VisualTestContext, cx: &mut TestAppContext| {
         let graph = visual
             .debug_bounds("operator-envelope-graph")
             .expect("envelope graph");
-        let attack = float_value(state, 36);
-        let decay = float_value(state, 37);
-        let release = float_value(state, 38);
-        let window = ((attack + decay + release + 0.25) * 1.5).max(0.5);
-        let x = (attack + decay + 0.25 + release) / window;
+        let x = editor.read_with(cx, |view, cx| {
+            operator_panel::envelope::displayed_node(view, device, 0, 3, cx).unwrap()[0]
+        });
         point(
             graph.origin.x + px(7.0) + (graph.size.width - px(14.0)) * x,
             graph.origin.y + graph.size.height - px(7.0),
         )
     };
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x + px(16.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
@@ -1769,8 +1790,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
         );
     });
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("graph after cancel");
@@ -1795,9 +1815,12 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
     let committed_release = editor.read_with(cx, |view, _| {
         float_value(view.state.as_ref().expect("committed state"), 38)
     });
+    assert_eq!(
+        committed_release, 60.0,
+        "outside release clamps to hard maximum"
+    );
 
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x - px(12.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
@@ -1851,8 +1874,7 @@ fn operator_envelope_release_drag_cancels_and_commits_after_outside_release(
         cx.notify();
     });
     visual.run_until_parked();
-    let state_now = editor.read_with(cx, |view, _| view.state.clone().expect("state"));
-    let start = release_endpoint(&mut visual, &state_now);
+    let start = release_endpoint(&mut visual, cx);
     let moved = point(start.x - px(12.0), start.y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
