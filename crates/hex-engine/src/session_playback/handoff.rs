@@ -194,6 +194,10 @@ impl SessionPlayback {
             .capture_epoch
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let previous_capture_epoch = previous
+            .capture_epoch
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -2216,6 +2220,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;
         self.capture_epoch = capture_epoch;
+        previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
         self.route_historical_floors = candidate_route_floors;

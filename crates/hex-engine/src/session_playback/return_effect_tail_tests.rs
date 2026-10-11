@@ -425,6 +425,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         .unwrap();
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 1]).unwrap();
+        let donor_plan = old
+            .output_capture_plan(&[OutputCaptureId::Track(track_id)], 8)
+            .unwrap();
         let mut candidate_snapshot = source_project.snapshot();
         candidate_snapshot.master_gain = 0.5;
         if replacement {
@@ -454,6 +457,18 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         let mut candidate = SessionPlayback::new(prepare(&candidate_project)).unwrap();
         let before_inherit_plan = candidate.output_capture_plan(&[], 8).unwrap();
         candidate.try_inherit_state_from(&mut old).unwrap();
+        let mut donor_main = [[9.0; 2]; 8];
+        let mut donor_buffer = donor_main;
+        let mut donor_buffers: [&mut [Frame]; 1] = [&mut donor_buffer];
+        let mut donor_capture = OutputCapture::new(&donor_plan, &mut donor_buffers);
+        let donor_clock = old.performance_frame();
+        assert_eq!(
+            old.render_with_capture(&mut donor_main, &mut donor_capture),
+            Err(SessionPlaybackError::Capture(OutputCaptureError::StalePlan))
+        );
+        assert_eq!(donor_capture.valid_frames(), 0);
+        assert_eq!(old.performance_frame(), donor_clock);
+        assert!(donor_main.iter().flatten().all(|sample| *sample == 0.0));
         assert_eq!(
             candidate
                 .tail_track_ids

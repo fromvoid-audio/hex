@@ -535,6 +535,42 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         assert_eq!(*frame, expected);
         assert_eq!(main[index], expected.map(|sample| sample * 0.25));
     }
+    let mut gain_source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    gain_source.apply(SessionPlaybackCommand::Play).unwrap();
+    gain_source.render(&mut [[0.0; 2]; 128]).unwrap();
+    let mut retarget_snapshot = project.snapshot();
+    retarget_snapshot.tracks[0].gain = 0.25;
+    retarget_snapshot.tracks[0].balance = 0.5;
+    let retarget_project = Project::from_snapshot(retarget_snapshot).unwrap();
+    let retarget_revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &retarget_project,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            Some(revision.session()),
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
+    retarget.try_inherit_state_from(&mut gain_source).unwrap();
+    assert!(retarget.releases.is_empty());
+    assert!(retarget.tail_groups.iter().all(Option::is_none));
+    let retarget_plan = retarget
+        .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 16)
+        .unwrap();
+    let mut retarget_main = [[9.0; 2]; 16];
+    let mut retarget_track = retarget_main;
+    let mut retarget_buffers: [&mut [Frame]; 1] = [&mut retarget_track];
+    let mut retarget_capture = OutputCapture::new(&retarget_plan, &mut retarget_buffers);
+    retarget
+        .render_with_capture(&mut retarget_main, &mut retarget_capture)
+        .unwrap();
+    for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
+        let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
+        assert_eq!(*frame, expected);
+        assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+    }
     // Actual public inheritance of a removed analytic owner, not a synthetic
     // capture-only release. The old held gate is released at the cut.
     let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -578,4 +614,67 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
     );
     assert_eq!(capture.valid_frames(), 0);
     assert_eq!(inherited.performance_frame(), 136);
+}
+
+#[test]
+fn capture_bounds_and_handoff_generation_exhaustion_refuse_before_runtime_mutation() {
+    let revision = audio_fixture(false, false, false);
+    let mut runtime = linear(Arc::clone(&revision));
+    let id = OutputCaptureId::Track(runtime.routes[0].id);
+    let plan = runtime.output_capture_plan(&[id], 1).unwrap();
+    let mut oversized = vec![[9.0; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1];
+    let mut buffers: [&mut [Frame]; 1] = [&mut oversized];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    let mut main = [[9.0; 2]; 1];
+    assert_eq!(
+        runtime.render_with_capture(&mut main, &mut capture),
+        Err(SessionPlaybackError::Capture(
+            OutputCaptureError::InsufficientCapacity
+        ))
+    );
+    assert_eq!(capture.valid_frames(), 0);
+    assert!(capture.output(0).unwrap().is_empty());
+    assert_eq!(runtime.performance_frame(), 0);
+    assert_eq!(main, [[0.0; 2]; 1]);
+    assert!(
+        oversized[..MAX_OUTPUT_CAPTURE_FRAMES]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    // Out-of-contract raw storage remains inaccessible through the invalid view.
+    assert_eq!(oversized[MAX_OUTPUT_CAPTURE_FRAMES], [9.0; 2]);
+    for donor_exhausted in [false, true] {
+        let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        previous.render(&mut [[0.0; 2]; 4]).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        if donor_exhausted {
+            previous.capture_epoch = u64::MAX;
+        } else {
+            candidate.capture_epoch = u64::MAX;
+        }
+        let before = (
+            previous.capture_epoch,
+            candidate.capture_epoch,
+            previous.performance_frame(),
+            candidate.performance_frame(),
+            previous.routes.clone(),
+            candidate.routes.clone(),
+        );
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut previous),
+            Err(SessionPlaybackError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            (
+                previous.capture_epoch,
+                candidate.capture_epoch,
+                previous.performance_frame(),
+                candidate.performance_frame(),
+                previous.routes.clone(),
+                candidate.routes.clone()
+            ),
+            before
+        );
+    }
 }

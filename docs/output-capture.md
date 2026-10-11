@@ -16,7 +16,8 @@ current/retained owner registry. The engine does not infer an export selection.
 
 The plan binds the exact runtime instance, prepared revision and successful
 inheritance generation. Another runtime, or another inheritance on the same
-runtime, requires a new plan. A missing expired owner is refused before render
+runtime, requires a new plan. Successful handoff invalidates both recipient and
+donor plans because processor ownership changes on both sides. A missing expired owner is refused before render
 mutation. Completed effect groups remain retained until control publication,
 so an otherwise valid selected retired owner may produce silence. Analytic
 release entries may expire at render commit; their retired-only keys then cease
@@ -73,8 +74,9 @@ A removed owner remains its original ID, even when another track occupies its
 former index. Old tails keep their original mix, pan, processor history and sonic
 routing: a tail routed directly to Main by the existing kernel is not newly sent
 through the replacement Return. Retired Return groups retain their original
-ReturnId, matrix and gain/mute. A gain-only compatible retarget retains the
-existing runtime path rather than creating an artificial old generation.
+ReturnId, matrix and gain/mute. A compatible active gain-only retarget retains the
+existing runtime path; already residual owners retain the existing old-mix tail
+policy. Capture does not manufacture an additional generation.
 
 ## confidence and limits
 
