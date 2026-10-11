@@ -2085,3 +2085,13 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   waits for a safe disposable window.156 gray-rail/black-center source integrated;
   final fullCI must pass on that tree. Prior4f0c4c4 fullCI passed all16; later
   gray integration run stopped at disk floor, with only own inactive cache cleared.
+
+
+- Pulse2345 human confirms v2 stable geometry and complete labels across repeated
+  press/hold/drag/release and long typing. Clean6fceb49 full localCI passed all16
+  with unchanged digest; actual-device wrapper refreshed but remains unlaunched.
+  Disposable Live Untitled stopped/audioOff is verified; fresh user-input guard
+  paused endpoint study. PR156 keyboard repair and revised dark-gray panels from
+  68e25a1 are integrated preserving shared metrics. Combined-tree CI, actual-device
+  narrow/wide and Live endpoint/reference gates remain open. Separate layout
+  fixture work is Pulse2355; PR157 remains draft.

@@ -143,3 +143,35 @@ incremental cache was removed after verifying sole target ownership and no
 active build. Final exact-source CI remains required after black-center
 integration. PR157 stays draft until required native/reference and dependency
 acceptance gates are met.
+
+
+## human acceptance and dependency repair checkpoint
+
+The human confirms stable geometry and complete labels in the v2 fixture for
+repeated mouse-down/hold/drag/release and long typed edits across every row.
+This accepts the bounded wobble and Mini label repairs; actual-device narrow/wide
+review and the corresponding Live endpoint comparison remain open.
+
+All 16 full local CI steps passed on clean commit
+`6fceb49c552a3f0e0c6e340da47b93def32b166c`, with unchanged source digest
+`5ef7d74e0e303df0e44a52246462cb61832e151b61efc1f10b39137bbcaf934b`.
+Evidence: `artifacts/local-ci/20261011T092535Z-ae9de1e8/summary.json`.
+The actual-device no-audio wrapper was refreshed from that source, remains
+unlaunched, and has executable SHA256
+`5c0d2188b51da6a5b66520629b609106ba7241579db5d441873c5df13f9258d3`.
+
+The human established a disposable Live set. Fresh AX inspection shows Untitled,
+an empty four-track Session with Return A/B, Play0 and audio off. A neutral
+mixer capture is retained privately. AX pan setValue is unsupported; click/Home
+and typed endpoint attempts left pan at0. A subsequent Raise/drag attempt was
+blocked before delivery by a fresh user-input guard. Native automation paused;
+no endpoint sequence or reference parity is claimed.
+
+The later human keyboard check found Tab lost knob focus and Enter did nothing.
+PR156 owns the focused keyboard repair, now integrated from
+`68e25a18a752f5e38bcb854dfb4e0d82da390f75`: dedicated Routing Enter/Space
+bindings and a regression using production editor bindings. New user reference
+crops supersede the black-center choice with rounded neutral-dark-gray center
+and dark rail rows. Shared knob metrics and Balance Pan selection are preserved.
+The combined tree requires fresh full CI and native acceptance; the prior green
+run is checkpoint evidence only. Separate layout-family fixture work is Pulse2355.
