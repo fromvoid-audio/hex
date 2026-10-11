@@ -415,7 +415,8 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values[11],
+            view.device_panel.operator_previews[&device].values
+                [operator_panel::preview::Field::FineB as usize],
             12.0
         )
     });
@@ -431,7 +432,9 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values[11], 12.0,
+            view.device_panel.operator_previews[&device].values
+                [operator_panel::preview::Field::FineB as usize],
+            12.0,
             "hidden owner cannot receive stale numeric input"
         )
     });
