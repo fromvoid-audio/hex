@@ -51,6 +51,12 @@ format, and the architecture guard pass. It does not claim numeric parity with
 Ableton Live. PR134 merged after all 16 local CI checks passed on the clean unchanged
 final tree. The shared native panel and native listening acceptance remain open. See [Compressor](docs/compressor.md).
 
+## lattice compressor panel — pulse2314
+
+Dedicated compact shared-widget composition and cached static knee-law preview;
+source and exact local CI evidence recorded in PR137. Native appearance and
+listening remain user acceptance. See [Compressor](docs/compressor.md).
+
 ## delivery rules
 
 - Use Pulse for project and issue planning. Discover IDs, check existing tickets

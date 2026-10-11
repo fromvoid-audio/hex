@@ -216,7 +216,7 @@ fn render_return_effect(
     let bypassed = device.bypassed();
     let action_size = if matches!(
         device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator")
+        Ok("hex.utility" | "hex.saturator" | "hex.compressor")
     ) {
         12.0
     } else {
@@ -307,6 +307,8 @@ fn render_return_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.compressor") {
+                super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
@@ -352,7 +354,7 @@ fn render_return_effect(
             };
             if matches!(
                 device_view.type_id.as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.compressor")
             ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
@@ -383,7 +385,7 @@ fn render_return_effect(
                 .h(px(
                     if matches!(
                         device.state().type_id().as_str(),
-                        Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+                        Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.compressor")
                     ) {
                         UTILITY_FRAME_BODY_HEIGHT
                     } else {
@@ -395,7 +397,7 @@ fn render_return_effect(
                 .child(theme::text(format!("unsupported device state · {error}")));
             if matches!(
                 device.state().type_id().as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.compressor")
             ) {
                 compact_device_frame(title, control_style(), actions, body).into_any_element()
             } else {
@@ -415,6 +417,7 @@ fn render_return_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
+        Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     div()
