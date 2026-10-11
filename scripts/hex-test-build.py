@@ -283,7 +283,7 @@ def build(args) -> dict:
             validate_ci(args.ci_report, runner, args.candidate)
             stage = Path(tempfile.mkdtemp(prefix=".hex-stage-", suffix=".app", dir=app.parent))
             contents = stage / "Contents"
-            (contents / "MacOS").mkdir()
+            (contents / "MacOS").mkdir(parents=True)
             (contents / "Resources/licenses").mkdir(parents=True)
             shutil.copy2(binaries[0], contents / "MacOS/hex")
             for source, name in ((ROOT / "assets/fonts/ioskeley-mono/OFL.txt", "ioskeley-mono-OFL.txt"),

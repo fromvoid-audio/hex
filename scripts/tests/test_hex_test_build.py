@@ -7,7 +7,8 @@ import plistlib
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -111,6 +112,69 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "another"):
                 with delivery.activation_lock(self.app):
                     self.fail("second installer entered")
+
+    def test_production_build_assembles_and_replaces_stable_app(self):
+        # Exercise real assembly/receipt/activation with native external tools
+        # substituted. A missing Contents parent failed actual post-merge delivery.
+        self.bundle(self.app, b"old")
+        source = self.root / "repo"
+        source.mkdir()
+        for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
+            (source / relative).mkdir(parents=True)
+        (source / "scripts/hex-test-build.json").write_text('{"app_path":"artifacts/hex.app"}')
+        (source / "assets/fonts/ioskeley-mono/OFL.txt").write_text("font license")
+        (source / "third_party/gpui/LICENSE-APACHE").write_text("gpui license")
+        # The reported executable deliberately lives outside target/release.
+        target = self.root / "configured-target/aarch64-apple-darwin/release"
+        target.mkdir(parents=True)
+        executable = target / "hex-desktop"
+        executable.write_bytes(b"optimized fixture")
+        executable.chmod(0o755)
+        candidate = "a" * 40
+        report = self.root / "ci.json"
+        report.write_text('{"status":"passed"}')
+        included = self.root / "included.json"
+        included.write_text(json.dumps([{"ticket":2411, "ticket_revision":9,
+                                         "pr":"https://github.com/PORTALSURFER/hex/pull/168",
+                                         "head":candidate}]))
+        checklist = self.root / "USER-TEST.md"
+        checklist.write_text("1. launch stable app\n2. inspect source identity\n")
+        runner = delivery.ci.LocalCiRunner(source)
+        runner.summary["start_tree"] = {"commit":candidate, "dirty":False,
+                                        "content_sha256":"digest"}
+        runner.cargo_identity = {"target_directory":str(target.parent.parent)}
+        runner.target_lock = SimpleNamespace(release=Mock(return_value=None))
+        event = {"reason":"compiler-artifact", "executable":str(executable),
+                 "target":{"name":"hex-desktop"}, "profile":{"opt_level":"3"}}
+        def tool(argv, root=source):
+            if argv[:2] == ["git", "rev-parse"]:
+                return str(source / ".git")
+            if argv[:2] == ["cargo", "metadata"]:
+                return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
+            return ""
+        args = SimpleNamespace(ci_report=report, candidate=candidate,
+                               included=included, checklist=checklist)
+        with patch.object(delivery, "ROOT", source), \
+                patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
+                patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
+                patch.object(delivery, "validate_ci", return_value={}), \
+                patch.object(runner, "_resolve_cargo_identity", return_value=True), \
+                patch.object(runner, "_check_disk_headroom", return_value=True), \
+                patch.object(runner, "_prepare_target_cache", return_value=True), \
+                patch.object(delivery, "run", side_effect=tool), \
+                patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event))):
+            receipt = delivery.build(args)
+        verified = delivery.verify(self.app)
+        self.assertEqual(verified["source"], candidate)
+        self.assertEqual(verified["profile"], "release")
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
+        self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
+        self.assertEqual((self.app / "Contents/Resources/local-ci-summary.json").read_bytes(), report.read_bytes())
+        self.assertEqual((self.app / "Contents/Resources/licenses/ioskeley-mono-OFL.txt").read_text(), "font license")
+        self.assertEqual((Path(receipt["rollback_path"]) / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertEqual(json.loads((self.root / "hex-test-build-receipt.json").read_text()), receipt)
+        runner.target_lock.release.assert_called_once()
 
     def test_ci_gate_rejects_shortcuts_stale_and_changed_source(self):
         runner = delivery.ci.LocalCiRunner(self.root, steps=(delivery.ci.Step("fake", ("true",)),))

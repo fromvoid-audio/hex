@@ -15,7 +15,11 @@ future testing or delete historical review bundles.
    No hosted/paid CI or separate pre-merge user-testing gate is introduced here.
 3. Immediately run the guarded post-merge delivery below. A merge commit can use
    its candidate's CI only when the complete Git tree/digest is identical and the
-   verified candidate is an ancestor. Revalidate any changed source.
+   verified candidate is an ancestor. For a squash merge, run delivery from the
+   clean verified PR-head checkout after authenticating that the merged PR's
+   complete tree is identical; retain the head/merge mapping in Pulse's candidate
+   receipt. The wrapper does not weaken its source gate to guess squash ancestry.
+   Revalidate any changed source.
 4. Record the installed receipt, CI report, source, included ticket/PR revisions,
    build version and checklist in Pulse. Successful accessible delivery permits
    `ready_for_review`; failed delivery keeps work open. Use the supported Pulse
@@ -105,7 +109,7 @@ until exact-build owner approval is recorded.
 
 ## automated and native evidence
 
-The shared full local CI runner includes delivery regression tests for checksum
+The shared full local CI runner includes delivery regression tests for production bundle assembly from Cargo-reported custom target paths, checksum
 failure, unrelated identity/symlinks, running case aliases, serialized activation,
 interrupted rename recovery, corrupt-new-bundle rollback and stale/incomplete CI
 rejection. These deterministic filesystem tests do not establish native UI,

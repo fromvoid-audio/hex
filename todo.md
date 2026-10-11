@@ -2152,3 +2152,14 @@ approval are recorded on Pulse #2408; this entry alone claims none of them.
   Mixed-input regression added; disabled activation stays refused.
 - Prior `aebc618` app/CI are superseded; renewed source/build validation and user
   confirmation of these remaining changes are pending.
+
+## 11 October 2026 — Pulse #2411 assembly repair / PR168
+
+The actual #2408 post-action failed before activation because staging created
+Contents/MacOS without its Contents parent. The optimized executable built, and
+the previous stable app was preserved. PR168 creates that parent and adds a
+production orchestration regression covering assembly, reported custom-target
+executable, licenses, CI/checklist/receipts, replacement and prior-app rollback.
+The regression fails with the original ENOENT and passes after the repair.
+Full final local CI, actual stable delivery and exact-build owner approval are
+recorded in Pulse; this entry does not claim native acceptance.
