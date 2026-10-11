@@ -1,5 +1,10 @@
 # local ci
 
+For the private reusable Codex Cloud setup, startup activation, command network
+permissions and Linux/native validation boundaries, see
+[cloud environment](cloud-environment.md). Portable cloud checks are useful
+evidence but do not replace the complete runner below.
+
 Run the project validation pipeline from any working directory with:
 
 ```sh
