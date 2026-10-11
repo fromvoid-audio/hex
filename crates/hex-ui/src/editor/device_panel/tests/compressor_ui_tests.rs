@@ -94,10 +94,12 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
         cx.notify();
     });
     visual.run_until_parked();
-    let drive_selector =
+    let threshold_selector =
         Box::leak(format!("device-{}-parameter-1", device.value()).into_boxed_str());
-    let drive = visual.debug_bounds(drive_selector).expect("drive knob");
-    let start = drive.center();
+    let threshold = visual
+        .debug_bounds(threshold_selector)
+        .expect("threshold field");
+    let start = threshold.center();
     let moved = point(start.x, start.y - px(25.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
@@ -112,7 +114,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
             hex_lattice_contract::ParameterId::from_static(1),
             gesture.value,
         )
-        .expect("drive draft");
+        .expect("threshold draft");
         assert_eq!(
             compressor_panel::cached_curve(view, device),
             Some(&hex_engine::native_compressor_transfer_curve(&expected).expect("draft curve"))
