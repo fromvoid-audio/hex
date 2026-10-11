@@ -2025,6 +2025,14 @@ reported parameter-triggered playback stop remains unconfirmed and undiagnosed.
 The reported B-oscillator mixing behavior is a separate, unconfirmed observation.
 See [device controls](docs/device-controls.md).
 
+## 11 October 2026 — header build identity (Pulse #2338)
+
+Focused PR #148 adds compile-time package version/source revision at the far
+top right of canonical/loading and demo headers. Dirty/unavailable identities
+are explicit; the centered project title reserves symmetric space. Existing
+minimum-window rendered coverage checks title/readout clearance. Local CI and
+user native visual/resize acceptance are recorded in Pulse and the PR. Operator
+visual refinement remains a separate PR.
 
 ## 11 october 2026 — pulse2332: Operator reference refinement
 
