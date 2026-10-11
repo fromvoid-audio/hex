@@ -77,6 +77,35 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             device.value()
         )))
         .unwrap();
+    let lfo = tab_bounds(&mut visual, device, "lfo", "lfo");
+    visual.simulate_click(lfo.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Lfo
+        );
+    });
+    assert_eq!(
+        tab_bounds(&mut visual, device, "envelope", "amp env"),
+        envelope
+    );
+    assert_eq!(
+        tab_bounds(&mut visual, device, "oscillator", "osc"),
+        oscillator
+    );
+    assert_eq!(tab_bounds(&mut visual, device, "lfo", "lfo"), lfo);
+    for parameter in 82..=92 {
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "device-{}-parameter-{parameter}",
+                    device.value()
+                )))
+                .is_some(),
+            "LFO page retains real canonical controls"
+        );
+    }
     visual.simulate_click(oscillator.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -163,7 +192,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in 0..3 {
+    for switch in 0..2 {
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",
@@ -191,7 +220,11 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     );
     // Click the Time tile rather than the icon, then activate the rail by keyboard.
     let time = visual
-        .debug_bounds(selector(format!("operator-preview-{}-7", device.value())))
+        .debug_bounds(selector(format!(
+            "operator-preview-{}-{}",
+            device.value(),
+            operator_panel::preview::Field::Time as usize
+        )))
         .unwrap();
     visual.simulate_click(
         point(time.center().x, time.origin.y + px(3.0)),
@@ -224,8 +257,9 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(envelope.center(), Modifiers::default());
     let fine = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-11-knob",
-            device.value()
+            "operator-preview-{}-{}-knob",
+            device.value(),
+            operator_panel::preview::Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
@@ -298,7 +332,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
             .debug_bounds(selector(format!(
                 "operator-preview-{}-{}-knob",
                 device.value(),
-                10 + operator
+                operator_panel::preview::Field::FineA as usize + operator
             )))
             .unwrap();
         visual.simulate_click(fine.center(), Modifiers::default());
@@ -369,8 +403,9 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     });
     let value = visual
         .debug_bounds(selector(format!(
-            "operator-preview-{}-11-value",
-            device.value()
+            "operator-preview-{}-{}-value",
+            device.value(),
+            operator_panel::preview::Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(value.center(), Modifiers::default());
