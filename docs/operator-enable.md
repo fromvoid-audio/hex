@@ -1,6 +1,6 @@
 # Operator oscillator enable controls — Pulse2335
 
-Status: requirements and source inspection; implementation and acceptance pending.
+Status: integrated source; final automated and native acceptance pending.
 Focused draft: [PR164](https://github.com/PORTALSURFER/hex/pull/164).
 
 ## Required behavior
@@ -18,7 +18,7 @@ it must preserve authored level, waveform, tuning, routing, envelope and feedbac
 values so re-enabling restores them. A UI-only flag or destructive level edit
 does not satisfy this requirement.
 
-## Proposed signal contract, awaiting ownership and architectural review
+## Signal contract
 
 Apply the enable mask to oscillator amplitude before both outgoing modulation and
 carrier summation. Disabled output is zero; it does not bypass an intermediate
@@ -32,16 +32,12 @@ The existing mutable runtime can ramp compiled oscillator level between zero and
 the authored level using its original 5 ms shared transition. Rapid toggles must
 continue from the actual applied boundary. Its recurrence currently stores shaped
 outputs; under a zero level those become zero, rather than freezing an old signal.
-Whether this exact contract carries through the forthcoming LFO/harmonic runtime
-and active analytic notes is an explicit design gate, not an implemented promise.
-Source review confirmed that active analytic notes retain their old sampler on
-both Arrangement and Session publication. A level mask alone therefore fails
-held-note toggling. Resolve this with a deliberately approved provider/engine
-continuation contract or an agreed integrated runtime policy before implementation;
-do not silently convert all Operator notes to the current16-voice mutable class.
-Analytic smoothing also needs a deliberate contract; the mutable ramp does not
-provide it. Compare against the actually applied source, not an intermediate
-canonical revision that may never have reached audio.
+Active analytic notes use the approved provider/engine continuation contract in
+[the continuation document](operator-enable-continuation.md), with the same
+five-millisecond coefficient law. Ordinary built-in analytic polyphony is
+preserved. Compatibility and reversal use the actually applied source, including
+coalesced publications, rather than an intermediate desired canonical revision.
+The harmonic painter's authored-bank runtime remains its separate owner's work.
 
 Feedback stores the rendered post-level signal, not a hidden unmuted recurrence.
 Existing inaudible-ancestor pruning can also zero enabled upstream histories
@@ -52,18 +48,14 @@ affect the current owner. Downstream effect tails may remain audible.
 
 ## Shared ownership gates
 
-PR156 owns badge/header/navigation geometry until its published handoff. PR154
-owns LFO state/runtime/clock additions. PR158 owns the 64-harmonic waveform and
-paired-runtime integration. Main currently has envelope-domain state version6,
-320 bytes and IDs through81; the earlier frozen LFO checkpoint also used version6
-with364 bytes and IDs82–92. Never accept two layouts under one version or assign
-enable IDs inside reserved harmonic fields. Agree the integrated prefix, strict
-version order, descriptor allocation and source freeze before shared-state edits.
-Bound the existing feedback decode slice to its original endpoint before appending
-a suffix; its current open-ended loop would exceed the four-entry array. Freeze
-the old envelope migration cutoff at version6 and remove descriptor validation
-indices relative to the growing descriptor-array tail. Recalculate fixed runtime
-compatibility-payload storage against the final integrated8192-byte pair limit.
+PR156 navigation is integrated at `9bbdad836d24bdcbd6d2348ef78ecde6d322d7b3`.
+PR154 LFO dependency is integrated at `a982a62409613e1afef0164509c779690d59481b`,
+and PR159 capture at `3f1ef2279696de0acb7dec2941dfdbe5fe53c6e2`. PR158 released
+the constructor/context/enable seams while retaining harmonic table/pair ownership.
+Strict version7 is 364 bytes; version8 is 380 bytes with IDs513–516, leaving
+IDs93–512 reserved for harmonic fields and future version9 append-only data.
+Feedback/LFO decode endpoints and the legacy envelope cutoff remain fixed.
+Runtime compatibility and retained canonical state are charged to existing caps.
 
 No native input or compilation begins while another chat owns its lease.
 

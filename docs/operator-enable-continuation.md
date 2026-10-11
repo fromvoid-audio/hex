@@ -1,28 +1,37 @@
-# Proposed analytic enable continuation — Pulse2335
+# Analytic enable continuation — Pulse2335
 
-Status: narrow contract direction approved by the coordinating parent on
-11October2026; shared PR154/158 ownership/version allocation remains pending.
-No functional toggle integration, storage measurement or passing runtime regression is claimed.
+Status: integrated source in draft PR164, awaiting validation of the final tree.
+The coordinating parent approved the narrow provider contract on 11 October 2026;
+PR154/158 released the required shared seams and PR156 navigation is integrated.
+The harmonic painter's paired runtime and authored table banks remain PR158 work.
 
-## Disjoint source preparation
+## Integrated boundaries
 
-`crates/hex-lattice/src/analytic_continuation.rs` now contains the proposed
-target-bound eight-word frame, checked absolute transition clock and provider
-interface. It is now registered/exported through a separate block after lattice's
-imports, preserving the pair owner's existing registration stanzas. Five prepared tests cover independent query order/
-partitions, exact endpoints/overflow/refusal, rate rounding, toy-provider actual
-boundary reversal versus a detached snapshot and incompatible law/frame/note
-refusal. Formatting/whitespace review passes; the module is not yet compiled or
-tested. These fixtures do not verify Operator or engine integration.
+The generic lattice contract provides a target-bound eight-word parameter frame,
+checked absolute transition clock and opt-in provider interface. Operator exposes
+four effective oscillator levels while preserving authored state. Compatibility
+requires equal provider format, sample rate and authored bytes except the four
+strict enable words. Unsupported edits retain the existing old-context policy;
+invalid admitted frames, notes or clocks produce explicit refusal.
 
-The frozen LFO6fba838 dependency has been integrated and the enable version8 codec
-appended at bytes364–380, with IDs513–516 and three strict prefix/malformed/atomic
-tests prepared. It is not yet a functional DSP/UI toggle. No authored engine,
-provider context trait, DSP or UI change has been made in this checkpoint.
-PR159 capture-owner freeze is needed only for its actual overlapping render,
-publication, tail-metadata and storage-accounting hunks. Disjoint contract work
-does not wait on the entire engine PR. Operator suffix work still needs the
-corrected PR154/158 version/descriptor/ownership sequence.
+The engine carries explicit current-owner versus detached-tail bindings. Each
+current owner has one bounded transition; detached samplers snapshot their origin
+transition and retain its target-context lease. Arrangement, Session and capture
+share the same sample at the absolute performance boundary. Mutable feedback/LFO
+uses the same fixed five-millisecond coefficient ramp without resetting phases,
+clock, onset age or gate. The ordinary built-in zero-feedback path remains analytic.
+
+Two fixed-length transition tables are allocated on control using fallible
+reservation, require exactly `MAX_TRACKS` capacity, and never resize or exchange
+allocation ownership in callback handoff/render. Both capacities are charged to
+actual and paired preroll storage under the unchanged 32 MiB cap. The shared
+sampler remains inside the existing 344-byte enum footprint. Operator context
+accounting includes its retained canonical state payload and Arc bookkeeping.
+Post-repair storage and callback instrumentation remain pending.
+
+Canonical badge clicks enqueue Boolean parameter edits with queue-refusal rollback
+and select the clicked oscillator. Enabled fill and focus border are independent.
+History/save/reopen and rapid pending-click fixtures are added but not yet run.
 
 ## Why a host contract is required
 
@@ -34,7 +43,7 @@ and resource behavior, and is not a justified incidental toggle implementation.
 Mixing two complete outputs during a crossfade would interpolate rendered timbre,
 not the oscillator coefficients used by the existing mutable transition.
 
-## Preferred bounded provider contract
+## Bounded provider contract
 
 Add an opt-in provider-approved analytic continuation capability. Its fixed
 opaque scalar state represents effective oscillator levels for Operator; the
@@ -83,7 +92,7 @@ verify sizes and account for all slot/proof/context storage rather than assuming
 that headroom. Retained-context slot/byte backpressure remains enforced; no
 second old context is needed merely to evaluate one level ramp.
 
-## Proposed owning seams
+## Owning seams
 
 | File | Responsibility |
 | --- | --- |
@@ -122,16 +131,22 @@ numerical transition, recurrence or CPU parity.
 
 ## Focused source evidence — 11 October 2026
 
-The registered generic contract's five tests and the version-8 enable codec's
-three migration, malformed-input and authored-prefix tests passed at commit
-`69520d89f7f99ac5e4739538d555ca72d3644beb`, with prepared integration files present
-but source editing paused. Start/end source SHA-256 was unchanged:
-`2c05efcdabf7d450d6f98484969eba6ae4d41c34e53d5b28910a7958acf89ac2`.
-Retained evidence is
-`artifacts/local-ci/operator-enable-focused-20261011/summary.json`.
-The custom two-step runner records `partial`, not full PR validation.
+The initial contract's five tests and codec's three tests passed on unchanged
+source digest `2c05efcdabf7d450d6f98484969eba6ae4d41c34e53d5b28910a7958acf89ac2`
+at checkpoint `69520d89f7f99ac5e4739538d555ca72d3644beb` with paused dirty integration.
+Retained evidence: `artifacts/local-ci/operator-enable-focused-20261011/summary.json`.
 
-These checks do not compile or exercise the prepared engine integration, the
-unregistered Operator provider or its PCM-oracle tests, mutable enable ramps,
-or badge behavior. Their shared-file handoffs and functional validation remain
-open. The sole Mac build lease was released after both commands exited zero.
+At clean checkpoint `fb31d4d`, two independent Operator coefficient-oracle tests,
+the full LFO test subset, ten engine continuation/ownership/refusal tests and the
+shared-context regression subset passed. Evidence is retained under
+`artifacts/local-ci/operator-enable-integrated-20261011` and
+`artifacts/local-ci/operator-enable-regressions-20261011`.
+These custom focused runs record partial validation, not full PR validation.
+
+The capture regression then aborted with a default-test-thread stack overflow.
+Moving both fixed transition tables from inline arrays to control-allocated
+storage repairs that construction risk in source; no larger test stack was used.
+The post-repair engine/capture/preroll run, strict Clippy, UI fixtures, callback
+allocation probes and full final exact-commit/digest local CI remain pending.
+User native interaction/listening and physical deadline evidence remain separate.
+No numerical Live transition or CPU parity is claimed.

@@ -96,9 +96,11 @@ Authored levels/routing/tuning/feedback/envelopes/LFO bytes remain independent
 and unchanged. LFO decoding remains fixed to[320,364) for versions>=7; legacy
 envelope clamping retains its literal<6 cutoff.
 
-This checkpoint implements codec/descriptors only. DSP enable masking, active
-analytic continuation, mutable adoption, canonical history/save integration and
-badge interaction are pending and unverified. Do not present the flags as a
-working musical toggle until those boundaries are integrated and tested. See
+The integrated source masks effective DSP levels without changing authored
+levels. Compatible active analytic notes use provider-approved coefficient
+continuation; mutable feedback/LFO voices adopt the same five-millisecond ramp.
+Canonical badge/history/save fixtures are present. Focused provider, mutable and
+engine tests passed before the subsequent transition-table storage repair; final
+post-repair validation and native interaction/listening remain open. See
 [enable requirements](operator-enable.md) and
-[approved continuation direction](operator-enable-continuation.md).
+[continuation contract and evidence](operator-enable-continuation.md).

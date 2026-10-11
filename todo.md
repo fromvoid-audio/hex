@@ -2112,10 +2112,15 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Five generic continuation-contract tests and three codec tests passed on an
   unchanged source digest; `docs/operator-enable-continuation.md` records the
   exact commit/digest and retained partial-run evidence.
-- Active analytic engine integration and provider PCM-oracle tests are prepared
-  source, with shared constructor/context and mutable LFO seams still awaiting
-  owner handoffs. Actual DSP toggles, canonical badge interaction, history/save,
-  callback probes, full local CI and user listening/UI acceptance remain open.
+- Shared ownership handoffs are released. Provider coefficient oracles, mutable
+  LFO/feedback tests, ten generic engine continuation/ownership/refusal tests and
+  shared-context regressions passed at clean checkpoint fb31d4d.
+- Capture regression exposed a default-test-thread stack overflow. Fixed current
+  and scratch transition tables now use bounded fallible control allocation,
+  charged to the unchanged preroll cap; post-repair checks remain pending.
+- Canonical badge toggles, history/save/reopen and pending/queue-refusal fixtures
+  are integrated with PR156 navigation. New held/release/reversal callback probes,
+  UI fixtures, full final local CI and user listening/UI acceptance remain open.
 
 11 October 2026 follow-up native feedback: the human reports the connected001 appearance is generally correct, but rail/center content needs more space from section edges and the dark separator between rails and center must go. The focused correction removes the two explicit dark rail borders and adds four logical pixels of horizontal content inset to both rail rows and the center/tab content. It preserves the compact frame/body height, forty-pixel controls, two-pixel row gutters, exact outer-gray selected backgrounds, and accepted Routing activation. Strengthened rendered row/control containment checks cover the inset requirement; updated validation and native appearance remain pending.
 
