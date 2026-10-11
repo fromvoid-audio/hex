@@ -489,3 +489,22 @@ Direct user image is now attached and visually inspected in this chat: confirms
 64bars/64selected,16/32/64selector,Userwave/preview and companion controls as
 listed in research inventory. Exact build, ranges/modes and sound laws remain
 unproved. Background darkgray belongs PR156; no shell/navigation edits here.
+
+Independent harmonic-kernel proof is now test-only in operator_harmonics.rs;
+it is not registered state or callback DSP. Four tests establish fundamental
+bit-equivalence with original sine-table samples, finite signed coefficient
+validation,64th-harmonic nonzero output/coherent spectral bins, strict Nyquist
+boundary/rate caps and convex f64 source interpolation with an L1 peak bound.
+Its signed[-1,1] mathematical input and L1 normalization are original proof
+choices, NOT selected visible painter ranges or observed Live semantics. The
+base/LFO phase cap does not prove FM/PM sidebands alias-free; no such claim is
+made. State/UI registration, production preflight and complete modulation
+acceptance remain separate work after canonical dependency sequence.
+
+Old-instance native helper was relayed in PR158comments6107705308/6107707776.
+Verified exactSHA2566a52c766c30f01b0635305e68cefc54c1875541254b6b7cea96cdaeea42e9f3f
+(after removing only the extra Markdown fence newline), Debiantrixie/amd64,
+APT/dpkg-deb/Python/archive-keyring prerequisites and no existing conflicting
+native/apt directories. Rootless workspace extraction uses signed APT indices
+and package hashes, inherited proxy/CA and command-scoped network grant. Saved
+old environment version is unchanged; no new-version publication claim.
