@@ -31,6 +31,7 @@ pub(super) enum OperatorPage {
     #[default]
     Envelope,
     Routing,
+    Lfo,
 }
 
 const fn id(value: u32) -> ParameterId {
@@ -108,6 +109,7 @@ pub(super) fn render_body(
             state.selected_operator,
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
+        OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
     };
     div()
         .id(ElementId::Name(
@@ -138,7 +140,7 @@ pub(super) fn render_body(
                 .gap(px(3.0))
                 .child(detail),
         )
-        .child(preview::render(view, cx, device))
+        .child(preview::render(view, cx, device, device_view))
 }
 
 fn page_tabs(cx: &mut Context<EditorView>, device: DeviceId, state: OperatorPanelState) -> Div {
@@ -162,6 +164,7 @@ fn page_tabs(cx: &mut Context<EditorView>, device: DeviceId, state: OperatorPane
             "amp env",
             state.page,
         ))
+        .child(page_tab(cx, device, OperatorPage::Lfo, "lfo", state.page))
         .child(page_tab(
             cx,
             device,
@@ -844,6 +847,122 @@ fn section_title(label: &'static str) -> Div {
         .child(theme::text(label))
 }
 
+fn lfo_detail(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    for ids in [
+        &[82, 83, 84][..],
+        &[85, 86, 87][..],
+        &[88, 89, 90, 91, 92][..],
+    ] {
+        let mut row = div().w_full().flex().items_center().gap(px(3.0));
+        for parameter in ids {
+            row = row.child(compact_control(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                id(*parameter),
+                match *parameter {
+                    82 | 84 | 88..=92 => ControlPresentation::CompactButton,
+                    83 | 86 => ControlPresentation::CompactSelector,
+                    _ => ControlPresentation::MicroDial,
+                },
+                Some(match *parameter {
+                    82 => "on",
+                    83 => "wave",
+                    84 => "sync",
+                    85 => "hz",
+                    86 => "beats",
+                    87 => "amount",
+                    88 => "retrig",
+                    89 => "a",
+                    90 => "b",
+                    91 => "c",
+                    _ => "d",
+                }),
+            ));
+        }
+        content = content.child(row);
+    }
+    content
+        .id(ElementId::Name(
+            format!("operator-lfo-detail-{}", device.value()).into(),
+        ))
+        .child(page_tabs(
+            cx,
+            device,
+            OperatorPanelState {
+                selected_operator: 0,
+                page: OperatorPage::Lfo,
+            },
+        ))
+}
+
+pub(super) fn lfo_summary(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let parameters = &device_view.parameters;
+    let sync = matches!(
+        value(view, device, parameters, id(84)),
+        Some(ParameterValue::Bool(true))
+    );
+    let mut row = div()
+        .id(ElementId::Name(
+            format!("operator-preview-row-{}-lfo", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
+        .w_full()
+        .h(px(40.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0));
+    row = row.child(compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(82),
+        ControlPresentation::CompactButton,
+        Some("lfo"),
+    ));
+    for (parameter, label) in [
+        (83, "wave"),
+        (if sync { 86 } else { 85 }, "rate"),
+        (87, "amount"),
+    ] {
+        row = row.child(compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            if matches!(parameter, 83 | 86) {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
+            Some(label),
+        ));
+    }
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,6 +983,7 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
+        exposed.extend(82..=92);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
@@ -889,9 +1009,9 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 77);
+        assert_eq!(exposed.len(), 88);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&81));
+        assert_eq!(exposed.last(), Some(&92));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }

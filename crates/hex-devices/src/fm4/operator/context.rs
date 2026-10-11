@@ -30,7 +30,7 @@ pub struct PreparedOperatorConfiguration {
 
 /// Compact pitch/velocity data. Sample only against its preparing configuration.
 /// No oscillator graph or envelope is copied into an individual note.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct PreparedOperatorNote {
     steps: [u64; OPERATORS],
     velocity: f64,
@@ -211,6 +211,69 @@ impl PreparedOperatorConfiguration {
             return 0.0;
         };
         (routed * note.velocity) as f32
+    }
+
+    /// Bounded sequential pitch integration, sharing the existing FM/envelope law.
+    /// Harmonic caps conservatively cover the full one-octave LFO excursion.
+    pub(crate) fn prepare_lfo_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<PreparedOperatorNote, Invalid> {
+        let mut note = self.prepare_note(pitch, velocity)?;
+        if note.steps.iter().any(|step| *step >= (1_u64 << 62)) {
+            return Err(Invalid("LFO excursion must remain below nyquist"));
+        }
+        let mut caps = [0; OPERATORS];
+        for (i, cap) in caps.iter_mut().enumerate() {
+            if self.waveforms[i] != OperatorWaveform::Sine {
+                *cap = harmonic_cap_index(note.steps[i] * 2).ok_or(Invalid("LFO harmonic cap"))?;
+            }
+        }
+        note.harmonic_caps = pack_caps(caps);
+        Ok(note)
+    }
+
+    pub(crate) fn lfo_steps(note: &PreparedOperatorNote) -> [u64; OPERATORS] {
+        note.steps
+    }
+
+    #[allow(clippy::too_many_arguments)] // Explicit borrowed note, integrated phase and feedback recurrence.
+    pub(crate) fn sample_lfo(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age: u64,
+        gate: u64,
+        phases: &[u64; OPERATORS],
+        feedback: [f64; OPERATORS],
+        previous: [f64; OPERATORS],
+    ) -> (f32, [f64; OPERATORS]) {
+        let mut amplitudes = self.envelopes.levels(age, gate);
+        if amplitudes == [0.0; OPERATORS] {
+            return (0.0, [0.0; OPERATORS]);
+        }
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
+        }
+        let feedback = std::array::from_fn(|i| feedback[i] * previous[i]);
+        let (routed, signals) = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
+            self.configuration
+                .routed_output_with_feedback::<true>(table, 1, phases, amplitudes, feedback)
+        } else if let Some(bank) = self.waveform_bank {
+            self.configuration
+                .routed_output_with_waveforms_and_feedback(
+                    table,
+                    bank,
+                    (1, phases),
+                    amplitudes,
+                    (&self.waveforms, &unpack_caps(note.harmonic_caps)),
+                    feedback,
+                )
+        } else {
+            return (0.0, [0.0; OPERATORS]);
+        };
+        ((routed * note.velocity) as f32, signals)
     }
 
     pub(crate) fn note_matches_configuration(&self, note: &PreparedOperatorNote) -> bool {

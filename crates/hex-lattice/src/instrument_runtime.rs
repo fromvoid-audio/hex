@@ -3,6 +3,14 @@ use super::StereoFrame;
 use hex_lattice_contract::DeviceContractError;
 use std::{any::Any, fmt};
 
+/// Borrowed, immutable host musical clock. Q32.32 quarter-note beats at frame
+/// centers, including the exclusive segment end. Implementations must return
+/// deterministic, nondecreasing values throughout a preflight/process call.
+/// No device owns this clock or constructs a project tempo map on the callback.
+pub trait NativeInstrumentClock {
+    fn beat_at_offset(&self, offset: usize) -> Option<u64>;
+}
+
 /// One note-on or note-off event in caller-owned block storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentEvent {
@@ -125,6 +133,23 @@ pub trait MutableInstrumentRuntime: Any + Send {
     /// Apply a previously preflighted event slice and add generated audio to
     /// `frames`. Events at an equal frame offset are observed in slice order.
     fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]);
+
+    /// Opt-in musical processing; legacy devices retain their existing path.
+    fn preflight_clock(
+        &self,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _frames: usize,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        Ok(())
+    }
+    fn process_block_with_clock(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) {
+        self.process_block(events, frames);
+    }
 
     fn reset(&mut self);
     /// True only when no existing note or internal state can produce future
@@ -329,12 +354,24 @@ impl NativeInstrumentRuntimePair {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
     ) -> Result<(), NativeInstrumentRuntimeError> {
+        self.process_block_with_clock(events, frames, None)
+    }
+
+    /// Clock-aware transactional segment. All clock/event preflight completes
+    /// before the scratch runtime or PCM is changed.
+    pub fn process_block_with_clock(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
         if !self.block_started {
             return Err(NativeInstrumentRuntimeError::BlockNotStarted);
         }
         validate_event_batch(events, frames.len(), self.max_events_per_block)?;
         self.scratch.preflight_events(events, frames.len())?;
-        self.scratch.process_block(events, frames);
+        self.scratch.preflight_clock(clock, frames.len())?;
+        self.scratch.process_block_with_clock(events, frames, clock);
         Ok(())
     }
 
