@@ -1,3 +1,13 @@
+## xattr Linux source compatibility — pulse2349
+
+The exact xattr0.2.3/libc0.2.190 Linux ENOATTR failure was reproduced with
+Rust1.94.0's Linux target. A verified, licensed external patch uses ENODATA on
+Linux/Android while preserving macOS/BSD. The locked Linux compile regression
+and macOS path/descriptor missing-attribute/error tests pass. No dependency
+versions change. See [dependency boundary and evidence](docs/xattr-compatibility.md).
+Full exact-commit local CI and final PR review are delivery gates; cross checks
+do not prove a complete Linux desktop or native Linux syscall execution.
+
 ## 100-track Lattice effects profile — pulse2317
 
 Original release profiler now checks whole-run standalone composition and timed
