@@ -206,6 +206,7 @@
     "src/platform/mac/window.rs": "f1a466028bf259e37fdddb10c2fb32c4dec77375472d211579bf6e7eb07bbf4a",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
-    "src/platform.rs": "02c4939c26e3889ea7ec8c27e246ac11bf7c549136f491ff4568c2d8209b361b"
+    "src/platform.rs": "02c4939c26e3889ea7ec8c27e246ac11bf7c549136f491ff4568c2d8209b361b",
+    "src/window.rs": "5a19c2f682dcec4a102b747843bcbb90e05206a061bc176d062ccdce48ede8f1"
   }
 }
