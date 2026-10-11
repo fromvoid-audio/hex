@@ -366,3 +366,9 @@ supersede black with a rounded neutral dark gray center and dark rectangular
 rail rows separated by lighter gray gutters. Updated exact-source CI and native
 acceptance remain required; PR156 stays draft. Crowded matrix readouts are
 tracked separately as2352.
+
+Human confirmed the repaired native Routing keyboard activation in gray68.
+Latest visual correction keeps Operator header, border and outer surface one
+light-gray color; selected/focused rows equal that surface exactly. Dark row
+gutters widen to 2px while the 168px body and shared frame/control dimensions
+remain unchanged. New native appearance acceptance remains required.

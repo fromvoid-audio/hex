@@ -2271,6 +2271,24 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
         );
         let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
         assert_eq!(row_bounds.size.height, px(40.0));
+        assert!(row_bounds.origin.y >= shell.origin.y);
+        assert!(
+            row_bounds.origin.y + row_bounds.size.height <= shell.origin.y + shell.size.height,
+            "wider gutters must not push the bottom oscillator outside its shell"
+        );
+        if operator < 3 {
+            let previous = visual
+                .debug_bounds(Box::leak(
+                    format!("operator-row-{}-{}", instrument_id.value(), operator + 1)
+                        .into_boxed_str(),
+                ))
+                .expect("previous oscillator row");
+            assert_eq!(
+                row_bounds.origin.y - previous.origin.y - previous.size.height,
+                px(2.0),
+                "dark oscillator rows have a visible two-pixel gutter"
+            );
+        }
         let badge = visual
             .debug_bounds(Box::leak(
                 format!("operator-select-{}-{operator}", instrument_id.value()).into_boxed_str(),

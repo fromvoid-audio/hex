@@ -8,8 +8,10 @@ The regression now installs those bindings and fails before the focused Routing
 action repair; all 13 Operator tests pass afterward. Enter/Space use the rail's
 own key context, and focused rail background provides visible feedback.
 Latest user crops supersede black: neutral dark gray rounded center, dark
-rectangular rail rows and lighter gray gutters. Final changed-tree local CI and
-native acceptance remain required; PR156 stays draft. Historical exact 9f0ba1a
+rectangular rail rows and lighter gray gutters. Human confirmed Routing opens in gray68. Latest appearance correction merges
+Operator header/border with the outer gray, widens row gaps to 2px and makes
+selected/focused rows exactly that outer gray. Final changed-tree CI and native
+appearance acceptance remain required; PR156 stays draft. Historical exact 9f0ba1a
 all-16 CI passed, but does not validate this newer tree.
 See [operator navigation evidence](research/observations/operator-navigation-003.md).
 Harmonics belong to2342/PR158; preview-source error2347 and crowded routing
