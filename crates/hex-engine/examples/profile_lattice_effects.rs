@@ -101,7 +101,7 @@ fn oracle(
     project: &hex_engine::Project,
     samples: &[[f32; 2]],
     states: &[NativeDeviceState],
-) -> Fallible<f32> {
+) -> Fallible<(f32, u64)> {
     let mut processors: Vec<Box<dyn NativeProcessorRuntime>> = Vec::new();
     for state in states {
         let prepared = native_registry()?
@@ -114,6 +114,7 @@ fn oracle(
     let mut actual = [[0.0; 2]; BLOCK];
     let mut expected = actual;
     let mut max_error = 0.0_f32;
+    let mut digest = 0xcbf2_9ce4_8422_2325_u64;
     for block in 0..WARMUP + MEASURED {
         for (i, frame) in expected.iter_mut().enumerate() {
             *frame = samples[(block * BLOCK + i) % SOURCE];
@@ -122,6 +123,12 @@ fn oracle(
             processor.process_block(&mut expected);
         }
         renderer.render(&mut actual)?;
+        if block >= WARMUP {
+            for sample in actual.iter().flatten() {
+                digest ^= u64::from(sample.to_bits());
+                digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
         for (frame_index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
             for channel in 0..2 {
                 let mut sum = 0.0_f32;
@@ -136,7 +143,7 @@ fn oracle(
             }
         }
     }
-    Ok(max_error)
+    Ok((max_error, digest))
 }
 
 fn profile(name: &str, states: &[NativeDeviceState]) -> Fallible<()> {
@@ -154,7 +161,7 @@ fn profile(name: &str, states: &[NativeDeviceState]) -> Fallible<()> {
         }
         Err(error) => return Err(error),
     };
-    let max_error = oracle(&project, &samples, states)?;
+    let (max_error, oracle_digest) = oracle(&project, &samples, states)?;
     let mut renderer = Renderer::new(&project);
     renderer.play();
     let mut output = [[0.0; 2]; BLOCK];
@@ -171,6 +178,9 @@ fn profile(name: &str, states: &[NativeDeviceState]) -> Fallible<()> {
             digest ^= u64::from(sample.to_bits());
             digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
         }
+    }
+    if digest != oracle_digest {
+        return Err("timed whole-run PCM differs from validated oracle run".into());
     }
     let total: u128 = timings.iter().sum();
     let deadline_ns = u128::from(BLOCK as u64) * 1_000_000_000 / u128::from(RATE);
