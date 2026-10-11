@@ -92,8 +92,8 @@ demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')
 for key in ('CFBundleName', 'CFBundleDisplayName'):
-    source = (ROOT / 'scripts/bundle-macos.sh').read_text()
-    if f'<key>{key}</key><string>hex</string>' not in source:
+    source = (ROOT / 'scripts/hex-test-build.py').read_text()
+    if f'"{key}": "hex"' not in source:
         errors.append(f'{key} must be lowercase hex')
 if errors:
     print('\n'.join(errors), file=sys.stderr)

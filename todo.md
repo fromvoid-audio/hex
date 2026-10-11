@@ -2087,6 +2087,15 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
 
+## 11 October 2026 — Pulse #2408 stable optimized test delivery
+
+PR #167 adds the native optimized delivery wrapper to the existing bundle entry
+point: exact full CI gate, Cargo artifact resolution, stable primary-checkout app,
+identity/process guards, staged verified replacement, retained rollback/journal,
+installed receipt and finite checklist. Delivery tests join the shared local CI
+runner. No projects/settings/media or historical review apps are removed.
+Source verification, actual optimized post-merge delivery and exact-build user
+approval are recorded on Pulse #2408; this entry alone claims none of them.
 ## 11 October 2026 — native layout review gallery (Pulse2355 / PR163)
 
 - Source candidate: isolated `hex-ui/examples/layout_review` Rust/GPUI catalog

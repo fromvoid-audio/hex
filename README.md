@@ -45,8 +45,8 @@ remains open. Asset relinking is deferred.
 ```sh
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
-# Or create the local development app, then open artifacts/hex.app:
-sh scripts/bundle-macos.sh
+# Optimized stable test delivery after exact-source CI (see docs/test-builds.md):
+sh scripts/bundle-macos.sh --help
 python3 scripts/check-architecture.py
 python3 scripts/check-ui-style.py
 cargo test --workspace
@@ -62,9 +62,12 @@ cargo run -p hex-cli -- render-project artifacts/project.hex artifacts/project.w
 cargo run -p hex-cli -- recover-project artifacts/project.hex artifacts/recovered.hex
 ```
 
-The bundle script refuses to overwrite a running development app, including
-macOS case-insensitive `Hex.app` aliases. Close the development app first or use
-a separately named review bundle to preserve an unsaved project.
+User-test builds use the optimized stable development app at `artifacts/hex.app`,
+with exact-source CI, provenance, guarded replacement and retained rollback. The
+bundle script refuses to overwrite a running app, including macOS case-insensitive
+`Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
+delivery. See [native test builds](docs/test-builds.md) for the required arguments
+and shared merge → delivery → user approval sequence.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by
 seven repetitions of an enveloped 220 Hz tone. Output creation refuses to
