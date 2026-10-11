@@ -1551,7 +1551,7 @@ impl EditorView {
             return;
         }
         if self.edit_pending()
-            || !state.project.track(track).is_some()
+            || state.project.track(track).is_none()
             || state.project.session_cell(track, scene).is_some()
         {
             self.error = Some("session destination cell is unavailable".into());

@@ -10,6 +10,88 @@ const LOOP_FRAMES: u64 = 12_000;
 const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
 
 #[test]
+fn lfo_arrangement_session_partitions_seek_and_loop_share_the_prepared_law() {
+    for sync in [false, true] {
+        let mut fixture = fixture();
+        let mut state = operator_state(1.0);
+        for (id, value) in [
+            (82, ParameterValue::Bool(true)),
+            (84, ParameterValue::Bool(sync)),
+            (85, ParameterValue::Float(7.0)),
+            (87, ParameterValue::Float(75.0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+        fixture
+            .editor
+            .execute(Command::ReplaceDeviceState {
+                device: fixture.instrument,
+                state,
+            })
+            .unwrap();
+        let revision = prepared(&fixture, None);
+        let mut arrangement = start_route(Arc::clone(&revision), None);
+        let mut session = start_route(Arc::clone(&revision), Some(fixture.session_clip));
+        let mut expected = vec![[0.0; 2]; 7000];
+        let mut actual = expected.clone();
+        arrangement.render(&mut expected).unwrap();
+        for block in actual.chunks_mut(113) {
+            session.render(block).unwrap();
+        }
+        assert_eq!(actual, expected, "Session vs Arrangement sync={sync}");
+        let mut phase = 0.0;
+        for (index, frame) in expected.iter().enumerate().take(6000) {
+            let sample = (TAU * phase).sin() as f32;
+            assert!(
+                (frame[0] - sample).abs() < 3e-6,
+                "host clock oracle sync={sync} at {index}"
+            );
+            let lfo =
+                (TAU * index as f64 * if sync { 2.0 / 48_000.0 } else { 7.0 / 48_000.0 }).sin();
+            phase += 440.0 / 48_000.0 * (0.75 * lfo).exp2();
+        }
+        let mut sought = start_route(Arc::clone(&revision), None);
+        assert!(
+            sought.apply(SessionPlaybackCommand::Seek(3000)).is_err(),
+            "held mutable seek requires control-prepared preroll"
+        );
+        assert_eq!(sought.performance_frame(), 0);
+        let mut copy = start_route(Arc::clone(&revision), None);
+        let mut prefix = [[0.0; 2]; 173];
+        copy.render(&mut prefix).unwrap();
+        let mut replacement = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        replacement.try_inherit_state_from(&mut copy).unwrap();
+        copy = replacement;
+        let mut continued = [[0.0; 2]; 128];
+        copy.render(&mut continued).unwrap();
+        assert_eq!(&continued[..], &expected[173..301]);
+        fixture
+            .editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: LOOP_FRAMES,
+                enabled: true,
+            })
+            .unwrap();
+        let looped_revision = prepared(&fixture, None);
+        let mut looped = start_route(looped_revision, None);
+        let mut loop_pcm = vec![[0.0; 2]; 12_500];
+        looped.render(&mut loop_pcm).unwrap();
+        assert_eq!(
+            &loop_pcm[12_000..],
+            &expected[..500],
+            "note retrigger at loop onset"
+        );
+    }
+}
+
+#[test]
 fn fixed_operator_is_rendered_at_effective_frequency_by_the_shared_project_path() {
     let mut fixture = fixture();
     let mut state = operator_state(1.0);
@@ -264,7 +346,7 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
             .expect("Operator catalog entry")
             .parameters
             .len(),
-        77
+        88
     );
 
     let mut renderer = Renderer::new(revision.arrangement());

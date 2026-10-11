@@ -289,6 +289,17 @@ fn compile_project<'a>(
         } else {
             None
         };
+        if mutable_limits.is_some()
+            && let Some(instrument) = instrument_config.as_deref()
+        {
+            for clip in track.midi_clips() {
+                for note in clip.source().notes() {
+                    instrument
+                        .validate_event_note(note.pitch(), note.velocity())
+                        .map_err(|_| Invalid("mutable instrument note is unsupported"))?;
+                }
+            }
+        }
         let mutable_looping_source = track
             .midi_clips()
             .iter()

@@ -1407,9 +1407,9 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
-            if !cut
+            if cut
                 .stop_through
-                .is_some_and(|stop_through| queued.ticket <= stop_through)
+                .is_none_or(|stop_through| queued.ticket > stop_through)
             {
                 let mut invalidate_audition = false;
                 if let Some(active) = self.active.as_mut() {
@@ -3887,6 +3887,35 @@ mod tests {
                 process_through: 7,
             }
         );
+    }
+
+    #[test]
+    fn stop_cut_suppresses_tickets_at_or_before_boundary_only() {
+        for (stop_through, process_through, expected_position) in [
+            (Some(2), 1, 0),
+            (Some(2), 2, 0),
+            (Some(2), 3, 33),
+            (None, 3, 33),
+        ] {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            assert!(control.publish(graph().0).is_ok());
+            callback.begin_block();
+            for frame in [11, 22, 33] {
+                control.command(PlaybackCommand::Seek(frame)).unwrap();
+            }
+            callback.consume_commands_through(CommandCut {
+                stop_through,
+                process_through,
+            });
+            assert_eq!(control.status.position.load(Acquire), expected_position);
+            assert_eq!(
+                control.status.consumed_command.load(Acquire),
+                process_through
+            );
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
     }
 
     #[test]
