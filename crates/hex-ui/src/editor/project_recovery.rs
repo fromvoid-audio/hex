@@ -100,10 +100,9 @@ impl EditorView {
                                 files: true,
                                 directories: false,
                                 multiple: false,
-                                prompt: Some(format!(
-                                    "locate missing media · {}",
-                                    original.display()
-                                )),
+                                prompt: Some(
+                                    format!("locate missing media · {}", original.display()).into(),
+                                ),
                             })
                         })
                         .map_err(|e| e.to_string())?;

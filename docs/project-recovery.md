@@ -117,11 +117,11 @@ preservation, Save As to a different directory, Save Current, previous-save
 recovery, and explicit Session relaunch PCM across different block partitions.
 These are Linux headless checks, not native dialogs or physical output evidence.
 
-The full exact-source local runner is required and may remain blocked on the
-published Linux environment: the pinned upstream `xattr` dependency references
-`libc::ENOATTR`, absent from pinned libc0.2.190 on Linux. No unrelated dependency
-repair or registry mutation is included. Required checks that fail or do not run
-prevent a merge; PR151 stays draft and user authorization excludes merge.
+The full exact-source local runner is required. The initial Linux run was blocked
+by upstream `xattr` referencing `libc::ENOATTR`; the separately merged PR161
+supplies that compatibility repair. Existing cloud sessions may still need native
+library prerequisites. Required checks that fail or do not run prevent a merge;
+PR151 stays draft pending native acceptance and user authorization excludes merge.
 
 ## Native/manual gate
 
