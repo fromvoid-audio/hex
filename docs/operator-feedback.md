@@ -313,3 +313,14 @@ produce identical partition and retarget PCM checksums across all18 interleaved
 workload runs; measured scope and limitations are in docs/performance.md. This
 reduces ramp work, not the unchanged steady-state or whole-graph handoff costs;
 higher-capacity and physical deadline acceptance remain Pulse2226/2108.
+
+
+### Measured envelope-query inlining
+
+The existing scalar and four-envelope queries carry inline hints so prepared
+voice sampling can optimize their small held/release branches at the call site.
+Arithmetic, checked preparation, independent envelope stages, release endpoints,
+public signatures and registered runtime storage remain unchanged. This is not
+a recurrence cache or approximation. Matched source/binary measurements and
+exact PCM guards are retained in docs/performance.md (Pulse2300); higher
+polyphony, native deadlines and unsupported retarget types remain separate.
