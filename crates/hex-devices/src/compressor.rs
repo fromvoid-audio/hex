@@ -445,5 +445,33 @@ fn gain_reduction_db(level_db: f64, threshold_db: f64, ratio: f64, knee_db: f64)
     }
 }
 
+/// Bounded control-side static knee curve, independent of detector timing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompressorTransferCurve {
+    pub points: [[f32; 2]; 129],
+}
+
+/// Steady detector input is -60..0 dB; output is normalized to -66..24 dB.
+/// Uses the same gain-reduction law as the runtime, including manual makeup.
+pub fn transfer_curve(
+    state: &NativeDeviceState,
+) -> Result<CompressorTransferCurve, DeviceContractError> {
+    let settings = decode(state)?;
+    let points = std::array::from_fn(|index| {
+        let x = index as f64 / 128.0;
+        let input_db = -60.0 + x * 60.0;
+        let output_db = input_db
+            + gain_reduction_db(
+                input_db,
+                f64::from(settings.threshold_db),
+                f64::from(settings.ratio),
+                f64::from(settings.knee_db),
+            )
+            + f64::from(settings.makeup_db);
+        [x as f32, ((output_db + 66.0) / 90.0) as f32]
+    });
+    Ok(CompressorTransferCurve { points })
+}
+
 #[cfg(test)]
 mod tests;

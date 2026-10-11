@@ -7,6 +7,7 @@ pub(super) enum NumericDisplayCodec {
     Balance,
     MidSide,
     Hertz,
+    Ratio,
 }
 
 impl NumericDisplayCodec {
@@ -18,6 +19,7 @@ impl NumericDisplayCodec {
                 Self::MidSide if value == 0.0 => "0".to_owned(),
                 Self::MidSide => format_side(value, "m", "s"),
                 Self::Hertz => format!("{} hz", format_number(value, 2)),
+                Self::Ratio => format!("{}:1", format_number(value, 2)),
             },
             move |text| match self {
                 Self::Percent => text
@@ -30,6 +32,13 @@ impl NumericDisplayCodec {
                     .map(|value| value / 100.0),
                 Self::Balance => parse_side(text, "l", "r"),
                 Self::MidSide => parse_side(text, "m", "s"),
+                Self::Ratio => text
+                    .trim()
+                    .strip_suffix(":1")
+                    .unwrap_or(text.trim())
+                    .trim()
+                    .parse::<f64>()
+                    .ok(),
                 Self::Hertz => text
                     .trim()
                     .strip_suffix("hz")
@@ -114,6 +123,27 @@ mod tests {
         assert!(spec.parse("NaN%").is_err());
         assert!(spec.parse("inf%").is_err());
         assert!(spec.parse("101%").is_err());
+    }
+
+    #[test]
+    fn ratio_codec_roundtrips_typed_ratio_without_accepting_other_denominators() {
+        let spec = NumericDisplayCodec::Ratio.apply(
+            NumericSpec::new(
+                1.0,
+                20.0,
+                4.0,
+                NumericScale::Linear,
+                2,
+                None::<std::sync::Arc<str>>,
+            )
+            .expect("ratio domain"),
+        );
+        assert_eq!(spec.format(4.0).expect("ratio"), "4:1");
+        assert_eq!(spec.parse(" 2.5:1 ").expect("typed ratio"), 2.5);
+        assert_eq!(spec.parse("4").expect("plain value"), 4.0);
+        for invalid in ["4:2", "NaN:1", "inf:1", "0.5:1", "21:1"] {
+            assert!(spec.parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

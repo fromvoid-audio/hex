@@ -20,6 +20,7 @@ use hex_widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod compressor_panel;
 mod eq8_panel;
 mod gate_panel;
 mod numeric_display;
@@ -140,6 +141,7 @@ pub(super) struct DevicePanelState {
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
+    compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
@@ -342,6 +344,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
+        view.device_panel.compressor_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
@@ -399,6 +402,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
+        view.device_panel.compressor_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.owner = desired_owner;
@@ -871,6 +875,9 @@ fn retire_transfer_previews(
     panel.saturator_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
     });
+    panel.compressor_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+    });
 }
 
 fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
@@ -881,6 +888,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     }
@@ -1239,7 +1247,7 @@ fn render_effect(
         view.state.as_ref().map_or(0, |state| state.revision),
         matches!(
             device.state().type_id().as_str(),
-            Ok("hex.utility" | "hex.saturator" | "hex.gate")
+            Ok("hex.utility" | "hex.saturator" | "hex.compressor" | "hex.gate")
         ),
         cx,
     ));
@@ -1247,6 +1255,8 @@ fn render_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.compressor") {
+                compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
@@ -1296,7 +1306,7 @@ fn render_effect(
             };
             if matches!(
                 device_view.type_id.as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.gate")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.compressor" | "hex.gate")
             ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
@@ -1316,7 +1326,7 @@ fn render_effect(
         Err(error) => {
             let compact = matches!(
                 device.state().type_id().as_str(),
-                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.gate")
+                Ok("hex.utility" | "hex.eq8" | "hex.saturator" | "hex.compressor" | "hex.gate")
             );
             let body = div()
                 .id(ElementId::Name(
@@ -1362,6 +1372,7 @@ fn render_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
+        Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
@@ -1977,7 +1988,7 @@ fn device_actions(
     let id = device.id();
     let action_size = if matches!(
         device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator" | "hex.gate")
+        Ok("hex.utility" | "hex.saturator" | "hex.compressor" | "hex.gate")
     ) {
         12.0
     } else {
