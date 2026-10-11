@@ -423,12 +423,13 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 5);
+        assert_eq!(effects.len(), 6);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq eight"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
+        assert!(effects.iter().any(|entry| entry.name == "auto pan"));
         assert_eq!(instruments.len(), 3);
         let sine = instruments
             .iter()
