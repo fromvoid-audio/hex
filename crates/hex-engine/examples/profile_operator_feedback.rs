@@ -34,12 +34,13 @@ struct Options {
     measured: usize,
     scenario: Scenario,
     density_check: bool,
+    all_operators: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     println!(
-        "profile={} operator=registered feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} arch={} os={}",
+        "profile={} operator=registered feedback=nonzero states=feedback:{FEEDBACK_A}->{FEEDBACK_B},level:{LEVEL_A}->{LEVEL_B} ramp_default=5ms sample_rate={} tracks={} notes_per_track={} block_frames={} warmup_blocks={} measured_blocks={} scenario={:?} all_operators={} arch={} os={}",
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -52,20 +53,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         options.warmup,
         options.measured,
         options.scenario,
+        options.all_operators,
         std::env::consts::ARCH,
         std::env::consts::OS,
     );
 
-    let target_state = fixture::state(FEEDBACK_A, LEVEL_A)?;
+    let target_state = fixture::state_with_operators(FEEDBACK_A, LEVEL_A, options.all_operators)?;
     report_registered_storage(&target_state)?;
 
-    let initial = fixture::project(options.tracks, options.notes, FEEDBACK_A, LEVEL_A)?;
+    let initial = fixture::project_with_operators(
+        options.tracks,
+        options.notes,
+        FEEDBACK_A,
+        LEVEL_A,
+        options.all_operators,
+    )?;
     let table = Arc::new(SineTable::new());
     let initial_revision = Arc::new(prepare_revision(&initial.project, &table, None)?);
     verify_partition_checksum(Arc::clone(&initial_revision))?;
 
     if options.density_check {
-        verify_density_refusal(Arc::clone(&table))?;
+        verify_density_refusal(Arc::clone(&table), options.all_operators)?;
     }
 
     match options.scenario {
@@ -147,7 +155,7 @@ fn run_retarget(
         let setup_started = Instant::now();
         editor.execute(Command::ReplaceDeviceState {
             device: initial.instrument_ids[track_index],
-            state: fixture::state(feedback, level)?,
+            state: fixture::state_with_operators(feedback, level, options.all_operators)?,
         })?;
         let prepared = Arc::new(prepare_revision(
             editor.project(),
@@ -296,8 +304,15 @@ mod tests {
     }
 }
 
-fn verify_density_refusal(table: Arc<SineTable>) -> Result<(), Box<dyn Error>> {
-    let overfull = fixture::project(1, 17, FEEDBACK_A, LEVEL_A)?;
+fn verify_density_refusal(
+    table: Arc<SineTable>,
+    all_operators: bool,
+) -> Result<(), Box<dyn Error>> {
+    let overfull = if all_operators {
+        fixture::project_with_operators(1, 17, FEEDBACK_A, LEVEL_A, true)?
+    } else {
+        fixture::project(1, 17, FEEDBACK_A, LEVEL_A)?
+    };
     let revision = match prepare_revision(&overfull.project, &table, None) {
         Ok(revision) => Arc::new(revision),
         Err(error) if is_density_refusal(&error) => {
@@ -385,10 +400,13 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         measured: DEFAULT_MEASURED_BLOCKS,
         scenario: Scenario::Both,
         density_check: false,
+        all_operators: false,
     };
     for argument in std::env::args().skip(1) {
         if argument == "--density-check" {
             options.density_check = true;
+        } else if argument == "--all-operators" {
+            options.all_operators = true;
         } else if let Some(value) = argument.strip_prefix("--tracks=") {
             options.tracks = value.parse()?;
         } else if let Some(value) = argument.strip_prefix("--notes=") {
@@ -437,5 +455,5 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "usage: profile_operator_feedback [--tracks=1|100] [--notes=1|16] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check]"
+    "usage: profile_operator_feedback [--tracks=1|100] [--notes=1|16] [--block=128|512] [--warmup-blocks=n] [--measured-blocks=n] [--scenario=steady|retarget|both] [--density-check] [--all-operators]"
 }

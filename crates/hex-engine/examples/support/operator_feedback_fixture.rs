@@ -23,10 +23,20 @@ pub fn project(
     feedback: f32,
     level: f32,
 ) -> Result<Fixture, Box<dyn Error>> {
+    project_with_operators(tracks, notes_per_track, feedback, level, false)
+}
+
+pub fn project_with_operators(
+    tracks: usize,
+    notes_per_track: usize,
+    feedback: f32,
+    level: f32,
+    all_operators: bool,
+) -> Result<Fixture, Box<dyn Error>> {
     if tracks == 0 || tracks > hex_project::MAX_TRACKS || notes_per_track == 0 {
         return Err("tracks and notes must be nonzero and within project limits".into());
     }
-    let state = state(feedback, level)?;
+    let state = state_with_operators(feedback, level, all_operators)?;
     let mut next_id = 1_u64;
     let mut track_snapshots = Vec::with_capacity(tracks);
     let mut instrument_ids = Vec::with_capacity(tracks);
@@ -113,6 +123,30 @@ pub fn state(feedback: f32, level: f32) -> Result<NativeDeviceState, Box<dyn Err
         parameter::oscillator_level(1),
         ParameterValue::Float(level),
     )?)
+}
+
+/// Optional four-active-carrier control workload; defaults remain unchanged.
+pub fn state_with_operators(
+    feedback: f32,
+    level: f32,
+    all_operators: bool,
+) -> Result<NativeDeviceState, Box<dyn Error>> {
+    let mut state = state(feedback, level)?;
+    if all_operators {
+        for operator in 2..=4 {
+            state = OPERATOR_METADATA.patch_parameter(
+                &state,
+                parameter::oscillator_level(operator),
+                ParameterValue::Float(0.3 + operator as f32 * 0.05),
+            )?;
+            state = OPERATOR_METADATA.patch_parameter(
+                &state,
+                parameter::carrier(operator),
+                ParameterValue::Float(0.25),
+            )?;
+        }
+    }
+    Ok(state)
 }
 
 fn take_id(next_id: &mut u64) -> Result<u64, Box<dyn Error>> {
