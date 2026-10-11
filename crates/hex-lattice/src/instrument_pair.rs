@@ -1,8 +1,9 @@
 //! Optional single-owner mutable instrument pairs. Existing independent twins
 //! retain their factory and accounting contract in `instrument_runtime`.
 use crate::{
-    InstrumentHistoryRetargetPreparation, NativeInstrumentEvent, NativeInstrumentRuntimeError,
-    NativeInstrumentRuntimeLimits, PreparedInstrumentHistoryRetarget, StereoFrame,
+    InstrumentHistoryRetargetPreparation, NativeInstrumentClock, NativeInstrumentEvent,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, PreparedInstrumentHistoryRetarget,
+    StereoFrame,
 };
 use hex_lattice_contract::DeviceContractError;
 use std::any::Any;
@@ -44,6 +45,24 @@ pub trait OwnedInstrumentRuntime: Any + Send {
         events: &[NativeInstrumentEvent],
         frame_count: usize,
     ) -> Result<(), NativeInstrumentRuntimeError>;
+    /// Read-only clock preflight, using the same borrowed host lattice clock as
+    /// independent twins. Clock-dependent providers must reject missing/invalid
+    /// spans here; no callback clock allocation or alternative generation law.
+    fn preflight_clock(
+        &self,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _frame_count: usize,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        Ok(())
+    }
+    fn process_block_with_clock(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) {
+        self.process_block(events, frames);
+    }
     fn begin_block(&mut self);
     fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]);
     fn commit_block(&mut self);
@@ -152,12 +171,21 @@ impl NativeOwnedInstrumentRuntimePair {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
     ) -> Result<(), NativeInstrumentRuntimeError> {
+        self.process_block_with_clock(events, frames, None)
+    }
+    pub fn process_block_with_clock(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
         if !self.open {
             return Err(NativeInstrumentRuntimeError::BlockNotStarted);
         }
         crate::instrument_runtime::validate_event_batch(events, frames.len(), self.events)?;
         self.runtime.preflight_events(events, frames.len())?;
-        self.runtime.process_block(events, frames);
+        self.runtime.preflight_clock(clock, frames.len())?;
+        self.runtime.process_block_with_clock(events, frames, clock);
         Ok(())
     }
     pub fn commit_block(&mut self) {

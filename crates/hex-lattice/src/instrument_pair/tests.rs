@@ -58,6 +58,24 @@ impl OwnedInstrumentRuntime for Pair {
             Ok(())
         }
     }
+    fn preflight_clock(
+        &self,
+        clock: Option<&dyn NativeInstrumentClock>,
+        frames: usize,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if let Some(clock) = clock {
+            let start = clock
+                .beat_at_offset(0)
+                .ok_or(NativeInstrumentRuntimeError::InvalidEventBatch)?;
+            let end = clock
+                .beat_at_offset(frames)
+                .ok_or(NativeInstrumentRuntimeError::InvalidEventBatch)?;
+            if end < start {
+                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+        }
+        Ok(())
+    }
     fn begin_block(&mut self) {
         self.history[1 - self.selected] = self.committed();
     }
@@ -316,4 +334,27 @@ fn partitioning_checkpoint_tail_independence_and_reset_are_sample_exact() {
     transition.reset();
     assert!(transition.committed_is_quiescent());
     assert_eq!(state(&transition).source, state(&transition).target);
+}
+
+#[test]
+fn clock_rejection_precedes_pcm_or_history_mutation() {
+    struct BrokenClock;
+    impl NativeInstrumentClock for BrokenClock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            if offset == 0 { Some(100) } else { None }
+        }
+    }
+    let mut p = pair(1.0);
+    render(&mut p, 4);
+    let before = state(&p).committed();
+    let mut frames = [[7.0, 8.0]; 3];
+    p.begin_block();
+    assert_eq!(
+        p.process_block_with_clock(&[], &mut frames, Some(&BrokenClock)),
+        Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+    );
+    assert_eq!(frames, [[7.0, 8.0]; 3]);
+    assert_eq!(state(&p).history[1 - state(&p).selected], before);
+    p.rollback_block();
+    assert_eq!(state(&p).committed(), before);
 }

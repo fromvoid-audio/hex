@@ -508,3 +508,27 @@ APT/dpkg-deb/Python/archive-keyring prerequisites and no existing conflicting
 native/apt directories. Rootless workspace extraction uses signed APT indices
 and package hashes, inherited proxy/CA and command-scoped network grant. Saved
 old environment version is unchanged; no new-version publication claim.
+
+Fresh published LFO source independently verified and integrated: exact
+6fba8383641c89df9127cad2a477db3b9b283c16 already fixes the reported collision.
+It declaresv7/364B, strictv5/v6=320B, legacy envelope clamp cutoff<6 and LFO IDs
+82–92. Prior “owner must reconcile” statements above are historical, resolved
+by this actual source. The dependency merge retains LFO and PR162 ownership;
+PR158 adds no LFO/toggle/nav implementation. Enable next-version/suffix remains
+PR164's agreed writer; its lib.rs analytic_continuation export hunk is released
+as disjoint from instrument_pair registration. No enable state written here.
+
+The pair now consumes that exact NativeInstrumentClock through read-only clock
+preflight before PCM/scratch processing; an additional test verifies a missing
+exclusive-end clock value leaves PCM and both usable histories unchanged.
+172device/37lattice tests and targeted all-target strictClippy pass on combined
+source. These are still intermediate tests, not the complete harmonic feature.
+
+Final preceding standalone source7cc55a7 fullCI20261011T100235Z-208a46c6 is clean/
+stale=false:1393workspace,18export,397UIfeature,131audioallocation and19stream
+allocation tests pass; strictworkspaceClippy fails unchangedprepared.rs1410,
+5later steps not_run. Dedicated2353/PR162 was deduplicated (revision17) instead
+of making a competing repair. Its unchanged fix is included through the frozen
+LFO dependency above; the new combined source requires its own fullCI result.
+The tested native helper removes ALSA setup as a blocker in this old instance.
+No native Mac input/screenshot/listening or new published-environment claim.
