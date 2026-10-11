@@ -671,3 +671,19 @@ See [the focused contract](mutable-transport-loops.md). The144 SessionPlayback t
 wrap callback allocation probe pass. Full local CI and native acceptance remain
 pending at this checkpoint. Pulse2215 owns this work. Pulse2220 separately tracks
 the pre-existing finite/source-loop aggregate event and device-capacity proof.
+
+## candidate-owned handoff scratch — Pulse2371 / PR166
+
+Prepared-playback continuation borrows the candidate's constructor-owned
+`MidiSpanBuffer` alongside its immutable `PreparedRevision`, instead of
+constructing another buffer inside the candidate query helper. Both handoff
+query sites use this same scratch. Session queries clear visible length before
+work and on error; Arrangement queries do not consume it. Results copy bounded
+span values, so scratch references do not escape. Refusal may change candidate
+scratch but preserves donor ownership and committed playback state.
+
+This changes neither capacity nor runtime layout and adds no callback allocation
+or owning drop. The isolated extraction still requires original default-stack
+Darwin regressions, allocation probes and full exact-source local CI. Selected
+stack-frame reservations from the source PR are not a measured peak-stack result.
+User testing and explicit correctness confirmation remain required before merge.

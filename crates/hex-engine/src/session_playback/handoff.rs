@@ -45,12 +45,13 @@ struct MutableCandidateSpan {
 
 impl SessionPlayback {
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
-        &self,
+        revision: &PreparedRevision,
         track_index: usize,
         track_id: TrackId,
         owner: RouteOwner,
         previous: &Self,
         timing: &T,
+        spans: &mut MidiSpanBuffer,
     ) -> Result<
         (
             [Option<MutableCandidateSpan>; crate::mutable_instrument::MAX_MUTABLE_SPANS_PER_QUERY],
@@ -61,23 +62,20 @@ impl SessionPlayback {
     > {
         let mut candidates = [None; crate::mutable_instrument::MAX_MUTABLE_SPANS_PER_QUERY];
         let mut count = 0_usize;
-        let mut spans = MidiSpanBuffer::default();
         let source_frame = match owner {
             RouteOwner::Arrangement => {
                 let frame = previous.arrangement_frame;
                 let end = frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                let track = self
-                    .revision
+                let track = revision
                     .arrangement()
                     .tracks()
                     .get(track_index)
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
                 let mut overflow = false;
                 let mut arithmetic_failure = false;
-                let wrapped_loop_start = self
-                    .revision
+                let wrapped_loop_start = revision
                     .arrangement()
                     .loop_region()
                     .filter(|region| region.enabled())
@@ -142,7 +140,7 @@ impl SessionPlayback {
                 let end = frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                let Some(prepared) = self.revision.session().midi_clip(clip) else {
+                let Some(prepared) = revision.session().midi_clip(clip) else {
                     return Ok((candidates, 0, frame));
                 };
                 if prepared.track != track_id || !prepared.instrument_enabled() {
@@ -150,7 +148,7 @@ impl SessionPlayback {
                 }
                 prepared
                     .instrument_template()
-                    .query(launch, timing, frame, end, &mut spans)
+                    .query(launch, timing, frame, end, spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {
                     let Some(slot) = candidates.get_mut(count) else {
@@ -614,12 +612,14 @@ impl SessionPlayback {
                 // because there was no old route to match.
                 new_route.owner
             };
-            let (candidates, candidate_count, source_frame) = self.mutable_candidates_at_cut(
+            let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
+                &self.revision,
                 new_index,
                 new_route.id,
                 candidate_owner,
                 previous,
                 &candidate_timing,
+                &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
                 let exact = mutable_proof_deadline(previous, new_route.id, candidate.signature);
@@ -1194,12 +1194,14 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let (candidates, candidate_count, _) = self.mutable_candidates_at_cut(
+            let (candidates, candidate_count, _) = Self::mutable_candidates_at_cut(
+                &self.revision,
                 new_index,
                 route.id,
                 route.owner,
                 previous,
                 &candidate_timing,
+                &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
                 let proof_deadline =
