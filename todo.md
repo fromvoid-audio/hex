@@ -2091,10 +2091,16 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
   the canonical capture prerequisite, with sample ranges and cancellable preroll.
 - Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
-  old files are retained, new batches publish exclusively, and races return
+  old files survive cancellation, confirmed replacements remove routine backups,
+  new batches publish exclusively, and unexpected races return
   truthful recovery errors. The finite behavior is documented in docs/export.md.
 - Final exact-source local checks and PR review remain gates. Native macOS,
   listening and sustained throughput acceptance remain unverified.
+- User feedback11October: picker should start in home, read-only destinations
+  need a clear error, native overwrite confirmation is sufficient, no normal
+  export backup. Revised source needs fresh checks/build/user confirmation.
+  Finder drops2385, persistent selection2386 and multi-track selection2387 are
+  separate tickets; Return listening2388 and realistic long export2389 deferred.
 
 ## 11 October 2026 — candidate-owned handoff scratch (Pulse2371 / PR166)
 

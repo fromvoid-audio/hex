@@ -61,7 +61,7 @@ fn run(directory: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn explicit_cli_export_range_stems_and_overwrite_preserve_prior_output() {
+fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
     let directory = TempDir::new();
     fs::write(
         directory.path().join("source.wav"),
@@ -123,14 +123,14 @@ fn explicit_cli_export_range_stems_and_overwrite_preserve_prior_output() {
         String::from_utf8_lossy(&replaced.stderr)
     );
     let text = String::from_utf8(replaced.stdout).unwrap();
-    let recovery = text
-        .lines()
-        .find_map(|line| line.strip_prefix("previous file preserved at "))
-        .unwrap();
-    assert_eq!(
-        fs::read(directory.path().join(recovery)).unwrap(),
-        b"old recording"
-    );
+    assert!(!text.contains("previous file preserved"));
+    assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".hex-export-")
+    }));
     assert_eq!(
         &fs::read(directory.path().join("existing.wav")).unwrap()[44..],
         &data[44..]

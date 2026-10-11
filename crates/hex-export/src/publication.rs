@@ -16,6 +16,21 @@ pub enum Publication {
     Replace(OverwriteConsent),
 }
 
+impl Publication {
+    /// The caller has accepted this concrete path through a native save dialog.
+    /// Existing regular files may be replaced; absent paths still publish with
+    /// no-replace semantics, so a later collision never truncates another file.
+    pub fn confirmed_save(path: &Path) -> Result<Self, ExportError> {
+        match OverwriteConsent::inspect(path) {
+            Ok(consent) => Ok(Self::Replace(consent)),
+            Err(ExportError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                Ok(Self::CreateNew)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl OverwriteConsent {
     pub fn inspect(path: &Path) -> Result<Self, ExportError> {
         let metadata = fs::symlink_metadata(path).map_err(|source| ExportError::Io {

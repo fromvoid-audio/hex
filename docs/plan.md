@@ -3827,6 +3827,9 @@ The finite [export contract](export.md) consumes canonical capture from verified
 PR159 source 3f1ef2279696de0acb7dec2941dfdbe5fe53c6e2. It adds progress/cancel,
 half-open frame ranges with bounded stateful preroll, explicit Main/track/Return
 scopes, separately named stems, and safe staged publication with concrete overwrite
-consent and retained displaced files. Capture dependencies remain separate PRs.
+consent. On11October user acceptance revised normal replacement to destructive
+overwrite with native-dialog confirmation only, no routine backup, and a user-folder
+picker default. Exceptional external races remain explicit errors preserving
+unexpected displaced data. Capture dependencies remain separate PRs.
 Listening, native macOS behavior and sustained physical throughput require their
 own acceptance evidence; Linux source checks do not establish them.

@@ -26,6 +26,8 @@ Project/session editing, job scheduling, progress UI, device I/O, or alternate a
 
 The output is staged in an exclusive same-directory temporary file, synchronized,
 then linked to the requested destination without replacing an existing file.
-Explicit overwrite preserves the displaced original at a reported recovery path.
+Explicit overwrite atomically replaces the confirmed file and removes the old
+export after publication; ordinary success creates no backup. Unexpected races
+and cleanup failures report truthful exceptional recovery paths.
 See [the export contract](../../docs/export.md) for scopes, consent, race handling,
 platform limits and the remaining acceptance gates.

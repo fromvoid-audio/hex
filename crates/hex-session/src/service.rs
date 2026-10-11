@@ -1526,8 +1526,7 @@ fn run_export_worker(
                 path: job.path.clone(),
                 result: if let Some((start, signal, control, overwrite)) = job.controlled {
                     let policy = if overwrite {
-                        hex_export::OverwriteConsent::inspect(&job.path)
-                            .map(hex_export::Publication::Replace)
+                        hex_export::Publication::confirmed_save(&job.path)
                     } else {
                         Ok(hex_export::Publication::CreateNew)
                     };
@@ -4627,7 +4626,8 @@ mod service_tests {
                 frames: Some(1),
                 signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
                 control: control.clone(),
-                overwrite: false,
+                // Native save confirmation also permits a new destination.
+                overwrite: true,
             })
             .unwrap();
         next_event(&service);

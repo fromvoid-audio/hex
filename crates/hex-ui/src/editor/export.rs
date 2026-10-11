@@ -2,7 +2,7 @@
 use super::EditorView;
 use gpui::{AnyWindowHandle, AppContext, Context, PromptButton, PromptLevel, Window};
 use hex_session::service::{ExportControl, ExportSignal, Request, Stem};
-use std::{path::Path, sync::mpsc::TryRecvError};
+use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
     pub(super) fn export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -134,8 +134,18 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let batch = matches!(&signal, ExportSignal::Stems(_));
+        let Some(directory) = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+        else {
+            self.export_dialog_open = false;
+            self.error = Some("could not locate your user folder for export".into());
+            cx.notify();
+            return;
+        };
         let response = cx.prompt_for_new_path(
-            Path::new("."),
+            &directory,
             Some(if batch {
                 "untitled-stems"
             } else {
@@ -144,12 +154,9 @@ impl EditorView {
         );
         cx.spawn(async move |this, cx| {
             let path = match response.await {
-                Ok(Ok(Some(mut path))) => {
-                    if !batch && path.extension().is_none() {
-                        path.set_extension("wav");
-                    }
-                    path
-                }
+                // Keep the exact native-confirmed path. Appending an extension
+                // afterward could target a different existing, unconfirmed file.
+                Ok(Ok(Some(path))) => path,
                 picked => {
                     let _ = this.update(cx, |view, cx| {
                         view.export_dialog_open = false;
@@ -161,56 +168,27 @@ impl EditorView {
                     return;
                 }
             };
-            let message = format!(
-                "{}{}",
-                path.display(),
-                if batch {
-                    " · new batch directory only"
-                } else {
-                    " · replacing retains the previous file as recovery data"
-                }
-            );
-            let answer = cx.update_window(handle, |_, window, cx| {
-                let mut buttons = vec![
-                    PromptButton::cancel("cancel"),
-                    PromptButton::new("create new"),
-                ];
-                if !batch {
-                    buttons.push(PromptButton::new("replace this file"));
-                }
-                window.prompt(
-                    PromptLevel::Warning,
-                    "confirm export destination",
-                    Some(&message),
-                    &buttons,
-                    cx,
-                )
-            });
-            let choice = match answer {
-                Ok(answer) => answer.await.ok(),
-                Err(_) => None,
-            };
             let _ = this.update(cx, |view, cx| {
                 view.export_dialog_open = false;
-                if matches!(choice, Some(1 | 2)) {
-                    if path.as_os_str().len() > 4096 {
-                        view.error = Some("export path exceeds the 4096-byte limit".into());
-                    } else if super::device_panel::finalize_controls(view, cx) {
-                        let control = ExportControl::default();
-                        if view.enqueue_device_barrier(Request::ExportRange {
-                            path,
-                            start,
-                            frames,
-                            signal,
-                            control: control.clone(),
-                            overwrite: choice == Some(2),
-                        }) {
-                            view.export_pending = true;
-                            view.export_control = Some(control);
-                            view.export_window = Some(handle);
-                            view.status = "export requested".into();
-                            view.error = None;
-                        }
+                // The native save dialog already owns concrete-path overwrite
+                // confirmation. Never ask for that same consent a second time.
+                if path.as_os_str().len() > 4096 {
+                    view.error = Some("export path exceeds the 4096-byte limit".into());
+                } else if super::device_panel::finalize_controls(view, cx) {
+                    let control = ExportControl::default();
+                    if view.enqueue_device_barrier(Request::ExportRange {
+                        path,
+                        start,
+                        frames,
+                        signal,
+                        control: control.clone(),
+                        overwrite: !batch,
+                    }) {
+                        view.export_pending = true;
+                        view.export_control = Some(control);
+                        view.export_window = Some(handle);
+                        view.status = "export requested".into();
+                        view.error = None;
                     }
                 }
                 cx.notify();
@@ -304,7 +282,7 @@ mod tests {
     use gpui::TestAppContext;
 
     #[gpui::test]
-    fn export_dialog_cancel_reopen_and_concrete_destination_cancel_never_reserve_job(
+    fn export_dialog_cancel_reopen_starts_in_user_folder_and_native_save_needs_no_second_consent(
         cx: &mut TestAppContext,
     ) {
         let (project, _, _, _) = clip_drag_ui_test::midi_project();
@@ -326,7 +304,10 @@ mod tests {
         cx.simulate_prompt_answer("main mix");
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
-        cx.simulate_new_path_selection(|_| None);
+        cx.simulate_new_path_selection(|directory| {
+            assert_eq!(directory, PathBuf::from(std::env::var_os("HOME").unwrap()));
+            None
+        });
         cx.run_until_parked();
         assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
         begin(cx);
@@ -334,17 +315,15 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_new_path_selection(|_| {
             Some(std::path::PathBuf::from(
-                "/tmp/hex-concrete-export-test.wav",
+                "/tmp/hex-nonexistent-export-parent/no-extension",
             ))
         });
         cx.run_until_parked();
-        assert!(cx.has_pending_prompt());
-        cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
         editor.read_with(cx, |view, _| {
-            assert!(!view.export_pending);
+            assert!(view.export_pending);
             assert!(!view.export_dialog_open);
-            assert!(view.export_control.is_none());
+            assert!(view.export_control.is_some());
         });
     }
 

@@ -49,24 +49,29 @@ accepted before that boundary prevents publication. Once publication starts,
 cancellation returns false and completion reports the actual publication result;
 it does not pretend to undo an already committed output.
 
-## publication and recovery
+## publication and overwrite
 
 Create-new is the default and checks collisions at the actual hard-link or
-exclusive-rename publication point. Native export presents a separate prompt for
-the concrete destination; replacing a regular file requires the explicit
-`replace this file` choice. No UI-thread filesystem inspection is performed.
+exclusive-rename publication point. Native export starts in the user's home
+folder and uses the native save dialog's concrete-path overwrite confirmation;
+there is no second application confirmation. The accepted path is preserved
+exactly, without appending an extension after consent. An absent destination
+still publishes without replacement, including a late collision. Read-only and
+permission errors explain choosing a writable folder rather than temporary-file
+implementation details. No UI-thread filesystem inspection is performed.
 The worker records and revalidates the concrete destination's regular-file
 identity, length and modification time before atomic exchange. Links and
 directories are refused at consent inspection.
 
-Replacement always retains the displaced object at the reported recovery path,
-even on successful overwrite. It never truncates the old file. An external writer
+Successful confirmed replacement is destructive: after atomic exchange the old
+file is removed. No routine backup or recovery notification is created. Rendering
+and cancellation before publication still preserve the old destination. An external writer
 can race the last validation: after exchange, a changed displaced identity is a
 `PublicationConflict`, naming both paths and retaining both objects. The new
 export may then be visible at the destination; this is explicitly an error,
 not success. No blind rollback can overwrite a later writer. Metadata validation
-is not byte-level compare-and-swap; retaining the displaced object protects data
-even when an external in-place write is not distinguished by metadata. Existing
+is not byte-level compare-and-swap; undetected in-place writes may be removed as
+part of the consented destructive overwrite. Existing
 open descriptors can still mutate their inode; no global writer lock is claimed.
 
 Stems publish only as one **new batch directory**. Files use deterministic
@@ -100,7 +105,7 @@ hex-cli export-project project.hex mix.wav 12000 24000 --overwrite
 IDs come from the canonical project. End must exceed start. Progress is emitted
 on stderr; type `cancel` followed by enter on stdin to cancel. `--overwrite`
 is explicit intent for that concrete existing regular file, with the same
-recovery semantics. Batch directory overwrite is refused. Existing
+destructive replacement semantics. Batch directory overwrite is refused. Existing
 `render-project` behavior remains available.
 
 ## acceptance evidence and gaps
@@ -109,17 +114,28 @@ Focused fixtures verify independent post-fader track and effectful Return PCM,
 one-pass batch stems, equal-name separation, held and release feedback range
 bytes against uninterrupted export, preroll progress/cancellation and budget
 refusal, cancelled reservation reuse, staging cancellation/cleanup, late file
-and batch collisions, retained prior data and displaced external-write recovery.
+and batch collisions, cancellation preserving prior data, successful replacement
+without backups, and exceptional displaced external-write recovery.
 CLI integration covers exact range PCM, stems, default collision refusal,
-explicit overwrite/recovery and malformed ranges. GPUI support tests cover scope
-and path cancellation/reopening, concrete consent cancellation and pending-job
+explicit destructive overwrite and malformed ranges. GPUI support tests cover scope
+and path cancellation/reopening, the user-folder default, native-save admission
+without a second application confirmation, and pending-job
 cancellation. These are automated source fixtures, not native user acceptance.
 
 Required local CI remains tied to the exact final commit and unchanged digest;
 record its actual result in Pulse/todo rather than infer it from focused checks.
-Listening quality, native macOS path/consent interaction and cancellation,
-physical device behavior and sustained throughput remain unverified. Native
+The user tested candidate958d1f2 on11October: Documents export works and the Main
+file looks good; root-volume read-only refusal is accepted. The user requested
+the simpler path/overwrite behavior above. Changed behavior requires a fresh
+exact-source candidate and explicit user correctness confirmation before merge.
+Return/stem listening is deferred in Pulse2388 until representative effect devices
+and projects exist; realistic sustained long export is deferred in Pulse2389.
+Finder audio drops2385, disappearing selection highlight2386 and multiple-track
+selection2387 are separate work, not fixes included in this export PR. Stems
+continue to use explicitly selected tracks (including empty ones) plus separately
+named shared Returns; unselected tracks are not implicitly added. Native
 checklist: export a held/releasing feedback range and compare timing by listening;
 exercise scope/cancel/reopen; export selected stems with a shared effectful Return;
-confirm collision refusal and explicit replacement/recovery; close during replay;
+confirm batch collision refusal and one native overwrite confirmation with no
+routine backup; check writable default/read-only error; close during replay;
 measure a stated long-project sustained workload separately.

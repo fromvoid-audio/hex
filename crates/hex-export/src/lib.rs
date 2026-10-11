@@ -31,7 +31,8 @@ pub struct ExportReport {
     pub sample_rate: u32,
     pub frames: u64,
     pub data_bytes: u32,
-    /// A displaced prior destination is always retained after explicit overwrite.
+    /// Reserved for exceptional publication recovery; successful overwrite
+    /// removes the displaced file and returns no backup path.
     pub recovery_path: Option<PathBuf>,
 }
 
@@ -76,7 +77,17 @@ impl fmt::Display for ExportError {
             Self::Invalid(reason) => write!(f, "invalid wav export: {reason}"),
             Self::Render(source) => write!(f, "could not render wav: {source}"),
             Self::SessionRender(source) => write!(f, "could not render wav: {source}"),
-            Self::Io { operation, source } => write!(f, "could not {operation}: {source}"),
+            Self::Io { operation, source } => match source.kind() {
+                io::ErrorKind::ReadOnlyFilesystem => write!(
+                    f,
+                    "cannot export to a read-only location; choose a writable folder, such as your user folder or documents"
+                ),
+                io::ErrorKind::PermissionDenied => write!(
+                    f,
+                    "cannot write to this location; choose a folder you have permission to write to"
+                ),
+                _ => write!(f, "could not {operation}: {source}"),
+            },
             Self::PublishedButNotDurable {
                 path,
                 recovery_path,
@@ -262,8 +273,16 @@ fn publish<R: BlockRenderer>(
         return Err(error);
     }
 
-    let recovery_path = match publication {
-        Publication::CreateNew => None,
+    match publication {
+        Publication::CreateNew => {
+            if let Err(source) = fs::hard_link(&temporary_path, path) {
+                let _ = fs::remove_file(&temporary_path);
+                return Err(ExportError::Io {
+                    operation: "publish the wav without replacing the destination",
+                    source,
+                });
+            }
+        }
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
                 if !matches!(error, ExportError::PublicationConflict { .. }) {
@@ -271,24 +290,13 @@ fn publish<R: BlockRenderer>(
                 }
                 return Err(error);
             }
-            Some(temporary_path.clone())
-        }
-    };
-    if recovery_path.is_none() {
-        if let Err(source) = fs::hard_link(&temporary_path, path) {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(ExportError::Io {
-                operation: "publish the wav without replacing the destination",
-                source,
-            });
         }
     }
 
-    let cleanup_error = if recovery_path.is_none() {
-        fs::remove_file(&temporary_path).err()
-    } else {
-        None
-    };
+    // After a confirmed successful exchange this removes the displaced old
+    // export. It is not retained as a routine backup. On a race, the earlier
+    // error preserves unexpected displaced data instead of deleting it.
+    let cleanup_error = fs::remove_file(&temporary_path).err();
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
@@ -297,7 +305,8 @@ fn publish<R: BlockRenderer>(
     if let Some(source) = cleanup_error {
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
-            recovery_path: recovery_path.clone(),
+            recovery_path: matches!(publication, Publication::Replace(_))
+                .then(|| temporary_path.clone()),
             operation: "remove the temporary file",
             source,
         });
@@ -305,7 +314,7 @@ fn publish<R: BlockRenderer>(
     if let Some(source) = sync_error {
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
-            recovery_path: recovery_path.clone(),
+            recovery_path: None,
             operation: "synchronize the destination directory",
             source,
         });
@@ -316,7 +325,7 @@ fn publish<R: BlockRenderer>(
         sample_rate,
         frames,
         data_bytes,
-        recovery_path,
+        recovery_path: None,
     })
 }
 
@@ -635,7 +644,20 @@ mod tests {
             Err(ExportError::Cancelled)
         ));
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
-        let error = publish_new(&path, 48_000, 0, 257, || {
+        fs::write(&path, b"prior recording").unwrap();
+        let consent = Publication::confirmed_save(&path).unwrap();
+        assert!(matches!(
+            publish(&path, 48_000, 0, 257, &consent, || Ok(BoundaryRenderer {
+                collision: None
+            })),
+            Err(ExportError::Cancelled)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"prior recording");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        fs::remove_file(&path).unwrap();
+        let consent = Publication::confirmed_save(&path).unwrap();
+        assert!(matches!(consent, Publication::CreateNew));
+        let error = publish(&path, 48_000, 0, 257, &consent, || {
             Ok(BoundaryRenderer {
                 collision: Some(path.clone()),
             })
@@ -648,9 +670,25 @@ mod tests {
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
+    #[test]
+    fn destination_write_errors_explain_read_only_and_permission_failures() {
+        for (kind, expected) in [
+            (io::ErrorKind::ReadOnlyFilesystem, "read-only location"),
+            (io::ErrorKind::PermissionDenied, "permission to write"),
+        ] {
+            let error = ExportError::Io {
+                operation: "create an exclusive temporary file",
+                source: io::Error::new(kind, "native filesystem refusal"),
+            };
+            assert!(error.to_string().contains(expected));
+            assert!(error.to_string().contains("choose a"));
+            assert!(!error.to_string().contains("temporary"));
+        }
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn replacement_preserves_prior_file_and_reports_displaced_external_race_without_rollback() {
+    fn confirmed_replacement_removes_prior_file_but_preserves_unexpected_external_race() {
         struct Silence;
         impl BlockRenderer for Silence {
             fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
@@ -666,10 +704,8 @@ mod tests {
             Ok(Silence)
         })
         .unwrap();
-        assert_eq!(
-            fs::read(report.recovery_path.unwrap()).unwrap(),
-            b"prior recording"
-        );
+        assert!(report.recovery_path.is_none());
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
         assert_eq!(&fs::read(&target).unwrap()[..4], b"RIFF");
         let consent = OverwriteConsent::inspect(&target).unwrap();
         let stage = dir.0.join("stage.wav");
