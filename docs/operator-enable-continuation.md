@@ -292,3 +292,15 @@ release gate/end or clock before proving sounded Stop refusal and recovery.
 Other reviewed immediate-Stop/count fixtures render first, cut later or seed
 a different ownership boundary. Exact Session integration and reduced-bank
 regressions then full16 must validate these changes. Provider handoff remains held.
+
+
+At6dd02b5 exact reduced-bank1/1 and Session integration32/32pass, preserving
+all audited tail/clock/PCM assertions. The subsequent full16 run
+operator-enable-final-audit-20261011 passes guards but stops at workspace tests:
+hex-session operator preset integration expects364bytes instead of current380
+(3pass/1fail). The single stale current-version assertion is updated to v8/380;
+the existing preset fixture authors oscillatorA disabled and checks all four
+canonical enable values survive preset selection, alongside the existing
+payload[288..] equality and exactUndo/Redo states. All intentional v7prefix,
+migration and malformed-length364checks remain unchanged. Runtime source is
+unchanged; complete preset integration then full16 remain required.

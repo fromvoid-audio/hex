@@ -2172,3 +2172,9 @@ occupancy. Architect baseline audit confirms NEW Session unheard-onset
 cancellation (c9432c8), matching olderArrangement behavior. Finite3fixture repair
 preserves64/65and16soundedtails, pending/finalclock andPCM oracle; strengthens
 full-bank unheard-stop positivecontrol versus soundedrefusal. Fullvalidationpending.
+
+
+Operator-enable6dd02b5 reducedbank1/Session32pass; fullCI nextstops on a stale
+preset-state length364→380. Existing preset fixture nowchecks v8 and preserves
+authoredfalse/true/true/trueenable flags plus exactsuffix/UndoRedo equality.
+Intentionallegacy364checks retained; fullvalidation stillpending.
