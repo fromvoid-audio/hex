@@ -847,80 +847,6 @@ fn section_title(label: &'static str) -> Div {
         .child(theme::text(label))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn operator_view_inventory_maps_every_descriptor_to_a_panel_page() {
-        let mut exposed = Vec::new();
-        for operator in 0..4_u32 {
-            let base = operator * 3 + 1;
-            exposed.extend([base, base + 1, base + 2]);
-            exposed.extend(33 + operator * 6..39 + operator * 6);
-            exposed.extend([
-                57 + operator,
-                62 + operator * 3,
-                63 + operator * 3,
-                64 + operator * 3,
-            ]);
-            exposed.extend([74 + operator, 78 + operator]);
-        }
-        exposed.extend([61]);
-        exposed.extend(82..=92);
-        for source in 0..4_u32 {
-            for target in 0..4_u32 {
-                if source != target {
-                    exposed.push(12 + source * 4 + target + 1);
-                }
-            }
-            exposed.push(29 + source);
-        }
-        exposed.sort_unstable();
-        exposed.dedup();
-        let registered = hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
-            .expect("registered instrument catalog")
-            .into_iter()
-            .find(|entry| entry.type_id.as_str() == Ok("hex.instrument.operator"))
-            .expect("registered Operator descriptor");
-        let mut actual: Vec<_> = registered
-            .parameters
-            .iter()
-            .map(|descriptor| descriptor.id.value())
-            .collect();
-        actual.sort_unstable();
-        assert_eq!(
-            exposed, actual,
-            "panel inventory matches registered metadata"
-        );
-        assert_eq!(exposed.len(), 88);
-        assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&92));
-        for diagonal in [13, 18, 23, 28] {
-            assert!(!exposed.contains(&diagonal));
-        }
-    }
-
-    #[test]
-    fn waveform_cycle_preview_matches_selected_fundamental_shape() {
-        let sine = waveform_cycle(0).expect("sine preview");
-        let saw = waveform_cycle(1).expect("saw preview");
-        let square = waveform_cycle(2).expect("square preview");
-        let triangle = waveform_cycle(3).expect("triangle preview");
-        assert_eq!(sine.len(), 32);
-        assert_eq!(saw[0], [0.0, 1.0]);
-        assert_eq!(saw[31], [1.0, 0.0]);
-        assert_eq!(square[0][1], 1.0);
-        assert_eq!(square[31][1], 0.0);
-        assert!(
-            triangle
-                .iter()
-                .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
-        );
-        assert!(waveform_cycle(4).is_none());
-    }
-}
-
 fn lfo_detail(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -1035,4 +961,78 @@ pub(super) fn lfo_summary(
         ));
     }
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_view_inventory_maps_every_descriptor_to_a_panel_page() {
+        let mut exposed = Vec::new();
+        for operator in 0..4_u32 {
+            let base = operator * 3 + 1;
+            exposed.extend([base, base + 1, base + 2]);
+            exposed.extend(33 + operator * 6..39 + operator * 6);
+            exposed.extend([
+                57 + operator,
+                62 + operator * 3,
+                63 + operator * 3,
+                64 + operator * 3,
+            ]);
+            exposed.extend([74 + operator, 78 + operator]);
+        }
+        exposed.extend([61]);
+        exposed.extend(82..=92);
+        for source in 0..4_u32 {
+            for target in 0..4_u32 {
+                if source != target {
+                    exposed.push(12 + source * 4 + target + 1);
+                }
+            }
+            exposed.push(29 + source);
+        }
+        exposed.sort_unstable();
+        exposed.dedup();
+        let registered = hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
+            .expect("registered instrument catalog")
+            .into_iter()
+            .find(|entry| entry.type_id.as_str() == Ok("hex.instrument.operator"))
+            .expect("registered Operator descriptor");
+        let mut actual: Vec<_> = registered
+            .parameters
+            .iter()
+            .map(|descriptor| descriptor.id.value())
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(
+            exposed, actual,
+            "panel inventory matches registered metadata"
+        );
+        assert_eq!(exposed.len(), 88);
+        assert_eq!(exposed.first(), Some(&1));
+        assert_eq!(exposed.last(), Some(&92));
+        for diagonal in [13, 18, 23, 28] {
+            assert!(!exposed.contains(&diagonal));
+        }
+    }
+
+    #[test]
+    fn waveform_cycle_preview_matches_selected_fundamental_shape() {
+        let sine = waveform_cycle(0).expect("sine preview");
+        let saw = waveform_cycle(1).expect("saw preview");
+        let square = waveform_cycle(2).expect("square preview");
+        let triangle = waveform_cycle(3).expect("triangle preview");
+        assert_eq!(sine.len(), 32);
+        assert_eq!(saw[0], [0.0, 1.0]);
+        assert_eq!(saw[31], [1.0, 0.0]);
+        assert_eq!(square[0][1], 1.0);
+        assert_eq!(square[31][1], 0.0);
+        assert!(
+            triangle
+                .iter()
+                .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+        );
+        assert!(waveform_cycle(4).is_none());
+    }
 }
