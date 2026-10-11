@@ -29,6 +29,7 @@ mod eq8_panel;
 mod gate_panel;
 mod numeric_display;
 mod operator_panel;
+pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod saturator_panel;
 mod send_controls;
 mod utility_panel;

@@ -20,8 +20,19 @@ const BODY_HEIGHT: f32 = 168.0;
 const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
-// Explicit user preference: the Operator center is black, independently of side rails.
-const DISPLAY_BACKGROUND: u32 = 0x000000;
+// Neutral colors based on the user-supplied Operator reference crops.
+const DISPLAY_BACKGROUND: u32 = 0x191919;
+const RAIL_BACKGROUND: u32 = 0x363636;
+const RAIL_GUTTER: u32 = 0x474747;
+
+gpui::actions!(hex_operator, [ActivateRouting]);
+
+pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
+        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
+    ]);
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct OperatorPanelState {
@@ -71,10 +82,10 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(theme::color(theme::PaletteRole::Background)))
+        .bg(rgb(RAIL_GUTTER))
         .flex()
         .flex_col()
-        .gap(px(0.0))
+        .gap(px(1.0))
         .pr(px(4.0))
         .border_r_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
@@ -139,6 +150,8 @@ pub(super) fn render_body(
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
                 .bg(rgb(DISPLAY_BACKGROUND))
+                .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
+                .overflow_hidden()
                 .relative()
                 .h_full()
                 .flex()
@@ -266,11 +279,7 @@ fn operator_row(
         .gap(px(2.0))
         .px(px(2.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(theme::color(if selected {
-            theme::PaletteRole::Hover
-        } else {
-            theme::PaletteRole::Background
-        })))
+        .bg(rgb(if selected { 0x414141 } else { RAIL_BACKGROUND }))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
