@@ -295,6 +295,12 @@ user. Manual review should check the three-column arrangement and right-shell
 spacing at the fixed rail height, reach the amp envelope and routing pages, and
 confirm local right-shell controls remain responsive after switching tracks.
 
+Auto Pan uses the same shared rounded frame and `CompactDial` entities for its
+amount, free rate and right phase on both regular tracks and Returns. Its fixed
+144 × 184 px frame stacks the three controls inside the existing device rail;
+canonical gestures, typed values and Undo continue through the common device
+controller. No preview cache or device-specific interaction path is required.
+
 The Operator oscillator page also shows the selected built-in waveform's ideal
 single-cycle shape and exposes per-oscillator velocity sensitivity as a
 percentage; level descriptors use the shared linear-amplitude dB presentation.

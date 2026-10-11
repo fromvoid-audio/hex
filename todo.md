@@ -21,6 +21,19 @@ focused test passes. Full exact-source local CI and PR review are delivery gates
 native audio/UI acceptance remains separate. This coverage does not reproduce or resolve Operator stop issue
 2305. See [device gestures](docs/device-gestures.md).
 
+## auto pan compact panel — pulse2322
+
+Added a dedicated 144 × 184 px shared-frame composition for amount, free rate
+and right phase, reused unchanged on Track and Return effects. All controls use
+the shared compact dial entities and canonical gesture/typed-edit history path.
+Headless rendered coverage checks the three bounds at 880 × 540, matching
+Track/Return geometry, drag plus one Undo, exact typed amount/rate/phase values, a Return phase edit
+and device/Return-owner retirement.
+The panel has no preview cache. The focused test passes with one matching rendered case. Full final-commit
+local CI is recorded in PR145/Pulse2322; native appearance, pointer behavior
+and listening remain user acceptance. DSP/caps and Operator stop2305 are unchanged. See
+[Auto Pan](docs/auto-pan.md).
+
 # hex todo
 
 Updated 11 October 2026. Target: installed Ableton Live 12 Suite 12.4.6,

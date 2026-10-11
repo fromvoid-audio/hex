@@ -6,6 +6,7 @@ use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
 
+mod auto_pan_ui_tests;
 mod compressor_ui_tests;
 mod gate_ui_tests;
 mod saturator_ui_tests;
