@@ -1,7 +1,8 @@
 //! Compact Compressor composition using the shared Lattice controls and plot.
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, parameter_control_with_presentation,
+    effective_parameter_value, numeric_display::NumericDisplayCodec,
+    parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
@@ -118,7 +119,10 @@ pub(super) fn render_body(
             identity,
             parameter,
             presentation,
-            ControlText::default(),
+            ControlText {
+                codec: (id == RATIO).then_some(NumericDisplayCodec::Ratio),
+                ..ControlText::default()
+            },
         ),
         None => div().child(theme::text("unsupported")),
     };
