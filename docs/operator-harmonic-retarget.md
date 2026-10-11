@@ -169,10 +169,76 @@ its own arithmetic/ownership proof. Raising the pair ceiling, reducing voices,
 requantizing interrupted ramps or hiding buffers behind pointers are not valid
 alternatives under the current authorization.
 
-Three example tests cover owned-buffer/copy accounting, capacities/budget and
-full coefficient/shape-boundary storage. Targeted tests and strict example
+The initial three example tests cover owned-buffer/copy accounting,
+capacities/budget and full coefficient/shape-boundary storage. Targeted tests and strict example
 Clippy pass; the initial prototype syntax error was repaired before these runs.
 This is not harmonic DSP, PCM, callback allocation or CPU evidence.
+
+### full64-partial alternative and explicit contract decision
+
+Further compiled types compare genuinely device-wide law storage with separately
+owned mutable primary/scratch histories. This alternative remains design-only:
+no implementation uses it and it is incompatible with today's per-twin-owned
+buffer declaration. It MUST NOT be admitted by declaring only pointer bytes.
+
+|64-partial layout|fully counted bytes|under8192|
+| --- | ---: | --- |
+|two self-contained twins|12496|no|
+|one shared law, two twins retaining cached steps|8512|no,320bytes over|
+|one shared law, two twins reconstructing steps|7520|yes,672bytes spare|
+
+The7520-byte sum is two1728-byte mutable twins, one4040-byte shared law,
+16bytes for Arc strong/weak counters and one8-byte retained graph-owner handle.
+The separate target proof remains24bytes. Allocation bookkeeping and host graph
+metadata are not included, matching current payload-accounting scope. The
+shared law includes exact canonical v6 bytes, target f32 coefficients, target
+settings/normalization, prepared timing, all f64 source partial/shape/scalar
+boundaries, configuration identities and a source-freeze status. Late-fill
+source words are actual AtomicU64 fields (f64 bit patterns), not hidden buffers
+or unsafe interior mutability. Their complete storage is counted. Both twins
+retain their OWN phases, f64 recurrence history, gates, ages, occurrence IDs,
+per-note/device LFO phases, velocities/pitches and transition elapsed clock.
+Rollback cannot share those mutable fields.
+
+This removes redundant per-note step arrays by storing MIDI pitch and rebuilding
+quantized steps with exactly the original frequency/tuning arithmetic order.
+The example's fifth test compares all128 pitches at8000/44100/48000/192000Hz,
+including fractional/extreme ratios and mixed fixed tuning, to actual registered
+prepared payloads; exact u64 steps and Nyquist refusal match. This is bounded
+source-equivalence evidence for those fixtures, not CPU evidence, all-state
+proof, active-LFO cap acceptance or native validation. Velocity scaling/cap
+reconstruction still needs its own integration regressions. Recomputing steps
+adds powf/division/rounding work per rendered voice; CPU measurements may reject
+the alternative even though it fits memory. No new process-wide pitch table or
+unaccounted cache is assumed.
+
+The minimal contract alternative for a primary decision is an explicit
+host-owned device-wide law lease with an8192-byte TOTAL budget including both
+mutable twins and EVERY unique shared byte/reference-counter/owner handle.
+Existing per-twin devices retain their present contract. Such a change needs
+generic admission, accounting and retirement APIs; it cannot be introduced as
+an Operator-only underdeclaration. It potentially overlaps PR159 host surfaces
+and therefore needs its frozen/API handoff before edits. Current traits require
+each twin to copy/own everything; this prototype intentionally implements none
+of them and does not evade that rule.
+
+Required lease/freeze rules before such integration: control allocates the
+candidate's bounded law; one audio owner fills source fields only AFTER full
+handoff preflight, then freezes them before either twin renders. Source fields
+remain immutable thereafter. Both twins use the same snapshot with independent
+clocks/history. Failed adoption must leave the previous law untouched; retry
+needs a fresh candidate or full actual-boundary equivalence validation, not
+configuration-ID equality alone. No control writer can race audio publication.
+Every callback handle replacement must have a graph-held lease so it cannot
+perform a final drop; all law/tail reclamation stays on control. Detached tails
+keep their frozen snapshot. Atomic fields alone do not prove these rules; the
+protocol, failed-block rollback and aggregate active/tail accounting require
+tests before use. There is no implemented lease/freeze protocol in this PR.
+
+Do not conclude full64 support is impossible from the self-contained layout,
+or accept16 as the requested feature. The measured alternative exposes the
+specific ownership/API and CPU decisions needed to continue. No numerical law,
+precision, event/voice capacity or8192-byte limit has been silently changed.
 
 ## finite native study handoff
 

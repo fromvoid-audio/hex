@@ -5,6 +5,7 @@
 //! They do not implement preparation, adoption, event handling or sampling.
 use hex_devices::SineTable;
 use std::mem::{align_of, offset_of, size_of};
+use std::sync::{Arc, atomic::AtomicU64};
 
 const OSCILLATORS: usize = 4;
 const VOICES: usize = 16;
@@ -102,6 +103,76 @@ struct TargetProof {
     reserved: u32,
 }
 
+/// Alternative requiring a NEW host accounting/lifetime contract. The current
+/// lattice factory counts owned data per twin and cannot admit this by declaring
+/// only an Arc handle. Report the complete unique allocation below instead.
+#[repr(C)]
+struct DeviceWideLaw<const H: usize> {
+    canonical_v6: [u8; V6_BYTES],
+    target_partials: [[f32; H]; OSCILLATORS],
+    target_settings: [[u32; 3]; OSCILLATORS],
+    target_normalization: [f64; OSCILLATORS],
+    envelopes: [EnvelopeTiming; OSCILLATORS],
+    phase_origins: [u64; OSCILLATORS],
+    routing_order: [u8; OSCILLATORS],
+    sine: Option<&'static SineTable>,
+    builtin_bank: Option<&'static [f32]>,
+    sample_rate: u32,
+    transition_frames: u32,
+    release_frames: u64,
+    target_configuration_id: u64,
+    // A real safe late-fill representation, not an UnsafeCell/raw pointer.
+    // No implementation of the required freeze/admission protocol exists here.
+    source_partials: [[AtomicU64; H]; OSCILLATORS],
+    source_builtin_weights: [[AtomicU64; 4]; OSCILLATORS],
+    source_scalars: [[AtomicU64; OSCILLATORS]; 3],
+    source_configuration_id: AtomicU64,
+    frozen: AtomicU64,
+}
+
+/// Hypothesis: reconstruct original quantized base steps from canonical tuning,
+/// pitch and rate using precisely the old arithmetic. This changes CPU work,
+/// not stored phase/recurrence precision; equivalence is NOT established here.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RecomputedStepVoice {
+    phases: [u64; OSCILLATORS],
+    previous_outputs: [f64; OSCILLATORS],
+    age: u64,
+    gate: u64,
+    occurrence_id: u64,
+    lfo: Phase,
+}
+
+#[repr(C)]
+struct DeviceWideTwin<const H: usize> {
+    law: Arc<DeviceWideLaw<H>>,
+    voices: [RecomputedStepVoice; VOICES],
+    pitches: [u8; VOICES],
+    velocities: [u8; VOICES],
+    device_lfo: Phase,
+    transition_elapsed: u32,
+}
+
+#[repr(C)]
+struct DeviceWideCachedStepTwin<const H: usize> {
+    law: Arc<DeviceWideLaw<H>>,
+    voices: [Voice; VOICES],
+    velocities: [u8; VOICES],
+    device_lfo: Phase,
+    transition_elapsed: u32,
+}
+
+/// Count BOTH mutable twins, one unique shared payload, Arc's strong/weak words,
+/// and a retained graph-owner handle. Allocator bookkeeping is excluded as in
+/// the existing contract. Host/ABI/lifetime implementation remains unproven.
+fn device_wide_bytes<const H: usize>() -> usize {
+    2 * size_of::<DeviceWideTwin<H>>()
+        + size_of::<DeviceWideLaw<H>>()
+        + 2 * size_of::<std::sync::atomic::AtomicUsize>()
+        + size_of::<Arc<DeviceWideLaw<H>>>()
+}
+
 fn inline_field_bytes<const H: usize>() -> usize {
     V6_BYTES
         + size_of::<[[f32; H]; OSCILLATORS]>()
@@ -162,6 +233,20 @@ fn main() {
     report::<16>();
     report::<32>();
     report::<64>();
+    println!(
+        "devicewide_alternative partials=64 mutable_twin={} unique_shared={} arc_words={} graph_handle={} aggregate={} limit={PAIR_LIMIT} fits={} current_trait_compatible=false",
+        size_of::<DeviceWideTwin<64>>(),
+        size_of::<DeviceWideLaw<64>>(),
+        2 * size_of::<std::sync::atomic::AtomicUsize>(),
+        size_of::<Arc<DeviceWideLaw<64>>>(),
+        device_wide_bytes::<64>(),
+        device_wide_bytes::<64>() <= PAIR_LIMIT
+    );
+    println!(
+        "devicewide_cached_steps aggregate={} fits=false",
+        device_wide_bytes::<64>()
+            + 2 * (size_of::<DeviceWideCachedStepTwin<64>>() - size_of::<DeviceWideTwin<64>>())
+    );
 }
 
 #[cfg(test)]
@@ -222,5 +307,103 @@ mod tests {
             + size_of::<[[f64; 64]; OSCILLATORS]>();
         assert_eq!(lower_bound, 5_612);
         assert!(lower_bound * 2 > PAIR_LIMIT);
+    }
+
+    #[test]
+    fn device_wide_alternative_counts_unique_owned_data_and_both_mutable_histories() {
+        assert_eq!(size_of::<AtomicU64>(), size_of::<f64>());
+        assert_eq!(size_of::<RecomputedStepVoice>(), 104);
+        assert_eq!(size_of::<[RecomputedStepVoice; VOICES]>(), 1_664);
+        // Copy alone is insufficient for the Arc-owning alternative. Its shared
+        // allocation is explicitly included, never hidden behind pointer size.
+        assert!(needs_drop::<DeviceWideTwin<64>>());
+        assert!(device_wide_bytes::<64>() > 2 * size_of::<DeviceWideTwin<64>>());
+        assert!(size_of::<DeviceWideLaw<64>>() >= V6_BYTES + 1_024 + 2_048 + 128 + 96);
+        if usize::BITS == 64 {
+            assert_eq!(size_of::<DeviceWideLaw<64>>(), 4_040);
+            assert_eq!(device_wide_bytes::<64>(), 7_520);
+            assert!(device_wide_bytes::<64>() <= PAIR_LIMIT);
+            assert_eq!(
+                device_wide_bytes::<64>()
+                    + 2 * (size_of::<DeviceWideCachedStepTwin<64>>()
+                        - size_of::<DeviceWideTwin<64>>()),
+                8_512
+            );
+            // Under the CURRENT per-twin-owned-buffer contract it still fails.
+            assert!(
+                2 * (size_of::<DeviceWideTwin<64>>() + size_of::<DeviceWideLaw<64>>()) > PAIR_LIMIT
+            );
+        }
+    }
+
+    #[test]
+    fn recomputed_steps_match_real_prepared_payload_including_nyquist_refusal() {
+        use hex_devices::operator_state::{OperatorMetadata, parameter};
+        use hex_lattice::NativeInstrumentDefinition;
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+        // Source equivalence check for the storage alternative, not a new
+        // admitted callback implementation. Retain the operation order: Hz,
+        // ratio/fixed product, divide by rate, multiply 2^64, then round.
+        let metadata = OperatorMetadata;
+        let ratios = [0.007_812_5_f32, 0.99, 1.0, 128.0];
+        let mut state = metadata.default_state().unwrap();
+        for (i, ratio) in ratios.iter().enumerate() {
+            state = metadata
+                .patch_parameter(
+                    &state,
+                    parameter::oscillator_ratio(i as u32 + 1),
+                    ParameterValue::Float(*ratio),
+                )
+                .unwrap();
+        }
+        let mut accepted = 0;
+        let mut refused = 0;
+        for fixed in [false, true] {
+            let mut law = state.clone();
+            if fixed {
+                law = metadata
+                    .patch_parameter(&law, parameter::fixed(4), ParameterValue::Bool(true))
+                    .unwrap();
+                law = metadata
+                    .patch_parameter(
+                        &law,
+                        parameter::fixed_frequency(4),
+                        ParameterValue::Float(20_000.0),
+                    )
+                    .unwrap();
+            }
+            for rate in [8_000, 44_100, 48_000, 192_000] {
+                let instrument = metadata.prepare_instrument(&law, rate).unwrap();
+                let context = instrument
+                    .prepare_shared_analytic_context()
+                    .unwrap()
+                    .unwrap();
+                for pitch in 0_u8..=127 {
+                    let hz = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+                    let frequencies: [f64; 4] = std::array::from_fn(|i| {
+                        if fixed && i == 3 {
+                            20_000.0
+                        } else {
+                            hz * f64::from(ratios[i])
+                        }
+                    });
+                    let valid = frequencies.iter().all(|hz| *hz < f64::from(rate) * 0.5);
+                    let prepared = context.prepare_note(pitch, 97);
+                    assert_eq!(prepared.is_ok(), valid, "rate={rate} pitch={pitch}");
+                    if let Ok(note) = prepared {
+                        accepted += 1;
+                        for (i, frequency) in frequencies.iter().enumerate() {
+                            let step = (frequency / f64::from(rate) * 18_446_744_073_709_551_616.0)
+                                .round() as u64;
+                            assert_eq!(note.payload()[i], step);
+                        }
+                    } else {
+                        refused += 1;
+                    }
+                }
+            }
+        }
+        assert!(accepted > 0 && refused > 0);
     }
 }
