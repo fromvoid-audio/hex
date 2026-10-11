@@ -320,6 +320,12 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     let device_id = devices[0].id();
     let second_device_id = devices[1].id();
     let parameter_id = entry.parameters[0].id;
+    let mut committed_edit =
+        hex_project::Editor::new(project.clone(), 16).expect("valid device panel project");
+    committed_edit
+        .execute(Command::RemoveDevice(device_id))
+        .expect("remove utility from committed project");
+    let project_after_remove = Arc::new(committed_edit.project().clone());
     let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
@@ -561,6 +567,36 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     visual.simulate_mouse_down(click_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click_point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    // The test editor only records commands. Apply the committed removal to its
+    // view snapshot so the next render no longer contains this device.
+    editor.update(cx, |view, cx| {
+        let previous = view.state.as_ref().expect("initial view state");
+        view.state = Some(Arc::new(ViewState {
+            project: Arc::clone(&project_after_remove),
+            waveforms: previous.waveforms.clone(),
+            midi_preview: Arc::clone(&previous.midi_preview),
+            timeline_frames: previous.timeline_frames,
+            can_undo: true,
+            can_redo: previous.can_redo,
+            revision: previous.revision + 1,
+            unsaved: true,
+            document_path: previous.document_path.clone(),
+        }));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(remove_selector).is_none(),
+        "removed device selector must not retain bounds from the previous frame"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("effect-device-{}", device_id.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "removed device frame must not remain in rendered debug bounds"
+    );
     editor.read_with(cx, |view, _| {
         assert!(matches!(
             view.last_enqueued_edit,

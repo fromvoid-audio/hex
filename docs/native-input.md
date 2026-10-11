@@ -89,3 +89,12 @@ the pinned patch set. Preserve baseline checksums and license notices, regenerat
 the cumulative diff and patched hashes, and retain the source guard. Native
 button hit-testing, dragging, resizing, minimizing, fullscreen transitions and
 Cancel/Discard remain user acceptance; source tests cannot prove AppKit behavior.
+
+## rendered debug bounds — 11 October 2026
+
+GPUI's test-support `debug_bounds` map is populated while painting the next
+frame. Clear it with that frame so selectors absent from the newly rendered UI
+cannot expose bounds left over from an earlier frame. Production behavior is
+unchanged because the map and clear are both gated by GPUI's existing test/test-
+support cfg. Hex's device-panel UI test covers a rendered device removal and
+asserts that both its action selector and device-frame selector disappear.

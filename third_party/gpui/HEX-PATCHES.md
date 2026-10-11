@@ -10,7 +10,8 @@ claim of a clean git commit, identifies this baseline.
 Changes: forward right/other mouse drag callbacks on macOS; preserve the
 per-event device-direction inversion flag; offer opt-in physical_delta() while
 keeping ordinary scroll delta unchanged; initialize the flag false on other
-platforms. AppKit access stays inside GPUI's existing native boundary.
+platforms; clear rendered debug selector bounds between test-support frames.
+AppKit access stays inside GPUI's existing native boundary.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
@@ -37,3 +38,8 @@ controls in the reserved titlebar strip. No app-side native calls or unsafe code
 were added. The source change is confined to `platform.rs` and
 `platform/mac/window.rs`; provenance hashes and the cumulative patch were
 regenerated from the verified published 0.2.2 archive.
+
+11 October debug selector lifecycle: clear `Frame::debug_bounds` when clearing
+the frame under the existing test/test-support cfg. This keeps visual-test
+selectors aligned with the most recently rendered frame and does not affect
+production layout or input behavior.
