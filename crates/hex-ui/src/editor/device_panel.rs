@@ -781,7 +781,7 @@ fn render_track(
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
 
-    let mut chain = div()
+    let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)
         .relative()
@@ -950,8 +950,6 @@ fn render_track(
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }
-    let element = chain_window::viewport_observer(view, cx);
-    chain = chain.child(element);
     root = root.child(header).child(chain);
     if add_open {
         root = root.child(render_add_menu(

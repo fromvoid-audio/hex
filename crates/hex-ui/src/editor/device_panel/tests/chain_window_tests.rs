@@ -349,3 +349,22 @@ fn track_chain_window_preserves_focus_drafts_gestures_and_history(cx: &mut TestA
 fn return_chain_window_preserves_focus_drafts_gestures_and_history(cx: &mut TestAppContext) {
     exercise(cx, true);
 }
+
+#[gpui::test]
+fn short_chain_window_does_not_add_scroll_extent(cx: &mut TestAppContext) {
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.0), px(700.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |view, _| view
+            .device_panel
+            .chain_window
+            .scroll
+            .max_offset()
+            .width),
+        px(0.0),
+        "observing the viewport must not enlarge the rail"
+    );
+}

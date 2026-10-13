@@ -1,6 +1,6 @@
 //! Window only composition, retaining every live control and its subscriptions.
 use super::*;
-use gpui::{FocusHandle, ScrollHandle, canvas, point};
+use gpui::{FocusHandle, ScrollHandle, point};
 use std::{cell::Cell, rc::Rc};
 
 #[derive(Default)]
@@ -102,25 +102,21 @@ pub(super) fn spacer(device: DeviceId, width: f32) -> Stateful<Div> {
         .flex_shrink_0()
 }
 
-pub(super) fn viewport_observer(view: &EditorView, cx: &Context<EditorView>) -> impl IntoElement {
+pub(super) fn rail(view: &EditorView, cx: &Context<EditorView>) -> Div {
     let width = view.device_panel.chain_window.width.clone();
     let entity = cx.entity();
     let scroll = view.device_panel.chain_window.scroll.clone();
     let expected_offset = scroll.offset();
-    canvas(
-        move |bounds, _, cx| {
-            let measured = f32::from(bounds.size.width);
-            let resized =
-                measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
-            if resized || scroll.offset() != expected_offset {
-                let entity = entity.clone();
-                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
-            }
-        },
-        |_, _, _, _| (),
-    )
-    .absolute()
-    .size_full()
+    // Observe the already-laid-out rail without introducing a child that
+    // could change its scroll extent, padding, order or drop geometry.
+    div().on_children_prepainted(move |_, _, cx| {
+        let measured = f32::from(scroll.bounds().size.width);
+        let resized = measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
+        if resized || scroll.offset() != expected_offset {
+            let entity = entity.clone();
+            cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+        }
+    })
 }
 
 #[cfg(test)]

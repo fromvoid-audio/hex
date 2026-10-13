@@ -173,7 +173,7 @@ pub(super) fn render(
         })
         .collect();
     view.device_panel.chain_window.prepare(&geometry);
-    let mut chain = div()
+    let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)
         .relative()
@@ -215,8 +215,6 @@ pub(super) fn render(
             .h(px(DEVICE_FRAME_HEIGHT))
             .flex_shrink_0(),
     );
-    let element = chain_window::viewport_observer(view, cx);
-    chain = chain.child(element);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));
