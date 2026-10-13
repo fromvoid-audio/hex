@@ -360,7 +360,8 @@ fn return_workflow_routes_pcm_edits_devices_history_and_schema18_roundtrip() {
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("project json");
-    assert_eq!(document["version"], 18);
+    assert_eq!(document["version"], 19);
+    assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     let persisted = hex_storage::load(&path).expect("load schema 18 project");
     assert_eq!(persisted, *saved.state.project);
