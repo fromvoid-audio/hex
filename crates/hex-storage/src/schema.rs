@@ -3,6 +3,7 @@ pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
 use crate::StorageError;
+mod host_gain;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
     MeterPoint, MidiClipSnapshot, MidiNoteSnapshot, MidiSourceSnapshot, Project,
@@ -666,6 +667,11 @@ impl DocumentV14 {
                     .iter()
                     .map(|device| {
                         let state = device.state();
+                        if state.output_gain_millidb() != 0 {
+                            return Err(StorageError::Invalid(
+                                "older schema cannot save host gain",
+                            ));
+                        }
                         Ok(DeviceDtoV14 {
                             id: device.id().value(),
                             bypassed: device.bypassed(),
@@ -1135,6 +1141,9 @@ fn device_to_dto(
     bypassed: bool,
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<DeviceDtoV14, StorageError> {
+    if state.output_gain_millidb() != 0 {
+        return Err(StorageError::Invalid("older schema cannot save host gain"));
+    }
     Ok(DeviceDtoV14 {
         id,
         bypassed,
@@ -1971,6 +1980,9 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
+        if header.version == 22 {
+            return host_gain::decode22(bytes);
+        }
         if header.version == 21 {
             return gain_envelopes::DocumentV21::decode(bytes);
         }
@@ -1981,7 +1993,7 @@ impl DocumentV11 {
             return routing::DocumentV19::decode(bytes);
         }
         if header.version == 18 {
-            return provenance::DocumentV18::decode(bytes);
+            return host_gain::decode18(bytes);
         }
         if header.version == 17 {
             return DocumentV17::decode(bytes);
@@ -2751,4 +2763,8 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             })
         })
         .collect()
+}
+
+pub(crate) fn encode_host_gain(project: &Project) -> Option<Result<Vec<u8>, StorageError>> {
+    host_gain::has_gain(project).then(|| host_gain::encode22(project))
 }
