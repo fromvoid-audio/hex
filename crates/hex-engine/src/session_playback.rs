@@ -295,6 +295,7 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -352,6 +353,17 @@ impl fmt::Debug for SessionPlayback {
 }
 
 impl SessionPlayback {
+    pub(crate) fn set_device_metering(&mut self, enabled: bool) {
+        self.device_metering = enabled;
+        for chain in self
+            .device_chains
+            .iter_mut()
+            .chain(self.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
+        }
+    }
+
     pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
         self.historical_floor
             .into_iter()
@@ -782,6 +794,7 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
         Ok(Self {
+            device_metering: false,
             revision,
             periodic_tempo,
             anchor: None,
@@ -941,7 +954,7 @@ impl SessionPlayback {
                     .arrangement()
                     .tracks()
                     .iter()
-                    .any(crate::Track::has_stateful_devices))
+                    .any(crate::Track::has_device_chain))
     }
 
     pub(crate) fn has_active_arrangement_voices(&self) -> bool {
