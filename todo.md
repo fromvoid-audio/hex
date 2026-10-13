@@ -1,3 +1,14 @@
+## 13 October 2026 — header double-click fullscreen
+
+The shared loading/editor title bar now toggles native fullscreen on left
+double-click and restores normal mode on the next double-click. Single/right
+clicks and triple-click continuation do not toggle; window controls retain
+their own stopped-propagation actions. A rendered GPUI pointer regression checks
+entry and exit. Native macOS transitions, header dragging and window-control
+sanity checks remain user acceptance. Automated validation is recorded with the
+task result. Pulse intake is currently blocked: its create-ticket endpoint
+requires a request_id that the installed tool schema does not expose.
+
 ## persistent Arrangement selection — pulse2386 / pr170
 
 The captured time range survives mouse release and subsequent idle controller
