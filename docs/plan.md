@@ -3810,6 +3810,29 @@ bus history is preflighted before handoff, and removal uses the bounded release
 policy in [return tracks](return-tracks.md). General latency compensation and
 native pinned rows/interactions remain separate gates; UI2178 owns the latter.
 
+### canonical output capture prerequisite — pulse2346 / pr159
+
+The finite [capture contract](output-capture.md) is implemented independently of
+active export30 / PR152: control-built runtime/revision/generation-bound plans,
+borrowed stereo buffers, one canonical Arrangement render, original-ID retained
+tails and whole-block output validity. Interactive admission requires an
+Arrangement-only cut without loop/pending Session scheduling; linear export
+keeps its inheritance refusal. Required final-source local CI and native/manual
+acceptance remain separate gates; this implementation does not finish export30.
+Pulse cannot link the prerequisite while30's workflow is active; no bypass.
+
+### export — pulse30 / pr152
+
+The finite [export contract](export.md) consumes canonical capture from verified
+PR159 source 3f1ef2279696de0acb7dec2941dfdbe5fe53c6e2. It adds progress/cancel,
+half-open frame ranges with bounded stateful preroll, explicit Main/track/Return
+scopes, separately named stems, and safe staged publication with concrete overwrite
+consent. On11October user acceptance revised normal replacement to destructive
+overwrite with native-dialog confirmation only, no routine backup, and a user-folder
+picker default. Exceptional external races remain explicit errors preserving
+unexpected displaced data. Capture dependencies remain separate PRs.
+Listening, native macOS behavior and sustained physical throughput require their
+own acceptance evidence; Linux source checks do not establish them.
 
 ## Pulse25 — finite project recovery contract, 11 October2026
 

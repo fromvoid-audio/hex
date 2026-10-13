@@ -462,6 +462,8 @@ pub(super) struct EditorView {
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     close_prompt_open: bool,
     export_pending: bool,
+    export_control: Option<hex_session::service::ExportControl>,
+    export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
@@ -728,6 +730,8 @@ impl EditorView {
             pending_scene_duplicate: None,
             close_prompt_open: false,
             export_pending: false,
+            export_control: None,
+            export_window: None,
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
@@ -845,6 +849,7 @@ impl EditorView {
         self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
+        self.update_track_selection_status();
     }
 
     pub(super) fn toggle_play(&mut self) {
@@ -1006,6 +1011,13 @@ impl EditorView {
             }
         }
         self.selected_track = Some(track);
+        if !self.track_selection.contains(track)
+            && let Some(state) = self.state.as_ref()
+        {
+            self.track_selection
+                .select(&state.project, track, false, false);
+            self.update_track_selection_status();
+        }
         self.selected_clip = Some(clip);
         true
     }

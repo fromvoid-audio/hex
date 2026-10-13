@@ -251,10 +251,35 @@ fn modulation_export(lfo: Option<bool>) {
 
     let directory = TestDir::new();
     let path = directory.0.join("operator-feedback.wav");
-    let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
+    let report = hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 6_500)
         .expect("linear prepared feedback export");
     assert_eq!(report.frames, 6_500);
     let bytes = fs::read(path).expect("read exported feedback wav");
+    // Seek into both a held feedback note and its release. The selected files
+    // must exactly match the full uninterrupted export's corresponding PCM.
+    for start in [127, 5_999, 6_113] {
+        let selected = directory.0.join(format!("feedback-range-{start}.wav"));
+        let control = hex_export::ExportControl::default();
+        hex_export::render_prepared_controlled(
+            &selected,
+            Arc::clone(&revision),
+            start,
+            300,
+            hex_export::ExportSignal::Main,
+            &control,
+        )
+        .expect("stateful selected range");
+        let data = fs::read(selected).unwrap();
+        let offset = 44 + start as usize * 4;
+        assert_eq!(&data[44..], &bytes[offset..offset + 300 * 4]);
+        assert_eq!(
+            control.progress(),
+            hex_export::ExportProgress {
+                processed_frames: start + 300,
+                total_frames: start + 300
+            }
+        );
+    }
     for (frame_index, (samples, expected)) in bytes[44..].chunks_exact(4).zip(expected).enumerate()
     {
         let left = i16::from_le_bytes([samples[0], samples[1]]);

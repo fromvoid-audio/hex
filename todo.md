@@ -2107,6 +2107,33 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   typing and Undo passed and requested merge. Main integration is revalidated
   before merging. The supplied checklist is in docs/device-controls.md.
 
+### canonical capture — pulse2346 / pr159
+
+- Added bounded stable TrackId/ReturnId capture plans and borrowed transactional
+  buffers before Main/master, including empty chains and original-ID retained
+  tails while preserving old sonic routing and shared Returns.
+- Independent PCM/history/partition/refusal fixtures and total/signed-net callback
+  allocation probes cover the finite contract in `docs/output-capture.md`.
+- Required full exact clean local CI is a merge gate. Native macOS/audio,
+  listening and physical throughput remain manual gaps; no export UI/preroll or
+  publication is included. Active Pulse30 prerequisite linking remains blocked.
+
+### export — pulse30 / pr152
+
+- Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
+  the canonical capture prerequisite, with sample ranges and cancellable preroll.
+- Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
+  old files survive cancellation, confirmed replacements remove routine backups,
+  new batches publish exclusively, and unexpected races return
+  truthful recovery errors. The finite behavior is documented in docs/export.md.
+- Final exact-source local checks and PR review remain gates. Native macOS,
+  listening and sustained throughput acceptance remain unverified.
+- User feedback11October: picker should start in home, read-only destinations
+  need a clear error, native overwrite confirmation is sufficient, no normal
+  export backup. Revised source needs fresh checks/build/user confirmation.
+  Finder drops2385, persistent selection2386 and multi-track selection2387 are
+  separate tickets; Return listening2388 and realistic long export2389 deferred.
+
 ## 11 October 2026 — candidate-owned handoff scratch (Pulse2371 / PR166)
 
 - Isolated the handoff.rs-only patch from PR164's shared-scratch checkpoint;

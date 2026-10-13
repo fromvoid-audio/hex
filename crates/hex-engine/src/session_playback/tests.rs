@@ -10688,5 +10688,7 @@ mod source_loop_tests;
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
 
+#[path = "capture_tests.rs"]
+mod capture_tests;
 #[path = "device_capacity_tests.rs"]
 mod device_capacity_tests;

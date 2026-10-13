@@ -188,6 +188,14 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        let capture_epoch = self
+            .capture_epoch
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let previous_capture_epoch = previous
+            .capture_epoch
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -2089,6 +2097,7 @@ impl SessionPlayback {
                 )
             {
                 std::mem::swap(candidate, previous_group);
+                self.tail_track_ids[slot] = previous.tail_track_ids[slot];
                 if let (Some(candidate_active), Some(previous_active)) = (
                     self.tail_output_active.get_mut(slot),
                     previous.tail_output_active.get(slot).copied(),
@@ -2145,6 +2154,7 @@ impl SessionPlayback {
                     old_chain,
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
+                self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
                 if let (Some(active), Some(prepared_active)) = (
                     self.tail_output_active.get_mut(slot),
                     old_track_tail_output_active.get(old_index).copied(),
@@ -2211,6 +2221,8 @@ impl SessionPlayback {
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;
+        self.capture_epoch = capture_epoch;
+        previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
         self.route_historical_floors = candidate_route_floors;

@@ -19,7 +19,7 @@ impl EditorView {
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
-                |view, _, cx| view.export_dialog(cx),
+                |view, window, cx| view.export_dialog(window, cx),
                 cx,
             ))
             .child(self.icon(

@@ -69,6 +69,14 @@ impl TrackSelection {
 }
 
 impl super::EditorView {
+    pub(super) fn update_track_selection_status(&mut self) {
+        self.status = match self.selected_track_ids().len() {
+            0 => "no tracks selected".into(),
+            1 => "track selected".into(),
+            count => format!("{count} tracks selected"),
+        };
+    }
+
     pub(super) fn select_track_with_modifiers(
         &mut self,
         track: TrackId,
@@ -83,12 +91,6 @@ impl super::EditorView {
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
             self.focus_selected_track(track, window);
-            let count = self.selected_track_ids().len();
-            self.status = match count {
-                0 => "no tracks selected".into(),
-                1 => "track selected".into(),
-                count => format!("{count} tracks selected"),
-            };
         }
     }
 

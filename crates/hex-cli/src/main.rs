@@ -27,6 +27,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         return projects::import_project(Path::new(&args[1]), Path::new(&args[2]));
     }
+    if args.first().is_some_and(|a| a == "export-project") {
+        return projects::export_project(&args);
+    }
     if args.first().is_some_and(|a| a == "render-project") {
         if args.len() != 3 {
             return Err("usage: hex-cli render-project <project.hex> <new-output.wav>".into());

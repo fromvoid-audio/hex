@@ -6,6 +6,7 @@ use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureS
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
+pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 mod recovery;
@@ -210,6 +211,15 @@ pub enum Request {
         generation: u64,
     },
     Export(PathBuf),
+    /// Explicit half-open Arrangement range; worker captures the current revision.
+    ExportRange {
+        path: PathBuf,
+        start: u64,
+        frames: Option<u64>,
+        signal: hex_export::ExportSignal,
+        control: hex_export::ExportControl,
+        overwrite: bool,
+    },
 }
 
 impl Request {
@@ -283,6 +293,12 @@ struct ExportJob {
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
     frames: u64,
+    controlled: Option<(
+        u64,
+        hex_export::ExportSignal,
+        hex_export::ExportControl,
+        bool,
+    )>,
 }
 
 enum ExportWork {
@@ -360,6 +376,7 @@ impl Service {
         let export_busy = Arc::new(AtomicBool::new(false));
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
         let worker = thread::Builder::new()
@@ -390,7 +407,7 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
-        if matches!(&request, Request::Export(_)) {
+        if matches!(&request, Request::Export(_) | Request::ExportRange { .. }) {
             if self
                 .export_busy
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -703,6 +720,7 @@ fn run_worker(
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
                 | Request::Export(_)
+                | Request::ExportRange { .. }
         );
         let mut barrier_failure = None;
         if barrier {
@@ -741,7 +759,7 @@ fn run_worker(
             if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
                 save_complete = true;
             }
-            if let Request::Export(path) = &request {
+            if let Request::Export(path) | Request::ExportRange { path, .. } = &request {
                 export_completion = Some(ExportEvent {
                     revision,
                     path: path.clone(),
@@ -1345,6 +1363,7 @@ fn run_worker(
                                 path: path.clone(),
                                 prepared: Arc::clone(prepared),
                                 frames,
+                                controlled: None,
                             })
                         }
                         _ => Err("latest project revision has not compiled".to_owned()),
@@ -1357,6 +1376,51 @@ fn run_worker(
                                 path,
                                 result: Err(reason),
                             });
+                        }
+                    }
+                }
+                Request::ExportRange {
+                    path,
+                    start,
+                    frames,
+                    signal,
+                    control,
+                    overwrite,
+                } => {
+                    let job = match compiled.as_ref() {
+                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
+                            let frames = frames.unwrap_or_else(|| {
+                                prepared
+                                    .arrangement()
+                                    .audible_end_frame()
+                                    .unwrap_or(0)
+                                    .saturating_sub(start)
+                            });
+                            if frames == 0 || start.checked_add(frames).is_none() {
+                                Err("invalid export range".to_owned())
+                            } else {
+                                Ok(ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
+                            }
+                        }
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    };
+                    match job {
+                        Ok(job) => {
+                            status = Some("export queued".into());
+                            export_job = Some(job);
+                        }
+                        Err(reason) => {
+                            export_completion = Some(ExportEvent {
+                                revision,
+                                path,
+                                result: Err(reason),
+                            })
                         }
                     }
                 }
@@ -1556,7 +1620,28 @@ fn run_export_worker(
             ExportWork::Render(job) => ExportEvent {
                 revision: job.revision,
                 path: job.path.clone(),
-                result: exporter(&job.path, &job.prepared, 0, job.frames),
+                result: if let Some((start, signal, control, overwrite)) = job.controlled {
+                    let policy = if overwrite {
+                        hex_export::Publication::confirmed_save(&job.path)
+                    } else {
+                        Ok(hex_export::Publication::CreateNew)
+                    };
+                    policy
+                        .and_then(|policy| {
+                            hex_export::render_prepared_with_policy(
+                                &job.path,
+                                job.prepared,
+                                start,
+                                job.frames,
+                                signal,
+                                &control,
+                                &policy,
+                            )
+                        })
+                        .map_err(|error| error.to_string())
+                } else {
+                    exporter(&job.path, &job.prepared, 0, job.frames)
+                },
             },
         };
         if events.send(event).is_err() {
@@ -4495,6 +4580,62 @@ mod service_tests {
         assert_eq!(read_u16(&bytes, 50), 0x2000);
     }
 
+    #[test]
+    fn explicit_export_range_uses_canonical_track_capture_and_releases_cancelled_reservation() {
+        let directory = TestDir::new();
+        let source = directory.0.join("selected.wav");
+        fs::write(&source, wav_mono(&[16_384, 8_192])).unwrap();
+        let service = Service::new(48_000, 16, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        let imported = next_event(&service);
+        let track = imported.state.project.tracks()[0].id();
+        let output = directory.0.join("selected-output.wav");
+        let cancelled = ExportControl::default();
+        cancelled.cancel();
+        service
+            .submit(Request::ExportRange {
+                path: output.clone(),
+                start: 1,
+                frames: Some(1),
+                signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+                control: cancelled,
+                overwrite: false,
+            })
+            .unwrap();
+        next_event(&service);
+        let refused = next_export_event(&service);
+        assert_eq!(refused.result.unwrap_err(), "export cancelled");
+        assert!(!output.exists());
+        let control = ExportControl::default();
+        service
+            .submit(Request::ExportRange {
+                path: output.clone(),
+                start: 1,
+                frames: Some(1),
+                signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+                control: control.clone(),
+                // Native save confirmation also permits a new destination.
+                overwrite: true,
+            })
+            .unwrap();
+        next_event(&service);
+        let completed = next_export_event(&service);
+        assert_eq!(completed.revision, imported.state.revision);
+        assert_eq!(completed.result.unwrap().frames, 1);
+        let bytes = fs::read(output).unwrap();
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(read_u16(&bytes, 44), 0x2000);
+        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_eq!(
+            control.progress(),
+            ExportProgress {
+                processed_frames: 1,
+                total_frames: 1
+            }
+        );
+    }
+
     fn read_u16(bytes: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
     }
@@ -5250,6 +5391,7 @@ mod service_tests {
                     sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                    recovery_path: None,
                 })
             })
         };

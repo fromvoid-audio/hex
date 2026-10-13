@@ -2607,6 +2607,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "rustix 1.1.5",
 ]
 
 [[package]]
