@@ -328,3 +328,6 @@ pub(super) struct NoteBinding {
     pub recipe: Handle,
     pub custom_caps: [u8; 4],
 }
+
+#[path = "inline_candidate/pair.rs"]
+mod compact_pair;

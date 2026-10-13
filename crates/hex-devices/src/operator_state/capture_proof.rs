@@ -10,3 +10,6 @@ mod leases;
 mod ownership_tests;
 #[path = "capture_proof/tests.rs"]
 mod tests;
+
+#[path = "capture_proof/inline_candidate.rs"]
+mod inline_candidate;
