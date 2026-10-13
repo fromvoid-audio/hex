@@ -228,7 +228,6 @@ pub(super) fn section_listener(
             let focus_in = cx.on_focus_in(&handle, window, move |view, window, cx| {
                 if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
                     state.focused = true;
-                    cx.notify();
                 }
                 if let Some(owner) = owner {
                     let excluded: Vec<_> = view
@@ -262,11 +261,15 @@ pub(super) fn section_listener(
                         _ => {}
                     }
                 }
+                // GPUI delivers focus events after painting, when immediate
+                // notifications cannot dirty the window. Schedule the changed
+                // section/context for the next frame without requiring input.
+                cx.defer_in(window, |_, _, cx| cx.notify());
             });
-            let focus_out = cx.on_focus_out(&handle, window, move |view, _, _, cx| {
+            let focus_out = cx.on_focus_out(&handle, window, move |view, _, window, cx| {
                 if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
                     state.focused = false;
-                    cx.notify();
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
             });
             if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
