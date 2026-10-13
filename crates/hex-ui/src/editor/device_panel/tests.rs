@@ -204,6 +204,119 @@ fn pump_until(
 }
 
 #[gpui::test]
+fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("instrument")
+        .id();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("{prefix}-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("device card");
+        let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+        visual.simulate_click(title, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.device_panel.selected_device, Some(device));
+            assert_eq!(view.state.as_ref().expect("state").revision, revision);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+    // Right-clicking a different card must not change the left-click selection.
+    let bounds = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+        ))
+        .expect("instrument");
+    let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+    visual.simulate_mouse_down(title, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(title, MouseButton::Right, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(effect))
+    });
+    let remove = visual
+        .debug_bounds(Box::leak(
+            format!("device-remove-{}", effect.value()).into_boxed_str(),
+        ))
+        .expect("remove action");
+    visual.simulate_click(remove.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        !view
+            .state
+            .as_ref()
+            .expect("state")
+            .project
+            .track(track)
+            .expect("track")
+            .devices()
+            .iter()
+            .any(|device| device.id() == effect)
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
+}
+
+#[gpui::test]
+fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .expect("gain knob");
+    visual.simulate_mouse_down(knob.center(), MouseButton::Left, Modifiers::default());
+    let moved = point(knob.center().x, knob.center().y - px(12.0));
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(device));
+        assert!(view.device_gesture.snapshot().is_some());
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(device))
+    });
+    editor.update(cx, |view, cx| {
+        view.focused_return = None;
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
+    editor.update(cx, |view, cx| {
+        view.device_panel.selected_device = Some(device);
+        view.project_generation += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
+}
+
+#[gpui::test]
 fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mut TestAppContext) {
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let instrument = state
