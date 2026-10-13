@@ -95,6 +95,7 @@ pub(super) fn must_mount(
         || view.active_native_device_drag.as_ref().is_some_and(|drag| {
             matches!(drag.source, drag::NativeDeviceDragSource::Existing { device: source, .. } if source == device)
                 || drag.destination.get().is_some_and(|target| target.before == Some(device) || target.replace == Some(device))
+                || drag.return_destination.get().is_some_and(|target| target.before == Some(device))
         })
         || panel.eq8_panels.get(&device).is_some_and(|panel| panel.audition_gesture_active)
 }

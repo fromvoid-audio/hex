@@ -1,3 +1,26 @@
+## device title reordering — 13 october 2026
+
+Regular and return device titles start metadata-only drags without a floating
+preview, as requested in the follow-up. Stable insertion markers resolve left/right card halves, inter-card
+gaps and the chain tail. Return effects use canonical `MoveReturnDevice`; regular
+effects and the freely positioned instrument reuse the existing actor drop path.
+Hover does not edit, valid moves produce one revision/Undo entry, and self-drop,
+Escape/outside release and stale/pending input preserve cancellation/refusal.
+Rendered title-move tests and source guards pass; full local CI belongs to the
+focused PR. Native macOS/listening and drag autoscroll remain open. See
+[device controls](docs/device-controls.md). Pulse intake is blocked by the live
+request_id requirement omitted/stripped by the installed create_ticket schema;
+no new ticket ID is claimed.
+
+## vector synth name — 13 october 2026
+
+Renamed the registered four-operator synth display name to `vector`; the shared
+catalog and device view feed the browser and card header. Existing
+`hex.instrument.operator` identity, state and DSP remain compatible. Updated
+existing catalog/view checks and profiler output. Native browser/header and
+existing-project reopening acceptance remain open; automated results belong to
+the focused rename PR. See [instrument contract](docs/operator-native.md).
+
 ## operator focus presentation — 13 october 2026
 
 User reports retained in Pulse2373 and oscillator enable Pulse2335. Individual

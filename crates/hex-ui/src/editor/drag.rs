@@ -78,6 +78,12 @@ pub(super) enum NativeDeviceDragSource {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ReturnDeviceDropTarget {
+    pub(super) owner: hex_project::ReturnId,
+    pub(super) before: Option<hex_project::DeviceId>,
+}
+
 /// Metadata-only payload shared by catalog drops and ordered-chain moves.
 #[derive(Clone, Debug)]
 pub(super) struct NativeDeviceDrag {
@@ -85,6 +91,7 @@ pub(super) struct NativeDeviceDrag {
     pub(super) revision: u64,
     pub(super) source: NativeDeviceDragSource,
     pub(super) destination: Rc<Cell<Option<NativeDeviceDropTarget>>>,
+    pub(super) return_destination: Rc<Cell<Option<ReturnDeviceDropTarget>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -805,6 +812,7 @@ impl super::EditorView {
             self.active_native_device_drag = None;
         }
         drag.destination.set(None);
+        drag.return_destination.set(None);
     }
 
     pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
@@ -812,6 +820,7 @@ impl super::EditorView {
             return false;
         };
         drag.destination.set(None);
+        drag.return_destination.set(None);
         true
     }
 

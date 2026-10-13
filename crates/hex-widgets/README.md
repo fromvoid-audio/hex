@@ -21,6 +21,9 @@ these controls and bind their descriptors; changes to shared controls propagate
 to every device using them. Presentation variants describe reusable density or
 control purpose, never a device identity.
 
+Device frames accept title elements as well as text, so callers can attach header
+drag input while the frame retains shared title styling and fixed geometry.
+
 ## Dependencies
 
 Depends only on GPUI. Control colors, labels, values, units, and callbacks are

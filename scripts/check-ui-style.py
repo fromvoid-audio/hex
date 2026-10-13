@@ -52,6 +52,7 @@ widgets = (
     # Device preset header actions reuse the themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button_sized(',
     'super::super::device_preset::actions(',
+    'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',

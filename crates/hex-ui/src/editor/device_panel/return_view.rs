@@ -203,58 +203,7 @@ pub(super) fn render(
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(track_name_view)
         .child(add_button);
-    let geometry: Vec<_> = devices
-        .iter()
-        .map(|device| {
-            (
-                device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-            )
-        })
-        .collect();
-    view.device_panel.chain_window.prepare(&geometry);
-    let mut chain = chain_window::rail(view, cx)
-        .id("device-chain-scroll")
-        .track_scroll(&view.device_panel.chain_window.scroll)
-        .relative()
-        .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
-        .debug_selector(|| "device-chain-scroll".into())
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .gap(px(DEVICE_CHAIN_PADDING))
-        .p(px(DEVICE_CHAIN_PADDING))
-        .overflow_x_scroll()
-        .overflow_y_hidden()
-        .drag_over::<drag::NativeDeviceDrag>(move |style, _, _, _| {
-            style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
-        })
-        .on_drop(
-            cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
-                view.drop_native_device_to_return(payload, return_id, window, cx);
-            }),
-        );
-    for (index, device) in devices.iter().enumerate() {
-        if chain_window::must_mount(view, device.id(), window, cx) {
-            let focus = view.device_panel.chain_window.focus(device.id(), cx);
-            chain = chain.child(
-                render_return_effect(view, window, cx, return_id, &devices, index, device)
-                    .track_focus(&focus),
-            );
-        } else {
-            let card = chain_window::spacer(
-                device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-            );
-            chain = chain.child(card);
-        }
-    }
-    chain = chain.child(
-        div()
-            .min_w(px(40.0))
-            .h(px(DEVICE_FRAME_HEIGHT))
-            .flex_shrink_0(),
-    );
+    let chain = super::return_drag::render_chain(view, window, cx, return_id, &devices);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));
@@ -262,7 +211,7 @@ pub(super) fn render(
     root
 }
 
-fn render_return_effect(
+pub(super) fn render_return_effect(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
@@ -429,7 +378,13 @@ fn render_return_effect(
                     | "hex.auto-pan")
             ) {
                 compact_device_frame(
-                    theme::text(device_view.name.clone()),
+                    device_drag_title(
+                        view,
+                        cx,
+                        device,
+                        NativeDeviceClass::Effect,
+                        theme::text(device_view.name.clone()),
+                    ),
                     control_style().with_device_selection(selected),
                     actions,
                     body,
@@ -437,7 +392,13 @@ fn render_return_effect(
                 .into_any_element()
             } else {
                 device_frame(
-                    theme::text(device_view.name.clone()),
+                    device_drag_title(
+                        view,
+                        cx,
+                        device,
+                        NativeDeviceClass::Effect,
+                        theme::text(device_view.name.clone()),
+                    ),
                     control_style().with_device_selection(selected),
                     actions,
                     body,
@@ -482,7 +443,7 @@ fn render_return_effect(
                     | "hex.auto-pan")
             ) {
                 compact_device_frame(
-                    title,
+                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                     control_style().with_device_selection(selected),
                     actions,
                     body,
@@ -490,7 +451,7 @@ fn render_return_effect(
                 .into_any_element()
             } else {
                 device_frame(
-                    title,
+                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                     control_style().with_device_selection(selected),
                     actions,
                     body,

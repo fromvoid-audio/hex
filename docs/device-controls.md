@@ -224,7 +224,7 @@ starts metadata-only drags; it does not construct DSP. Dropping an effect on a
 card's left or right half inserts before that stable device ID, while the empty
 chain tail appends. A browser instrument drop always targets the front position
 and is refused when the focused track already has an instrument; replacement
-remains an explicit menu action. Dragging an existing card by its header grip
+remains an explicit menu action. Dragging an existing card by its title
 moves that stable device identity to the indicated position, including across
 tracks. The rail renders the project's canonical ordered chain, and drop hit
 regions do not add spacing or resize the fixed-height panel.
@@ -237,6 +237,36 @@ the preview without publishing history. The Session actor repeats the generation
 revision, active-gesture, target and anchor checks before applying the typed add
 or move command. These contracts are source-tested; native pointer feel and
 cross-track behavior remain on the user review checklist.
+
+### title dragging and return-chain insertion — 13 october 2026
+
+The title area of every device frame is a drag source, including instruments,
+effects and return effects. The shared frame accepts caller-owned title content;
+device input and canonical commands stay in the editor/session. Header actions
+and parameter controls keep their own input. An open-hand cursor identifies the
+grab area; while dragging, the closed-hand cursor and insertion markers show the
+move without a floating preview.
+
+The left/right halves of each card choose a stable before-device anchor. The
+3 px gap after each card also accepts insertion drops without changing visual
+spacing, and the empty tail appends. Return chains now have the same insertion
+markers and title sources, dispatching one `MoveReturnDevice` within the current
+return owner. Browser effects can also insert at these anchors; return chains
+continue to refuse instruments and transfers from another owner.
+
+Hover leaves the canonical order untouched. Valid release creates one undoable
+move; dropping before itself or at its current position creates no request.
+Escape, outside release, stale source/project and active parameter edits retain
+the existing cancellation/refusal rules. Reordering does not clone device state
+or construct DSP on the UI thread. Horizontal drag autoscroll is still deferred.
+
+Rendered GPUI tests cover regular/return title drags left, right and into the
+inter-card gap, instrument placement among effects, unchanged order while hovering,
+one revision per move, Undo, self-drop and return Escape/outside cancellation.
+Native macOS interaction and listening remain open. User checklist: drag a device
+title left/right/between cards on a regular track and return; move the instrument
+among effects; check insertion markers with no floating preview, Undo/Redo, Escape and outside
+release; confirm knobs, bypass/remove buttons and horizontal scrolling still work.
 
 Starting a native-device drag from the browser reveals the device pane and
 selects device details so the drop receiver is visible, even when the pane was
