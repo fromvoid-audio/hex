@@ -532,6 +532,21 @@ impl OperatorSettings {
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
+    // Control preparation still runs the canonical encoder and preserves its
+    // error ordering. Reuse only the exact validated type/version/byte owner;
+    // migration or normalization must retain the newly encoded allocation.
+    fn prepared_authored_state(
+        &self,
+        input: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let canonical = self.to_state()?;
+        Ok(if input == &canonical {
+            input.clone()
+        } else {
+            canonical
+        })
+    }
+
     /// Decode validated original oscillator, graph and envelope laws on control.
     pub fn kernel_parts(
         &self,
@@ -868,7 +883,7 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
-        let authored_state = settings.to_state()?;
+        let authored_state = settings.prepared_authored_state(state)?;
         let effective_levels = *configuration
             .feedback_parameters([0.0; OPERATORS])
             .map_err(|_| DeviceContractError::InvalidParameterValue)?
@@ -1034,6 +1049,8 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
     (index < OPERATORS).then_some(index)
 }
 
+#[cfg(test)]
+mod canonical_reuse_tests;
 #[cfg(test)]
 mod enable_continuation_tests;
 #[cfg(test)]
