@@ -84,3 +84,27 @@ transport/catalog reserved capacities with checked retained/construction totals.
 The legacy CatalogFootprint remains a payload/subcomponent view, not an additive
 heap total. Capacity reporting excludes opaque allocator/Arc/OS/thread machinery
 and caller graph storage; it does not establish aggregate admission policy.
+
+`CompactSourceInput` is an opt-in control owner for compact input copying only.
+Construction moves the original Vec without allocating; borrowed preflight
+checks existing configuration, source/scratch/logical-path limits and complete
+key consistency/uniqueness without sorting originals. Fallible exact Vec and
+OsString reservations copy paths in original order, preserving raw non-UTF8
+representation and metadata. Actual returned slot/path capacities are checked
+against explicit caller `CompactCopyReservations`; no default global budget is
+introduced. Original capacity, compact capacity and disjoint caller-declared
+retained/construction data reservations are charged once in the checked overlap
+report. Allocator rounding/headers, stack and opaque process costs are excluded;
+this is reserved data capacity, not a process memory cap or observed RSS peak.
+An allocation can return excess capacity before it is checked and refused.
+
+Every API-reported validation/reservation/copy refusal leaves original owners
+unchanged and recoverable through `into_originals`; partial copies are reclaimed
+on control. Recovery after success reclaims the compact copy and returns the
+exact original Vec/paths. Process-fatal OOM/abort is outside this guarantee.
+Only completed compact-copy reporting is exposed: no worker verification,
+poll/readiness states, catalog or runtime escape, or native publication support.
+The legacy consuming constructors and their limits are unchanged. Worker
+integration, failed-construction capacity observation and an owned reader-path
+boundary remain separate work; this copy report does not charge those costs.
+These APIs and all final drops belong on control, never in a callback.

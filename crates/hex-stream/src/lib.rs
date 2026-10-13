@@ -8,6 +8,7 @@ mod footprint;
 mod page_endpoint;
 mod revision;
 mod runtime;
+mod staging;
 mod types;
 mod worker;
 
@@ -21,6 +22,10 @@ pub use revision::{StreamRevisionMismatch, VerifiedStreamRevision};
 pub use runtime::{
     CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
     StreamPairMismatch, StreamRuntime,
+};
+pub use staging::{
+    CompactCopyError, CompactCopyReport, CompactCopyReservations, CompactSourceInput,
+    InputAllocationFootprint,
 };
 pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,
