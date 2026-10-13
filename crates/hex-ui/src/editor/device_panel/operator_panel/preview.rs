@@ -10,8 +10,9 @@ use hex_widgets::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const PANEL_WIDTH: f32 = 228.0;
-const FIELD_WIDTH: f32 = 46.0;
+// Preserve selector-column space while accepting the wider shared dial tile.
+pub(super) const PANEL_WIDTH: f32 = 2.0 * FIELD_WIDTH + 148.0;
+const FIELD_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH;
 const ROW_HEIGHT: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -176,10 +177,10 @@ pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) selectors: HashMap<Choice, SelectorPreview>,
+    pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor::device_panel) values: [f64; 12],
     pub(in crate::editor::device_panel) enabled: [bool; 2],
     pub(in crate::editor::device_panel) selected: [usize; 2],
-    pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
 }
 
 impl Default for State {

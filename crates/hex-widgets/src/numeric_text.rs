@@ -383,6 +383,8 @@ mod tests {
             text: 0xe0e0e0,
             muted: 0xaaaaaa,
             accent,
+            focus_marker: 0xaaaaaa,
+            dial_rail: 0x000000,
             hover: 0x404040,
             font_size: 10.0,
         }

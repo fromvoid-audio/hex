@@ -1,11 +1,8 @@
 //! An immediately visible window with a weak task waiting for injected output.
-use super::{
-    EditorView, MAX_RESIDENT_FRAMES, Quit, editor_window_options, header, install_close_guard,
-};
+use super::{EditorView, Quit, editor_window_options, header, install_close_guard};
 use crate::theme;
 use gpui::{App, AppContext, Context, FocusHandle, Window, div, prelude::*, rgb};
 use hex_audio::{PreparedOutput, RecoveryOpen};
-use hex_session::service::Service;
 use std::time::Duration;
 
 pub(super) fn open(cx: &mut App, request: Result<RecoveryOpen, String>) -> Result<(), String> {
@@ -45,7 +42,7 @@ impl Bootstrap {
                 // the captured output drops through off-thread stream retirement.
                 let _ = cx.update_window(window_handle, move |_, window, cx| {
                     let rate = startup_rate(output.as_ref().ok().map(|audio| audio.sample_rate));
-                    let service = match Service::new(rate, 32, MAX_RESIDENT_FRAMES) {
+                    let service = match super::recovery_service(rate) {
                         Ok(service) => service,
                         Err(error) => {
                             let _ = this.update(cx, |view, cx| {

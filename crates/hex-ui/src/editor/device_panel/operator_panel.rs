@@ -13,9 +13,11 @@ pub(super) mod context;
 pub(super) mod envelope;
 pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 = 760.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 =
+    SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
 const BODY_HEIGHT: f32 = 168.0;
-const SHELL_WIDTH: f32 = 210.0;
+// Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
+const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
 // Neutral colors based on the user-supplied Operator reference crops.
@@ -945,7 +947,6 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let owner = context::Owner::capture(view, device);
     let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
     for ids in [
         &[82, 83, 84][..],
@@ -983,19 +984,9 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
-    content
-        .id(ElementId::Name(
-            format!("operator-lfo-detail-{}", device.value()).into(),
-        ))
-        .child(page_tabs(
-            cx,
-            device,
-            owner,
-            OperatorPanelState {
-                selected_operator: 0,
-                page: OperatorPage::Lfo,
-            },
-        ))
+    content.id(ElementId::Name(
+        format!("operator-lfo-detail-{}", device.value()).into(),
+    ))
 }
 
 pub(super) fn lfo_summary(
@@ -1019,6 +1010,8 @@ pub(super) fn lfo_summary(
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
+        .bg(rgb(RAIL_BACKGROUND))
+        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .px(px(4.0))
         .flex()

@@ -914,7 +914,10 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let shell_selector =
         Box::leak(format!("operator-shell-{}", instrument_id.value()).into_boxed_str());
     let shell = visual.debug_bounds(shell_selector).expect("operator shell");
-    assert_eq!(shell.size.width, px(210.0));
+    assert_eq!(
+        shell.size.width,
+        px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
+    );
     let envelope_graph = visual
         .debug_bounds("operator-envelope-graph")
         .expect("amp envelope is the default contextual view");
@@ -963,7 +966,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
             ))
             .expect("right-side shared micro dial");
-        assert_eq!(control.size.width, px(46.0));
+        assert_eq!(control.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
         assert_eq!(control.size.height, px(40.0));
     }
     // Three-dial sections start beside the narrow switch/icon column,
@@ -1025,12 +1028,18 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
     });
+    // Keep the compact-width layout assertions above, then expose the full
+    // horizontal device rail before interacting with the far-right controls.
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
     let wave_selector = Box::leak(
         format!("operator-preview-{}-selector-0", instrument_id.value()).into_boxed_str(),
     );
     let wave_bounds = visual
         .debug_bounds(wave_selector)
         .expect("local filter waveform selector");
+    assert!(wave_bounds.origin.x >= px(0.0));
+    assert!(wave_bounds.origin.x + wave_bounds.size.width <= px(1440.0));
     visual.simulate_click(
         point(
             wave_bounds.origin.x + px(5.0),
@@ -1058,10 +1067,6 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             .entity
             .read_with(cx, |selector, _| assert!(!selector.is_open()));
     });
-    // Keep the compact-width layout assertions above, then expose the full
-    // horizontal device rail before interacting with the far-right controls.
-    visual.simulate_resize(size(px(1440.0), px(540.0)));
-    visual.run_until_parked();
     let rate_knob =
         Box::leak(format!("operator-preview-{}-0-knob", instrument_id.value()).into_boxed_str());
     let rate_value =
@@ -2281,108 +2286,137 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    let shell = visual
-        .debug_bounds(Box::leak(
-            format!("operator-shell-{}", instrument_id.value()).into_boxed_str(),
-        ))
-        .expect("Operator shell");
-    assert_eq!(shell.size.width, px(210.0));
-    for operator in 0..4 {
-        let row = Box::leak(
-            format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
+    for width in [880.0, 1280.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        let shell = visual
+            .debug_bounds(Box::leak(
+                format!("operator-shell-{}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("Operator shell");
+        assert_eq!(
+            shell.size.width,
+            px(3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0)
         );
-        let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
-        assert_eq!(row_bounds.size.height, px(40.0));
-        assert!(row_bounds.origin.y >= shell.origin.y);
-        assert!(
-            row_bounds.origin.y + row_bounds.size.height <= shell.origin.y + shell.size.height,
-            "wider gutters must not push the bottom oscillator outside its shell"
-        );
-        if operator < 3 {
-            let previous = visual
+        for operator in 0..4 {
+            let row = Box::leak(
+                format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
+            );
+            let row_bounds = visual.debug_bounds(row).expect("fixed-mode row");
+            assert_eq!(row_bounds.size.height, px(40.0));
+            assert!(row_bounds.origin.y >= shell.origin.y);
+            assert!(
+                row_bounds.origin.y + row_bounds.size.height <= shell.origin.y + shell.size.height,
+                "wider gutters must not push the bottom oscillator outside its shell"
+            );
+            if operator < 3 {
+                let previous = visual
+                    .debug_bounds(Box::leak(
+                        format!("operator-row-{}-{}", instrument_id.value(), operator + 1)
+                            .into_boxed_str(),
+                    ))
+                    .expect("previous oscillator row");
+                assert_eq!(
+                    row_bounds.origin.y - previous.origin.y - previous.size.height,
+                    px(2.0),
+                    "dark oscillator rows have a visible two-pixel gutter"
+                );
+            }
+            let badge = visual
                 .debug_bounds(Box::leak(
-                    format!("operator-row-{}-{}", instrument_id.value(), operator + 1)
+                    format!("operator-select-{}-{operator}", instrument_id.value())
                         .into_boxed_str(),
                 ))
-                .expect("previous oscillator row");
-            assert_eq!(
-                row_bounds.origin.y - previous.origin.y - previous.size.height,
-                px(2.0),
-                "dark oscillator rows have a visible two-pixel gutter"
+                .expect("compact oscillator badge");
+            assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
+            let fixed_id = 62 + operator * 3;
+            let level_id = operator * 3 + 2;
+            for parameter in [fixed_id + 1, level_id] {
+                let field = Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                );
+                let bounds = visual.debug_bounds(field).expect("fixed-mode control");
+                assert_eq!(bounds.size.width, px(hex_widgets::MICRO_DIAL_WIDTH));
+                assert!(bounds.origin.x >= row_bounds.origin.x + px(4.0));
+                assert!(
+                    bounds.origin.x + bounds.size.width
+                        <= row_bounds.origin.x + row_bounds.size.width - px(4.0),
+                    "oscillator controls need an inset from the dark row edges"
+                );
+            }
+            let toggle = Box::leak(
+                format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
             );
-        }
-        let badge = visual
-            .debug_bounds(Box::leak(
-                format!("operator-select-{}-{operator}", instrument_id.value()).into_boxed_str(),
-            ))
-            .expect("compact oscillator badge");
-        assert_eq!(badge.size, gpui::size(px(12.0), px(12.0)));
-        let fixed_id = 62 + operator * 3;
-        let level_id = operator * 3 + 2;
-        for parameter in [fixed_id + 1, level_id] {
-            let field = Box::leak(
-                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
-            );
-            let bounds = visual.debug_bounds(field).expect("fixed-mode control");
-            assert_eq!(bounds.size.width, px(46.0));
-            assert!(bounds.origin.x >= row_bounds.origin.x + px(4.0));
+            let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
             assert!(
-                bounds.origin.x + bounds.size.width
-                    <= row_bounds.origin.x + row_bounds.size.width - px(4.0),
-                "oscillator controls need an inset from the dark row edges"
+                toggle_bounds.origin.x + toggle_bounds.size.width
+                    <= row_bounds.origin.x + row_bounds.size.width
             );
         }
-        let toggle = Box::leak(
-            format!("device-{}-parameter-{fixed_id}", instrument_id.value()).into_boxed_str(),
-        );
-        let toggle_bounds = visual.debug_bounds(toggle).expect("fixed mode toggle");
-        assert!(
-            toggle_bounds.origin.x + toggle_bounds.size.width
-                <= row_bounds.origin.x + row_bounds.size.width
-        );
-    }
-    for (title, fields) in [
-        (
-            "filter",
-            vec![
-                operator_panel::preview::Field::FilterFrequency,
-                operator_panel::preview::Field::FilterResonance,
-            ],
-        ),
-        (
-            "pitch env",
-            vec![
-                operator_panel::preview::Field::PitchEnvelope,
-                operator_panel::preview::Field::Spread,
-                operator_panel::preview::Field::Transpose,
-            ],
-        ),
-        (
-            "global",
-            vec![
-                operator_panel::preview::Field::Time,
-                operator_panel::preview::Field::Tone,
-                operator_panel::preview::Field::Volume,
-            ],
-        ),
-    ] {
-        let row = visual
+        let lfo = visual
             .debug_bounds(Box::leak(
-                format!("operator-preview-row-{}-{title}", instrument_id.value()).into_boxed_str(),
+                format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
             ))
-            .expect("preview row");
-        for field in fields {
-            let field = field as usize;
+            .expect("native LFO row");
+        for parameter in [82, 83, 85, 87] {
             let control = visual
                 .debug_bounds(Box::leak(
-                    format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
                 ))
-                .expect("preview control");
-            assert!(control.origin.x >= row.origin.x + px(4.0));
+                .expect("native LFO control");
+            assert!(control.origin.x >= lfo.origin.x + px(4.0));
             assert!(
-                control.origin.x + control.size.width <= row.origin.x + row.size.width - px(4.0),
-                "preview controls need an inset from the dark row edges"
+                control.origin.x + control.size.width <= lfo.origin.x + lfo.size.width - px(4.0)
             );
+        }
+        for (title, fields) in [
+            (
+                "filter",
+                vec![
+                    operator_panel::preview::Field::FilterFrequency,
+                    operator_panel::preview::Field::FilterResonance,
+                ],
+            ),
+            (
+                "pitch env",
+                vec![
+                    operator_panel::preview::Field::PitchEnvelope,
+                    operator_panel::preview::Field::Spread,
+                    operator_panel::preview::Field::Transpose,
+                ],
+            ),
+            (
+                "global",
+                vec![
+                    operator_panel::preview::Field::Time,
+                    operator_panel::preview::Field::Tone,
+                    operator_panel::preview::Field::Volume,
+                ],
+            ),
+        ] {
+            let row = visual
+                .debug_bounds(Box::leak(
+                    format!("operator-preview-row-{}-{title}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .expect("preview row");
+            for field in fields {
+                let field = field as usize;
+                let control = visual
+                    .debug_bounds(Box::leak(
+                        format!("operator-preview-{}-{field}", instrument_id.value())
+                            .into_boxed_str(),
+                    ))
+                    .expect("preview control");
+                assert!(control.origin.x >= row.origin.x + px(4.0));
+                assert!(
+                    control.origin.x + control.size.width
+                        <= row.origin.x + row.size.width - px(4.0),
+                    "preview controls need an inset from the dark row edges"
+                );
+            }
         }
     }
     // LFO uses canonical controls after PR154, with the same accepted row inset.
@@ -2536,6 +2570,22 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         assert!(bounds.origin.x >= body.origin.x);
         assert!(bounds.origin.x + bounds.size.width <= body.origin.x + body.size.width);
     }
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-2-pan-reset", device.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "balance uses shared pan semantics"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-10-pan-reset", device.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "mid-side bipolar is not automatically pan"
+    );
     let mode_knob = Box::leak(
         format!(
             "device-{}-parameter-{}-knob",

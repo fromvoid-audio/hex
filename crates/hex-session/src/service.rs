@@ -8,7 +8,10 @@ use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+mod recovery;
 use hex_storage::FileToken;
+pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
+use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -188,6 +191,11 @@ pub enum Request {
         scene: hex_project::SceneId,
     },
     Open(PathBuf),
+    /// Recovery/relink opens prepare a complete candidate before adoption.
+    OpenWith {
+        source: ProjectSource,
+        relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+    },
     Edit(Command),
     CopyTimeRange(hex_project::TimeRange),
     CutTimeRange(hex_project::TimeRange),
@@ -207,6 +215,12 @@ pub enum Request {
         generation: u64,
     },
     Export(PathBuf),
+}
+
+impl Request {
+    pub fn is_project_open(&self) -> bool {
+        matches!(self, Self::Open(_) | Self::OpenWith { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,10 +300,11 @@ impl Service {
         history_capacity: usize,
         max_resident_frames: u64,
     ) -> Result<Self, ServiceError> {
-        Self::with_exporter(
+        Self::with_exporter_and_recovery(
             sample_rate,
             history_capacity,
             max_resident_frames,
+            None,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
                     .map_err(|error| error.to_string().to_lowercase())
@@ -297,10 +312,46 @@ impl Service {
         )
     }
 
+    /// All journal I/O, including directory creation, stays on the worker.
+    pub fn with_recovery(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        untitled_path: PathBuf,
+    ) -> Result<Self, ServiceError> {
+        Self::with_exporter_and_recovery(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            Some(untitled_path),
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|error| error.to_string().to_lowercase())
+            }),
+        )
+    }
+
+    #[cfg(test)]
     fn with_exporter(
         sample_rate: u32,
         history_capacity: usize,
         max_resident_frames: u64,
+        exporter: Exporter,
+    ) -> Result<Self, ServiceError> {
+        Self::with_exporter_and_recovery(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            None,
+            exporter,
+        )
+    }
+
+    fn with_exporter_and_recovery(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
         exporter: Exporter,
     ) -> Result<Self, ServiceError> {
         let session = Session::new(sample_rate, history_capacity, max_resident_frames)
@@ -326,6 +377,7 @@ impl Service {
                     event_tx,
                     export_work_tx,
                     actor_export_events,
+                    recovery,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -566,6 +618,7 @@ fn run_worker(
     events: SyncSender<Event>,
     export_work: SyncSender<ExportWork>,
     export_events: SyncSender<ExportEvent>,
+    recovery: Option<PathBuf>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -574,6 +627,7 @@ fn run_worker(
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
     let mut document: Option<DocumentHandle> = None;
+    let mut journal: Option<hex_storage::Journal> = None;
     let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
     let mut state = view_state(&session, Arc::clone(&midi_preview), revision, unsaved, None);
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
@@ -632,6 +686,7 @@ fn run_worker(
         let mut project_replaced = false;
         let mut replacement_revision = None;
         let mut created = None;
+        let revision_before_request = revision;
         let mut duplicate_complete = false;
         let mut restore_complete = None;
         let mut restore_prepared = None;
@@ -647,6 +702,7 @@ fn run_worker(
         let barrier = matches!(
             &request,
             Request::Open(_)
+                | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
@@ -686,6 +742,7 @@ fn run_worker(
             }
         }
         if let Some(reason) = barrier_failure {
+            open_complete = request.is_project_open();
             if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
                 save_complete = true;
             }
@@ -938,25 +995,35 @@ fn run_worker(
                     }
                     Err(reason) => error = Some(reason),
                 },
-                Request::Open(path) => {
+                request @ (Request::Open(_) | Request::OpenWith { .. }) => {
                     open_complete = true;
-                    match open_project(&session, history_capacity, &path) {
-                        Ok((candidate, candidate_base, candidate_path, candidate_token)) => {
+                    let (source, relinks) = match request {
+                        Request::Open(path) => (ProjectSource::Saved(path), BTreeMap::new()),
+                        Request::OpenWith { source, relinks } => (source, relinks),
+                        _ => continue,
+                    };
+                    match open_source(&session, history_capacity, &source, &relinks) {
+                        Ok((candidate, candidate_base, candidate_document, dirty)) => {
                             match compile(
                                 &candidate,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                             ) {
                                 Ok(prepared) => {
+                                    journal = None;
                                     session = candidate;
                                     media_base = Some(candidate_base);
-                                    document = Some(DocumentHandle {
-                                        path: candidate_path,
-                                        token: candidate_token,
-                                    });
-                                    unsaved = false;
+                                    document = candidate_document;
+                                    unsaved = dirty;
                                     project_replaced = true;
                                     replacement_revision = Some(prepared);
-                                    status = Some("project opened".into());
+                                    status = Some(
+                                        if dirty {
+                                            "project recovered or relinked · save to keep changes"
+                                        } else {
+                                            "project opened"
+                                        }
+                                        .into(),
+                                    );
                                 }
                                 Err(reason) => error = Some(reason),
                             }
@@ -1368,6 +1435,35 @@ fn run_worker(
                     .flatten();
             }
         }
+        if let Some(untitled_path) = recovery.as_deref() {
+            let journal_result = if !unsaved {
+                let result = match journal.as_mut() {
+                    Some(current) => current.clear(),
+                    None => Ok(()),
+                };
+                if result.is_ok() {
+                    journal = None;
+                }
+                result.map_err(|reason| reason.to_string())
+            } else if revision != revision_before_request {
+                checkpoint_project(
+                    &session,
+                    media_base.as_deref(),
+                    document.as_ref(),
+                    untitled_path,
+                    &mut journal,
+                )
+            } else {
+                Ok(())
+            };
+            if let Err(reason) = journal_result {
+                let message = format!("automatic recovery: {reason}");
+                error = Some(match error {
+                    Some(existing) => format!("{existing}; {message}"),
+                    None => message,
+                });
+            }
+        }
         let device_preview = match (
             device_gesture.snapshot(),
             preview_project,
@@ -1474,113 +1570,6 @@ fn run_export_worker(
             return;
         }
     }
-}
-
-fn open_project(
-    current: &Session,
-    history_capacity: usize,
-    path: &Path,
-) -> Result<(Session, PathBuf, PathBuf, FileToken), String> {
-    let (project, token) =
-        hex_storage::load_with_token(path).map_err(|error| error.to_string().to_lowercase())?;
-    if project.sample_rate() != current.project().sample_rate() {
-        return Err("project sample rate differs from the active audio device".into());
-    }
-    let project_dir = absolute_document_base(path)?;
-    let mut prepared_assets = Vec::new();
-    prepared_assets
-        .try_reserve_exact(project.assets().count())
-        .map_err(|_| "could not reserve decoded media table".to_owned())?;
-    let mut remaining_frames = current.max_resident_frames();
-    // Load unreferenced assets too: the editor can place them later, so missing
-    // media in any asset record rejects the candidate instead of dropping it.
-    for asset in project.assets() {
-        let media_path = if asset.path().is_absolute() {
-            asset.path().to_path_buf()
-        } else {
-            project_dir.join(asset.path())
-        };
-        if asset.playback_frames() > remaining_frames {
-            return Err("project media exceeds resident audio frame limit".into());
-        }
-        let decoded = decode_wav_file(
-            media_path,
-            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
-        )
-        .map_err(|error| error.to_string().to_lowercase())?;
-        if decoded.sample_rate() != asset.source_sample_rate()
-            || u64::try_from(decoded.frames()).ok() != Some(asset.source_frames())
-        {
-            return Err(format!(
-                "media {} rate or frame count differs from project metadata",
-                asset.path().display()
-            ));
-        }
-        let prepared = PreparedImport::at_rate(
-            decoded,
-            project.sample_rate(),
-            ResampleLimits {
-                max_source_frames: IMPORT_FRAME_LIMIT,
-                max_output_frames: usize::try_from(remaining_frames)
-                    .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
-            },
-        )
-        .map_err(|error| error.to_string().to_lowercase())?;
-        remaining_frames = remaining_frames
-            .checked_sub(asset.playback_frames())
-            .ok_or_else(|| "project media exceeds resident audio frame limit".to_owned())?;
-        prepared_assets.push((asset.id(), prepared));
-    }
-    let session = Session::from_prepared_with_sine_table(
-        project,
-        history_capacity,
-        current.max_resident_frames(),
-        prepared_assets,
-        current.sine_table(),
-    )
-    .map_err(|error| error.to_string().to_lowercase())?;
-    let document_path = absolute_document_path(path)?;
-    Ok((session, project_dir, document_path, token))
-}
-
-fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        std::env::current_dir()
-            .map(|directory| directory.join(path))
-            .map_err(|error| error.to_string().to_lowercase())
-    }
-}
-
-fn absolute_document_base(path: &Path) -> Result<PathBuf, String> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if parent.is_absolute() {
-        Ok(parent.to_path_buf())
-    } else {
-        std::env::current_dir()
-            .map(|directory| directory.join(parent))
-            .map_err(|error| error.to_string().to_lowercase())
-    }
-}
-
-fn project_for_save(
-    session: &Session,
-    document_base: Option<&Path>,
-) -> Result<hex_project::Project, String> {
-    let mut snapshot = session.project().snapshot();
-    for asset in &mut snapshot.assets {
-        if !asset.path.is_absolute() {
-            let base = document_base.ok_or_else(|| {
-                "relative media path has no project directory; refusing ambiguous save".to_owned()
-            })?;
-            asset.path = base.join(&asset.path);
-        }
-    }
-    hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
 }
 
 fn import(

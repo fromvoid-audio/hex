@@ -78,6 +78,35 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             device.value()
         )))
         .unwrap();
+    let lfo = tab_bounds(&mut visual, device, "lfo", "lfo");
+    visual.simulate_click(lfo.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Lfo
+        );
+    });
+    assert_eq!(
+        tab_bounds(&mut visual, device, "envelope", "amp env"),
+        envelope
+    );
+    assert_eq!(
+        tab_bounds(&mut visual, device, "oscillator", "osc"),
+        oscillator
+    );
+    assert_eq!(tab_bounds(&mut visual, device, "lfo", "lfo"), lfo);
+    for parameter in 82..=92 {
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "device-{}-parameter-{parameter}",
+                    device.value()
+                )))
+                .is_some(),
+            "LFO page retains real canonical controls"
+        );
+    }
     visual.simulate_click(oscillator.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
