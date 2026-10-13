@@ -680,3 +680,28 @@ explicit revised accounting/ownership decision. A separately proven equivalent
 representation or lease-store ownership may resolve the conflict; neither is
 implemented or claimed safe. Reducing recipe capacity, dropping notes/tails,
 delaying until silence, and raising the budget are not authorized substitutes.
+
+
+### First checked release-location proof (13 October 2026)
+
+The test-only release_location module measures the actual unchanged entry at
+488 bytes and a candidate using identical payload types at480, both alignment8
+on Rust1.94 Linux x86_64. Its private four-byte encoding preserves route indices
+0..255 plus detached `usize::MAX`, independently of tail indices0..255 plus
+absence. All66,049 pairs round-trip, boundary remaps preserve the other value,
+and decoded sorting agrees with the original tuple including order0/u64::MAX.
+Out-of-domain constructors refuse rather than truncate. The original deliberate
+corrupt-tail pair (`usize::MAX`, `Some(u16::MAX)`) is distinguishable from absence.
+This module is cfg(test)-only and is not installed in production playback.
+
+Both original real retained-tail fixtures now also assert the actual release
+and scratch capacities are16,384 each. The unchanged legacy EQ-chain charge is
+still30,990,312 plus the full2,639,456-byte proposed pool =33,629,768, over32MiB
+by75,336. An eight-byte production reduction would save262,144 across bothbanks,
+yielding33,367,624 with186,808 spare; this remains a conditional calculation.
+No payload exclusion, duplicate-charge adjustment, cap/count/precision change or
+pool integration is made by this proof. Production equivalence/rollback/retry,
+allocation/performance and full final CI remain required after separately
+reviewed replacement. Current-main merge preview has Operator UI/test semantic
+conflicts requiring coordinator ownership resolution; those files are untouched.
+The full harmonic painter/state/provider/native scope remains incomplete.

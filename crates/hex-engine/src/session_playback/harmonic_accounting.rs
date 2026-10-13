@@ -171,6 +171,11 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
     let mut candidate = SessionPlayback::new(inventory(64, false, 100)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
     let tails = candidate.tail_mutable_instruments.iter().flatten().count();
+    assert_eq!(candidate.releases.capacity(), SESSION_RELEASE_CAPACITY);
+    assert_eq!(
+        candidate.release_scratch.capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
     let existing = candidate.accounted_runtime_storage_bytes().unwrap();
     let proposed = existing.checked_add(2_639_456).unwrap();
     eprintln!(
@@ -206,6 +211,11 @@ fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
                 .map(|chain| chain.len() - candidate.tail_suffix_starts[slot])
         })
         .sum();
+    assert_eq!(candidate.releases.capacity(), SESSION_RELEASE_CAPACITY);
+    assert_eq!(
+        candidate.release_scratch.capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
     let existing = candidate.accounted_runtime_storage_bytes().unwrap();
     let proposed = existing.checked_add(2_639_456).unwrap();
     eprintln!(

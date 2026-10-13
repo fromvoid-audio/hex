@@ -1192,3 +1192,6 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod release_location;
