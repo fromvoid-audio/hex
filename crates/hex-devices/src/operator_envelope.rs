@@ -181,6 +181,9 @@ impl PreparedOperatorEnvelopes {
     pub fn levels(&self, age_frames: u64, gate_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
         std::array::from_fn(|index| self.envelopes[index].level(age_frames, gate_frames))
     }
+    pub fn held_levels(&self, age_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
+        std::array::from_fn(|index| self.envelopes[index].held_level(age_frames))
+    }
 
     /// Maximum envelope release duration, not complete instrument quiescence.
     pub fn maximum_tail_frames(&self) -> u64 {

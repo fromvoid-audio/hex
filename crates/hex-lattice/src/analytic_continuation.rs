@@ -164,6 +164,18 @@ impl AnalyticContinuation {
 /// Host ownership and identity checks accompany, rather than replace, these
 /// provider checks. Default-unsupported context opt-in is integrated separately.
 pub trait PreparedAnalyticContinuation: Any + Send + Sync {
+    /// Additive open-gate continuation. The default refuses rather than
+    /// substituting a finite held duration or silently jumping parameters.
+    fn sample_live_with_parameters(
+        &self,
+        _target: AnalyticContinuationId,
+        _parameters: &AnalyticParameterFrame,
+        _note: &PreparedSharedAnalyticNote,
+        _age_frames: u64,
+        _gate: crate::NoteGate,
+    ) -> Result<StereoFrame, AnalyticContinuationError> {
+        Err(AnalyticContinuationError::InvalidParameters)
+    }
     fn as_any(&self) -> &dyn Any;
     fn format(&self) -> AnalyticContinuationFormat;
 

@@ -186,7 +186,33 @@ impl PreparedOperatorConfiguration {
         age_frames: u64,
         gate_frames: u64,
     ) -> f32 {
-        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        self.sample_at_amplitudes(
+            table,
+            note,
+            age_frames,
+            self.envelopes.levels(age_frames, gate_frames),
+        )
+    }
+    pub fn sample_held(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+    ) -> f32 {
+        self.sample_at_amplitudes(
+            table,
+            note,
+            age_frames,
+            self.envelopes.held_levels(age_frames),
+        )
+    }
+    fn sample_at_amplitudes(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        mut amplitudes: [f64; OPERATORS],
+    ) -> f32 {
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return 0.0;
         }
@@ -371,6 +397,33 @@ impl PreparedOperatorConfiguration {
     pub(crate) const fn configuration_id(&self) -> u64 {
         self.configuration_id
     }
+    pub(crate) fn sample_held_with_oscillator_levels(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age: u64,
+        levels: [f64; OPERATORS],
+    ) -> Result<f32, Invalid> {
+        if levels
+            .iter()
+            .any(|level| !level.is_finite() || !(0.0..=8.0).contains(level))
+            || !self.note_matches_configuration(note)
+        {
+            return Err(Invalid("invalid Operator enable continuation"));
+        }
+        let mut parameters = self.feedback_parameters([0.0; OPERATORS])?;
+        parameters.oscillator_levels = levels;
+        Ok(self
+            .sample_at_feedback_amplitudes(
+                table,
+                note,
+                age,
+                parameters,
+                [0.0; OPERATORS],
+                self.envelopes.held_levels(age),
+            )
+            .0)
+    }
 
     pub(crate) const fn effective_oscillator_levels(&self) -> [f64; OPERATORS] {
         self.oscillator_levels
@@ -447,10 +500,27 @@ impl PreparedOperatorConfiguration {
         parameters: OperatorFeedbackParameters,
         previous_outputs: [f64; OPERATORS],
     ) -> (f32, [f64; OPERATORS]) {
+        self.sample_at_feedback_amplitudes(
+            table,
+            note,
+            age_frames,
+            parameters,
+            previous_outputs,
+            self.envelopes.levels(age_frames, gate_frames),
+        )
+    }
+    fn sample_at_feedback_amplitudes(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        parameters: OperatorFeedbackParameters,
+        previous_outputs: [f64; OPERATORS],
+        mut amplitudes: [f64; OPERATORS],
+    ) -> (f32, [f64; OPERATORS]) {
         let mut configuration = self.configuration;
         configuration.levels = parameters.oscillator_levels;
         configuration.routing.carriers = parameters.carrier_weights;
-        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return (0.0, [0.0; OPERATORS]);
         }

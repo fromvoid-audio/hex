@@ -44,6 +44,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 
 mod instrument;
 mod instrument_runtime;
+mod live_note;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
     NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
@@ -55,6 +56,7 @@ pub use instrument_runtime::{
     NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
     PreparedMutableInstrumentRuntime,
 };
+pub use live_note::{NoteGate, PreparedLiveAnalyticNote};
 
 /// Immutable, control-prepared configuration for one stateful native effect.
 /// Runtime construction happens before publication and is covered by the

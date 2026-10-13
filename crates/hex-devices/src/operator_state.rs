@@ -968,6 +968,34 @@ struct PreparedOperatorContext {
 }
 
 impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn supports_live_gate(&self) -> bool {
+        true
+    }
+    fn sample_live(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: hex_lattice::NoteGate,
+    ) -> Result<StereoFrame, DeviceContractError> {
+        if note.release_frames() != self.configuration.release_frames() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let note = PreparedOperatorNote::from_shared_payload(note.payload())
+            .ok_or(DeviceContractError::MalformedState)?;
+        if !self.configuration.note_matches_configuration(&note) {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let sample = match gate {
+            hex_lattice::NoteGate::Held => {
+                self.configuration.sample_held(self.sine_table, &note, age)
+            }
+            hex_lattice::NoteGate::Released { at_age_frames } => {
+                self.configuration
+                    .sample(self.sine_table, &note, age, at_age_frames)
+            }
+        };
+        Ok([sample, sample])
+    }
     fn analytic_continuation(&self) -> Option<&dyn hex_lattice::PreparedAnalyticContinuation> {
         Some(self)
     }

@@ -54,6 +54,28 @@ impl PreparedOperatorContext {
 }
 
 impl PreparedAnalyticContinuation for PreparedOperatorContext {
+    fn sample_live_with_parameters(
+        &self,
+        target: AnalyticContinuationId,
+        parameters: &AnalyticParameterFrame,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: hex_lattice::NoteGate,
+    ) -> Result<StereoFrame, AnalyticContinuationError> {
+        if let hex_lattice::NoteGate::Released { at_age_frames } = gate {
+            return self.sample_with_parameters(target, parameters, note, age, at_age_frames);
+        }
+        let levels = self.continuation_levels(target, parameters)?;
+        let note = self.continuation_note(note)?;
+        let sample = if levels == self.effective_levels {
+            self.configuration.sample_held(self.sine_table, &note, age)
+        } else {
+            self.configuration
+                .sample_held_with_oscillator_levels(self.sine_table, &note, age, levels)
+                .map_err(|_| AnalyticContinuationError::InvalidParameters)?
+        };
+        Ok([sample, sample])
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
