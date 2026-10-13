@@ -85,7 +85,43 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(900.0), px(700.0)));
     visual.run_until_parked();
-    let control_count = editor.read_with(cx, |view, _| view.device_panel.controls.len());
+    let initially_created: std::collections::HashMap<_, _> = editor.read_with(cx, |view, _| {
+        view.device_panel
+            .controls
+            .iter()
+            .map(|(key, control)| {
+                let id = match control {
+                    ParameterControl::Float { entity, .. } => entity.entity_id(),
+                    ParameterControl::Bool { entity, .. } => entity.entity_id(),
+                    ParameterControl::Choice { entity, .. } => entity.entity_id(),
+                };
+                (*key, id)
+            })
+            .collect()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.views.len(),
+            ids.len() + usize::from(!is_return),
+            "full chain metadata survives bounded first paint"
+        );
+        assert!(
+            !view.device_panel.has_control_for(*ids.last().unwrap()),
+            "offscreen controls are not constructed initially"
+        );
+        assert!(
+            view.device_panel
+                .views
+                .get(ids.last().unwrap())
+                .unwrap()
+                .2
+                .as_ref()
+                .unwrap()
+                .parameters
+                .len()
+                >= 12
+        );
+    });
     assert!(
         visual
             .debug_bounds(selector("effect-device", first))
@@ -201,10 +237,23 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
         wide_mounted > narrow_mounted,
         "resize must expand actual composed geometry"
     );
-    assert_eq!(
-        editor.read_with(cx, |view, _| view.device_panel.controls.len()),
-        control_count
-    );
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel.has_control_for(*ids.last().unwrap()),
+            "scrolling creates the previously unmounted controls"
+        );
+        for (key, old_id) in &initially_created {
+            let id = match view.device_panel.controls.get(key).unwrap() {
+                ParameterControl::Float { entity, .. } => entity.entity_id(),
+                ParameterControl::Bool { entity, .. } => entity.entity_id(),
+                ParameterControl::Choice { entity, .. } => entity.entity_id(),
+            };
+            assert_eq!(
+                id, *old_id,
+                "creation of later cards must not replace existing entities"
+            );
+        }
+    });
     scroll(&editor, &mut visual, 0.0);
     // Actual captured numeric press must keep its event handlers mounted
     // when the rail scrolls before the outside release.
@@ -367,4 +416,64 @@ fn short_chain_window_does_not_add_scroll_extent(cx: &mut TestAppContext) {
         px(0.0),
         "observing the viewport must not enlarge the rail"
     );
+}
+
+#[gpui::test]
+fn return_chain_type_change_retires_old_identity_and_metadata(cx: &mut TestAppContext) {
+    let (service, state, track, return_track, device, parameter) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let old = editor.read_with(cx, |view, _| {
+        match &view.device_panel.controls[&ParameterKey { device, parameter }] {
+            ParameterControl::Float { entity, .. } => entity.entity_id(),
+            _ => panic!("gain"),
+        }
+    });
+    let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.saturator");
+    let replacement = hex_engine::default_native_device_state(type_id).unwrap();
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement
+        })))
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .type_id()
+                == type_id
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.views[&device].1.type_id(), type_id);
+        assert!(
+            !view
+                .device_panel
+                .controls
+                .values()
+                .any(|control| match control {
+                    ParameterControl::Float { entity, .. } => entity.entity_id() == old,
+                    _ => false,
+                })
+        );
+        assert!(
+            !view
+                .device_panel
+                .pending_values
+                .keys()
+                .any(|key| key.device == device)
+        );
+    });
 }

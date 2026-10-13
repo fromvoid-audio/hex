@@ -48,8 +48,15 @@ impl ChainWindow {
             .clone()
     }
 
-    fn visible(&self, device: DeviceId) -> bool {
-        let width = self.width.get();
+    fn visible(&self, device: DeviceId, initial_width: Option<f32>) -> bool {
+        let measured = self.width.get();
+        let width = if measured.is_finite() && measured > 0.0 {
+            measured
+        } else {
+            initial_width
+                .filter(|width| width.is_finite() && *width > 0.0)
+                .unwrap_or(0.0)
+        };
         if width <= 0.0 || !width.is_finite() {
             return true;
         }
@@ -77,7 +84,7 @@ pub(super) fn must_mount(
     let Some(window) = window else {
         return true;
     };
-    panel.chain_window.visible(device)
+    panel.chain_window.visible(device, Some(f32::from(window.viewport_size().width)))
         || panel.chain_window.focus.get(&device).is_some_and(|focus| focus.contains_focused(window, cx))
         || panel.controls.iter().any(|(key, control)| key.device == device && matches!(control,
             ParameterControl::Float { entity, .. } if entity.read_with(cx, |control, _| control.is_interacting() || control.is_editing())))
@@ -178,11 +185,34 @@ mod tests {
         chain.prepare(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
         assert_eq!(f32::from(chain.scroll.offset().x), -160.0);
         chain.width.set(100.0);
-        assert!(chain.visible(ids[0]), "unknown IDs are conservative");
-        assert!(!chain.visible(ids[2]));
+        assert!(chain.visible(ids[0], None), "unknown IDs are conservative");
+        assert!(!chain.visible(ids[2], None));
         chain.width.set(1600.0);
-        assert!(chain.visible(ids[2]), "resizing expands the composed range");
+        assert!(
+            chain.visible(ids[2], None),
+            "resizing expands the composed range"
+        );
+        chain.width.set(0.0);
+        assert!(
+            !chain.visible(ids[2], Some(100.0)),
+            "finite window bound limits first paint"
+        );
+        for unknown in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+        ] {
+            assert!(
+                chain.visible(ids[2], unknown),
+                "unknown bounds preserve conservative composition"
+            );
+        }
         chain.width.set(f32::NAN);
-        assert!(chain.visible(ids[2]), "invalid viewport cannot hide a card");
+        assert!(
+            chain.visible(ids[2], None),
+            "invalid viewport cannot hide a card"
+        );
     }
 }

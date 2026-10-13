@@ -459,8 +459,12 @@ Track and return rails retain a stable `DeviceId` geometry inventory, an explici
 GPUI scroll handle and fixed registered card widths. Once the actual rail width
 is observed, composition mounts visible cards plus one maximum-card-width of
 overscan; equal-width placeholders preserve every omitted card's position, gap,
-chain extent and ordered insertion anchors. The first unmeasured composition
-remains complete, so this stage does not eliminate cold first-paint preparation.
+chain extent and ordered insertion anchors. An unmeasured rail uses a positive finite GPUI window viewport width as a
+conservative upper bound; unavailable bounds retain complete composition. The
+full metadata inventory, including disabled parameters and unsupported-state
+errors, is cached independently of mounted cards. Controls are constructed on
+first mount, then retain their identity and subscriptions across later visibility
+changes. This does not window the parameters within an individual generic card.
 Resize and scroll-clamping observations request a fresh composition. Topology
 changes preserve the first surviving visible card's screen position.
 
@@ -480,3 +484,8 @@ not establish native frame time, font shaping, presentation, physical input,
 macOS focus/capture or accessibility acceptance. Optimized native review and
 accessible names/roles, readable meters and remaining compact-control acceptance
 for the broader dense-UI request remain pending.
+
+Track and return panel titles derive a readable foreground with
+`theme::readable_text` on their actual surface, including warning titles. The
+saved background/text/accent roles and title strings remain unchanged; a valid
+non-text accent color is not assumed to satisfy the stricter text contrast policy.

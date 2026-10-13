@@ -191,6 +191,41 @@ impl DevicePanelState {
     }
 }
 
+fn cache_device_metadata(
+    panel: &mut DevicePanelState,
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+) {
+    let current = panel
+        .views
+        .get(&device.id())
+        .is_some_and(|(cached_class, state, _)| *cached_class == class && state == device.state());
+    if !current {
+        let metadata = hex_engine::native_device_view_for_class(class, device.state())
+            .map_err(|error| error.to_string().to_lowercase());
+        panel
+            .views
+            .insert(device.id(), (class, device.state().clone(), metadata));
+    }
+}
+
+fn title_label(title: String, warning: bool) -> Div {
+    let preferred = theme::color(if warning {
+        theme::PaletteRole::Primary
+    } else {
+        theme::PaletteRole::Muted
+    });
+    div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme::readable_text(
+            theme::color(theme::PaletteRole::Surface),
+            preferred,
+        )))
+        .child(theme::text(title))
+}
+
 pub(super) fn control_style() -> ControlStyle {
     ControlStyle {
         background: theme::color(theme::PaletteRole::Background),
@@ -745,6 +780,18 @@ fn render_track(
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
 
+    // Prepare the full read-only inventory, including unavailable descriptors
+    // and unsupported-state errors, without constructing offscreen controls.
+    for node in track.ordered_device_chain() {
+        let (device, class) = match node {
+            hex_project::TrackDeviceRef::Instrument(device) => {
+                (device, NativeDeviceClass::Instrument)
+            }
+            hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
+        };
+        cache_device_metadata(&mut view.device_panel, device, class);
+    }
+
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
             hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
@@ -923,6 +970,7 @@ fn render_track(
         .message
         .clone()
         .unwrap_or_else(|| format!("{} · devices", track.name()));
+    let track_name_view = title_label(title, view.device_panel.message.is_some());
     let mut header = div()
         .id("device-panel-header")
         .debug_selector(|| "device-panel-header".into())
@@ -934,18 +982,7 @@ fn render_track(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(rgb(if view.device_panel.message.is_some() {
-                    theme::color(theme::PaletteRole::Primary)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .child(theme::text(title)),
-        )
+        .child(track_name_view)
         .child(add_button);
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
