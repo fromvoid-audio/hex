@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Offline builder for ORIGINAL descriptor-only CLAP Linux fixtures; no installation/fetch."""
+"""Offline builder for ORIGINAL descriptor and offline CLAP Linux fixtures; no installation/fetch."""
 import argparse,hashlib,json,platform,subprocess,shutil,re
 from pathlib import Path
 PIN='195b42a004144fab0b3cf95e9c067187d15365b7'
 NATIVE=Path(__file__).resolve().parent
 NAMES=['good','init-fail','no-factory','duplicate','malformed','api-bad','crash','hang','descendant','deinit-hang','bad-utf8','too-many','unclosed-features']
+OFFLINE=['process','process-hang','process-crash','process-nonfinite','process-error','process-descendant','instance-init-fail','state-fail','bus-refuse','restart','sleep','tail']
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def source_digest():
  h=hashlib.sha256()
@@ -37,6 +38,11 @@ def main():
  for mode,name in enumerate(NAMES):
   target=out/(name+'.clap');build('fixture.cpp',target,['-shared','-fPIC','-Wl,--no-undefined','-DFIXTURE_MODE='+str(mode)])
   modules.append({'name':name,'binary':target.name,'sha256':sha(target)})
+ build('offline.cpp',out/'hex-clap-offline-helper',['-ldl','-pthread'])
+ offline_modules=[]
+ for mode,name in enumerate(OFFLINE):
+  target=out/(name+'.clap');build('processing_fixture.cpp',target,['-shared','-fPIC','-Wl,--no-undefined','-pthread','-DFIXTURE_MODE='+str(mode)])
+  offline_modules.append({'name':name,'binary':target.name,'sha256':sha(target)})
  runtime={}
  # Only ORIGINAL freshly built binaries are inspected; never ldd untrusted modules.
  for target in artifacts:
@@ -47,5 +53,9 @@ def main():
  for name in ['libstdc++6','libgcc-s1','libc6','linux-libc-dev']:
   p=Path('/usr/share/doc')/name/'copyright';notices[name]={'sha256':sha(p),'text':p.read_text()}
  r={'version':1,'scope':'original-controlled-clap-fixtures','platform':'linux-x86_64','sdk':PIN,'native_source_sha256':source_digest(),'helper_sha256':sha(out/'hex-clap-probe'),'launcher_sha256':sha(out/'launch-ignored'),'modules':modules,'compiler':subprocess.check_output(['c++','--version'],text=True).splitlines()[0],'toolchain_sha256':sha(Path(shutil.which('c++')).resolve()),'runtime_closure':runtime,'runtime_notices':notices,'build_closure':closure,'licenses':{'clap':{'sha256':sha(license_path),'text':license_text}}}
- p=out/'controlled-clap-fixtures.json';p.write_text(json.dumps(r,indent=2)+'\n');(out/'build-commands.json').write_text(json.dumps(commands,indent=2)+'\n');print('Controlled receipt:',p);print('SHA256:',sha(p));print('Artifacts:',len(artifacts),'headers:',len(closure),'runtime libraries:',len(runtime))
+ p=out/'controlled-clap-fixtures.json';p.write_text(json.dumps(r,indent=2)+'\n');
+ h=hashlib.sha256()
+ for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
+ offline={'version':1,'scope':'original-controlled-offline-fixtures','scanner_receipt_sha256':sha(p),'source_sha256':h.hexdigest(),'helper_sha256':sha(out/'hex-clap-offline-helper'),'modules':offline_modules}
+ (out/'controlled-offline.json').write_text(json.dumps(offline,indent=2)+'\n');(out/'build-commands.json').write_text(json.dumps(commands,indent=2)+'\n');print('Controlled receipt:',p);print('SHA256:',sha(p));print('Artifacts:',len(artifacts),'headers:',len(closure),'runtime libraries:',len(runtime))
 if __name__=='__main__':main()

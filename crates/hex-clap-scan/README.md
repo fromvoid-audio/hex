@@ -1,12 +1,12 @@
-# controlled CLAP discovery
+# controlled CLAP discovery and offline fixtures
 
 ## Purpose
 
 Own a safe Rust standalone Linux x86_64 supervisor and a separately built native
 CLAP descriptor-only helper. Only ORIGINAL controlled fixtures are admitted. The
 approved native boundary owns dlopen/entry/factory pointers entirely inside a
-fresh child; no Rust FFI/wrapper/unsafe exception is adopted. This stage does not
-instantiate or process plugins. CLAP descriptor keywords are metadata, never
+fresh child; no Rust FFI/wrapper/unsafe exception is adopted. The descriptor probe never instantiates or processes plugins; the separate offline
+child described below owns the approved original-gain lifecycle. CLAP descriptor keywords are metadata, never
 assertions of bus/event/parameter/state/latency/editor capabilities.
 
 ## Dependencies
@@ -29,8 +29,8 @@ There is no API dependency between format scanners or production engine/audio.
 
 ## Does not own
 
-Third-party/installed-directory execution, security sandboxing, plugin instance
-or DSP lifecycle, realtime ownership, buses/events/parameters/state admission,
+Third-party/installed-directory execution, security sandboxing, production plugin instance
+or DSP lifecycle, realtime ownership, general buses/events/parameters/state admission,
 latency/routing, editors, project/UI integration, native Mac packaging/signing,
 reference/listening/deadline acceptance or complete Pulse20 hosting.
 
@@ -73,3 +73,57 @@ filesystem; installed/untrusted loading remains refused, with no weaker fallback
 No system policy change is made by this crate. Native Linux tests require explicit
 HEX_CLAP_FIXTURE_RECEIPT and `cargo test -p hex-clap-scan --test native --locked
 -- --ignored --test-threads=1`; default workspace runs visibly ignore those tests.
+
+
+## controlled offline gain unit
+
+The same offline builder additionally produces `controlled-offline.json`, bound
+by digest to the complete scanner build receipt and four original offline sources.
+`hex-clap-offline <controlled-offline.json> <original-name> <request.json>
+[deadline-ms]` uses the existing owned supervisor with bounded duplex IPC.
+Only the twelve freshly built ORIGINAL processing fixtures are accepted; descriptor
+scanner identities, catalog retention and its no-instantiation behavior remain.
+No installed module or real-time/editor/engine admission is introduced.
+
+Version1 owned request/response packets are limited to1MiB, opaque state64KiB,
+32blocks of1..1024frames,8192frames total,128gain events/block and1024total.
+Sample rates are44100/48000; a checked nonnegative steady frame clock is echoed
+with request ID/source/platform/capability metadata. This is a free-running offline
+clock, not DAW transport, wall-clock recording or hardware application evidence.
+The single global plain gain parameter0x200001 spans0..2 (default1); events are
+steps at sorted sample offsets, with latest input event winning coincident offsets.
+No MIDI/note buses, polyphonic targeting, output events, modulation or GUI exists.
+The exact supported profile is one stereo Float32 main input/output, zero latency,
+and explicit `clap.render` offline approval; other capabilities are refused.
+
+The native control thread remains the main thread from create through destroy.
+It owns initialization, copied extension/port/parameter metadata, inactive initial
+parameter flush or opaque state load, activation and deactivation. A single joined
+logical audio thread serializes start/process/stop. No parameter flush overlaps
+processing. Deferred callbacks are serviced on the main thread; callbacks during
+destroy are retained as diagnostics without calling the destroyed instance.
+Host/thread-check context survives destruction. Failed instance init still destroys
+the instance; entry init success is paired with deinit, followed by unload.
+
+Partial stream adapters transfer at most7bytes per read/write. Original state load
+validates fully before committing; unknown versions/truncation/trailing bytes refuse.
+Loaded state owns gain/history; `initial_gain` applies only to an empty-state start.
+State save occurs inactive after joined stop. All processed PCM must be finite;
+ERROR/unknown status, unexpected output events or restart requests discard the
+whole attempt. No earlier processed prefix is published on failure.
+
+Sleep stops processing. Subsequent zero-input/event-free blocks are explicitly
+reported as host skip status5 and emit zeros; nonzero input/events/request_process
+wake through start_processing. The original sleep fixture is zero-tail and quiet.
+CONTINUE/CONTINUE_IF_NOT_QUIET remain callable; TAIL uses only explicit caller
+blocks. The original tail fixture declares2frames and demonstrates stateful tail
+continuation; final TAIL status means residual work remains, not a fully drained
+export. The helper never silently appends or truncates an unbounded tail.
+
+Run the actual optimized native unit with HEX_CLAP_OFFLINE_RECEIPT and
+`cargo test -p hex-clap-scan --test offline_native --locked -- --ignored
+--test-threads=1`; native tests remain visibly ignored without explicit fixtures.
+Process-group cleanup is still not an OS sandbox. Third-party containment, general
+extension/callback negotiation, realtime scheduling/ownership, routing/latency,
+project/UI/device integration, editors and optimized macOS packaging/signing/native
+listening remain required for full20 and are unproved here.

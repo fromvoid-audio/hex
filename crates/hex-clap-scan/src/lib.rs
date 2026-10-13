@@ -1,4 +1,4 @@
-//! Controlled discovery records only; no plugin loading or audio-host API.
+//! Owned controlled discovery/offline records; no Rust plugin loading or engine API.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -408,3 +408,6 @@ impl Catalog {
         }
     }
 }
+
+/// Controlled original-fixture offline protocol; no engine integration.
+pub mod offline_protocol;
