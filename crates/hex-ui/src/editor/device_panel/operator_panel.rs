@@ -67,6 +67,12 @@ pub(super) enum NavigationTarget {
     Page(OperatorPage),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Section {
+    Oscillator(usize),
+    Preview(&'static str),
+}
+
 fn navigation_focus(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -327,7 +333,14 @@ fn operator_row(
         ControlPresentation::MicroDial,
         Some("level"),
     );
+    let (section_focus, focused) =
+        context::section_focus(view, cx, device, Section::Oscillator(operator));
     let mut row = div()
+        .on_children_prepainted(context::section_listener(
+            cx,
+            device,
+            Section::Oscillator(operator),
+        ))
         .id(ElementId::Name(
             format!("operator-row-{}-{operator}", device.value()).into(),
         ))
@@ -340,11 +353,13 @@ fn operator_row(
         .gap(px(2.0))
         .px(px(4.0))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(if selected {
+        .track_focus(&section_focus)
+        .bg(rgb(if selected || focused {
             RAIL_GUTTER
         } else {
             RAIL_BACKGROUND
         }))
+        .child(operator_label(view, cx, device, operator, selected))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -369,9 +384,7 @@ fn operator_row(
             .child(section_title("fixed"))
             .child(fixed_control),
     );
-    row = row
-        .child(level)
-        .child(operator_label(view, cx, device, operator, selected));
+    row = row.child(level);
     row
 }
 

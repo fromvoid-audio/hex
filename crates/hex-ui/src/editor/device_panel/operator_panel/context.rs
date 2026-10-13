@@ -181,3 +181,63 @@ pub(super) fn focus_listener(
         });
     }
 }
+
+// Section containers track descendant focus, but are never keyboard targets.
+pub(in crate::editor::device_panel) struct SectionFocus {
+    pub(in crate::editor::device_panel) handle: FocusHandle,
+    pub(in crate::editor::device_panel) focused: bool,
+    subscriptions: Option<(gpui::Subscription, gpui::Subscription)>,
+}
+
+pub(super) fn section_focus(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    section: super::Section,
+) -> (FocusHandle, bool) {
+    let state = view
+        .device_panel
+        .operator_section_focus
+        .entry((device, section))
+        .or_insert_with(|| SectionFocus {
+            handle: cx.focus_handle().tab_stop(false),
+            focused: false,
+            subscriptions: None,
+        });
+    (state.handle.clone(), state.focused)
+}
+
+pub(super) fn section_listener(
+    cx: &Context<EditorView>,
+    device: DeviceId,
+    section: super::Section,
+) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    let entity = cx.weak_entity();
+    move |_, window, cx| {
+        let _ = entity.update(cx, |view, cx| {
+            let key = (device, section);
+            let Some(state) = view.device_panel.operator_section_focus.get(&key) else {
+                return;
+            };
+            if state.subscriptions.is_some() {
+                return;
+            }
+            let handle = state.handle.clone();
+            let focus_in = cx.on_focus_in(&handle, window, move |view, _, cx| {
+                if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                    state.focused = true;
+                    cx.notify();
+                }
+            });
+            let focus_out = cx.on_focus_out(&handle, window, move |view, _, _, cx| {
+                if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                    state.focused = false;
+                    cx.notify();
+                }
+            });
+            if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                state.subscriptions = Some((focus_in, focus_out));
+            }
+        });
+    }
+}

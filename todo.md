@@ -1,3 +1,16 @@
+## Operator Tab review repairs — pulse2373 / PR178
+
+Oscillator selectors precede coarse/fine/fixed/level controls in forward traversal;
+Shift-Tab reverses the same order. Shared Toggle, Selector, NumericControl and
+ResponseGraph retain owner navigation intent while availability updates remove
+and restore their effective Tab stops. Section containers do not participate in
+Tab traversal: descendant widget focus reveals the row's gutter background,
+and the routing icon owns the global keyboard target. Audio enable flags and
+canonical sound state are preserved. Focused rendered regressions cover exact
+shell order and preview focus entry/exit, alongside existing draft/owner tests.
+Full final-source CI and an optimized review candidate are recorded in PR178;
+native visual/user review remains pending under its existing review-only hold.
+
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and

@@ -140,6 +140,8 @@ pub(super) struct DevicePanelState {
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
     operator_navigation_focus:
         HashMap<(DeviceId, operator_panel::NavigationTarget), gpui::FocusHandle>,
+    operator_section_focus:
+        HashMap<(DeviceId, operator_panel::Section), operator_panel::context::SectionFocus>,
     operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
@@ -357,6 +359,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
+        view.device_panel.operator_section_focus.clear();
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
@@ -457,6 +460,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
         view.device_panel.operator_navigation_focus.clear();
+        view.device_panel.operator_section_focus.clear();
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
@@ -710,6 +714,9 @@ fn render_track(
     });
     view.device_panel
         .operator_navigation_focus
+        .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
+    view.device_panel
+        .operator_section_focus
         .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
     let alive_operator: HashSet<_> = identities
         .iter()

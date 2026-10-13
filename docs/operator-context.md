@@ -26,7 +26,10 @@ in layout order, and Shift-Tab reverses that order and wraps within the group.
 The shell visits d, c, b, a: each oscillator selector followed by its available
 numeric controls. The detail pane contributes its visible envelope, lfo or
 oscillator controls and page selectors; the preview contributes its available
-controls and routing/global target. Hidden or disabled controls are excluded.
+controls and routing/global icon. Section containers are not Tab targets: focusing
+any child widget reveals that row's gutter background, without changing its enable
+flag. The routing icon remains keyboard-operable with Enter/Space. Hidden or
+disabled controls are excluded.
 Changing detail pages changes that page's available targets, without changing
 sound parameters. Enter/Space activates a focused oscillator or page selector;
 routing retains its existing keyboard activation. Numeric controls keep their

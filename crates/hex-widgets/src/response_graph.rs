@@ -100,6 +100,7 @@ pub struct ResponseGraph {
     drag: Option<Drag>,
     press: Option<Press>,
     editable: bool,
+    tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
 }
@@ -136,6 +137,7 @@ impl ResponseGraph {
             drag: None,
             press: None,
             editable: false,
+            tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
@@ -144,9 +146,10 @@ impl ResponseGraph {
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
     /// Owners choose participation without changing pointer or edit semantics.
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        let enabled = enabled && self.editable;
-        if self.focus.tab_stop != enabled {
-            self.focus = self.focus.clone().tab_index(0).tab_stop(enabled);
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.editable;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
             cx.notify();
         }
     }
@@ -190,6 +193,10 @@ impl ResponseGraph {
     pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
         if self.editable != editable {
             self.editable = editable;
+            let tab_stop = self.tab_navigation && self.editable;
+            if self.focus.tab_stop != tab_stop {
+                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            }
             cx.notify();
         }
     }

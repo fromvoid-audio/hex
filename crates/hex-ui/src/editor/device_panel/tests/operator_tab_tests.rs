@@ -263,3 +263,103 @@ fn operator_tab_targets_retire_on_track_owner_change(cx: &mut TestAppContext) {
         assert_ne!(view.device_panel.operator_navigation_focus[&key], old)
     });
 }
+
+#[gpui::test]
+fn operator_shell_selectors_precede_controls_and_sections_follow_child_focus(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let original = state.project.clone();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let order = editor.read_with(cx, |view, cx| {
+        let mut order = Vec::new();
+        for operator in (0..4).rev() {
+            order.push(
+                view.device_panel.operator_navigation_focus[&(
+                    device,
+                    operator_panel::NavigationTarget::Oscillator(operator),
+                )]
+                    .clone(),
+            );
+            let base = operator as u32 * 3 + 1;
+            let focus = |parameter| match &view.device_panel.controls[&ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+            }] {
+                ParameterControl::Float { entity, .. } => entity.focus_handle(cx),
+                ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
+                ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
+            };
+            order.push(focus(base));
+            order.push(
+                view.device_panel.operator_previews[&device].controls[&[
+                    operator_panel::preview::Field::FineA,
+                    operator_panel::preview::Field::FineB,
+                    operator_panel::preview::Field::FineC,
+                    operator_panel::preview::Field::FineD,
+                ][operator]]
+                    .entity
+                    .focus_handle(cx),
+            );
+            order.push(focus(62 + operator as u32 * 3));
+            order.push(focus(base + 1));
+        }
+        order
+    });
+    visual.update(|window, _| order[0].focus(window));
+    visual.run_until_parked();
+    for expected in order.iter().skip(1) {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        assert_eq!(
+            &focused(&mut visual),
+            expected,
+            "selector, coarse, fine, fixed, level"
+        );
+    }
+    for expected in order.iter().rev().skip(1) {
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        assert_eq!(&focused(&mut visual), expected);
+    }
+    // Preview child focus reveals its row without making the row a Tab stop
+    // or changing its switch, project state, or neighboring row's focus mode.
+    for (field, title) in [
+        (operator_panel::preview::Field::FilterFrequency, "filter"),
+        (operator_panel::preview::Field::PitchEnvelope, "pitch env"),
+        (operator_panel::preview::Field::Time, "global"),
+    ] {
+        let child = editor.read_with(cx, |view, cx| {
+            view.device_panel.operator_previews[&device].controls[&field]
+                .entity
+                .focus_handle(cx)
+        });
+        visual.update(|window, _| child.focus(window));
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            for ((_, section), state) in &view.device_panel.operator_section_focus {
+                assert!(
+                    !state.handle.tab_stop,
+                    "containers are excluded from traversal"
+                );
+                assert_eq!(
+                    state.focused,
+                    *section == operator_panel::Section::Preview(title)
+                );
+            }
+            assert_eq!(
+                view.device_panel.operator_previews[&device].enabled,
+                [true; 2]
+            );
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        });
+        assert_eq!(focused(&mut visual), child);
+    }
+}

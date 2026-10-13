@@ -266,11 +266,15 @@ fn row(
     fields: &[Field],
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
+    let section = super::Section::Preview(title);
+    let (section_focus, focused) = super::context::section_focus(view, cx, device, section);
     let mut row = div()
+        .on_children_prepainted(super::context::section_listener(cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-{title}", device.value()))
+        .track_focus(&section_focus)
         .w_full()
         .h(px(ROW_HEIGHT))
         .px(px(4.0))
@@ -321,12 +325,13 @@ fn row(
     row = row.child(dials);
     row = row
         .bg(rgb(
-            if title == "global"
-                && view
-                    .device_panel
-                    .operator_pages
-                    .get(&device)
-                    .is_some_and(|state| state.page == super::OperatorPage::Routing)
+            if focused
+                || (title == "global"
+                    && view
+                        .device_panel
+                        .operator_pages
+                        .get(&device)
+                        .is_some_and(|state| state.page == super::OperatorPage::Routing))
             {
                 super::RAIL_GUTTER
             } else {
@@ -335,51 +340,33 @@ fn row(
         ))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
-        let focus = view
-            .device_panel
-            .operator_previews
-            .entry(device)
-            .or_default()
-            .routing_focus
-            .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
-            .clone();
-        row = row
-            .track_focus(&focus)
-            .key_context("hex_operator_routing")
-            .focus(|style| style.bg(rgb(super::RAIL_GUTTER)))
-            .tab_index(0)
-            .tooltip(|_, cx| {
-                cx.new(|_| super::super::super::transport::MiniTooltip {
-                    description:
-                        "routing and global context · tab from device, then enter or space".into(),
-                })
-                .into()
-            })
-            .capture_any_mouse_down(cx.listener(
-                move |view, event: &gpui::MouseDownEvent, _, cx| {
-                    if event.button == gpui::MouseButton::Left
-                        && let Some(owner) = owner
-                    {
-                        super::context::select_routing(view, cx, owner);
-                    }
-                },
-            ))
-            .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
-                if let Some(owner) = owner {
+        row = row.capture_any_mouse_down(cx.listener(
+            move |view, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == gpui::MouseButton::Left
+                    && let Some(owner) = owner
+                {
                     super::context::select_routing(view, cx, owner);
-                    cx.stop_propagation();
                 }
-            }));
+            },
+        ));
     }
     row
 }
 
 fn routing_link(
-    view: &EditorView,
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: hex_project::DeviceId,
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
+    let focus = view
+        .device_panel
+        .operator_previews
+        .entry(device)
+        .or_default()
+        .routing_focus
+        .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+        .clone();
     let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
     let mut icon = div()
         .w(px(12.0))
@@ -404,6 +391,11 @@ fn routing_link(
             format!("operator-preview-{}-route-link", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
+        .track_focus(&focus)
+        .key_context("hex_operator_routing")
+        .border_1()
+        .border_color(rgb(super::RAIL_GUTTER))
+        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .w(px(18.0))
         .h(px(34.0))
         .flex()
@@ -414,13 +406,19 @@ fn routing_link(
             if owner.is_some_and(|owner| owner.is_current(view))
                 && super::finalize_controls(view, cx)
             {
-                view.focus.focus(window);
+                focus.focus(window);
                 view.device_panel
                     .operator_pages
                     .entry(device)
                     .or_default()
                     .page = super::OperatorPage::Routing;
                 cx.notify();
+            }
+        }))
+        .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
+            if let Some(owner) = owner {
+                super::context::select_routing(view, cx, owner);
+                cx.stop_propagation();
             }
         }))
 }
