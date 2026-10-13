@@ -510,7 +510,7 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
     // A direct focus update changes page context; draw its newly mounted controls
     // before looking up their handles (native windows draw on the next frame).
     visual.update(|window, cx| {
-        window.draw(cx);
+        window.draw(cx).clear();
     });
     visual.run_until_parked();
     let sync = editor.read_with(cx, |view, cx| {

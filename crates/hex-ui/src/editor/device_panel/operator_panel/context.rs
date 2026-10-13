@@ -248,17 +248,16 @@ pub(super) fn section_listener(
                         super::Section::Oscillator(operator) => {
                             select_oscillator(view, cx, owner, operator, &excluded);
                         }
-                        super::Section::Preview("lfo") => {
+                        super::Section::Preview("lfo")
                             if owner.is_current(view)
-                                && super::super::finalize_controls_except(view, cx, &excluded)
-                            {
-                                view.device_panel
-                                    .operator_pages
-                                    .entry(device)
-                                    .or_default()
-                                    .page = super::OperatorPage::Lfo;
-                                cx.notify();
-                            }
+                                && super::super::finalize_controls_except(view, cx, &excluded) =>
+                        {
+                            view.device_panel
+                                .operator_pages
+                                .entry(device)
+                                .or_default()
+                                .page = super::OperatorPage::Lfo;
+                            cx.notify();
                         }
                         _ => {}
                     }

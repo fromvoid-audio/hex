@@ -386,7 +386,7 @@ fn routing_link(
         .key_context("hex_operator_routing")
         .tooltip(|_, cx| {
             cx.new(|_| super::super::super::transport::MiniTooltip {
-                description: theme::text("routing and global context · enter or space").into(),
+                description: theme::text("routing and global context · enter or space"),
             })
             .into()
         })
