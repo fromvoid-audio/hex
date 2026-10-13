@@ -62,13 +62,12 @@ pub(super) fn render_chain(
                 rendered,
             ));
         } else {
-            chain = chain.child(
-                chain_window::spacer(
-                    device.id(),
-                    device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-                )
-                .mr(px(DEVICE_CHAIN_PADDING)),
-            );
+            let card = chain_window::spacer(
+                device.id(),
+                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+            )
+            .mr(px(DEVICE_CHAIN_PADDING));
+            chain = chain.child(card);
         }
     }
     chain.child(render_return_drop_target(
