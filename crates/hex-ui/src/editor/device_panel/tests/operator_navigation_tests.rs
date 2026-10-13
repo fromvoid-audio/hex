@@ -1,7 +1,8 @@
 use super::*;
 use gpui::Focusable;
+use operator_panel::preview::{Field, Switch};
 
-fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
+pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::RemoveInstrument { track }))
@@ -130,6 +131,27 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .unwrap();
         visual.simulate_click(badge.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        // Badges now make a canonical enable edit as well as selecting context.
+        // Undo that edit before testing that subsequent navigation preserves sound.
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(true)
+                })
+        });
         visual.run_until_parked();
         assert!(
             visual
@@ -192,7 +214,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in 0..2 {
+    for switch in [Switch::Filter, Switch::Pitch] {
+        let switch = switch.index();
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",
@@ -223,7 +246,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}",
             device.value(),
-            operator_panel::preview::Field::Time as usize
+            Field::Time as usize
         )))
         .unwrap();
     visual.simulate_click(
@@ -259,7 +282,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}-knob",
             device.value(),
-            operator_panel::preview::Field::FineB as usize
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
@@ -327,12 +350,17 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    for operator in [1, 2, 3, 0] {
+    for (operator, field) in [
+        (1, Field::FineB),
+        (2, Field::FineC),
+        (3, Field::FineD),
+        (0, Field::FineA),
+    ] {
         let fine = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-{}-knob",
                 device.value(),
-                operator_panel::preview::Field::FineA as usize + operator
+                field as usize
             )))
             .unwrap();
         visual.simulate_click(fine.center(), Modifiers::default());
@@ -405,7 +433,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}-value",
             device.value(),
-            operator_panel::preview::Field::FineB as usize
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(value.center(), Modifiers::default());
@@ -415,8 +443,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values
-                [operator_panel::preview::Field::FineB as usize],
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
             12.0
         )
     });
@@ -432,8 +459,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values
-                [operator_panel::preview::Field::FineB as usize],
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
             12.0,
             "hidden owner cannot receive stale numeric input"
         )

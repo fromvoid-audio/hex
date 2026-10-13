@@ -131,7 +131,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [false, true] {
-        operator_modulation_allocations(Some(sync))?;
+        operator_modulation_allocations(Some(sync), true)?;
     }
     Ok(())
 }
@@ -139,10 +139,19 @@ fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 #[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None)
+    operator_modulation_allocations(None, true)
 }
 
-fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn Error>> {
+#[test]
+fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
+-> Result<(), Box<dyn Error>> {
+    operator_modulation_allocations(None, false)
+}
+
+fn operator_modulation_allocations(
+    lfo_sync: Option<bool>,
+    feedback_active: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
         name: "operator feedback allocation".into(),
@@ -169,7 +178,10 @@ fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn
         (36, ParameterValue::Float(0.0)),
         (37, ParameterValue::Float(0.001)),
         (38, ParameterValue::Float(0.005)),
-        (78, ParameterValue::Float(0.4)),
+        (
+            78,
+            ParameterValue::Float(if feedback_active { 0.4 } else { 0.0 }),
+        ),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,
@@ -232,7 +244,15 @@ fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn
     for block in 0..80 {
         control.reclaim();
         let mut accepted = None;
-        if lfo_sync.is_some() && (2..5).contains(&block) {
+        // Reversal occurs before the 240-frame coefficient transition finishes.
+        // The second pair straddles note-off at frame 6000, covering release too.
+        let edit = match block {
+            5 | 46 => Some((513, ParameterValue::Bool(false))),
+            6 | 47 => Some((513, ParameterValue::Bool(true))),
+            2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
+            _ => None,
+        };
+        if let Some((parameter, value)) = edit {
             let current = editor
                 .project()
                 .track(track)
@@ -242,8 +262,8 @@ fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn
             let state = hex_engine::patch_native_device_parameter_for_class(
                 class,
                 current,
-                ParameterId::from_static(87),
-                ParameterValue::Float(20.0 * block as f32),
+                ParameterId::from_static(parameter),
+                value,
             )?;
             editor.execute(Command::ReplaceDeviceState { device, state })?;
             let next = Arc::new(PreparedRevision::prepare(
@@ -256,7 +276,7 @@ fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn
             let mut next_oracle = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
             next_oracle
                 .try_inherit_runtime_from(&mut oracle)
-                .map_err(|_| "lfo oracle transfer refused")?;
+                .map_err(|_| "operator oracle transfer refused")?;
             accepted = Some(
                 control
                     .publish_with_policy_and_context_generation(
@@ -273,11 +293,11 @@ fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn
         oracle.render(&mut expected)?;
         let counts = measure(|| {
             callback.begin_block();
-            callback.render(&mut output).expect("feedback render");
+            callback.render(&mut output).expect("operator render");
         });
         assert!(
             output == expected,
-            "lfo callback transfer PCM block={block} accepted={accepted:?} applied={}",
+            "operator callback transfer PCM block={block} accepted={accepted:?} applied={}",
             control.status.applied_revision.load(Ordering::Acquire)
         );
         if let Some(accepted) = accepted {
