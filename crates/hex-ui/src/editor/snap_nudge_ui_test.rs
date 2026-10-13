@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 #[gpui::test]
 fn arrangement_nudge_uses_selected_grid_instead_of_legacy_free_step(cx: &mut TestAppContext) {
-    cx.update(|cx| super::bind_editor_keys(cx));
+    cx.update(super::bind_editor_keys);
     for midi in [false, true] {
         let (project, track, _, clip) = if midi {
             midi_project()
@@ -99,7 +99,7 @@ fn snap_nudge_worker_history_keeps_source_and_other_tracks(cx: &mut TestAppConte
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
-    cx.update(|cx| super::bind_editor_keys(cx));
+    cx.update(super::bind_editor_keys);
     for midi in [false, true] {
         let service = Service::new(48_000, 16, 16).unwrap();
         next(&service);

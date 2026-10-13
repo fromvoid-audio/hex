@@ -12,8 +12,10 @@ canonical worker command and Undo step.
 With snap disabled, existing audio quarter-second and MIDI one-beat free steps
 remain. Effective-grid inversion follows the existing platform modifier contract
 when an action is dispatched. Session navigation and focused piano-roll note
-nudges retain their existing paths. Busy, stale/unpainted geometry and
-unrepresentable endpoints enqueue nothing; the left edge is a no-op on the grid.
+nudges retain their existing paths. Busy edits enqueue nothing. Enabled snap
+requires current painted geometry and representable endpoints; missing distinct
+landmarks, including the left edge, are no-ops. Free nudges retain canonical
+worker limit validation.
 
 Rendered/action, directional landmark, modifier, boundary and real-worker
 Undo/Redo tests are source evidence. Native keyboard/focus/modifier behavior and
