@@ -947,7 +947,7 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(3.0));
     for ids in [
         &[82, 83, 84, 88][..],
         &[85, 86, 87][..],
