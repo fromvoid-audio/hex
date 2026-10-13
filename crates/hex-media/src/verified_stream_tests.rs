@@ -3,6 +3,8 @@ use crate::{
     decode_wav,
 };
 use hex_engine::Frame;
+#[path = "verified_stream_owned_tests.rs"]
+mod owned;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},

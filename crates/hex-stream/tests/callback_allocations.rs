@@ -89,6 +89,58 @@ fn assert_no_allocation(info: AllocationInfo) {
     assert_eq!(info.bytes_current, 0, "endpoint changed live bytes");
 }
 
+#[test]
+fn owned_media_failure_reclaims_manifest_and_moves_recovery_parts_without_allocation() {
+    // Control-side probe of the media API; no worker or callback is installed.
+    let wav = FixtureWav::create();
+    let mut path = PathBuf::with_capacity(4096);
+    path.push(&wav.0);
+    let pointer = path.as_os_str().as_encoded_bytes().as_ptr();
+    let capacity = path.capacity();
+    let limits = VerifiedWavReaderLimits::new(
+        WavReaderLimits::new(1024 * 1024, SOURCE_FRAMES as u64, 128, SOURCE_FRAMES),
+        1024 * 1024,
+    );
+    let mut path = Some(path);
+    let mut result = None;
+    let opening = measure(|| {
+        result = Some(VerifiedWavReader::open_owned_with_cancel(
+            path.take().expect("owned path"),
+            limits,
+            || true,
+        ));
+    });
+    let failure = result.expect("opening attempted").err().expect("cancelled");
+    assert!(matches!(failure.error(), hex_media::ImportError::Cancelled));
+    let observed = failure.capacity();
+    assert!(observed.manifest_reservation_attempted);
+    assert_eq!(observed.path_capacity_bytes, capacity);
+    // This short Linux fixture uses one manifest allocation; a path clone
+    // would add another allocation even if immediately reclaimed.
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(opening.count_total, 1);
+        assert_eq!(
+            opening.bytes_total as usize,
+            observed.manifest_bytes().expect("manifest bytes")
+        );
+    }
+    assert_eq!(
+        opening.count_current, 0,
+        "partial manifest reclaimed; original path retained"
+    );
+    assert_eq!(opening.bytes_current, 0);
+    let mut parts = None;
+    let recovered = measure(|| parts = Some(failure.into_parts()));
+    assert_no_allocation(recovered);
+    let (path, error, report) = parts.expect("recovery parts");
+    assert_eq!(path.as_os_str().as_encoded_bytes().as_ptr(), pointer);
+    assert_eq!(path.capacity(), capacity);
+    assert_eq!(path, wav.0);
+    assert!(matches!(error, hex_media::ImportError::Cancelled));
+    assert_eq!(report, observed);
+}
+
 fn wait_for_pages(
     pages: &mut hex_stream::StreamCallbackPages,
     keys: &[hex_stream::PageKey],

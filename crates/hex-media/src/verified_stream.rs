@@ -30,6 +30,60 @@ impl VerifiedWavReaderLimits {
     }
 }
 
+/// Observed reserved data capacities for opening, not total process memory.
+/// On opening failure, manifest storage has been reclaimed; this observation
+/// preserves its capacity before reclamation. The returned path is still owned.
+/// Inline verification scratch/reader data, stack, OS and allocator overhead
+/// are excluded. Byte products/sums explicitly return None on overflow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VerifiedOpenCapacity {
+    pub path_capacity_bytes: usize,
+    pub manifest_slots: usize,
+    pub manifest_reservation_attempted: bool,
+}
+impl VerifiedOpenCapacity {
+    pub fn manifest_bytes(self) -> Option<usize> {
+        self.manifest_slots.checked_mul(DIGEST_BYTES)
+    }
+    pub fn data_bytes(self) -> Option<usize> {
+        self.path_capacity_bytes.checked_add(self.manifest_bytes()?)
+    }
+}
+
+/// API-reported opening refusal, retaining the exact input path allocation.
+#[derive(Debug)]
+pub struct OwnedVerifiedOpenFailure {
+    path: PathBuf,
+    error: ImportError,
+    capacity: VerifiedOpenCapacity,
+}
+impl OwnedVerifiedOpenFailure {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn error(&self) -> &ImportError {
+        &self.error
+    }
+    pub fn capacity(&self) -> VerifiedOpenCapacity {
+        self.capacity
+    }
+    /// Move the original path, error and fixed-size observation; no allocation
+    /// or cloning. Manifest/file cleanup has already occurred on control.
+    pub fn into_parts(self) -> (PathBuf, ImportError, VerifiedOpenCapacity) {
+        (self.path, self.error, self.capacity)
+    }
+}
+impl std::fmt::Display for OwnedVerifiedOpenFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl std::error::Error for OwnedVerifiedOpenFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// WAV reader backed by an ordered SHA-256 manifest of the opened descriptor.
 ///
 /// Opening hashes the complete file once. It is not an atomic filesystem
@@ -62,102 +116,66 @@ impl VerifiedWavReader {
     pub fn open_with_cancel(
         path: impl AsRef<Path>,
         limits: VerifiedWavReaderLimits,
-        mut cancelled: impl FnMut() -> bool,
+        cancelled: impl FnMut() -> bool,
     ) -> Result<Self, ImportError> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
-        let before = file.metadata()?;
-        let captured_len = before.len();
-        if captured_len > limits.reader.max_file_bytes {
-            return Err(ImportError::LimitExceeded("input bytes"));
-        }
-        let captured_modified = before.modified()?;
-        let page_count = page_count(captured_len)?;
-        let requested_manifest_bytes = page_count
-            .checked_mul(DIGEST_BYTES)
-            .ok_or(ImportError::Invalid("verified page manifest size overflow"))?;
-        if requested_manifest_bytes > limits.max_manifest_bytes {
-            return Err(ImportError::LimitExceeded("verified page manifest bytes"));
-        }
-        let preliminary_layout =
-            wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
-        if preliminary_layout.frames > limits.reader.max_source_frames {
-            return Err(ImportError::LimitExceeded("source frames"));
-        }
-        check_metadata(&file, captured_len, captured_modified)?;
-        let mut page_digests = Vec::new();
-        page_digests
-            .try_reserve_exact(page_count)
-            .map_err(|_| ImportError::AllocationFailed)?;
-        let allocated_manifest_bytes = page_digests
-            .capacity()
-            .checked_mul(DIGEST_BYTES)
-            .ok_or(ImportError::Invalid("verified page manifest size overflow"))?;
-        if allocated_manifest_bytes > limits.max_manifest_bytes {
-            return Err(ImportError::LimitExceeded("verified page manifest bytes"));
-        }
+        // Preserve the legacy borrowed path copy and failure behavior.
+        Self::open_owned_with_cancel(path.as_ref().to_path_buf(), limits, cancelled)
+            .map_err(|failure| failure.into_parts().1)
+    }
 
-        let mut scratch = [0_u8; PAGE_BYTES];
-        let mut whole_file = Sha256::new();
-        for page in 0..page_count {
-            if cancelled() {
-                return Err(ImportError::Cancelled);
-            }
-            let page_start = page_start(page)?;
-            let page_len = page_len(captured_len, page_start)?;
-            check_metadata(&file, captured_len, captured_modified)?;
-            file.seek(SeekFrom::Start(page_start))?;
-            if let Err(error) = file.read_exact(&mut scratch[..page_len]) {
-                return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
-                    ImportError::SourceChanged
-                } else {
-                    ImportError::Io(error)
-                });
-            }
-            check_metadata(&file, captured_len, captured_modified)?;
-            let page_digest: [u8; DIGEST_BYTES] = Sha256::digest(&scratch[..page_len]).into();
-            whole_file.update(&scratch[..page_len]);
-            page_digests.push(page_digest);
-        }
-        check_metadata(&file, captured_len, captured_modified)?;
-        let fingerprint: [u8; DIGEST_BYTES] = whole_file.finalize().into();
-        let layout = {
-            check_metadata(&file, captured_len, captured_modified)?;
-            let mut verified = VerifiedPageReader::new(
-                &mut file,
-                &page_digests,
-                &mut scratch,
-                captured_len,
-                captured_modified,
-                &mut cancelled,
-            );
-            wav::scan(&mut verified, captured_len, limits.reader.max_header_count)
-                .map_err(map_verified_error)?
-        };
-        {
-            if cancelled() {
-                return Err(ImportError::Cancelled);
-            }
-            check_metadata(&file, captured_len, captured_modified)?;
-            if layout != preliminary_layout {
-                return Err(ImportError::SourceChanged);
-            }
-        }
-        if layout.frames > limits.reader.max_source_frames {
-            return Err(ImportError::LimitExceeded("source frames"));
-        }
-        Ok(Self {
-            file,
-            path,
-            layout,
-            captured_len,
-            captured_modified,
-            max_header_count: limits.reader.max_header_count,
-            max_window_frames: limits.reader.max_window_frames,
-            fingerprint,
-            page_digests,
-            scratch,
+    /// Control-side opening that consumes an already fallibly copied path.
+    /// Success retains the exact allocation; every API-reported failure returns
+    /// it unchanged, with the existing error and observed manifest capacity.
+    /// No path cloning/normalization occurs. Process-fatal OOM/abort is outside
+    /// this ownership-recovery guarantee. Cancellation and descriptor pinning
+    /// match the borrowed opening API; this is not an atomic filesystem snapshot.
+    pub fn open_owned_with_cancel(
+        path: PathBuf,
+        limits: VerifiedWavReaderLimits,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, OwnedVerifiedOpenFailure> {
+        Self::open_owned_with_reserve(path, limits, cancelled, |manifest, count| {
+            manifest
+                .try_reserve_exact(count)
+                .map_err(|_| ImportError::AllocationFailed)
         })
+    }
+
+    fn open_owned_with_reserve(
+        path: PathBuf,
+        limits: VerifiedWavReaderLimits,
+        mut cancelled: impl FnMut() -> bool,
+        reserve_manifest: impl FnOnce(&mut Vec<[u8; DIGEST_BYTES]>, usize) -> Result<(), ImportError>,
+    ) -> Result<Self, OwnedVerifiedOpenFailure> {
+        let mut capacity = VerifiedOpenCapacity {
+            path_capacity_bytes: path.capacity(),
+            manifest_slots: 0,
+            manifest_reservation_attempted: false,
+        };
+        match verify_open(
+            &path,
+            limits,
+            &mut cancelled,
+            &mut capacity,
+            reserve_manifest,
+        ) {
+            Ok(parts) => Ok(parts.into_reader(path)),
+            Err(error) => Err(OwnedVerifiedOpenFailure {
+                path,
+                error,
+                capacity,
+            }),
+        }
+    }
+
+    /// Actual path and retained manifest data capacities; no allocation/clone.
+    /// Excludes inline scratch/reader data, stack, file/OS and allocator costs.
+    pub fn opening_capacity(&self) -> VerifiedOpenCapacity {
+        VerifiedOpenCapacity {
+            path_capacity_bytes: self.path.capacity(),
+            manifest_slots: self.page_digests.capacity(),
+            manifest_reservation_attempted: true,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -527,4 +545,144 @@ fn map_verified_error(error: ImportError) -> ImportError {
         ImportError::Io(error) => map_io_error(error),
         other => other,
     }
+}
+
+struct VerifiedOpenParts {
+    file: File,
+    layout: wav::Layout,
+    captured_len: u64,
+    captured_modified: SystemTime,
+    max_header_count: usize,
+    max_window_frames: usize,
+    fingerprint: [u8; DIGEST_BYTES],
+    page_digests: Vec<[u8; DIGEST_BYTES]>,
+    scratch: [u8; PAGE_BYTES],
+}
+impl VerifiedOpenParts {
+    fn into_reader(self, path: PathBuf) -> VerifiedWavReader {
+        VerifiedWavReader {
+            file: self.file,
+            path,
+            layout: self.layout,
+            captured_len: self.captured_len,
+            captured_modified: self.captured_modified,
+            max_header_count: self.max_header_count,
+            max_window_frames: self.max_window_frames,
+            fingerprint: self.fingerprint,
+            page_digests: self.page_digests,
+            scratch: self.scratch,
+        }
+    }
+}
+
+fn verify_open(
+    path: &Path,
+    limits: VerifiedWavReaderLimits,
+    cancelled: &mut dyn FnMut() -> bool,
+    observation: &mut VerifiedOpenCapacity,
+    reserve_manifest: impl FnOnce(&mut Vec<[u8; DIGEST_BYTES]>, usize) -> Result<(), ImportError>,
+) -> Result<VerifiedOpenParts, ImportError> {
+    let mut file = File::open(path)?;
+    let before = file.metadata()?;
+    let captured_len = before.len();
+    if captured_len > limits.reader.max_file_bytes {
+        return Err(ImportError::LimitExceeded("input bytes"));
+    }
+    let captured_modified = before.modified()?;
+    let page_count = page_count(captured_len)?;
+    let requested_manifest_bytes = page_count
+        .checked_mul(DIGEST_BYTES)
+        .ok_or(ImportError::Invalid("verified page manifest size overflow"))?;
+    if requested_manifest_bytes > limits.max_manifest_bytes {
+        return Err(ImportError::LimitExceeded("verified page manifest bytes"));
+    }
+    let preliminary_layout = wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
+    if preliminary_layout.frames > limits.reader.max_source_frames {
+        return Err(ImportError::LimitExceeded("source frames"));
+    }
+    check_metadata(&file, captured_len, captured_modified)?;
+    let mut page_digests = Vec::new();
+    observation.manifest_reservation_attempted = true;
+    let reserved = reserve_manifest(&mut page_digests, page_count);
+    // Capture actual returned capacity before propagating any refusal.
+    observation.manifest_slots = page_digests.capacity();
+    reserved?;
+    let allocated_manifest_bytes = page_digests
+        .capacity()
+        .checked_mul(DIGEST_BYTES)
+        .ok_or(ImportError::Invalid("verified page manifest size overflow"))?;
+    if allocated_manifest_bytes > limits.max_manifest_bytes {
+        return Err(ImportError::LimitExceeded("verified page manifest bytes"));
+    }
+
+    let mut scratch = [0_u8; PAGE_BYTES];
+    let mut whole_file = Sha256::new();
+    for page in 0..page_count {
+        if cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        let page_start = page_start(page)?;
+        let page_len = page_len(captured_len, page_start)?;
+        check_metadata(&file, captured_len, captured_modified)?;
+        file.seek(SeekFrom::Start(page_start))?;
+        if let Err(error) = file.read_exact(&mut scratch[..page_len]) {
+            return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
+                ImportError::SourceChanged
+            } else {
+                ImportError::Io(error)
+            });
+        }
+        check_metadata(&file, captured_len, captured_modified)?;
+        let page_digest: [u8; DIGEST_BYTES] = Sha256::digest(&scratch[..page_len]).into();
+        whole_file.update(&scratch[..page_len]);
+        page_digests.push(page_digest);
+    }
+    check_metadata(&file, captured_len, captured_modified)?;
+    let fingerprint: [u8; DIGEST_BYTES] = whole_file.finalize().into();
+    let layout = {
+        check_metadata(&file, captured_len, captured_modified)?;
+        let mut verified = VerifiedPageReader::new(
+            &mut file,
+            &page_digests,
+            &mut scratch,
+            captured_len,
+            captured_modified,
+            cancelled,
+        );
+        wav::scan(&mut verified, captured_len, limits.reader.max_header_count)
+            .map_err(map_verified_error)?
+    };
+    {
+        if cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        check_metadata(&file, captured_len, captured_modified)?;
+        if layout != preliminary_layout {
+            return Err(ImportError::SourceChanged);
+        }
+    }
+    if layout.frames > limits.reader.max_source_frames {
+        return Err(ImportError::LimitExceeded("source frames"));
+    }
+    Ok(VerifiedOpenParts {
+        file,
+        layout,
+        captured_len,
+        captured_modified,
+        max_header_count: limits.reader.max_header_count,
+        max_window_frames: limits.reader.max_window_frames,
+        fingerprint,
+        page_digests,
+        scratch,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn open_owned_with_reserve_for_test(
+    path: PathBuf,
+    limits: VerifiedWavReaderLimits,
+    cancelled: impl FnMut() -> bool,
+    reserve: impl FnOnce(&mut Vec<[u8; DIGEST_BYTES]>, usize) -> Result<(), ImportError>,
+) -> Result<VerifiedWavReader, OwnedVerifiedOpenFailure> {
+    VerifiedWavReader::open_owned_with_reserve(path, limits, cancelled, reserve)
 }

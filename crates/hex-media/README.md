@@ -55,6 +55,27 @@ The fingerprint is not persisted and no managed copy, sidecar, project
 generation, or cache identity is implemented yet. Keep verified reader
 creation, reads, hashing and final destruction on control workers.
 
+`VerifiedWavReader::open_owned_with_cancel` consumes an already fallibly copied
+PathBuf without another path clone or normalization. Success retains that exact
+allocation. Every API-reported refusal returns `OwnedVerifiedOpenFailure`, whose
+`into_parts` moves the original path, existing ImportError and fixed-size
+VerifiedOpenCapacity observation without allocating or cloning. The shared
+private verifier borrows the path and preserves the borrowed APIs' numeric/file
+checks, cancellation order and opened-descriptor pinning. Replacing a pathname
+after opening does not replace the pinned descriptor. No expected graph rate or
+fingerprint is accepted here; callers still compare the reported source facts.
+
+Opening observations record actual manifest slot capacity immediately after
+reservation, including excess capacity rejected by the existing manifest limit.
+On failure the manifest/file have been reclaimed on control; the observation
+retains their manifest-capacity history while the returned path remains owned.
+On success `opening_capacity` reports retained path/manifest data capacities.
+Checked byte arithmetic excludes inline reader/scratch data, stack, allocator
+headers/rounding and opaque OS costs. It is neither a total-process cap nor a
+sampled memory peak. Process-fatal OOM/abort is outside ownership recovery.
+This primitive adds no worker request lifecycle, kernel-failure accounting,
+catalog/page access, readiness or native publication behavior.
+
 This is only a bounded source-decoding primitive. It does not change the resident
 import path or its limits and does not stream media into Session, Arrangement,
 export, or the real-time callback. Production page identity, conversion, cache
