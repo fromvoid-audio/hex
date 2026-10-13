@@ -1,3 +1,12 @@
+## persistent Arrangement selection — pulse2386 / pr170
+
+The captured time range survives mouse release and subsequent idle controller
+maintenance. Autoscroll no longer cancels a completed range when no gesture is
+active; stale active gestures and explicit Escape cancellation retain their
+existing behavior. Rendered audio/MIDI/empty-lane and main-scope regression fails
+before the fix; final focused/full source checks and native exact-candidate
+confirmation are recorded in Pulse2386/PR170. No native acceptance claim here.
+
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
@@ -2252,12 +2261,3 @@ signature validation participates in activation/recovery rollback. A real macOS
 linker/codesign regression reproduces the prior failure and checks resource/code
 tampering. Full exact-source CI, actual stable optimized delivery and combined
 owner acceptance remain pending; prior application untouched.
-
-## persistent Arrangement selection — pulse2386 / pr170
-
-The captured time range survives mouse release and subsequent idle controller
-maintenance. Autoscroll no longer cancels a completed range when no gesture is
-active; stale active gestures and explicit Escape cancellation retain their
-existing behavior. Rendered audio/MIDI/empty-lane and main-scope regression fails
-before the fix; final focused/full source checks and native exact-candidate
-confirmation are recorded in Pulse2386/PR170. No native acceptance claim here.
