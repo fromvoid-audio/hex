@@ -116,3 +116,37 @@ backpressure/environment limits are in `docs/performance.md`. Remaining evidence
 exact-tree local CI, paced/native display throughput, native UI interaction and
 listening, and any physical-device deadline claim. The analyzer is original
 telemetry; no Live algorithm or visual parity is claimed.
+
+## Borrowed pages plus observation — pulse24 / draft177
+
+The engine's SessionPlayback and Playback combined
+`render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>` entry borrows
+an existing engine-neutral provider and optional post-node observer for one
+block. Session uses its existing private render transaction with both inputs,
+so streamed sample access no longer requires dropping headless node observation.
+Neither borrow nor sample slice is retained. Observer code is callback code and
+must not allocate, block, clone owners or retain slices. Observations are
+speculative; consumers commit them only after block rendering and their final
+output validation succeed. Failed validation must discard staged observations.
+
+The new Playback method refuses Some(observer) without a Session runtime before
+changing output, clocks, provider or state, including paused/empty calls. None
+uses the existing page fallback. Existing providerless, page-only and observed
+methods keep their public behavior. Rendering attempts on Session still close
+fresh-candidate admission even on refusal, as before.
+
+Headless tests compare resident/streamed PCM and exact EQ8 post-node identities,
+offsets and samples through Arrangement/Session transitions, cover pause/empty,
+cold misses, legacy refusal and lifetime-clock error rollback. The clock boundary
+is explicitly fault-injected only in a private unit test; no late-chunk failure
+or native lifespan acceptance is claimed. Malformed neutral-provider samples
+follow existing unavailable-data behavior; they are not fabricated render errors.
+A real verified WAV worker probe checks combined Session/Playback rendering,
+pause/empty/miss/refusal with zero total/net allocation bytes/counts, stable graph
+and source owners, and control-owned final pool reclamation. Fixture observations
+are finite headless evidence, not whole native callback/handoff clone proof.
+
+Production audio still calls its existing providerless observer entry; streamed
+publication remains refused. Native page consumption, installed-page readiness,
+endpoint retirement, aggregate admission policy and full native acceptance are
+separate pending work. PR177 remains draft and Pulse24 blocked under HOLD.
