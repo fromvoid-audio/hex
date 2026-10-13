@@ -261,8 +261,10 @@ impl NumericControl {
         readout: crate::DeviceMeterReadout,
         cx: &mut Context<Self>,
     ) {
-        self.meter_readout = readout;
-        cx.notify();
+        if self.meter_readout != readout {
+            self.meter_readout = readout;
+            cx.notify();
+        }
     }
 
     pub fn value(&self) -> f64 {

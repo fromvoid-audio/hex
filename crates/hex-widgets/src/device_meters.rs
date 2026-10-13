@@ -4,7 +4,7 @@ use gpui::{
     Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative, rgb,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct DeviceMeterReadout {
     pub height: f32,
     pub levels: [f32; 2],
