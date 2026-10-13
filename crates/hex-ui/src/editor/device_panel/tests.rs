@@ -687,7 +687,16 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card_selector =
         Box::leak(format!("device-drop-card-{}", instrument.value()).into_boxed_str());
     let card = visual.debug_bounds(card_selector).expect("instrument card");
-    assert_eq!(card.size.width, px(DEVICE_FRAME_WIDTH));
+    assert_eq!(
+        card.size.width,
+        px(DEVICE_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
+    );
+    let painted_card = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+        ))
+        .expect("painted instrument card");
+    assert_eq!(painted_card.size.width, px(DEVICE_FRAME_WIDTH));
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -760,7 +769,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
