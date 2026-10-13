@@ -2,7 +2,7 @@
 use super::*;
 use std::time::Instant;
 
-pub(super) const WIDTH: f32 = 23.0;
+pub(super) const WIDTH: f32 = 25.0;
 pub(super) struct MeterState {
     source: Option<Arc<hex_engine::DeviceMeter>>,
     levels: [f32; 2],
@@ -62,6 +62,11 @@ pub(super) fn render(
         .and_then(|candidate| candidate.prepared_revision.as_ref())
         .and_then(|revision| revision.arrangement().device_meter(id.value()))
         .cloned();
+    let healthy = view.audio_status().is_some_and(|status| {
+        !status
+            .render_fault
+            .load(std::sync::atomic::Ordering::Relaxed)
+    });
     let playing = view.audio_status().is_some_and(|status| {
         status.playing.load(std::sync::atomic::Ordering::Relaxed)
             && !status
@@ -92,7 +97,9 @@ pub(super) fn render(
         } else {
             0.0
         };
-        if playing {
+        // Drain the final valid transient even when Pause/Stop wins before
+        // the next UI refresh; only the live fills depend on transport state.
+        if healthy {
             state.held[index] = state.held[index].max(peak);
         }
     }

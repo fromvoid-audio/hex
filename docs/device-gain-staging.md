@@ -1,7 +1,7 @@
 # Native device gain staging
 
 The first version is manual. Every regular-track effect, instrument and Return
-effect has a 23 px strip immediately to the right of its existing device frame.
+effect has a 25 px strip immediately to the right of its existing device frame.
 The left well is input; the right well is output after the host output trim.
 Both use the same -60 to 0 dBFS scale, stereo-linked maximum sample amplitude,
 a fast attack, a 12 dB/second display decay and a held peak marker. Above-full-

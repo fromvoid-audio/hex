@@ -32,6 +32,7 @@ pub(crate) fn well(
         .debug_selector(move || selector.clone())
         .relative()
         .w(px(8.0))
+        .flex_shrink_0()
         .h_full()
         .bg(rgb(style.rail))
         .child(

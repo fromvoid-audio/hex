@@ -897,7 +897,7 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], 18);
-    json["version"] = 18.into();
+    json["version"] = 19.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     remove_schema_seventeen_routes(&mut json);

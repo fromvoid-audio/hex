@@ -774,7 +774,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -832,13 +832,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(
-            !view
-                .device_panel
-                .controls
-                .keys()
-                .any(|key| key.device == instrument)
-        );
+        assert!(view.device_panel.has_only_host_control_for(instrument));
         assert!(
             !view
                 .device_panel
@@ -2628,7 +2622,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     assert_eq!(panel.size.height, px(213.0));
     let frame_selector = Box::leak(format!("effect-device-{}", device.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("utility frame");
-    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let input_selector = Box::leak(format!("utility-input-{}", device.value()).into_boxed_str());
     let output_selector = Box::leak(format!("utility-output-{}", device.value()).into_boxed_str());
@@ -3084,7 +3078,7 @@ fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
             format!("effect-device-{}", device.value()).into_boxed_str(),
         ))
         .expect("return Utility frame");
-    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let body = visual
         .debug_bounds(Box::leak(
@@ -4202,7 +4196,12 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         assert!(!control.is_editing(), "removed target cancels its draft");
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.device_panel.controls.is_empty());
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .all(|key| key.device != device)
+        );
         assert!(
             !view.device_panel.operator_pages.contains_key(&device),
             "removed device drops its page state"
@@ -4277,7 +4276,12 @@ fn invalid_return_numeric_draft_is_cancelled_when_its_owner_is_removed(cx: &mut 
         )
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.device_panel.controls.is_empty());
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .all(|key| key.device != device)
+        );
         assert!(view.state.as_ref().unwrap().project.track(track).is_some());
         assert_eq!(view.device_panel.message, None);
     });

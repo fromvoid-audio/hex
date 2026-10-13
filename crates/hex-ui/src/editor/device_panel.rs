@@ -186,6 +186,18 @@ impl DevicePanelState {
         self.controls.keys().any(|key| key.device == device)
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn has_only_host_control_for(&self, device: DeviceId) -> bool {
+        self.controls.contains_key(&ParameterKey {
+            device,
+            parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
+        }) && self
+            .controls
+            .keys()
+            .filter(|key| key.device == device)
+            .all(|key| key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id)
+    }
+
     pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
         self.controls.values().any(|control| match control {
             ParameterControl::Float { entity, .. } => entity.read_with(cx, |control, _| {
@@ -2469,7 +2481,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     let _ = control.set_external_value(f64::from(value), cx);
@@ -2479,7 +2492,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });
@@ -2491,7 +2505,7 @@ fn parameter_control_with_presentation(
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
-                ControlPresentation::DeviceMeters => (23.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::DeviceMeters => (gain_meters::WIDTH, DEVICE_FRAME_HEIGHT),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -2502,7 +2516,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     control.set_checked(value, cx);
@@ -2512,7 +2527,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });
@@ -2538,7 +2554,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     let _ = control.set_selected(value as usize, cx);
@@ -2548,7 +2565,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });

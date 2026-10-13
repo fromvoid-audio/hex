@@ -2511,20 +2511,21 @@ Short cloud/headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed CPU
 Rust 1.94.0 release, existing `profile_lattice_effects` workload: 100 resident
 looping tracks, 48 kHz, 128-frame blocks, 100 warmup and 2000 measured blocks.
 Parent source 6574f27; candidate adds explicit `--meters` diagnostics. Other host
-load was uncontrolled and baseline/candidate compilation overlapped other work;
-these single runs are bounded throughput evidence, not a stable regression gate.
+load was uncontrolled; these are separate single runs, with no Cargo running
+during the final candidate timing capture.
+The runs are bounded throughput evidence, not a stable regression gate.
 
 | Case | Before p50 µs | Candidate, meters off p50 µs | Meters on p50 µs |
 | --- | ---: | ---: | ---: |
-| No effects | 35.384 | 61.663 | 62.815 |
-| 100 Saturators | 111.979 | 110.968 | 176.126 |
-| 100 Compressors | 442.278 | 440.556 | 502.840 |
-| 100 Gates | 98.279 | 97.718 | 163.246 |
-| 100 Gate+Compressor chains | 479.655 | 478.383 | 602.770 |
+| No effects | 35.384 | 35.063 | 35.013 |
+| 100 Saturators | 111.979 | 111.979 | 175.345 |
+| 100 Compressors | 442.278 | 438.964 | 500.818 |
+| 100 Gates | 98.279 | 99.720 | 161.734 |
+| 100 Gate+Compressor chains | 479.655 | 475.039 | 613.657 |
 
 All three runs match the independent whole-run oracle exactly and retain identical
 PCM hashes; the 300-stateful-processor case remains refused. No sampled block
-exceeded 2666.667 µs; enabled peak handoffs add roughly 0.65 µs per effect at p50
+exceeded 2666.667 µs; enabled peak handoffs add roughly 0.62–0.69 µs per effect at p50
 in these runs. Raw logs are retained in `artifacts/device-gain-meters/` (ignored).
 This does not cover dense memoryless chains, native UI workload, instrument tap
 normalization, physical audio deadlines or Apple Silicon timing. The demo render

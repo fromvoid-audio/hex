@@ -1053,7 +1053,7 @@ impl gpui::Render for NumericControl {
         let mut root = match (self.kind, self.appearance) {
             (_, NumericControlAppearance::DeviceMeters) => div()
                 .id(self.id.clone())
-                .w(px(23.0))
+                .w(px(25.0))
                 .h(px(self.meter_readout.height))
                 .flex()
                 .gap(px(3.0))
