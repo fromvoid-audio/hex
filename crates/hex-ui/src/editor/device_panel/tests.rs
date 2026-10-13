@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
+mod device_reorder_tests;
 mod gate_ui_tests;
 mod operator_navigation_tests;
 mod operator_tab_tests;
@@ -687,7 +688,16 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card_selector =
         Box::leak(format!("device-drop-card-{}", instrument.value()).into_boxed_str());
     let card = visual.debug_bounds(card_selector).expect("instrument card");
-    assert_eq!(card.size.width, px(DEVICE_FRAME_WIDTH));
+    assert_eq!(
+        card.size.width,
+        px(DEVICE_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
+    );
+    let painted_card = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+        ))
+        .expect("painted instrument card");
+    assert_eq!(painted_card.size.width, px(DEVICE_FRAME_WIDTH));
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -760,7 +770,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -2724,13 +2734,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         ))
         .expect("headphone audition control");
     assert_eq!(audition.size.width, px(14.0));
-    for suffix in [
-        "device-bypass",
-        "device-up",
-        "device-down",
-        "device-remove",
-        "device-drag-grip",
-    ] {
+    for suffix in ["device-bypass", "device-up", "device-down", "device-remove"] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
@@ -3215,7 +3219,7 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
 }
 
 #[gpui::test]
-fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAppContext) {
+fn existing_device_header_title_reorders_cards_by_stable_identity(cx: &mut TestAppContext) {
     let (service, _state, track, first, _, _) = actor_utility_fixture();
     let utility = hex_engine::native_device_catalog()
         .expect("registered utility")
@@ -3242,18 +3246,18 @@ fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
-    let grip_selector = Box::leak(format!("device-drag-grip-{}", first.value()).into_boxed_str());
+    let title_selector = Box::leak(format!("device-drag-title-{}", first.value()).into_boxed_str());
     let target_selector =
         Box::leak(format!("device-drop-card-{}", second.value()).into_boxed_str());
-    let grip = visual
-        .debug_bounds(grip_selector)
-        .expect("first device grip");
+    let title = visual
+        .debug_bounds(title_selector)
+        .expect("first device title");
     let target = visual
         .debug_bounds(target_selector)
         .expect("second device receiver");
     let down = point(
-        grip.origin.x + grip.size.width / 2.0,
-        grip.origin.y + grip.size.height / 2.0,
+        title.origin.x + title.size.width / 2.0,
+        title.origin.y + title.size.height / 2.0,
     );
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(

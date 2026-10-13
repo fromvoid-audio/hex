@@ -46,7 +46,7 @@ widgets = (
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
-    'device_drag_grip(', 'uniform_list(',
+    'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
