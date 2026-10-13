@@ -181,3 +181,100 @@ pub(super) fn focus_listener(
         });
     }
 }
+
+// Section containers track descendant focus, but are never keyboard targets.
+pub(in crate::editor::device_panel) struct SectionFocus {
+    pub(in crate::editor::device_panel) handle: FocusHandle,
+    pub(in crate::editor::device_panel) focused: bool,
+    subscriptions: Option<(gpui::Subscription, gpui::Subscription)>,
+}
+
+pub(super) fn section_focus(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    section: super::Section,
+) -> (FocusHandle, bool) {
+    let state = view
+        .device_panel
+        .operator_section_focus
+        .entry((device, section))
+        .or_insert_with(|| SectionFocus {
+            handle: cx.focus_handle().tab_stop(false),
+            focused: false,
+            subscriptions: None,
+        });
+    (state.handle.clone(), state.focused)
+}
+
+pub(super) fn section_listener(
+    view: &EditorView,
+    cx: &Context<EditorView>,
+    device: DeviceId,
+    section: super::Section,
+) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    let entity = cx.weak_entity();
+    let owner = Owner::capture(view, device);
+    move |_, window, cx| {
+        let _ = entity.update(cx, |view, cx| {
+            let key = (device, section);
+            let Some(state) = view.device_panel.operator_section_focus.get(&key) else {
+                return;
+            };
+            if state.subscriptions.is_some() {
+                return;
+            }
+            let handle = state.handle.clone();
+            let focus_in = cx.on_focus_in(&handle, window, move |view, window, cx| {
+                if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                    state.focused = true;
+                }
+                if let Some(owner) = owner {
+                    let excluded: Vec<_> = view
+                        .device_panel
+                        .controls
+                        .iter()
+                        .filter_map(|(key, control)| {
+                            let focus = match control {
+                                ParameterControl::Float { entity, .. } => entity.focus_handle(cx),
+                                ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
+                                ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
+                            };
+                            (key.device == device && focus.is_focused(window)).then_some(*key)
+                        })
+                        .collect();
+                    match section {
+                        super::Section::Oscillator(operator) => {
+                            select_oscillator(view, cx, owner, operator, &excluded);
+                        }
+                        super::Section::Preview("lfo")
+                            if owner.is_current(view)
+                                && super::super::finalize_controls_except(view, cx, &excluded) =>
+                        {
+                            view.device_panel
+                                .operator_pages
+                                .entry(device)
+                                .or_default()
+                                .page = super::OperatorPage::Lfo;
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }
+                // GPUI delivers focus events after painting, when immediate
+                // notifications cannot dirty the window. Schedule the changed
+                // section/context for the next frame without requiring input.
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            });
+            let focus_out = cx.on_focus_out(&handle, window, move |view, _, window, cx| {
+                if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                    state.focused = false;
+                    cx.defer_in(window, |_, _, cx| cx.notify());
+                }
+            });
+            if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
+                state.subscriptions = Some((focus_in, focus_out));
+            }
+        });
+    }
+}

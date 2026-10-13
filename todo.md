@@ -1,3 +1,104 @@
+## vector synth name — 13 october 2026
+
+Renamed the registered four-operator synth display name to `vector`; the shared
+catalog and device view feed the browser and card header. Existing
+`hex.instrument.operator` identity, state and DSP remain compatible. Updated
+existing catalog/view checks and profiler output. Native browser/header and
+existing-project reopening acceptance remain open; automated results belong to
+the focused rename PR. See [instrument contract](docs/operator-native.md).
+
+## operator focus presentation — 13 october 2026
+
+User reports retained in Pulse2373 and oscillator enable Pulse2335. Individual
+new-ticket intake is blocked: live create_ticket requires request_id, while the
+installed MCP schema omits/strips it. No new ticket IDs are claimed.
+
+- Row order: coarse/frequency → fine → fixed → level → oscillator badge.
+- Center curve/detail display stays dark on keyboard and pointer focus.
+- Defer section notifications after GPUI's post-paint focus callbacks so section
+  highlights repaint immediately without mouse movement.
+- Before-fix rendered tests reproduced badge-first order and a stale LFO
+  background; after the repaint repair, the same test reproduced light detail
+  background. Retained logs: artifacts/operator-focus/before.log and middle-detail.log.
+- Focused rendered navigation suite: 7/7 pass after repair; full exact-source
+  local CI remains the merge gate.
+- Canonical oscillator on/off remains in existing unmerged PR164/Pulse2335.
+  Do not claim a selection-only badge toggles sound.
+- Native checklist after optimized stable delivery: Tab/Shift-Tab through each
+  row in ratio/fixed mode; LFO on/wave/rate/amount → filter → pitch → global
+  highlights update without moving mouse; focus/edit center controls and curve
+  without lightening background; valid edits commit once, invalid drafts retain focus.
+  Native delivery and owner acceptance are pending on this Linux executor.
+
+## common wav import encodings — 13 october 2026
+
+The reported `encoding is not pcm or ieee float` rejection is addressed by shared
+extensible PCM/float header validation, PCM8, float64 and G.711 decoding, plus
+bounded resident Microsoft/IMA ADPCM block decoding. Resident imports cover both
+Arrangement and Session, sampler assets and project reopen through the existing
+service path. Seekable/verified readers share the new fixed-frame formats;
+ADPCM is explicitly resident-only. Byte/frame ceilings and the mono/stereo,
+8–192 kHz domain remain unchanged. RF64/RIFX, surround downmix and other compressed
+WAV codecs remain unsupported; do not claim arbitrary WAV-container support.
+
+Independent FFmpeg PCM16 oracles cover every G.711 codeword and multi-block mono/
+stereo ADPCM, including declared final padding. Generated exact-sample tests
+cover extensible GUID/depth/layout validation, PCM8, float64 and seekable windows.
+Malformed ADPCM headers/dimensions/fact extents, custom Microsoft coefficients,
+caller ceilings and nonfinite/unrepresentable float64 have regression coverage.
+Native reimport of the user's failed sample and listening remain pending. Pulse
+intake is blocked because the connected create-ticket schema cannot supply the
+server-required `request_id`; no ticket was created. Full local CI is a separate
+PR delivery gate; cloud tests do not establish native macOS acceptance.
+
+
+## Operator Tab review repairs — pulse2373 / PR178
+
+Oscillator squares remain visually at the right while preceding their controls
+in the focus tree. Selector focus activates its oscillator and uses a distinct
+thicker focus border. Section backgrounds follow descendant focus only, including
+lfo summary/detail and routing preset; previous groups deactivate even when their
+view context remains selected. Common lfo widgets mount once in the summary,
+with remaining controls in detail, avoiding duplicate GPUI focus ancestry/Tab IDs.
+Fine/filter/pitch/global invalid previews refuse both Tab directions before blur;
+valid preview drafts finish locally without authoring canonical sound. The routing
+icon retains its lowercase Enter/Space tooltip. Shared disabled-widget navigation
+intent/restoration remains preserved. Rendered regressions cover geometry/order,
+all lfo widgets, routing, group exit and preview drafts; restored-old-behavior
+negative controls reproduce both invalid-preview traversal and duplicate-lfo order.
+Full exact-source CI, optimized review build and pending native confirmation are
+recorded in PR178/Pulse2373 under the retained review-only hold.
+
+## 13 October 2026 — header double-click fullscreen
+
+The shared loading/editor title bar now toggles native fullscreen on left
+double-click and restores normal mode on the next double-click. Single/right
+clicks and triple-click continuation do not toggle; window controls retain
+their own stopped-propagation actions. A rendered GPUI pointer regression checks
+entry and exit. Native macOS transitions, header dragging and window-control
+sanity checks remain user acceptance. Automated validation is recorded with the
+task result. Pulse intake is currently blocked: its create-ticket endpoint
+requires a request_id that the installed tool schema does not expose.
+
+## Open latest session log from header — 13 october 2026
+
+A compact debug control sits at the far right beside the version in the editor,
+startup and demo headers. It opens the current session's log with the macOS
+default text editor (`open -t`), using the injected path and a background launcher.
+Repeated pending requests are ignored; missing logging and launch failures show
+a lowercase dialog. The existing header layout test now checks the button's
+right edge, spacing and title-row bounds. See [session diagnostics](docs/diagnostics.md).
+
+Linux source guards, formatting, `cargo check -p hex-ui --locked` and strict
+UI-feature Clippy pass. Focused header/title and diagnostic tests pass, and the
+locked desktop build succeeds. The macOS-only layout test skips its assertions
+on Linux; full exact-commit local CI remains the merge gate.
+Native acceptance: click the control, verify the current session log opens in a
+text editor, and check title/version/button spacing at the minimum window width.
+Pulse ticket creation is blocked by a connector schema mismatch: the live
+server requires request_id but the connector does not pass that field through.
+No ticket update, merge or macOS test bundle is claimed.
+
 ## persistent Arrangement selection — pulse2386 / pr170
 
 The captured time range survives mouse release and subsequent idle controller

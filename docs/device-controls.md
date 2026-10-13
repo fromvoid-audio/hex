@@ -63,6 +63,21 @@ transfer laws, modifier behavior and numerical increments are unverified until
 reference experiments establish them. The visual target is the user-supplied
 Live device screenshot; rendering and assets are independent implementations.
 
+### numeric text shortcut ownership
+
+An active numeric text draft advertises `hex_text_editing` alongside its numeric
+control context. Editor printable shortcuts (space, `s`, Shift-`s`, and `l`) are
+excluded while that context is focused, so unit strings retain their characters
+without changing transport, Solo or loop state. Direct Solo actions also refuse
+that text-edit context. Numeric clipboard, selection, Enter/Escape and existing
+modified-command finalization paths remain unchanged. Focus on a numeric control
+outside text editing still permits the normal Solo shortcuts.
+
+Rendered editor-to-worker regressions cover lost characters, canonical Solo and
+history isolation, uppercase/space, clipboard/cancel, owner finalization, Enter
+and single Undo. Linux headless tests do not establish physical macOS keyboard,
+IME, bundled-font rendering or native visual acceptance.
+
 ### linear-amplitude gain presentation
 
 Parameter descriptors may declare `LinearAmplitudeDecibels` when their

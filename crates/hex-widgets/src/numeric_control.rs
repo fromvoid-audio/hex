@@ -191,6 +191,7 @@ pub struct NumericControl {
     pub(crate) style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    tab_navigation: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -245,6 +246,7 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -299,11 +301,26 @@ impl NumericControl {
         Ok(())
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            cx.notify();
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled == enabled {
             return;
         }
         self.enabled = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+        }
         if !enabled {
             self.cancel(cx);
         }
@@ -974,6 +991,13 @@ impl gpui::Render for NumericControl {
         {
             self.cancel(cx);
         }
+        // A text draft owns printable keys even beneath editor shortcut contexts.
+        // Keep numeric editing actions available in the same focused node.
+        let key_context = if self.editing {
+            "hex_numeric_control hex_text_editing"
+        } else {
+            "hex_numeric_control"
+        };
         let entity = cx.entity();
         let enabled = self.enabled;
         let style = self.style;
@@ -1021,7 +1045,7 @@ impl gpui::Render for NumericControl {
                 .w(px(crate::MICRO_DIAL_WIDTH))
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .absolute()
@@ -1075,7 +1099,7 @@ impl gpui::Render for NumericControl {
                     .gap(px(gap))
                     .items_center()
                     .track_focus(&self.focus)
-                    .key_context("hex_numeric_control")
+                    .key_context(key_context)
                     .child(
                         div()
                             .w(px(width))
@@ -1110,7 +1134,7 @@ impl gpui::Render for NumericControl {
                 .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(value_field_sized(
                     self.id.clone(),
                     value_text,
@@ -1133,7 +1157,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(1.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(48.0))
@@ -1164,7 +1188,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(5.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(42.0))
@@ -1200,7 +1224,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(2.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w_full()

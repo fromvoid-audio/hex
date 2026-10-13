@@ -13,7 +13,7 @@
      /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
      pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
          let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -675,6 +681,12 @@
+@@ -675,6 +681,29 @@
  }
 
  impl VisualTestContext {
@@ -21,6 +21,23 @@
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
 +        self.update(|window, _| window.rendered_frame.cursor_style(window))
++    }
++
++    /// Background of the last painted quad exactly matching a debug element's bounds.
++    /// Reads the completed scene without drawing or injecting pointer events.
++    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled)
++                .map(|quad| quad.background)
++        })
 +    }
 +
      /// Provides a `Window` and `App` for the duration of the closure.
@@ -445,6 +462,19 @@
                  transparent_titlebar: titlebar
                      .as_ref()
                      .is_none_or(|titlebar| titlebar.appears_transparent),
+--- a/src/platform/test/platform.rs
++++ b/src/platform/test/platform.rs
+@@ -91,6 +91,10 @@
+ }
+
+ impl TestPlatform {
++    pub(crate) fn cursor_style(&self) -> CursorStyle {
++        *self.active_cursor.lock()
++    }
++
+     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
+         #[cfg(target_os = "windows")]
+         let bitmap_factory = unsafe {
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
 @@ -553,6 +553,7 @@
@@ -588,17 +618,3 @@
 +            }
          }
      }
-
---- a/src/platform/test/platform.rs
-+++ b/src/platform/test/platform.rs
-@@ -91,6 +91,10 @@
- }
-
- impl TestPlatform {
-+    pub(crate) fn cursor_style(&self) -> CursorStyle {
-+        *self.active_cursor.lock()
-+    }
-+
-     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
-         #[cfg(target_os = "windows")]
-         let bitmap_factory = unsafe {
