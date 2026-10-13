@@ -6,6 +6,86 @@ fn focused(visual: &mut VisualTestContext) -> FocusHandle {
 }
 
 #[gpui::test]
+fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let row = |title| {
+        Box::leak(format!("operator-preview-row-{}-{title}", device.value()).into_boxed_str())
+            as &'static str
+    };
+    let detail = Box::leak(format!("operator-detail-{}", device.value()).into_boxed_str());
+    let background = |color| Some(gpui::Background::from(gpui::rgb(color)));
+    let lfo = editor.read_with(cx, |view, app| {
+        let ParameterControl::Bool { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(82),
+        }] else {
+            panic!("lfo toggle")
+        };
+        entity.focus_handle(app)
+    });
+    visual.update(|window, _| lfo.focus(window));
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+    for _ in 0..3 {
+        visual.simulate_keystrokes("tab");
+        assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+    }
+    // Amount -> filter toggle, then its two selectors and two dials -> pitch toggle,
+    // then three pitch dials -> global routing icon. No pointer event or forced draw.
+    for (title, tabs) in [("filter", 1), ("pitch env", 5), ("global", 4)] {
+        for _ in 0..tabs {
+            visual.simulate_keystrokes("tab");
+        }
+        assert_eq!(
+            visual.rendered_background(row(title)),
+            background(0x474747),
+            "{title} paints immediately"
+        );
+        assert_eq!(visual.rendered_background(row("lfo")), background(0x363636));
+    }
+    visual.simulate_keystrokes("enter");
+    let algorithm = editor.read_with(cx, |view, app| {
+        let ParameterControl::Choice { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(61),
+        }] else {
+            panic!("algorithm selector")
+        };
+        entity.focus_handle(app)
+    });
+    visual.update(|window, _| algorithm.focus(window));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background(detail),
+        background(0x191919),
+        "focused detail stays dark"
+    );
+    let bounds = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-61", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    assert_eq!(
+        visual.rendered_background(detail),
+        background(0x191919),
+        "pointer-focused detail stays dark"
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+}
+
+#[gpui::test]
 fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits(
     cx: &mut TestAppContext,
 ) {
@@ -265,7 +345,7 @@ fn operator_tab_targets_retire_on_track_owner_change(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn operator_shell_selectors_precede_controls_and_sections_follow_child_focus(
+fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
     cx: &mut TestAppContext,
 ) {
     cx.update(hex_widgets::bind_numeric_control_keys);
@@ -308,13 +388,6 @@ fn operator_shell_selectors_precede_controls_and_sections_follow_child_focus(
     let order = editor.read_with(cx, |view, cx| {
         let mut order = Vec::new();
         for operator in (0..4).rev() {
-            order.push(
-                view.device_panel.operator_navigation_focus[&(
-                    device,
-                    operator_panel::NavigationTarget::Oscillator(operator),
-                )]
-                    .clone(),
-            );
             let base = operator as u32 * 3 + 1;
             let focus = |parameter| match &view.device_panel.controls[&ParameterKey {
                 device,
@@ -337,6 +410,13 @@ fn operator_shell_selectors_precede_controls_and_sections_follow_child_focus(
             );
             order.push(focus(62 + operator as u32 * 3));
             order.push(focus(base + 1));
+            order.push(
+                view.device_panel.operator_navigation_focus[&(
+                    device,
+                    operator_panel::NavigationTarget::Oscillator(operator),
+                )]
+                    .clone(),
+            );
         }
         order
     });
@@ -348,14 +428,28 @@ fn operator_shell_selectors_precede_controls_and_sections_follow_child_focus(
             "selector focus activates its oscillator"
         )
     });
-    for expected in order.iter().skip(1) {
+    for (index, expected) in order.iter().enumerate().skip(1) {
         visual.simulate_keystrokes("tab");
         visual.run_until_parked();
         assert_eq!(
             &focused(&mut visual),
             expected,
-            "selector, coarse, fine, fixed, level"
+            "coarse, fine, fixed, level, selector"
         );
+        for operator in 0..4 {
+            let row =
+                Box::leak(format!("operator-row-{}-{operator}", device.value()).into_boxed_str());
+            let color = if operator == 3 - index / 5 {
+                0x474747
+            } else {
+                0x363636
+            };
+            assert_eq!(
+                visual.rendered_background(row),
+                Some(gpui::Background::from(gpui::rgb(color))),
+                "row paints the current keyboard target"
+            );
+        }
     }
     for expected in order.iter().rev().skip(1) {
         visual.simulate_keystrokes("shift-tab");

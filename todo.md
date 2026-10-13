@@ -7,6 +7,29 @@ existing catalog/view checks and profiler output. Native browser/header and
 existing-project reopening acceptance remain open; automated results belong to
 the focused rename PR. See [instrument contract](docs/operator-native.md).
 
+## operator focus presentation — 13 october 2026
+
+User reports retained in Pulse2373 and oscillator enable Pulse2335. Individual
+new-ticket intake is blocked: live create_ticket requires request_id, while the
+installed MCP schema omits/strips it. No new ticket IDs are claimed.
+
+- Row order: coarse/frequency → fine → fixed → level → oscillator badge.
+- Center curve/detail display stays dark on keyboard and pointer focus.
+- Defer section notifications after GPUI's post-paint focus callbacks so section
+  highlights repaint immediately without mouse movement.
+- Before-fix rendered tests reproduced badge-first order and a stale LFO
+  background; after the repaint repair, the same test reproduced light detail
+  background. Retained logs: artifacts/operator-focus/before.log and middle-detail.log.
+- Focused rendered navigation suite: 7/7 pass after repair; full exact-source
+  local CI remains the merge gate.
+- Canonical oscillator on/off remains in existing unmerged PR164/Pulse2335.
+  Do not claim a selection-only badge toggles sound.
+- Native checklist after optimized stable delivery: Tab/Shift-Tab through each
+  row in ratio/fixed mode; LFO on/wave/rate/amount → filter → pitch → global
+  highlights update without moving mouse; focus/edit center controls and curve
+  without lightening background; valid edits commit once, invalid drafts retain focus.
+  Native delivery and owner acceptance are pending on this Linux executor.
+
 ## common wav import encodings — 13 october 2026
 
 The reported `encoding is not pcm or ieee float` rejection is addressed by shared
