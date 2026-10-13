@@ -347,32 +347,6 @@ post-reset movement, external synchronization and keyboard adjustment. Native
 pointer sanity acceptance remains for the user; this is not an Operator playback
 stop diagnosis.
 
-
-## Operator navigation and context — pulse2341
-
-Envelope and Oscillator navigation now has one stable slot below the graph;
-routing remains canonical and is reached through the entire global rail.
-Every supported oscillator shell control, including view-only Fine, follows its
-stable project/track/device context on pointer, focus and keyboard adjustment.
-Canonical parameters, shared widgets and draft/history contracts remain intact.
-See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
-The harmonic painter is a separate2342feature; this layout does not claim
-complete Oscillator-view parity. Full local CI and native pointer comparison pass at the documented checkpoint.
-Human native Tab → Enter acceptance failed because the production editor's
-Session action intercepted Enter. The rendered regression now installs actual
-editor keybindings. The global rail has a dedicated Routing key context/action
-for Enter and Space, plus a lighter focused background. Latest supplied crops
-supersede black with a rounded neutral dark gray center and dark rectangular
-rail rows separated by lighter gray gutters. Updated exact-source CI and native
-acceptance remain required; PR156 stays draft. Crowded matrix readouts are
-tracked separately as2352.
-
-Human confirmed the repaired native Routing keyboard activation in gray68.
-Latest visual correction keeps Operator header, border and outer surface one
-light-gray color; selected/focused rows equal that surface exactly. Dark row
-gutters widen to 2px while the 168px body and shared frame/control dimensions
-remain unchanged. New native appearance acceptance remains required.
-
 ### value-field pointer lifecycle — 11 October 2026
 
 Pulse2340 / [PR155](https://github.com/PORTALSURFER/hex/pull/155) keeps the arrow
@@ -413,6 +387,65 @@ The user explicitly authorized merging PR155. Checklist supplied for testing:
    window/application. Preserve unsaved user projects; use an isolated fixture or
    review app. Full local CI and native appearance/delivery are separate gates.
 
+## shared knob artwork (Pulse2345 / PR157)
+
+Every native knob appearance uses the shared renderer: black unfilled rail,
+progressive secondary-accent fill and light needle. Explicit DialLayout selects
+a lower-right readout gap, bottom gap, or center-up pan with a reset triangle.
+Orientation is selected by semantics, independently of density and bipolar scale.
+Ordinary knobs fill from their normalized minimum, including logarithmic and
+amplitude/dB mappings. Bipolar zero is a neutral center with no fill, and signed
+values fill from center toward their position. No value/DSP/gesture law changed.
+
+Enabled focus, pointer interaction and numeric drafts use four short neutral-gray
+L corners around the complete tile. Typed drafts retain caret/selection and
+background; invalid drafts retain red error feedback. Numeric focus/keyboard
+handling and the separately reviewed cursor lifecycle remain intact.
+
+The MicroDial and MiniDial label-above tiles are58x40logical pixels with an18px
+dial; the width follows the measured installed Live Coarse class. Mini labels
+remain visible. Compact and Standard footprints remain unchanged. Device layouts
+consume exported shared metrics. Operator shell/preview/frame widths are derived
+from those tiles; inline routing fields retain46px. Utility Balance chooses Pan
+by its display codec; other bipolar controls retain their own orientation.
+Pointer capture has absolute positioning so
+pressing cannot insert a flex gap or shift the dial/readout.
+The isolated `cargo run -p hex-ui --example knob_review` fixture has no audio,
+project or settings I/O and shows all densities at normalized minimum/middle/
+maximum initially; each column remains editable. Generic density/semantic row
+headings do not rename actual devices. It is a rendering/gesture fixture, not
+canonical device acceptance. Exact installed Live pan/Return geometry remains
+a required reference gate; the public Live12 Mixing manual supports the reset
+triangle behavior, not pixel equivalence.
+
+Reference provenance, before/after native captures, regression sensitivity and
+remaining actual-device/reference acceptance are recorded in
+[knob focus observation](../research/observations/knob-focus-001.md).
+
+## Operator navigation and context — pulse2341
+
+Envelope and Oscillator navigation now has one stable slot below the graph;
+routing remains canonical and is reached through the entire global rail.
+Every supported oscillator shell control, including view-only Fine, follows its
+stable project/track/device context on pointer, focus and keyboard adjustment.
+Canonical parameters, shared widgets and draft/history contracts remain intact.
+See [the bounded reference and acceptance study](../research/observations/operator-navigation-003.md).
+The harmonic painter is a separate2342feature; this layout does not claim
+complete Oscillator-view parity. Full local CI and native pointer comparison pass at the documented checkpoint.
+Human native Tab → Enter acceptance failed because the production editor's
+Session action intercepted Enter. The rendered regression now installs actual
+editor keybindings. The global rail has a dedicated Routing key context/action
+for Enter and Space, plus a lighter focused background. Latest supplied crops
+supersede black with a rounded neutral dark gray center and dark rectangular
+rail rows separated by lighter gray gutters. Updated exact-source CI and native
+acceptance remain required; PR156 stays draft. Crowded matrix readouts are
+tracked separately as2352.
+
+Human confirmed the repaired native Routing keyboard activation in gray68.
+Latest visual correction keeps Operator header, border and outer surface one
+light-gray color; selected/focused rows equal that surface exactly. Dark row
+gutters widen to 2px while the 168px body and shared frame/control dimensions
+remain unchanged. New native appearance acceptance remains required.
 
 11 October 2026 follow-up native feedback: the human reports the connected001 appearance is generally correct, but rail/center content needs more space from section edges and the dark separator between rails and center must go. The focused correction removes the two explicit dark rail borders and adds four logical pixels of horizontal content inset to both rail rows and the center/tab content. It preserves the compact frame/body height, forty-pixel controls, two-pixel row gutters, exact outer-gray selected backgrounds, and accepted Routing activation. Strengthened rendered row/control containment checks cover the inset requirement; updated validation and native appearance remain pending.
 

@@ -684,3 +684,18 @@ context leases remain within existing admission/preroll caps. Canonical badges
 queue Boolean edits and restore pending values on queue refusal. See
 [requirements](operator-enable.md) and [source evidence](operator-enable-continuation.md)
 for final automated and native acceptance still required.
+## candidate-owned handoff scratch — Pulse2371 / PR166
+
+Prepared-playback continuation borrows the candidate's constructor-owned
+`MidiSpanBuffer` alongside its immutable `PreparedRevision`, instead of
+constructing another buffer inside the candidate query helper. Both handoff
+query sites use this same scratch. Session queries clear visible length before
+work and on error; Arrangement queries do not consume it. Results copy bounded
+span values, so scratch references do not escape. Refusal may change candidate
+scratch but preserves donor ownership and committed playback state.
+
+This changes neither capacity nor runtime layout and adds no callback allocation
+or owning drop. The isolated extraction still requires original default-stack
+Darwin regressions, allocation probes and full exact-source local CI. Selected
+stack-frame reservations from the source PR are not a measured peak-stack result.
+User testing and explicit correctness confirmation remain required before merge.
