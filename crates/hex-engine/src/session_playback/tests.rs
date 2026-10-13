@@ -912,6 +912,8 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         ],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "audio".into(),
             gain: 1.0,
@@ -975,6 +977,8 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
     snapshot.next_id = 12;
     snapshot.tracks.push(TrackSnapshot {
         gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 6,
         name: "keys".into(),
         gain: 1.0,
@@ -1055,6 +1059,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
     });
     snapshot.tracks.push(TrackSnapshot {
         gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 14,
         name: "arrangement bed".into(),
         gain: 1.0,
@@ -1090,6 +1096,8 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "track".into(),
             gain,
@@ -6171,6 +6179,8 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
         let session_note = 25;
         snapshot.tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: "new mutable track".into(),
             gain: 1.0,
@@ -8152,6 +8162,8 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     for (track_id, clip_id, note_id, gain) in [(7, 9, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("track {track_id}"),
             gain,
@@ -8350,6 +8362,8 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
     let mut snapshot = original.snapshot();
     snapshot.tracks.push(TrackSnapshot {
         gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 7,
         name: "other".into(),
         gain: 1.0,

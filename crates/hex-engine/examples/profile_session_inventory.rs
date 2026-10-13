@@ -29,6 +29,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         next_id += 1;
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: format!("instrument {index:03}"),
             gain: 0.1,

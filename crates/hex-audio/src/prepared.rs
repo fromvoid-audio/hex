@@ -1758,6 +1758,8 @@ mod tests {
             }],
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: TRACK_ID,
                 name: "analyzer fixture".into(),
                 gain: 1.0,
@@ -1881,6 +1883,8 @@ mod tests {
             }],
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: TRACK_ID,
                 name: "saturator callback fixture".into(),
                 gain: 1.0,
@@ -1992,6 +1996,8 @@ mod tests {
             }],
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: TRACK_ID,
                 name: "compressor callback fixture".into(),
                 gain: 1.0,
@@ -2115,6 +2121,8 @@ mod tests {
             }],
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: TRACK_ID,
                 name: "gate callback fixture".into(),
                 gain: 1.0,
@@ -4080,6 +4088,8 @@ mod tests {
             }],
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: 1,
                 name: "audio".into(),
                 gain: 1.0,
@@ -4528,6 +4538,8 @@ mod tests {
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track_id,
                 name: "keys".into(),
                 gain: 1.0,

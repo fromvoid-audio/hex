@@ -85,6 +85,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             .collect();
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("instrument {track_index:03}"),
             gain: 1.0,

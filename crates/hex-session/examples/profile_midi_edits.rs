@@ -30,6 +30,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             .collect();
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("instrument {index:03}"),
             gain: 0.1,

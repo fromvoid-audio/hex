@@ -60,6 +60,8 @@ pub fn project_with_operators(
         }
         track_snapshots.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("operator {track_index:03}"),
             gain: 1.0,

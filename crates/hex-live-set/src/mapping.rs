@@ -232,6 +232,8 @@ pub fn map(
         let track_id = id(&mut next)?;
         let mut t = TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: value(track, "Name/EffectiveName")?.to_owned(),
             gain: number(m, "Volume/Manual")? as f32,
