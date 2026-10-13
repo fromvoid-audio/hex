@@ -691,14 +691,17 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card = visual.debug_bounds(card_selector).expect("instrument card");
     assert_eq!(
         card.size.width,
-        px(DEVICE_FRAME_WIDTH + DEVICE_CHAIN_PADDING)
+        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
     );
     let painted_card = visual
         .debug_bounds(Box::leak(
             format!("instrument-device-{}", instrument.value()).into_boxed_str(),
         ))
         .expect("painted instrument card");
-    assert_eq!(painted_card.size.width, px(DEVICE_FRAME_WIDTH));
+    assert_eq!(
+        painted_card.size.width,
+        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH)
+    );
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -1032,8 +1035,25 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let frame_selector =
         Box::leak(format!("instrument-device-{}", instrument_id.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
-    assert_eq!(frame.size.width, px(operator_panel::OPERATOR_FRAME_WIDTH));
+    assert_eq!(
+        frame.size.width,
+        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH)
+    );
     assert_eq!(frame.size.height, px(184.0));
+    for side in ["input", "output"] {
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{}-{side}-meter",
+                instrument_id.value(),
+                hex_engine::DEVICE_OUTPUT_GAIN.id.value()
+            )
+            .into_boxed_str(),
+        );
+        let meter = visual.debug_bounds(selector).expect("device meter well");
+        assert_eq!(meter.size.width, px(8.0));
+        assert!(meter.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
+        assert!(meter.origin.x + meter.size.width <= frame.origin.x + frame.size.width);
+    }
     let body_selector =
         Box::leak(format!("operator-body-{}", instrument_id.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Operator body");

@@ -52,9 +52,9 @@ impl PostNodeIdentity {
 }
 
 pub use hex_lattice::DeviceMeter;
-/// Borrowed post-node samples delivered during one render call.
 pub use native_device_view::DEVICE_OUTPUT_GAIN;
 
+/// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
 /// Maximum stable track routes exposed to native callback telemetry.

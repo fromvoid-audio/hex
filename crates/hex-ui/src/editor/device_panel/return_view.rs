@@ -54,6 +54,9 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    view.device_panel
+        .meter_states
+        .retain(|id, _| alive.contains(id));
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()
