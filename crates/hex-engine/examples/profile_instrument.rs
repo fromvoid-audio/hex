@@ -279,7 +279,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "instrument={} four_stage_fm4={} notes_per_track={} dense_sustain={} warmup_blocks={} measured_blocks={}",
         if workload.operator {
-            "operator"
+            "vector"
         } else if workload.fm4 {
             "fm4"
         } else {

@@ -441,7 +441,7 @@ mod tests {
             .expect("FM4 instrument is registered");
         let operator = instruments
             .iter()
-            .find(|entry| entry.name == "operator")
+            .find(|entry| entry.name == "vector")
             .expect("Operator instrument is registered");
 
         let state = crate::default_native_device_state_for_class(
@@ -502,7 +502,7 @@ mod tests {
         .unwrap();
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
-        assert_eq!(operator_view.name, "operator");
+        assert_eq!(operator_view.name, "vector");
         assert_eq!(operator_view.parameters.len(), 88);
         for parameter in operator_view
             .parameters

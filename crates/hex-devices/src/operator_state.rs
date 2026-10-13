@@ -668,7 +668,7 @@ impl NativeDeviceMetadata for OperatorMetadata {
         OPERATOR_TYPE_ID
     }
     fn display_name(&self) -> Option<&'static str> {
-        Some("operator")
+        Some("vector")
     }
     fn state_version(&self) -> u32 {
         OPERATOR_STATE_VERSION
