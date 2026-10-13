@@ -1,4 +1,10 @@
-# registered Operator instrument
+# registered vector instrument
+
+The original four-operator FM synth is named **vector** in the browser, catalog
+and device header. Its stable `hex.instrument.operator` identity, versioned
+state and parameter IDs remain unchanged so existing projects retain their
+instrument and settings. Internal Operator module names and reference research
+still use the historical name.
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
 catalog. The control codec exposes77 descriptors and opaque version6 state.
