@@ -58,9 +58,13 @@ change the canonical project.
   confirmation. Linux local verification does not establish macOS dialogs,
   CoreAudio behavior, listening or hardware deadlines.
 
-The initial PR187 base a882 contains Operator v7 and predates the v8 enable-state
-history in frozen PR164 and untouched-draft fix in frozen PR186. Integration of
-those canonical histories requires coordinator handoff; v8 enable acceptance and
-that finalization dependency remain explicit gaps until integrated and tested.
+PR187 retains original-history integrations of frozen PR164
+`25c1cdf00d1ab22f8fe6743aa4bc5f43cb0f1971` (complete Operator v8 enable state)
+and PR186 `e00397a2cc4647806dd4c2f4e8035a5692e4f2b3` (untouched numeric value
+finalization and retired preview authority). These fixes are consumed from their
+canonical histories, with no replacement codec or duplicate implementation.
+Preset regressions retain mixed enable flags alongside non-default levels,
+tuning, envelopes, signed routing and supported LFO state, including a freely
+positioned instrument between two effects. Native acceptance remains pending.
 This draft remains blocked under the readiness hold; no passing gate or receipt
 is registered.

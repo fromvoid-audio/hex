@@ -160,6 +160,7 @@ fn device_preset_return_owner_exposes_actions_and_cancel_keeps_sends(cx: &mut Te
 
 #[gpui::test]
 fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, _, _, _) = actor_utility_fixture();
     let device = state
         .project
@@ -179,6 +180,16 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         .unwrap();
     let replaced = receive_service_event(&service);
     assert!(replaced.error.is_none());
+    service
+        .submit(Request::SetDeviceParameter {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+            value: ParameterValue::Float(1.2345),
+        })
+        .unwrap();
+    let replaced = receive_service_event(&service);
+    assert!(replaced.error.is_none());
+    let original_revision = replaced.state.revision;
     let original = replaced.state.project.clone();
     let directory =
         std::env::temp_dir().join(format!("hex-operator-preset-ui-{}", std::process::id()));
@@ -200,6 +211,46 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         ))
         .unwrap();
     assert!(save.right() <= frame.right() && load.right() <= frame.right());
+    let oscillator = visual
+        .debug_bounds(Box::leak(
+            format!("operator-page-{}-oscillator", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(oscillator.center(), Modifiers::default());
+    visual.run_until_parked();
+    let ratio = hex_lattice_contract::ParameterId::from_static(1);
+    enter_typed_value(&mut visual, device, ratio, "--");
+    visual.simulate_click(save.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view.preset_dialog_open,
+            "invalid current draft must refuse save"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    assert!(!path.exists());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: ratio,
+        }] else {
+            panic!("ratio control");
+        };
+        assert!(entity.read(cx).is_editing());
+        assert_eq!(entity.read(cx).display_text(), "1.23");
+    });
     visual.simulate_click(save.center(), Modifiers::default());
     visual.run_until_parked();
     cx.simulate_new_path_selection(|_| Some(path.clone()));
@@ -209,7 +260,12 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     });
     assert!(path.exists());
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().project, original)
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            original_revision,
+            "untouched rounded display must not author a preset-time edit"
+        );
     });
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::SetDeviceParameter {

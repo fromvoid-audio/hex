@@ -158,9 +158,19 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         let mut state = original.device(device).unwrap().state().clone();
         let mut edits = vec![(1, ParameterValue::Float(0.37))];
         if class == NativeDeviceClass::Instrument {
+            assert_eq!(
+                state.state_version(),
+                8,
+                "canonical enable-state history is required"
+            );
+            assert_eq!(state.payload().len(), 380, "complete v8 suffix retained");
             // Non-default values span level, tuning, envelope, signed routing
             // and supported LFO fields. Compare complete opaque state below.
             edits.extend([
+                (513, ParameterValue::Bool(false)),
+                (514, ParameterValue::Bool(true)),
+                (515, ParameterValue::Bool(false)),
+                (516, ParameterValue::Bool(true)),
                 (2, ParameterValue::Float(0.27)),
                 (14, ParameterValue::Float(-0.21)),
                 (29, ParameterValue::Float(0.4)),
