@@ -10747,3 +10747,152 @@ mod device_capacity_tests;
 
 #[path = "analytic_continuation_tests.rs"]
 mod analytic_continuation_tests;
+
+#[test]
+fn retiring_context_moves_preserve_real_strong_counts_across_generations() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.shared.context");
+    let definition = ContinuityInstrumentDefinition {
+        id,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let first_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+    let observed = first_revision
+        .arrangement()
+        .shared_contexts()
+        .clone_owner(0)
+        .unwrap();
+    let mut first = SessionPlayback::new(Arc::clone(&first_revision)).unwrap();
+    first.prepare_retiring_contexts().unwrap();
+    first.apply(SessionPlaybackCommand::Play).unwrap();
+    first.render(&mut [[0.0; 2]; 2]).unwrap();
+    let changed = with_test_instrument(&base, id, 1);
+    let second_revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &changed,
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(first_revision.session()),
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut second = SessionPlayback::new(Arc::clone(&second_revision)).unwrap();
+    second.prepare_retiring_contexts().unwrap();
+    // A late validation refusal consumes only the candidate. Preserve the
+    // detached control owner so actual source counts cannot be fabricated.
+    let detached = first.retiring_revision_contexts[0].take();
+    let before = Arc::strong_count(&observed);
+    let clock = first.performance_frame;
+    assert_eq!(
+        second.try_inherit_retiring_state_from(&mut first),
+        Err(SessionPlaybackError::SharedAnalyticContext)
+    );
+    assert!(second.require_fresh_candidate().is_err());
+    assert_eq!(first.performance_frame, clock);
+    assert_eq!(Arc::strong_count(&observed), before);
+    first.render(&mut [[0.0; 2]; 1]).unwrap();
+    assert_eq!(first.performance_frame, clock + 1);
+    first.retiring_revision_contexts[0] = detached;
+    drop(second); // Consumed candidate disposal is on control.
+    let mut second = SessionPlayback::new(Arc::clone(&second_revision)).unwrap();
+    second.prepare_retiring_contexts().unwrap();
+    let before = Arc::strong_count(&observed);
+    second.try_inherit_retiring_state_from(&mut first).unwrap();
+    assert_eq!(
+        Arc::strong_count(&observed),
+        before,
+        "owner is moved, not cloned"
+    );
+    assert!(first.retiring_revision_contexts[0].is_none());
+    let index = second
+        .retained_contexts
+        .iter()
+        .position(|owner| {
+            owner
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner, &observed))
+        })
+        .unwrap();
+    let third_revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &changed,
+            &BTreeMap::new(),
+            table,
+            Some(second_revision.session()),
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut third = SessionPlayback::new(third_revision).unwrap();
+    third.prepare_retiring_contexts().unwrap();
+    let before = Arc::strong_count(&observed);
+    third.try_inherit_retiring_state_from(&mut second).unwrap();
+    assert_eq!(Arc::strong_count(&observed), before);
+    assert!(second.retained_contexts[index].is_none());
+    assert!(
+        third
+            .retained_contexts
+            .iter()
+            .flatten()
+            .any(|owner| Arc::ptr_eq(owner, &observed))
+    );
+
+    // Positive control: the retained legacy API really adds an Arc owner.
+    let mut legacy_old = SessionPlayback::new(first_revision).unwrap();
+    legacy_old.apply(SessionPlaybackCommand::Play).unwrap();
+    legacy_old.render(&mut [[0.0; 2]; 2]).unwrap();
+    let mut legacy_next = SessionPlayback::new(second_revision).unwrap();
+    let before = Arc::strong_count(&observed);
+    legacy_next.try_inherit_state_from(&mut legacy_old).unwrap();
+    assert_eq!(Arc::strong_count(&observed), before + 1);
+
+    // Refusal returns the same exclusive allocation, without changing source
+    // ownership or the usable predecessor. Missing control preparation is not
+    // filled with a callback clone.
+    let previous = Box::new(
+        Playback::try_from_prepared_with_session(Arc::clone(&legacy_old.revision)).unwrap(),
+    );
+    let pointer = previous.as_ref() as *const Playback;
+    let mut candidate =
+        Playback::try_from_prepared_with_session(Arc::clone(&legacy_next.revision)).unwrap();
+    candidate.prepare_retiring_handoff().unwrap();
+    let before = Arc::strong_count(&observed);
+    let failure = match candidate.try_inherit_and_retire_previous(previous) {
+        Err(failure) => failure,
+        Ok(_) => panic!("unprepared predecessor must be refused"),
+    };
+    assert_eq!(failure.previous.as_ref() as *const Playback, pointer);
+    assert!(!failure.candidate_consumed);
+    assert_eq!(Arc::strong_count(&observed), before);
+    let mut recovered = failure.previous;
+    recovered.render(&mut [[0.0; 2]; 2]).unwrap();
+
+    recovered.prepare_retiring_handoff().unwrap();
+    let retired = match candidate.try_inherit_and_retire_previous(recovered) {
+        Ok(retired) => retired,
+        Err(_) => panic!("prepared owner must transfer"),
+    };
+    let observation = thread::spawn(move || {
+        let control_thread = thread::current().id();
+        drop(retired);
+        (
+            control_thread,
+            crate::playback::take_retired_disposal().unwrap(),
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        observation.1.0, pointer as usize,
+        "original Box survived transfer"
+    );
+    assert_eq!(
+        observation.1.1, observation.0,
+        "actual disposal ran on control"
+    );
+}

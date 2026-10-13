@@ -8,6 +8,9 @@ impl StreamingCallback {
         let Some(binding) = publication.stream_source.as_mut() else {
             return true;
         };
+        self.install_binding(binding)
+    }
+    pub(in crate::prepared) fn install_binding(&mut self, binding: &mut StreamBinding) -> bool {
         let Some(batch) = self.batch.as_mut() else {
             return false;
         };

@@ -299,6 +299,10 @@ impl SessionPlayback {
             &mut total,
             self.retained_contexts.capacity(),
         )?;
+        add_capacity::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(
+            &mut total,
+            self.retiring_revision_contexts.capacity(),
+        )?;
         add_capacity::<crate::shared_analytic::ContextLeasePlan>(
             &mut total,
             self.context_lease_plan.capacity(),

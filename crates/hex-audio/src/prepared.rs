@@ -55,7 +55,7 @@ pub fn input_bridge_storage_bytes() -> Option<usize> {
         .checked_add(arc_words)?
         .checked_add(MAX_TRACKS.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(ring::<Publication>(1)?)?
-        .checked_add(ring::<Publication>(RETIRED)?)?
+        .checked_add(ring::<GraphReturn>(RETIRED)?)?
         .checked_add(ring::<QueuedCommand>(COMMANDS)?)?
         .checked_add(spectrum_target::channel_heap_storage_bytes()?)?
         .checked_add(processor_audition::channel_heap_storage_bytes()?)?
@@ -205,6 +205,28 @@ struct Publication {
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
+}
+
+struct RetiredPublication {
+    stream_source: Option<streaming::StreamBinding>,
+    _revision: u64,
+    _control_context_generation: u64,
+    _policy: PublicationPolicy,
+    _fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    _playback: hex_engine::playback::RetiredPlayback,
+}
+
+enum GraphReturn {
+    Live(Publication),
+    Retired(RetiredPublication),
+}
+impl GraphReturn {
+    fn stream_source_mut(&mut self) -> Option<&mut streaming::StreamBinding> {
+        match self {
+            Self::Live(publication) => publication.stream_source.as_mut(),
+            Self::Retired(publication) => publication.stream_source.as_mut(),
+        }
+    }
 }
 
 /// Controls whether a newly compiled runtime inherits transport and Session
@@ -670,7 +692,7 @@ impl std::fmt::Debug for PublishError {
 pub struct Control {
     streaming_tag: Option<Arc<()>>,
     publications: Producer<Publication>,
-    retired: Option<Consumer<Publication>>,
+    retired: Option<Consumer<GraphReturn>>,
     commands: Producer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
     typing_cut: Arc<AtomicU64>,
@@ -690,7 +712,7 @@ pub struct Callback {
     streaming: Option<Box<streaming::StreamingCallback>>,
     native_stream_root: Option<streaming::NativeStreamRoot>,
     publications: Consumer<Publication>,
-    retired: Producer<Publication>,
+    retired: Producer<GraphReturn>,
     commands: Consumer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
     typing_cut: Arc<AtomicU64>,
@@ -708,7 +730,7 @@ pub struct Callback {
     active: Option<Publication>,
     deferred: Option<Publication>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
-    held_retirement: Option<Publication>,
+    held_retirement: Option<GraphReturn>,
     published_route_key: Option<(u64, u64)>,
     #[cfg(test)]
     route_slot_visits: usize,
@@ -923,7 +945,7 @@ impl Control {
     /// `publish` and `publish_with_policy`.
     pub fn publish_with_policy_and_context_generation(
         &mut self,
-        playback: Playback,
+        mut playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
@@ -940,6 +962,15 @@ impl Control {
         };
         if let Some(reason) = reason {
             return Err(PublishError { reason, playback });
+        }
+        if self.streaming_tag.is_some()
+            && playback.prepared_revision().is_some()
+            && playback.prepare_retiring_handoff().is_err()
+        {
+            return Err(PublishError {
+                reason: "retiring graph preparation refused",
+                playback,
+            });
         }
         if self
             .publication_pending
@@ -1123,6 +1154,9 @@ impl Control {
 
 impl Callback {
     fn return_graph(&mut self, publication: Publication) {
+        self.return_owner(GraphReturn::Live(publication));
+    }
+    fn return_owner(&mut self, publication: GraphReturn) {
         if let Err(PushError::Full(publication)) = self.retired.push(publication) {
             self.held_retirement = Some(publication);
         }
@@ -1142,7 +1176,7 @@ impl Callback {
             barrier.wait();
         }
         if let Some(publication) = self.held_retirement.take() {
-            self.return_graph(publication);
+            self.return_owner(publication);
             if self.held_retirement.is_some() {
                 // Ownership backpressure must not delay the independent Stop
                 // path. Keep the graph retained while consuming bounded control.
@@ -1313,6 +1347,15 @@ impl Callback {
                     }
                 }
             }
+            let predecessor_identity = self.active.as_ref().map(|previous| {
+                (
+                    previous.control_context_generation,
+                    previous.revision,
+                    previous.playback.sample_rate(),
+                )
+            });
+            let mut retired_predecessor = None;
+            let mut retiring_candidate_consumed = false;
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
                     hex_engine::SessionPlaybackError::ReleaseBankFull,
@@ -1326,13 +1369,51 @@ impl Callback {
             ) {
                 None
             } else {
-                self.active.as_mut().map(|previous| {
-                    next.playback
-                        .try_inherit_runtime_from(&mut previous.playback)
-                })
+                if next.stream_source.is_some() {
+                    self.active.take().map(|previous| {
+                        let Publication {
+                            stream_source,
+                            revision,
+                            control_context_generation,
+                            policy,
+                            fresh_runtime_cancellation,
+                            playback,
+                        } = previous;
+                        match next.playback.try_inherit_and_retire_previous(playback) {
+                            Ok(playback) => {
+                                retired_predecessor = Some(RetiredPublication {
+                                    stream_source,
+                                    _revision: revision,
+                                    _control_context_generation: control_context_generation,
+                                    _policy: policy,
+                                    _fresh_runtime_cancellation: fresh_runtime_cancellation,
+                                    _playback: playback,
+                                });
+                                Ok(())
+                            }
+                            Err(failure) => {
+                                retiring_candidate_consumed = failure.candidate_consumed;
+                                self.active = Some(Publication {
+                                    stream_source,
+                                    revision,
+                                    control_context_generation,
+                                    policy,
+                                    fresh_runtime_cancellation,
+                                    playback: failure.previous,
+                                });
+                                Err(failure.error)
+                            }
+                        }
+                    })
+                } else {
+                    self.active.as_mut().map(|previous| {
+                        next.playback
+                            .try_inherit_runtime_from(&mut previous.playback)
+                    })
+                }
             };
             match handoff {
-                Some(Err(error)) if error.is_transient() => {
+                Some(Err(error)) if error.is_transient() && !retiring_candidate_consumed => {
                     self.deferred = Some(next);
                 }
                 Some(Err(error)) => {
@@ -1392,12 +1473,13 @@ impl Callback {
                         .processor_audition_lease
                         .filter(|target| self.processor_audition.current() == Some(*target))
                     {
-                        let previous_matches_target = self.active.as_ref().is_some_and(|active| {
-                            active.control_context_generation == target.project_generation
-                                && active.revision >= target.activation_floor
-                                && active.playback.sample_rate() == target.sample_rate_hz
-                                && active.playback.sample_rate() == self.rate
-                        });
+                        let previous_matches_target =
+                            predecessor_identity.is_some_and(|(generation, revision, rate)| {
+                                generation == target.project_generation
+                                    && revision >= target.activation_floor
+                                    && rate == target.sample_rate_hz
+                                    && rate == self.rate
+                            });
                         let candidate_matches_target = next.control_context_generation
                             == target.project_generation
                             && next.revision >= target.activation_floor
@@ -1420,6 +1502,9 @@ impl Callback {
                         .store(next.playback.session_capability_status() as u32, Relaxed);
                     if let Some(previous) = self.active.replace(next) {
                         self.return_graph(previous);
+                    }
+                    if let Some(previous) = retired_predecessor {
+                        self.return_owner(GraphReturn::Retired(previous));
                     }
                     if let Some(cancellation) = self
                         .active
@@ -4079,14 +4164,14 @@ mod tests {
         for revision in 10..10 + RETIRED as u64 {
             callback
                 .retired
-                .push(Publication {
+                .push(GraphReturn::Live(Publication {
                     stream_source: None,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
-                })
+                }))
                 .unwrap();
         }
         assert!(callback.retired.is_full());
@@ -4390,14 +4475,14 @@ mod tests {
     fn retired_session_audio_pcm_stays_owned_until_control_reclaims_publication() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (playback, weak_revision, _, _) = session_audio_graph();
-        callback.held_retirement = Some(Publication {
+        callback.held_retirement = Some(GraphReturn::Live(Publication {
             stream_source: None,
             revision: 1,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback),
-        });
+        }));
         assert!(weak_revision.upgrade().is_some());
         callback.begin_block();
         assert!(weak_revision.upgrade().is_some());
@@ -4504,14 +4589,14 @@ mod tests {
             assert!(
                 callback
                     .retired
-                    .push(Publication {
+                    .push(GraphReturn::Live(Publication {
                         stream_source: None,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
-                    })
+                    }))
                     .is_ok()
             );
             retired_weak.push(weak);
@@ -4578,27 +4663,27 @@ mod tests {
             assert!(
                 callback
                     .retired
-                    .push(Publication {
+                    .push(GraphReturn::Live(Publication {
                         stream_source: None,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
-                    })
+                    }))
                     .is_ok()
             );
             retired_weak.push(weak);
         }
         let (held, held_weak) = graph();
-        callback.held_retirement = Some(Publication {
+        callback.held_retirement = Some(GraphReturn::Live(Publication {
             stream_source: None,
             revision: 4,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held),
-        });
+        }));
         let mut last_ticket = 0;
         for _ in 0..COMMANDS {
             last_ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();

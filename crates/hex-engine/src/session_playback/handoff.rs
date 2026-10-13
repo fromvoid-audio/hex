@@ -356,6 +356,18 @@ impl SessionPlayback {
         previous: &mut Self,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_with_transfer(previous, demand, false)
+    }
+
+    pub(super) fn inherit_state_with_transfer(
+        &mut self,
+        previous: &mut Self,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        retiring: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if retiring && (!self.retiring_contexts_prepared || !previous.retiring_contexts_prepared) {
+            return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
             || previous.analytic_continuations.len() != MAX_TRACKS
@@ -2972,22 +2984,29 @@ impl SessionPlayback {
         // Stage shared-context leases before moving any owner. The Return plan
         // validates every destination below; owner moves then use only these
         // prevalidated private indices.
-        self.stage_shared_context_leases(previous)?;
-        return_tail_plan.validate_commit(
-            &self.return_effect_tails,
-            &previous.return_effect_tails,
-            &previous.return_chains,
-            previous.revision.arrangement().return_buses(),
-        )?;
-        return_tail_plan.apply_carry(
+        let context_transfer = if retiring {
+            Some(super::retiring::ValidatedContextTransfer::new(
+                &self.context_lease_plan,
+                &mut self.retained_contexts,
+                &mut previous.retiring_revision_contexts,
+                &mut previous.retained_contexts,
+            )?)
+        } else {
+            self.stage_shared_context_leases(previous)?;
+            None
+        };
+        let return_transfer = return_tail_plan.validated_commit(
             &mut self.return_effect_tails,
             &mut previous.return_effect_tails,
-        )?;
-        return_tail_plan.capture_buses(
-            &mut self.return_effect_tails,
             &mut previous.return_chains,
             previous.revision.arrangement().return_buses(),
         )?;
+        // Both guards retain exclusive borrows. No fallible operations remain
+        // after the first predecessor owner moves.
+        if let Some(context_transfer) = context_transfer {
+            context_transfer.commit();
+        }
+        return_transfer.commit();
         for slot in 0..previous.tail_groups.len() {
             if active_tail_groups.get(slot).copied().unwrap_or(false)
                 && previous.tail_groups[slot].is_some()

@@ -18,6 +18,7 @@ use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
 mod mutable_checkpoint;
+mod retiring;
 mod stream_demand;
 mod transport_loop_admission;
 mod typing;
@@ -334,6 +335,8 @@ pub struct SessionPlayback {
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
+    retiring_revision_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
+    retiring_contexts_prepared: bool,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
     // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
     // revision context. Actual capacities are charged in preroll accounting.
@@ -836,6 +839,8 @@ impl SessionPlayback {
             releases,
             release_scratch,
             retained_contexts,
+            retiring_revision_contexts: Vec::new(),
+            retiring_contexts_prepared: false,
             context_lease_plan,
             analytic_continuations,
             analytic_continuation_scratch,

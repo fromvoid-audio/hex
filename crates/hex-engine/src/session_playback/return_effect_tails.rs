@@ -184,7 +184,69 @@ pub(super) struct ReturnEffectTailPlan {
     inherit_bus: [bool; MAX_RETURN_TRACKS],
 }
 
+/// Exclusive, fully checked Return owner transfer. No caller can change a bank
+/// between validation and commit; the guard exposes no mutable bank access.
+pub(super) struct ValidatedReturnEffectCommit<'a> {
+    plan: &'a ReturnEffectTailPlan,
+    candidate: &'a mut ReturnEffectTailBank,
+    previous: &'a mut ReturnEffectTailBank,
+    previous_chains: &'a mut [NativeRuntimeChain],
+    previous_buses: &'a [ReturnBus],
+}
+
+impl ValidatedReturnEffectCommit<'_> {
+    pub(super) fn commit(self) {
+        for (source, target) in self.plan.carry.iter().flatten().copied() {
+            std::mem::swap(
+                &mut self.candidate.slots[target],
+                &mut self.previous.slots[source],
+            );
+        }
+        for (source, target) in self.plan.capture.iter().flatten().copied() {
+            let chain = std::mem::replace(
+                &mut self.previous_chains[source],
+                NativeRuntimeChain::empty(),
+            );
+            self.candidate.slots[target] =
+                Some(ReturnEffectTail::new(chain, &self.previous_buses[source]));
+        }
+    }
+}
+
 impl ReturnEffectTailPlan {
+    pub(super) fn validated_commit<'a>(
+        &'a self,
+        candidate: &'a mut ReturnEffectTailBank,
+        previous: &'a mut ReturnEffectTailBank,
+        previous_chains: &'a mut [NativeRuntimeChain],
+        previous_buses: &'a [ReturnBus],
+    ) -> Result<ValidatedReturnEffectCommit<'a>, SessionPlaybackError> {
+        self.validate_commit(candidate, previous, previous_chains, previous_buses)?;
+        let mut destinations = [false; RETURN_EFFECT_TAIL_CAPACITY];
+        let mut carried = [false; RETURN_EFFECT_TAIL_CAPACITY];
+        for (source, target) in self.carry.iter().flatten().copied() {
+            if carried[source] || destinations[target] {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            carried[source] = true;
+            destinations[target] = true;
+        }
+        for (index, capture) in self.capture.iter().enumerate() {
+            if let Some((source, target)) = *capture {
+                if source != index || destinations[target] {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                destinations[target] = true;
+            }
+        }
+        Ok(ValidatedReturnEffectCommit {
+            plan: self,
+            candidate,
+            previous,
+            previous_chains,
+            previous_buses,
+        })
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight(
         old_buses: &[ReturnBus],
@@ -320,73 +382,6 @@ impl ReturnEffectTailPlan {
             {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
-        }
-        Ok(())
-    }
-
-    pub(super) fn apply_carry(
-        &self,
-        candidate: &mut ReturnEffectTailBank,
-        previous: &mut ReturnEffectTailBank,
-    ) -> Result<(), SessionPlaybackError> {
-        for (source, target) in self.carry.iter().flatten().copied() {
-            let (Some(Some(_)), Some(None)) =
-                (previous.slots.get(source), candidate.slots.get(target))
-            else {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            };
-        }
-        for (source, target) in self.carry.iter().flatten().copied() {
-            let (Some(candidate_slot), Some(previous_slot)) = (
-                candidate.slots.get_mut(target),
-                previous.slots.get_mut(source),
-            ) else {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            };
-            if candidate_slot.is_some() || previous_slot.is_none() {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-            std::mem::swap(candidate_slot, previous_slot);
-        }
-        Ok(())
-    }
-
-    pub(super) fn capture_buses(
-        &self,
-        candidate: &mut ReturnEffectTailBank,
-        previous_chains: &mut [NativeRuntimeChain],
-        previous_buses: &[ReturnBus],
-    ) -> Result<(), SessionPlaybackError> {
-        for (source, target) in self.capture.iter().flatten().copied() {
-            if previous_buses.get(source).is_none()
-                || previous_chains.get(source).is_none()
-                || !candidate.slots.get(target).is_some_and(Option::is_none)
-            {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-        }
-        for (old_index, target) in self.capture.iter().enumerate() {
-            let Some((planned_index, target_slot)) = *target else {
-                continue;
-            };
-            if planned_index != old_index {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-            let bus = previous_buses
-                .get(old_index)
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            let chain = previous_chains
-                .get_mut(old_index)
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            let slot = candidate
-                .slots
-                .get_mut(target_slot)
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            if slot.is_some() {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-            let owned = std::mem::replace(chain, NativeRuntimeChain::empty());
-            *slot = Some(ReturnEffectTail::new(owned, bus));
         }
         Ok(())
     }

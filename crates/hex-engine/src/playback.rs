@@ -277,7 +277,90 @@ pub struct Playback {
     performance_clock_exhausted: bool,
     playing: bool,
 }
+
+/// Opaque, nonrevivable predecessor owner. Retains its original allocation;
+/// audio must return it to control for disposal, never drop it during rendering.
+///
+/// ```compile_fail
+/// fn resume(mut owner: hex_engine::playback::RetiredPlayback) {
+///     owner.render(&mut [[0.0_f32; 2]; 1]).unwrap();
+/// }
+/// ```
+#[must_use = "return the retired predecessor to control for disposal"]
+pub struct RetiredPlayback {
+    _playback: Box<Playback>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETIRED_DISPOSAL: std::cell::Cell<Option<(usize, std::thread::ThreadId)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+#[cfg(test)]
+impl Drop for RetiredPlayback {
+    fn drop(&mut self) {
+        RETIRED_DISPOSAL.set(Some((
+            self._playback.as_ref() as *const Playback as usize,
+            std::thread::current().id(),
+        )));
+        // Rust drops the original Box field on this same thread afterward.
+    }
+}
+#[cfg(test)]
+pub(crate) fn take_retired_disposal() -> Option<(usize, std::thread::ThreadId)> {
+    RETIRED_DISPOSAL.take()
+}
+
+pub struct RetiringHandoffFailure {
+    pub error: PlaybackHandoffError,
+    pub previous: Box<Playback>,
+    pub candidate_consumed: bool,
+}
+
 impl Playback {
+    /// Control-only opt-in preparation. Legacy constructors allocate no reserve.
+    /// Clones immutable context roots here, not at the retiring callback commit.
+    pub fn prepare_retiring_handoff(&mut self) -> Result<(), PlaybackHandoffError> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            ))?
+            .prepare_retiring_contexts()
+            .map_err(PlaybackHandoffError::Session)
+    }
+
+    /// Consume exclusive ownership of an interactive predecessor. Success
+    /// returns only an opaque disposal owner; refusal returns the same Box.
+    /// A consumed candidate must be reconstructed on control before retry.
+    pub fn try_inherit_and_retire_previous(
+        &mut self,
+        mut previous: Box<Playback>,
+    ) -> Result<RetiredPlayback, RetiringHandoffFailure> {
+        let result = match (&mut self.session_runtime, &mut previous.session_runtime) {
+            (Some(candidate), Some(old)) => candidate
+                .try_inherit_retiring_state_from(old)
+                .map(|_| ())
+                .map_err(PlaybackHandoffError::Session),
+            _ => Err(PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            )),
+        };
+        match result {
+            Ok(()) => Ok(RetiredPlayback {
+                _playback: previous,
+            }),
+            Err(error) => Err(RetiringHandoffFailure {
+                error,
+                previous,
+                candidate_consumed: self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.require_fresh_candidate().is_err()),
+            }),
+        }
+    }
     pub fn new(project: Project) -> Self {
         Self::from_shared(Arc::new(project))
     }

@@ -448,7 +448,36 @@ fn same_actual_catalog_reuses_endpoint_but_project_context_change_refuses() {
         .request;
     refused.context.project_generation = 31;
     control.publish_streamed(&mut root, refused).unwrap();
+    // Existing return pressure must keep the predecessor live until space is
+    // available; no opaque retired owner may be silently dropped on callback.
+    for revision in [90, 91] {
+        callback
+            .retired
+            .push(GraphReturn::Live(Publication {
+                stream_source: None,
+                revision,
+                control_context_generation: 0,
+                policy: PublicationPolicy::InstallFreshRuntime,
+                fresh_runtime_cancellation: None,
+                playback: Box::new(Playback::new(
+                    hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+                )),
+            }))
+            .ok()
+            .unwrap();
+    }
     callback.begin_block();
+    assert_eq!(control.status.applied_revision.load(Relaxed), 1);
+    assert!(callback.active.is_some());
+    let _reports = root.reclaim(&mut control).unwrap();
+    let allocations = allocation_counter::measure(|| callback.begin_block());
+    assert_eq!(allocations.count_total, 0);
+    assert_eq!(allocations.count_current, 0);
+    assert_eq!(allocations.bytes_total, 0);
+    assert_eq!(allocations.bytes_current, 0);
+    let returned = control.retired.as_mut().unwrap().pop().ok().unwrap();
+    assert!(matches!(returned, GraphReturn::Retired(_)));
+    drop(returned); // Actual opaque predecessor disposal belongs to control.
     assert_eq!(control.status.applied_revision.load(Relaxed), 2);
     let mut domains = 0;
     root.reaper.visit_domains(|_, _| domains += 1);

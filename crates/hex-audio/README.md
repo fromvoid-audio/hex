@@ -1,5 +1,15 @@
 # hex-audio
 
+The opt-in streaming bridge prepares movable shared-context handles on control.
+Its retiring handoff consumes the predecessor's existing playback box and sends
+an opaque, nonrevivable `RetiredPlayback` through the same bounded return path.
+Candidate-only staging may consume a refused candidate; that candidate must be
+rebuilt on control. A refusal before owner commit returns the usable predecessor.
+Validated context and Return-tail guards hold exclusive borrows until their
+infallible moves. Actual reserve capacities and the tagged return-ring entries
+are included in existing storage reporting; existing ceilings are retained.
+Resident borrowed handoff APIs remain available through the legacy path.
+
 ## Purpose
 
 Own device output, stream lifetime, bounded real-time control delivery, and backend telemetry.

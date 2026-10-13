@@ -113,15 +113,15 @@ impl Drop for Callback {
         let Some(stream) = self.streaming.as_mut() else {
             return;
         };
-        for publication in [
-            &mut self.active,
-            &mut self.deferred,
-            &mut self.held_retirement,
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for publication in [&mut self.active, &mut self.deferred].into_iter().flatten() {
             let _installed = stream.install_publication(publication);
+        }
+        if let Some(binding) = self
+            .held_retirement
+            .as_mut()
+            .and_then(GraphReturn::stream_source_mut)
+        {
+            let _installed = stream.install_binding(binding);
         }
         while let Ok(mut publication) = self.publications.pop() {
             let _installed = stream.install_publication(&mut publication);
@@ -145,14 +145,7 @@ impl Drop for Callback {
             drop(publication); // Confirmed control-side closure disposal.
         }
         let mut root = root.lock();
-        for publication in [
-            &mut self.active,
-            &mut self.deferred,
-            &mut self.held_retirement,
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for publication in [&mut self.active, &mut self.deferred].into_iter().flatten() {
             if let Some(admission) = publication
                 .stream_source
                 .as_mut()
@@ -168,6 +161,21 @@ impl Drop for Callback {
                     };
                     *slot = Some(admission);
                 }
+            }
+        }
+        if let Some(admission) = self
+            .held_retirement
+            .as_mut()
+            .and_then(GraphReturn::stream_source_mut)
+            .and_then(|binding| binding.admission.take())
+        {
+            if let Err(admission) = root.reaper.recover_uninstalled(admission) {
+                let slot = root
+                    .native_failed_admissions
+                    .iter_mut()
+                    .find(|slot| slot.is_none())
+                    .expect("at most two actual domain admissions");
+                *slot = Some(admission);
             }
         }
         if let Some(batch) = stream.batch.take() {

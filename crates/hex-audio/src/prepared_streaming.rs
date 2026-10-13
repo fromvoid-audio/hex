@@ -61,7 +61,7 @@ pub struct StreamBridgeControl {
     reaper: hex_stream::MediaDomainReaper,
     terminal: hex_stream::TerminalBatchSender,
     return_failure: Option<hex_stream::MediaReturnFailure>,
-    native_retired: Option<Consumer<Publication>>,
+    native_retired: Option<Consumer<GraphReturn>>,
     native_reports: [Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; RETIRED],
     native_callback_ended: bool,
     native_failed_admissions: [Option<hex_stream::DomainAdmission>; RETIRED],
@@ -149,7 +149,7 @@ impl Control {
     pub fn publish_streamed(
         &mut self,
         bridge: &mut StreamBridgeControl,
-        request: StreamPublicationRequest,
+        mut request: StreamPublicationRequest,
     ) -> Result<u64, StreamPublishError> {
         let error = |reason, request| StreamPublishError {
             reason,
@@ -218,6 +218,9 @@ impl Control {
                     return Err(error("stream domain is retiring or mismatched", request));
                 }
             }
+        }
+        if request.playback.prepare_retiring_handoff().is_err() {
+            return Err(error("retiring graph preparation refused", request));
         }
         if self
             .publication_pending
@@ -395,7 +398,7 @@ impl StreamBridgeControl {
     }
     fn reclaim_receiver(
         &mut self,
-        retired: &mut Consumer<Publication>,
+        retired: &mut Consumer<GraphReturn>,
         consume_reports: bool,
     ) -> Result<[Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; RETIRED], Invalid>
     {
@@ -404,8 +407,7 @@ impl StreamBridgeControl {
                 break;
             };
             if let Some(admission) = publication
-                .stream_source
-                .as_mut()
+                .stream_source_mut()
                 .and_then(|source| source.admission.take())
             {
                 if let Err(admission) = self.reaper.recover_uninstalled(admission) {
