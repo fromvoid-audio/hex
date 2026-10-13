@@ -46,7 +46,7 @@ widgets = (
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
-    'lights)', 'crate::build_info::label()',
+    'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     'device_drag_grip(', 'uniform_list(',
     # Device preset header actions reuse the themed compact action buttons.
