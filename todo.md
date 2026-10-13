@@ -1,3 +1,12 @@
+## vector synth name — 13 october 2026
+
+Renamed the registered four-operator synth display name to `vector`; the shared
+catalog and device view feed the browser and card header. Existing
+`hex.instrument.operator` identity, state and DSP remain compatible. Updated
+existing catalog/view checks and profiler output. Native browser/header and
+existing-project reopening acceptance remain open; automated results belong to
+the focused rename PR. See [instrument contract](docs/operator-native.md).
+
 ## operator focus presentation — 13 october 2026
 
 User reports retained in Pulse2373 and oscillator enable Pulse2335. Individual
