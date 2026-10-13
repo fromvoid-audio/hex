@@ -345,6 +345,7 @@ fn project_fixture(
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("stack probe {track_index:03}"),
             gain: 1.0,

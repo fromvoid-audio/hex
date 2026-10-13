@@ -128,13 +128,52 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
+/// Encode schema21 for gain lanes or schema20 for feeds, preserving legacy bytes.
+/// Compact JSON keeps a maximum-size provenance byte array within the existing
+/// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    let document = schema::DocumentV17::from_project(project)?;
-    let bytes = serde_json::to_vec_pretty(&document)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
+    if project.has_gain_automation() {
+        encode_document(&schema::gain_envelopes::DocumentV21::from_project(project)?)
+    } else if project.authored_routing().is_empty() {
+        encode_document(&schema::routing::DocumentV19::from_project(project)?)
+    } else {
+        encode_schema20(project)
+    }
+}
+
+/// Explicit schema20 encoding, including empty-feed projects.
+pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
+}
+
+fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
+    struct BoundedOutput {
+        bytes: Vec<u8>,
+        exceeded: bool,
+    }
+    impl io::Write for BoundedOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > MAX_DOCUMENT_BYTES.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(io::Error::other("project document exceeds byte limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut output = BoundedOutput {
+        bytes: Vec::new(),
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut output, document);
+    if output.exceeded {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
     }
-    Ok(bytes)
+    result?;
+    Ok(output.bytes)
 }
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {

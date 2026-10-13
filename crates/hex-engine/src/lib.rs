@@ -20,6 +20,11 @@ pub use native_device_view::{
     native_effect_frequency_response,
 };
 
+mod gain_envelope;
+pub use gain_envelope::{
+    GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS,
+};
+mod return_feed_plan;
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -504,6 +509,7 @@ pub struct Track {
     clips: Vec<Clip>,
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
+    gain_envelope: Option<gain_envelope::PreparedGainEnvelope>,
     instrument: Option<InstrumentTrack>,
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
@@ -600,6 +606,11 @@ impl PreparedTrackMix {
         ]
     }
 
+    pub(crate) fn with_absolute_gain(mut self, gain: f32) -> Self {
+        self.channel_gain[0] *= gain;
+        self.channel_gain[1] *= gain;
+        self
+    }
     fn add_captured(self, destination: &mut Frame, source: Frame, capture: Option<&mut Frame>) {
         let source = self.apply_frame(source);
         destination[0] += source[0];
@@ -635,6 +646,7 @@ impl Track {
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
             source_mix: PreparedTrackMix::new(gain, balance, muted)?,
+            gain_envelope: None,
             instrument: None,
             instrument_position: 0,
             ordered_prefix: None,
@@ -680,6 +692,7 @@ impl Track {
             clips,
             mix,
             source_mix,
+            gain_envelope: None,
             instrument,
             instrument_position,
             ordered_prefix,
@@ -839,6 +852,40 @@ impl Track {
         }
     }
 
+    pub(crate) fn with_gain_envelope(
+        mut self,
+        points: &[hex_project::GainPoint],
+        tempo: &hex_project::TempoMap,
+        balance: f32,
+    ) -> Result<Self, Invalid> {
+        let neutral =
+            PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
+        self.gain_envelope = gain_envelope::PreparedGainEnvelope::prepare(points, tempo, neutral)?;
+        if self.gain_envelope.is_some() {
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        Ok(self)
+    }
+    /// Read-only prepared curve metadata. Empty means static fallback; this is not an applied-value acknowledgment.
+    pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
+        self.gain_envelope
+            .as_ref()
+            .map_or(&[], |envelope| envelope.knots())
+    }
+    /// Logical prepared gain at an Arrangement frame, independent of the runtime source owner.
+    pub fn prepared_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
+    pub(crate) fn has_gain_automation(&self) -> bool {
+        self.gain_envelope.is_some()
+    }
+    pub(crate) fn mix_at(&self, frame: u64) -> PreparedTrackMix {
+        self.gain_envelope
+            .as_ref()
+            .map_or(self.mix, |envelope| envelope.mix_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }
@@ -864,6 +911,9 @@ impl Track {
     /// `start_frame` anchors output[0]; transport is not changed. The range end is
     /// checked before any samples are added, so overflow leaves output untouched.
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.has_gain_automation() {
+            return Err(Invalid("automated track requires project rendering"));
+        }
         if self.clips.iter().any(Clip::is_streamed) {
             return Err(Invalid("streamed clips require a media page provider"));
         }
@@ -1409,6 +1459,7 @@ pub struct Project {
     sample_rate: u32,
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
+    return_feed_plan: return_feed_plan::ReturnFeedPlan,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
@@ -1496,6 +1547,7 @@ impl Project {
             sample_rate,
             tracks,
             return_buses: Vec::new(),
+            return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
             loop_region,
             master_gain,
             has_streamed_sources,
@@ -1535,6 +1587,19 @@ impl Project {
 
     pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
+    }
+    pub fn gain_automation_capacity(&self) -> GainAutomationCapacity {
+        let mut capacity = GainAutomationCapacity::default();
+        for track in &self.tracks {
+            if let Some(envelope) = &track.gain_envelope {
+                let (authored, count, slots, bytes) = envelope.capacity();
+                capacity.authored_points += authored;
+                capacity.prepared_knots += count;
+                capacity.allocated_knot_slots += slots;
+                capacity.allocated_knot_bytes += bytes;
+            }
+        }
+        capacity
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -1958,7 +2023,7 @@ impl RendererRuntime {
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_stateful_devices();
-            if stateful || track.requires_ordered_processing() {
+            if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
                 let mut chain = if stateful {
                     Some(
                         self.device_chains
@@ -2019,11 +2084,23 @@ impl RendererRuntime {
                     } else if let Some(chain) = chain.as_deref_mut() {
                         chain.process_block(target);
                     }
-                    for (destination, source) in output[offset..offset + count]
-                        .iter_mut()
-                        .zip(target.iter().copied())
-                    {
-                        track.mix.add_frame(destination, source);
+                    if track.has_gain_automation() {
+                        for (frame_index, (destination, source)) in output[offset..offset + count]
+                            .iter_mut()
+                            .zip(target.iter().copied())
+                            .enumerate()
+                        {
+                            track
+                                .mix_at(start + frame_index as u64)
+                                .add_frame(destination, source);
+                        }
+                    } else {
+                        for (destination, source) in output[offset..offset + count]
+                            .iter_mut()
+                            .zip(target.iter().copied())
+                        {
+                            track.mix.add_frame(destination, source);
+                        }
                     }
                     offset += count;
                 }
@@ -2073,7 +2150,7 @@ impl RendererRuntime {
             for (track_index, track) in project.tracks.iter().enumerate() {
                 let stateful = track.has_stateful_devices();
                 let ordered = track.requires_ordered_processing();
-                if !stateful && !ordered && track.sends.is_empty() {
+                if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
                     if let Some(provider) = pages.as_deref_mut() {
                         track.render_unmuted_range_with_pages(
                             start,
@@ -2131,7 +2208,11 @@ impl RendererRuntime {
                         .process_block(rendered);
                 }
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
-                    let mixed = track.mix.apply_frame(source);
+                    let mixed = if track.has_gain_automation() {
+                        track.mix_at(start + frame_index as u64).apply_frame(source)
+                    } else {
+                        track.mix.apply_frame(source)
+                    };
                     output_chunk[frame_index][0] += mixed[0];
                     output_chunk[frame_index][1] += mixed[1];
                     for send in &track.sends {
@@ -2143,6 +2224,38 @@ impl RendererRuntime {
                         target[frame_index][1] += mixed[1] * send.gain;
                     }
                 }
+            }
+            if !project.return_feed_plan.is_empty() {
+                for &index in project.return_feed_plan.order() {
+                    let bus = &project.return_buses[index];
+                    let frames = &mut self.return_scratch[index][..count];
+                    self.return_chains
+                        .get_mut(index)
+                        .ok_or(Invalid("return runtime is unavailable"))?
+                        .process_block(frames);
+                    if let Some(matrix) = bus.matrix {
+                        matrix.apply_block(frames);
+                    }
+                    if bus.muted {
+                        frames.fill([0.0; 2]);
+                    } else {
+                        for frame in frames {
+                            frame[0] *= bus.gain;
+                            frame[1] *= bus.gain;
+                        }
+                    }
+                    project
+                        .return_feed_plan
+                        .propagate(index, &mut self.return_scratch, count);
+                }
+                // Main always sums in pinned bus order, not dependency order.
+                for frames in &self.return_scratch {
+                    for (destination, source) in output_chunk.iter_mut().zip(&frames[..count]) {
+                        destination[0] += source[0];
+                        destination[1] += source[1];
+                    }
+                }
+                continue;
             }
             for (index, bus) in project.return_buses.iter().enumerate() {
                 let bus_frames = self

@@ -53,6 +53,7 @@ pub struct StreamCallbackPages {
 
 struct CatalogOwner {
     config: StreamConfig,
+    allocations: crate::TransportAllocationFootprint,
     stop: Arc<AtomicBool>,
     worker_wake: Thread,
     worker: Mutex<Option<JoinHandle<Vec<Box<PageBuffer>>>>>,
@@ -85,6 +86,10 @@ impl Clone for CatalogLease {
 }
 
 impl CatalogLease {
+    pub(crate) fn matches_pages(&self, pages: &StreamCallbackPages) -> bool {
+        Arc::ptr_eq(&self.owner, &pages._owner) && Arc::ptr_eq(&self.pair_id, &pages.pair_id)
+    }
+
     /// True only when the complete verified metadata value, including
     /// generation and fingerprint, is present in this catalog.
     pub fn covers_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
@@ -104,6 +109,11 @@ impl CatalogLease {
 
     pub fn footprint(&self) -> CatalogFootprint {
         self.catalog.footprint
+    }
+
+    /// Shared storage report, charged once per actual catalog, not per lease.
+    pub fn allocation_footprint(&self) -> crate::CatalogAllocationFootprint {
+        self.catalog.allocations
     }
 }
 
@@ -228,13 +238,50 @@ impl StreamRuntime {
         free_pages
             .try_reserve_exact(config.page_buffers)
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        let mut page_boxing_capacity = 0;
         for _ in 0..config.page_buffers {
-            free_pages.push(PageBuffer::new().map_err(|_| StreamRuntimeError::AllocationFailed)?);
+            let (page, capacity) = PageBuffer::new_with_capacity()
+                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            page_boxing_capacity = page_boxing_capacity.max(capacity);
+            free_pages.push(page);
         }
         let (request_tx, request_rx) = RingBuffer::new(config.request_capacity);
         let (ready_tx, ready_rx) = RingBuffer::new(config.ready_capacity);
         let (return_tx, return_rx) = RingBuffer::new(config.return_capacity);
         let (failure_tx, failure_rx) = RingBuffer::new(config.failure_capacity);
+        let pcm_frames = free_pages
+            .iter()
+            .try_fold(0_usize, |total, page| total.checked_add(page.frames.len()))
+            .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+        let allocations = crate::TransportAllocationFootprint {
+            page_objects: crate::AllocationCapacity::of::<PageBuffer>(free_pages.len()),
+            pcm_frames: crate::AllocationCapacity::of::<hex_engine::Frame>(pcm_frames),
+            request_slots: crate::AllocationCapacity::of::<crate::endpoint::PageRequest>(
+                request_tx.buffer().capacity(),
+            ),
+            ready_slots: crate::AllocationCapacity::of::<Box<PageBuffer>>(
+                ready_tx.buffer().capacity(),
+            ),
+            return_slots: crate::AllocationCapacity::of::<Box<PageBuffer>>(
+                return_tx.buffer().capacity(),
+            ),
+            failure_slots: crate::AllocationCapacity::of::<StreamFailure>(
+                failure_tx.buffer().capacity(),
+            ),
+            queue_object_bytes: std::mem::size_of::<RingBuffer<crate::endpoint::PageRequest>>()
+                .checked_add(std::mem::size_of::<RingBuffer<Box<PageBuffer>>>())
+                .and_then(|v| v.checked_add(std::mem::size_of::<RingBuffer<Box<PageBuffer>>>()))
+                .and_then(|v| v.checked_add(std::mem::size_of::<RingBuffer<StreamFailure>>()))
+                .ok_or(StreamRuntimeError::InvalidConfiguration)?,
+            catalog_owner_object_bytes: std::mem::size_of::<CatalogOwner>(),
+            stop_flag_object_bytes: std::mem::size_of::<AtomicBool>(),
+            page_boxing_peak_extra: crate::AllocationCapacity::of::<hex_engine::Frame>(
+                page_boxing_capacity,
+            ),
+        };
+        allocations
+            .bytes()
+            .ok_or(StreamRuntimeError::InvalidConfiguration)?;
         let (catalog_sender, catalog_result) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -287,6 +334,7 @@ impl StreamRuntime {
         };
         let owner = Arc::new(CatalogOwner {
             config,
+            allocations,
             stop,
             worker_wake,
             worker: Mutex::new(Some(worker)),
@@ -345,6 +393,23 @@ impl StreamRuntime {
         self.control
             .as_ref()
             .and_then(StreamControl::catalog_footprint)
+    }
+
+    /// Control-side snapshot of actual reserved capacities after verified
+    /// catalog admission. Takes the existing catalog lock but creates no lease
+    /// or owner. Use the verified endpoint's lock-free query when borrowing pages.
+    pub fn allocation_footprint(&self) -> Option<crate::StreamAllocationFootprint> {
+        let control = self.control.as_ref()?;
+        let pages = self.pages.as_ref()?;
+        let state = lock_unpoisoned(&control.owner.catalog_state);
+        let catalog = state.result.as_ref()?.as_ref().ok()?;
+        Some(crate::StreamAllocationFootprint {
+            endpoint: pages.allocation_footprint(),
+            transport: control.owner.allocations,
+            catalog: catalog.allocations,
+            construction: catalog.construction,
+            legacy_catalog: catalog.footprint,
+        })
     }
 
     pub fn pump_ready(&mut self, limit: usize) -> usize {
@@ -544,6 +609,24 @@ impl Drop for CatalogOwner {
 }
 
 impl StreamCallbackPages {
+    /// Endpoint-exclusive reserved capacities. Shared pages/queue payloads are
+    /// reported separately and must not be charged again for cached pointers.
+    pub fn allocation_footprint(&self) -> crate::EndpointAllocationFootprint {
+        self.endpoint.allocation_footprint()
+    }
+
+    pub(crate) fn complete_footprint(
+        &self,
+        lease: &CatalogLease,
+    ) -> crate::StreamAllocationFootprint {
+        crate::StreamAllocationFootprint {
+            endpoint: self.allocation_footprint(),
+            transport: self._owner.allocations,
+            catalog: lease.catalog.allocations,
+            construction: lease.catalog.construction,
+            legacy_catalog: lease.catalog.footprint,
+        }
+    }
     /// Drain a bounded number of completed pages into the preallocated cache.
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.endpoint
@@ -602,7 +685,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn final_catalog_lease_joins_worker_on_its_control_reclamation_thread() {
+    fn endpoint_binding_checks_owner_and_pair_independently_without_mutation() {
+        let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (control, mut pages) = runtime.split().ok().unwrap();
+        let lease = control.catalog_lease().unwrap();
+        let original_pair = Arc::clone(&pages.pair_id);
+        pages.pair_id = Arc::new(());
+        let error = crate::VerifiedPageEndpoint::new(pages, lease)
+            .err()
+            .unwrap();
+        let (mut pages, lease) = error.into_parts();
+        assert!(!lease.matches_pages(&pages));
+        assert!(!control.owner.stop.load(Ordering::Acquire));
+        assert_eq!(pages.stats(), Default::default());
+        pages.pair_id = original_pair;
+        let mut other = StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).unwrap();
+        other.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (other_control, other_pages) = other.split().ok().unwrap();
+        let original_owner = Arc::clone(&pages._owner);
+        pages._owner = Arc::clone(&other_control.owner);
+        let error = crate::VerifiedPageEndpoint::new(pages, lease)
+            .err()
+            .unwrap();
+        let (mut pages, lease) = error.into_parts();
+        assert!(Arc::ptr_eq(&pages.pair_id, &control.pair_id));
+        assert!(!lease.matches_pages(&pages));
+        pages._owner = original_owner;
+        let references = Arc::strong_count(&control.owner);
+        let endpoint = crate::VerifiedPageEndpoint::new(pages, lease).unwrap();
+        assert_eq!(Arc::strong_count(&control.owner), references);
+        let (pages, lease) = endpoint.into_parts();
+        let error = control.shutdown(pages).unwrap_err();
+        let (control, pages) = error.into_parts().unwrap();
+        assert!(!control.owner.stop.load(Ordering::Acquire));
+        drop(lease);
+        let report = control.shutdown(pages).unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+        let report = other_control.shutdown(other_pages).unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+    }
+
+    #[test]
+    fn final_graph_catalog_binding_joins_worker_on_its_control_reclamation_thread() {
         let mut runtime =
             StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).expect("runtime");
         runtime
@@ -610,6 +735,17 @@ mod tests {
             .expect("catalog ready");
         let (control, pages) = runtime.split().ok().expect("runtime split");
         let lease = control.catalog_lease().expect("verified catalog lease");
+        let project = hex_project::Project::new(48_000).expect("project");
+        let graph = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .expect("graph"),
+        );
+        let binding = crate::VerifiedStreamRevision::new(graph, lease).expect("binding");
         let worker_finished = Arc::clone(&control.owner.worker_finished);
 
         drop(control);
@@ -618,7 +754,7 @@ mod tests {
 
         thread::Builder::new()
             .name("hex-stream-control-reclaim-test".to_owned())
-            .spawn(move || drop(lease))
+            .spawn(move || drop(binding))
             .expect("start control reclamation thread")
             .join()
             .expect("control reclamation thread joins");

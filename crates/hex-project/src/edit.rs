@@ -9,6 +9,34 @@ use std::{collections::HashMap, path::PathBuf};
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    ReplaceTrackGainEnvelope {
+        track: TrackId,
+        points: Vec<crate::GainPoint>,
+    },
+    UpsertTrackGainPoint {
+        track: TrackId,
+        point: crate::GainPoint,
+    },
+    MoveTrackGainPoint {
+        track: TrackId,
+        from: crate::BeatTime,
+        to: crate::BeatTime,
+    },
+    RemoveTrackGainPoint {
+        track: TrackId,
+        beat: crate::BeatTime,
+    },
+    ClearTrackGainEnvelope {
+        track: TrackId,
+    },
+    /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
+    SetRouting(Vec<crate::RoutingEdge>),
+    /// Adopt or change a bounded additive stereo Return feed; zero removes it.
+    SetReturnFeed {
+        source: ReturnId,
+        destination: ReturnId,
+        gain: f32,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -602,6 +630,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            gain_envelope: Vec::new(),
             id,
             name,
             gain: 1.0,
@@ -1005,6 +1034,23 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::ReplaceTrackGainEnvelope { track, points } => {
+                self.replace_gain_envelope(track, points)
+            }
+            Command::UpsertTrackGainPoint { track, point } => self.upsert_gain_point(track, point),
+            Command::MoveTrackGainPoint { track, from, to } => {
+                self.move_gain_point(track, from, to)
+            }
+            Command::RemoveTrackGainPoint { track, beat } => self.remove_gain_point(track, beat),
+            Command::ClearTrackGainEnvelope { track } => {
+                self.replace_gain_envelope(track, Vec::new())
+            }
+            Command::SetRouting(edges) => self.adopt_routing(edges),
+            Command::SetReturnFeed {
+                source,
+                destination,
+                gain,
+            } => self.set_return_feed(source, destination, gain),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
@@ -1470,6 +1516,14 @@ impl Project {
             Command::Gain { track, gain } => {
                 if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
                     return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                if !self
+                    .track(track)
+                    .ok_or(Invalid("track no longer exists"))?
+                    .gain_envelope()
+                    .is_empty()
+                {
+                    return Err(Invalid("track gain is owned by automation"));
                 }
                 self.track_mut(track)?.gain = gain;
                 Ok(Created::None)

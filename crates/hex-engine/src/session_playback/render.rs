@@ -89,6 +89,20 @@ impl SessionPlayback {
         self.render_internal(output, pages, None, Some(capture))
     }
 
+    /// Render with borrowed pages and optional borrowed post-node observation.
+    /// Neither borrow is retained. Observers must not allocate, block, clone
+    /// owners or retain sample slices. Samples are speculative: commit them
+    /// only after this block and the caller's final output validation succeed.
+    pub fn render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
+        self.render_internal(output, Some(pages), observer, None)
+    }
+
     fn render_internal<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -358,7 +372,10 @@ impl SessionPlayback {
                     .as_ref()
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
-            let buffered = stateful_effects || mutable_active || !track.sends().is_empty();
+            let buffered = stateful_effects
+                || mutable_active
+                || !track.sends().is_empty()
+                || track.has_gain_automation();
             let ordered = track.requires_ordered_processing();
             while self
                 .release_scratch
@@ -588,6 +605,15 @@ impl SessionPlayback {
                     }
                 }
                 for (frame_index, source) in render_output.iter().copied().enumerate() {
+                    let mix = if track.has_gain_automation() {
+                        track.mix_at(
+                            arrangement_frame
+                                .checked_add(frame_index as u64)
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                        )
+                    } else {
+                        track.mix()
+                    };
                     if track.sends().is_empty() {
                         mix.add_frame(&mut output[frame_index], source);
                     } else {
@@ -951,6 +977,59 @@ impl SessionPlayback {
                 capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
             }
         }
+        let arrangement = self.revision.arrangement();
+        if !arrangement.return_feed_plan.is_empty() {
+            for &index in arrangement.return_feed_plan.order() {
+                let bus = &arrangement.return_buses()[index];
+                let frames = &mut self.return_scratch[index][..output.len()];
+                let chain = self
+                    .return_chains
+                    .get_mut(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if let Some(observer) = observer.as_mut() {
+                    let mut observe = |owner, device_id, device_type, offset, frames: &[Frame]| {
+                        observer(
+                            crate::PostNodeIdentity::new(owner, device_id, device_type),
+                            offset,
+                            frames,
+                        );
+                    };
+                    chain.process_block_observed(frames, frame_offset, &mut observe);
+                } else {
+                    chain.process_block(frames);
+                }
+                if let Some(matrix) = bus.matrix {
+                    matrix.apply_block(frames);
+                }
+                if bus.muted {
+                    frames.fill([0.0; 2]);
+                } else {
+                    for frame in frames.iter_mut() {
+                        frame[0] *= bus.gain;
+                        frame[1] *= bus.gain;
+                    }
+                }
+                if let Some(capture) = capture.as_mut() {
+                    capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
+                }
+                arrangement.return_feed_plan.propagate(
+                    index,
+                    &mut self.return_scratch,
+                    output.len(),
+                );
+            }
+            let count = output.len();
+            for frames in &self.return_scratch {
+                for (destination, source) in output.iter_mut().zip(&frames[..count]) {
+                    destination[0] += source[0];
+                    destination[1] += source[1];
+                }
+            }
+            // Captured chains feed Main only, never any current or old edge.
+            self.return_effect_tails
+                .render_chunk(output, frame_offset, capture)?;
+            return Ok(());
+        }
         for (index, bus) in self
             .revision
             .arrangement()
@@ -1273,6 +1352,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(arrangement_frame, output, page_provider)
+                    } else if track.has_gain_automation() {
+                        // This is the raw source stage; the buffered caller applies gain once.
+                        track.render_additive_with_midi_floor(arrangement_frame, output, None)
                     } else {
                         track.render_additive(arrangement_frame, output)
                     }
@@ -1523,5 +1605,79 @@ impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentCl
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
         self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
+    }
+}
+
+#[cfg(test)]
+mod observed_page_tests {
+    use super::*;
+    struct NoPages {
+        accesses: usize,
+    }
+    impl MediaPages for NoPages {
+        fn page(
+            &mut self,
+            _: crate::StreamSourceKey,
+            _: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            self.accesses += 1;
+            None
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            self.accesses += 1;
+        }
+    }
+    #[test]
+    fn observed_pages_clock_exhaustion_rolls_back_before_provider_or_observer() {
+        let project = hex_project::Project::new(48_000).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        // Fault-inject the otherwise impractical end of a lifetime clock. No
+        // production seam or new state/ownership behavior is introduced.
+        runtime.performance_frame = u64::MAX - 1;
+        let before = (
+            runtime.performance_frame,
+            runtime.arrangement_frame,
+            runtime.route_state_generation,
+            runtime.playing,
+        );
+        let owners = Arc::strong_count(&revision);
+        let mut pages = NoPages { accesses: 0 };
+        let mut output = [[9.0; 2]; 2];
+        let mut observed = 0;
+        assert_eq!(
+            runtime.render_with_pages_and_post_node_observer(
+                &mut output,
+                &mut pages,
+                Some(&mut |_, _, _: &[Frame]| observed += 1)
+            ),
+            Err(SessionPlaybackError::ArithmeticOverflow)
+        );
+        assert_eq!(output, [[0.0; 2]; 2]);
+        assert_eq!(
+            (
+                runtime.performance_frame,
+                runtime.arrangement_frame,
+                runtime.route_state_generation,
+                runtime.playing
+            ),
+            before
+        );
+        assert_eq!(pages.accesses, 0);
+        assert_eq!(observed, 0);
+        assert_eq!(Arc::strong_count(&revision), owners);
+        assert!(
+            !runtime.candidate_admission_open,
+            "existing render-attempt admission closure remains"
+        );
     }
 }

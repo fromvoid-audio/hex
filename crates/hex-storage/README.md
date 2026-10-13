@@ -128,8 +128,42 @@ attributes. Sidecar names must fit a 255-byte
 filesystem component; long names that would exceed that limit are refused
 before publication.
 
+Ticket 32 adds a bounded project-level import provenance envelope independent of
+native device state: exact original input bytes (1 MiB maximum), source kind and
+version, and adapter version. Clones/snapshots/history share immutable evidence;
+normal edits retain it unchanged. Debug output excludes contents and private
+paths. This is unchanged-input pass-through, not editable Ableton export or
+proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+
+Schema 18 requires nullable `import_provenance`. Schemas 1–17 migrate to absent
+provenance; their strict readers reject the new field. Unknown envelope kinds or
+versions, empty input and oversized arrays are rejected. Schema-18 JSON is compact
+and retains the 8 MiB document ceiling, including provenance. Serialization stops
+at that ceiling; saving never drops evidence to fit. The finite musical adapter
+uses the genuine Live-authored fixture; native interaction and listening
+acceptance remain separate.
 Automatic journal checkpoints are independent of previous-save recovery. The
 strict journal envelope retains one current snapshot, uses a stable generation
 lock to serialize cooperating publication, refuses unknown files, and clears
 only the exact owned generation. No untitled history is retained. Native
 composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).
+
+Imported unsaved projects use that same latest-untitled checkpoint path. Recovery
+retains schema-18 original-document provenance and prepares the complete media
+and playback candidate before adoption, without acquiring an overwrite association.
+
+Schema19 adds a required strict bounded routing envelope on schema18, preserving
+exact original provenance and opaque device state. Only legacy routing is admitted;
+nonempty authored edges validate then refuse before engine use. See
+[routing](../../docs/routing.md).
+
+Schema20 strictly persists canonical additive stereo Return feeds, selecting20
+only for nonempty feeds in the ordinary writer. Legacy projects keep the19 byte
+path; old writers refuse feed loss. Provenance, opaque payloads and migrations
+remain intact. See [routing](../../docs/routing.md) for the admitted finite stage
+and the remaining automation/latency/native acceptance.
+
+Schema21 strictly persists canonical track-gain envelopes with every schema20
+field. Readers of legacy schemas migrate empty lanes; ordinary19/20 writers remain selected
+for projects without automation, and older envelope entry points refuse lane loss.
+See [track gain automation](../../docs/track-gain-automation.md).

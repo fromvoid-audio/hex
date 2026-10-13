@@ -784,7 +784,7 @@ impl SessionPlayback {
                                             track_index: usize::MAX,
                                             track_id: old_route.id,
                                             order: 0,
-                                            mix: old_track.mix(),
+                                            mix: old_track.mix_at(previous.arrangement_frame),
                                             tail_group: None,
                                             continuation: None,
                                             voice,
@@ -1189,7 +1189,7 @@ impl SessionPlayback {
                                 track_index: new_index,
                                 track_id: old_route.id,
                                 order: 0,
-                                mix: old_track.mix(),
+                                mix: old_track.mix_at(previous.arrangement_frame),
                                 tail_group: None,
                                 continuation: None,
                                 voice,
@@ -1495,7 +1495,7 @@ impl SessionPlayback {
                         .tracks()
                         .get(old_index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?
-                        .mix();
+                        .mix_at(previous.arrangement_frame);
                     let continuation = matches.then_some(SessionContinuation {
                         key,
                         onset_beat: span.onset_beat,
@@ -2306,7 +2306,7 @@ impl SessionPlayback {
                     self.tail_mixes.get_mut(slot),
                     previous.revision.arrangement().tracks().get(old_index),
                 ) {
-                    *tail_mix = old_track.mix();
+                    *tail_mix = old_track.mix_at(previous.arrangement_frame);
                 }
                 if let (Some(start), Some((suffix_start, _))) = (
                     self.tail_suffix_starts.get_mut(slot),
