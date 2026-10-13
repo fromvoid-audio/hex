@@ -81,6 +81,7 @@ fn fixture(
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id,

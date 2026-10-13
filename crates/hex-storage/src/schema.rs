@@ -1226,6 +1226,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
@@ -1258,6 +1259,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1290,6 +1292,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1329,6 +1332,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1368,6 +1372,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1407,6 +1412,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1446,6 +1452,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1503,6 +1510,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1925,6 +1933,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
@@ -2174,6 +2183,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    return_feeds: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
@@ -2301,6 +2311,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,

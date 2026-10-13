@@ -22,10 +22,10 @@ Non-legacy adoption is closed. `Command::SetRouting` validates first, then
 returns `authored routing requires playback support` for any nonempty list
 before project/history mutation. An empty list is a legacy no-op. Failed edits
 preserve IDs, undo and redo. `Project::from_snapshot_with_routing` applies the
-same check to a newly constructed candidate. The existing Snapshot API remains
-unchanged: every admitted Project has empty authored routing. Any future opening
-of admission must first extend snapshots/history and enforce engine compilation;
-changing only the adoption guard would lose metadata or ignore routing semantics.
+same check to a newly constructed candidate. Canonical Snapshot now carries ReturnFeed records: every admitted Project still
+has empty authored routing. Any future opening of admission must enforce complete
+engine preparation/rendering; changing only the adoption guard would ignore
+routing semantics.
 No route UI is exposed.
 
 Schema19 requires an explicit `routing` array and retains every schema18 field,
@@ -56,14 +56,14 @@ of120 feeds matches the unique DAG bound for16 Returns. Missing endpoints,
 global ID collisions, duplicate pairs, invalid gains and all cycles refuse.
 Removing a Return cleans both incoming and outgoing feed records in the same edit.
 
-`RoutingSnapshot` is a routing-aware transport envelope for candidate metadata,
-not a playable Project or a second history owner. It preserves the base Snapshot
-and feed records without breaking engine/audio snapshot constructors while their
-owners work. `with_return_feed` prepares a new validated envelope without mutating
-its source. `SetReturnFeed` and `from_routing_snapshot` still refuse any nonempty
-result before canonical adoption. All publicly admitted Projects have no feeds.
-Tests may construct private unadmitted metadata to check cloning/history/removal;
-that does not authorize rendering or production adoption.
+Canonical `Snapshot.return_feeds` carries the same Project-owned records through
+snapshot/history/storage, with no parallel production envelope. `Snapshot::with_return_feed`
+prepares a new validated canonical metadata candidate without mutating its source.
+`SetReturnFeed` and `Project::from_snapshot` still refuse any nonempty result before
+canonical adoption. All publicly admitted Projects have no feeds. Tests may
+construct private unadmitted metadata to check ordinary snapshots, cloning/history
+and removal; that does not authorize rendering or production adoption. Necessary
+legacy snapshot constructors explicitly initialize an empty feed list.
 
 Reserved schema20 requires strict `routing` records tagged `return_feed`, each
 with required id/source/destination/gain. It retains bounded original provenance,
@@ -79,5 +79,5 @@ into destination input before its chain. The source still contributes Main.
 Each source runs once, master runs once, and captured old Return residuals stay
 zero-input Main-only without replaying old feeds. Actual adoption must wait for
 both render consumers, prepared capability checks, schema20 writer handoff and
-complete snapshot/history integration against the frozen combined pages/observer
+verified canonical snapshot/history against the frozen combined pages/observer
 API. No MIDI/sidechain/latency capability is added by this metadata preparation.

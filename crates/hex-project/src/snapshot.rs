@@ -13,6 +13,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
@@ -193,6 +194,16 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            return_feeds: self
+                .routing
+                .iter()
+                .map(|feed| crate::ReturnFeedSnapshot {
+                    id: feed.id.value(),
+                    source: feed.source.value(),
+                    destination: feed.destination.value(),
+                    gain: feed.gain,
+                })
+                .collect(),
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
             next_id: self.next_id,
@@ -374,7 +385,8 @@ impl Project {
     }
 
     /// Validate untrusted snapshot metadata before constructing a live model.
-    pub fn from_snapshot(snapshot: Snapshot) -> Result<Self, Invalid> {
+    pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let mut project = Project::new(snapshot.sample_rate)?;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
@@ -802,6 +814,12 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
+        if !return_feeds.is_empty() {
+            let mut candidate = project.snapshot();
+            candidate.return_feeds = return_feeds;
+            Self::validate_return_feed_snapshot(&candidate)?;
+            return Err(Invalid(crate::ROUTING_UNSUPPORTED));
+        }
         Ok(project)
     }
 }

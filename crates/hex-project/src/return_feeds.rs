@@ -38,13 +38,7 @@ pub struct ReturnFeedSnapshot {
     pub gain: f32,
 }
 
-/// Transport-only metadata, not a playable Project or another history owner.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RoutingSnapshot {
-    pub project: Snapshot,
-    pub return_feeds: Vec<ReturnFeedSnapshot>,
-}
-impl RoutingSnapshot {
+impl Snapshot {
     /// Prepare a new metadata candidate without mutating the original. Gain
     /// edits keep identity; zero removes; recreation uses allocator high-water.
     pub fn with_return_feed(
@@ -57,13 +51,8 @@ impl RoutingSnapshot {
         if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
             return Err(Invalid("return feed gain must be finite and within 0..2"));
         }
-        if !self
-            .project
-            .return_tracks
-            .iter()
-            .any(|r| r.id == source.value())
+        if !self.return_tracks.iter().any(|r| r.id == source.value())
             || !self
-                .project
                 .return_tracks
                 .iter()
                 .any(|r| r.id == destination.value())
@@ -84,8 +73,8 @@ impl RoutingSnapshot {
                 if candidate.return_feeds.len() == MAX_RETURN_FEEDS {
                     return Err(Invalid("return feed limit reached"));
                 }
-                let id = candidate.project.next_id;
-                candidate.project.next_id = id
+                let id = candidate.next_id;
+                candidate.next_id = id
                     .checked_add(1)
                     .ok_or(Invalid("project id space exhausted"))?;
                 candidate.return_feeds.push(ReturnFeedSnapshot {
@@ -102,37 +91,21 @@ impl RoutingSnapshot {
 }
 
 impl Project {
-    pub fn snapshot_with_return_feeds(&self) -> RoutingSnapshot {
-        RoutingSnapshot {
-            project: self.snapshot(),
-            return_feeds: self
-                .routing
-                .iter()
-                .map(|feed| ReturnFeedSnapshot {
-                    id: feed.id.value(),
-                    source: feed.source.value(),
-                    destination: feed.destination.value(),
-                    gain: feed.gain,
-                })
-                .collect(),
-        }
-    }
-
     /// Validate global identities, endpoints, gain, pair uniqueness and the
     /// complete DAG. Returned records are metadata, not playback admission.
-    pub fn validate_return_feed_snapshot(
-        snapshot: &RoutingSnapshot,
-    ) -> Result<Vec<ReturnFeed>, Invalid> {
+    pub fn validate_return_feed_snapshot(snapshot: &Snapshot) -> Result<Vec<ReturnFeed>, Invalid> {
         if snapshot.return_feeds.len() > MAX_RETURN_FEEDS {
             return Err(Invalid("return feed limit reached"));
         }
-        let base = Self::from_snapshot(snapshot.project.clone())?;
-        let mut seen = existing_ids(&snapshot.project);
+        let mut legacy = snapshot.clone();
+        legacy.return_feeds.clear();
+        let base = Self::from_snapshot(legacy)?;
+        let mut seen = existing_ids(snapshot);
         let mut pairs = BTreeSet::new();
         let mut feeds = Vec::with_capacity(snapshot.return_feeds.len());
         let mut edges = Vec::with_capacity(snapshot.return_feeds.len());
         for feed in &snapshot.return_feeds {
-            if feed.id == 0 || feed.id >= snapshot.project.next_id || !seen.insert(feed.id) {
+            if feed.id == 0 || feed.id >= snapshot.next_id || !seen.insert(feed.id) {
                 return Err(Invalid(
                     "return feed id must be globally unique below allocator high-water",
                 ));
@@ -173,29 +146,21 @@ impl Project {
         Ok(feeds)
     }
 
-    pub fn from_routing_snapshot(snapshot: RoutingSnapshot) -> Result<Self, Invalid> {
-        let feeds = Self::validate_return_feed_snapshot(&snapshot)?;
-        if !feeds.is_empty() {
-            return Err(Invalid(ROUTING_UNSUPPORTED));
-        }
-        Self::from_snapshot(snapshot.project)
-    }
-
     pub(crate) fn set_return_feed_closed(
         &mut self,
         source: ReturnId,
         destination: ReturnId,
         gain: f32,
     ) -> Result<Created, Invalid> {
-        let candidate =
-            self.snapshot_with_return_feeds()
-                .with_return_feed(source, destination, gain)?;
+        let candidate = self
+            .snapshot()
+            .with_return_feed(source, destination, gain)?;
         let feeds = Self::validate_return_feed_snapshot(&candidate)?;
         if !feeds.is_empty() {
             return Err(Invalid(ROUTING_UNSUPPORTED));
         }
         self.routing = feeds;
-        self.next_id = candidate.project.next_id;
+        self.next_id = candidate.next_id;
         Ok(Created::None)
     }
 }
@@ -267,19 +232,19 @@ mod tests {
         editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
         assert!(editor.undo());
         let before = editor.project().clone();
-        let legacy = before.snapshot_with_return_feeds();
+        let legacy = before.snapshot();
         let first = legacy.with_return_feed(ids[0], ids[1], 0.25).unwrap();
-        assert_eq!(first.return_feeds[0].id, legacy.project.next_id);
+        assert_eq!(first.return_feeds[0].id, legacy.next_id);
         let changed = first.with_return_feed(ids[0], ids[1], 2.0).unwrap();
         assert_eq!(first.return_feeds[0].id, changed.return_feeds[0].id);
-        assert_eq!(first.project.next_id, changed.project.next_id);
+        assert_eq!(first.next_id, changed.next_id);
         let removed = changed.with_return_feed(ids[0], ids[1], 0.0).unwrap();
         assert!(removed.return_feeds.is_empty());
-        assert_eq!(removed.project.next_id, changed.project.next_id);
+        assert_eq!(removed.next_id, changed.next_id);
         let recreated = removed.with_return_feed(ids[0], ids[1], 1.0).unwrap();
         assert!(recreated.return_feeds[0].id > first.return_feeds[0].id);
         assert_eq!(
-            Project::from_routing_snapshot(first),
+            Project::from_snapshot(first),
             Err(Invalid(ROUTING_UNSUPPORTED))
         );
         assert_eq!(
@@ -306,7 +271,7 @@ mod tests {
     #[test]
     fn complete_dag_bound_cycles_invalid_gain_and_global_ids_are_atomic() {
         let (editor, ids) = fixture(16);
-        let mut candidate = editor.project().snapshot_with_return_feeds();
+        let mut candidate = editor.project().snapshot();
         for (index, &source) in ids.iter().enumerate() {
             for &destination in &ids[index + 1..] {
                 candidate = candidate
@@ -327,7 +292,7 @@ mod tests {
             Err(Invalid("return feed limit reached"))
         );
         assert_eq!(candidate, before);
-        let empty = editor.project().snapshot_with_return_feeds();
+        let empty = editor.project().snapshot();
         let one = empty.with_return_feed(ids[0], ids[1], 1.0).unwrap();
         assert_eq!(
             one.with_return_feed(ids[1], ids[0], 1.0),
@@ -340,22 +305,22 @@ mod tests {
         for gain in [-1.0, 2.1, f32::NAN, f32::INFINITY] {
             assert!(empty.with_return_feed(ids[0], ids[1], gain).is_err());
         }
-        for id in [0, ids[0].value(), one.project.next_id] {
+        for id in [0, ids[0].value(), one.next_id] {
             let mut invalid = one.clone();
             invalid.return_feeds[0].id = id;
             assert!(Project::validate_return_feed_snapshot(&invalid).is_err());
         }
         let mut duplicate = one.clone();
         let mut second = duplicate.return_feeds[0];
-        second.id = duplicate.project.next_id;
-        duplicate.project.next_id += 1;
+        second.id = duplicate.next_id;
+        duplicate.next_id += 1;
         duplicate.return_feeds.push(second);
         assert_eq!(
             Project::validate_return_feed_snapshot(&duplicate),
             Err(Invalid("duplicate return feed"))
         );
         let mut exhausted = empty.clone();
-        exhausted.project.next_id = u64::MAX;
+        exhausted.next_id = u64::MAX;
         assert_eq!(
             exhausted.with_return_feed(ids[0], ids[1], 1.0),
             Err(Invalid("project id space exhausted"))
@@ -367,16 +332,18 @@ mod tests {
         let (editor, ids) = fixture(3);
         let candidate = editor
             .project()
-            .snapshot_with_return_feeds()
+            .snapshot()
             .with_return_feed(ids[0], ids[1], 0.5)
             .unwrap()
             .with_return_feed(ids[1], ids[2], 0.25)
             .unwrap();
         // Test-only metadata fixture; no production constructor admits these feeds.
         let feeds = Project::validate_return_feed_snapshot(&candidate).unwrap();
-        let mut metadata = Project::from_snapshot(candidate.project.clone()).unwrap();
+        let mut legacy = candidate.clone();
+        legacy.return_feeds.clear();
+        let mut metadata = Project::from_snapshot(legacy).unwrap();
         metadata.routing = feeds;
-        assert_eq!(metadata.snapshot_with_return_feeds(), candidate);
+        assert_eq!(metadata.snapshot(), candidate);
         let mut history = Editor::new(metadata.clone(), 8).unwrap();
         history.execute(Command::MasterGain { gain: 0.25 }).unwrap();
         assert_eq!(
@@ -388,13 +355,10 @@ mod tests {
         assert!(history.redo());
         history.execute(Command::RemoveReturnTrack(ids[1])).unwrap();
         assert!(history.project().authored_routing().is_empty());
-        assert_eq!(
-            history.project().snapshot().next_id,
-            candidate.project.next_id
-        );
+        assert_eq!(history.project().snapshot().next_id, candidate.next_id);
         assert!(history.undo());
         assert_eq!(
-            history.project().snapshot_with_return_feeds().return_feeds,
+            history.project().snapshot().return_feeds,
             candidate.return_feeds
         );
         assert!(history.redo());

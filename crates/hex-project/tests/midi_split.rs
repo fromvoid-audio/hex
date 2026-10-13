@@ -206,6 +206,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         })
         .collect();
     let full_project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 2 + MAX_CLIPS as u64,

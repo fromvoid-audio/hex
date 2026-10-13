@@ -1,6 +1,6 @@
 //! Reserved schema20 Return feeds; nonempty load/adoption remains closed.
 use super::*;
-use hex_project::{MAX_RETURN_FEEDS, ReturnFeedSnapshot, RoutingSnapshot};
+use hex_project::{MAX_RETURN_FEEDS, ReturnFeedSnapshot, Snapshot};
 use provenance::{DocumentV18, ProvenanceDto};
 use serde::de::{SeqAccess, Visitor};
 use std::fmt;
@@ -78,7 +78,7 @@ impl DocumentV20 {
             routing: Vec::new(),
         })
     }
-    fn into_snapshot(self) -> Result<RoutingSnapshot, StorageError> {
+    fn into_snapshot(self) -> Result<Snapshot, StorageError> {
         if self.format != "hex-project" || self.version != 20 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
@@ -117,17 +117,15 @@ impl DocumentV20 {
                 },
             })
             .collect();
-        let snapshot = RoutingSnapshot {
-            project: project.snapshot(),
-            return_feeds,
-        };
+        let mut snapshot = project.snapshot();
+        snapshot.return_feeds = return_feeds;
         Project::validate_return_feed_snapshot(&snapshot)
             .map_err(|e| StorageError::Invalid(e.0))?;
         Ok(snapshot)
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
-        Project::from_routing_snapshot(doc.into_snapshot()?).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_snapshot(doc.into_snapshot()?).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 
@@ -151,13 +149,13 @@ mod tests {
         }
         let proposed = editor
             .project()
-            .snapshot_with_return_feeds()
+            .snapshot()
             .with_return_feed(owners[0], owners[1], 0.375)
             .unwrap();
         let feed = proposed.return_feeds[0];
         let mut doc = DocumentV20::from_project(editor.project()).unwrap();
         // Transport-only fixture: production encoding/loading never admits it.
-        doc.next_id = proposed.project.next_id;
+        doc.next_id = proposed.next_id;
         doc.routing.push(FeedDto::ReturnFeed {
             id: feed.id,
             source: feed.source,

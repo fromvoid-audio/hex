@@ -1744,6 +1744,7 @@ mod tests {
         )
         .unwrap();
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: DEVICE_ID + 2,
@@ -1865,6 +1866,7 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
@@ -1974,6 +1976,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
@@ -2095,6 +2098,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
@@ -4058,6 +4062,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: 5,
@@ -4511,6 +4516,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
             next_id: track_id + 1,

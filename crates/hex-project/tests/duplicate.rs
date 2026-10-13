@@ -170,6 +170,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,

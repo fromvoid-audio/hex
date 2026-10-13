@@ -24,7 +24,7 @@ mod midi_playback;
 mod return_feeds;
 mod returns;
 mod routing;
-pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot, RoutingSnapshot};
+pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot};
 pub use routing::{
     MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
 };

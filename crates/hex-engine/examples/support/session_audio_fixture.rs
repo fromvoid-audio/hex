@@ -122,6 +122,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id,

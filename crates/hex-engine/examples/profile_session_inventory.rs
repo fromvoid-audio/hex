@@ -87,6 +87,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         }
     }
     Ok(Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id,
