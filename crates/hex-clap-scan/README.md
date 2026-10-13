@@ -190,3 +190,67 @@ profiles/dialects/rescan/thread calls, crash/hang/cancel and kernel descendant r
 Legacy native/scanner/protocol checks remain. Third-party containment and the
 full20/native blockers listed above are unchanged; this is offline controlled CC7
 support only. Rust unsafe-forbid and the existing dependency boundaries remain.
+
+## controlled offline finite delay
+
+Protocol3 adds only the ORIGINAL `org.hex.controlled.offline-finite-delay` module
+and `finite-delay-gain-v1` profile. The five reference variants declare fixed
+processing latency0/1/16/31/32samples at44100 or48000Hz. This is gain **before** a
+stereo FIFO: `y[t] = float32(x[t-D] * gain[t-D])`, with cold history zero. Global
+PARAM_VALUE events apply before their unchanged input sample offset; coincident
+ordering remains supplied ordering. No MIDI port, shifted input timestamps,
+filter/group-delay law or device/engine admission is introduced. Isolation startup,
+IPC buffering and scheduling overhead are explicitly unknown and separate fromD.
+
+The pinned1.2.10 latency ABI permits get on the main thread while activating or
+active; changed is accepted only on that thread during activate. The host latches
+notifications and queries after activate returns. Active latency drift, restart,
+wrong-thread/phase calls invalidate the whole attempt. Tail get supports main or
+logical audio thread. Tail.changed is accepted only during serialized audio
+start/process/stop; queries occur after those calls return. The attempt retains
+maximum observed finite tail, including stop, across continuations. Values>32,
+including the ABI infinite sentinel>=INT32_MAX, refuse. No dynamic graph restart,
+parameter flush/rescan scheduler or realtime promise follows.
+
+Each request block explicitly marks content or drain. Drain must be a contiguous
+suffix, zero input on both channels and event-free, supplied by the caller. No
+frames are silently appended. Content resets the current drain ledger; tail
+notifications never reset it. Caller drain is capped at32samples cumulatively
+across continuations, within the existing32block/8192frame/1MiB request limits.
+Short drain yields a truthful pending bound `max_tail - drained`, saturating at0;
+it is a conservative support bound, not a measurement of nonzero queued samples.
+New content may continue the FIFO. Drain-only continuation retains held gain,
+queue/cursor, frame and ledger and never replays events. ReportedPCM has exactly
+the supplied length, including drain; request/activation ordinals are not graph
+publication epochs or hardware/recording ACKs.
+
+The actual fixed32stereoFloat32 queue is256bytes; the measured Linux x86_64
+DelayMemory struct adds32metadata bytes (including ABI padding). Process input
+parameter vectors reserve128aligned56-byte slots/block before activation and
+report actual checked reservation (maximum229376bytes). These charges exclude
+PCM/result/container/IPC/state/plugin/process overhead and are not an OS memory
+limit. Opaque continuation is360bytes: strict288-byte plugin state plus8-byte
+maximum-tail/drain ledger and64ASCII module digest. The fixed state validates
+version/profile owner, module, rate, delay, frame, deterministic cursor, finite
+queue, zero unused cells, and completed-drain zero history before load/adoption.
+Ledger bytes must match the explicit owner; old states/profiles refuse. This
+controlled provenance does not authenticate arbitrary third-party binaries.
+
+All outputPCM/state stays provisional until every block, tail/latency recheck,
+state save, destruction/unload, supervisor reap and immutable input/build identity
+check succeeds. Illegal callback, capacity, drift/restart, malformed state, ignored
+output rejection or late process/stop/destroy failure exposes no successful result.
+Process-group cleanup is tested through real artificial descendants; it is not a
+security sandbox. Artificial nested namespace UID mapping remains refused by this
+cloud host. Installed/third-party admission stays closed without OS containment.
+
+Run `cargo test -p hex-clap-scan`, and the explicit native receipt commands above
+plus `cargo test -p hex-clap-scan --test delay_native -- --ignored --test-threads=1`.
+Original fixtures prove impulse/gain/event timing, both rates, partition/ring wrap,
+short drain/state continuation, owner/cursor/queue and suffix/capacity refusal,
+maximum tail after shrink/stop, callback phase/thread/drift/restart/late failures,
+hang/crash/cancel and actual descendant reap. The builder includes each new source
+in its pinned closure and source digest, preserving SDK/system notices. Legacy
+version1/2/scanner regressions remain required. Full20 hosting and full28 graph
+latency compensation remain unfinished; macOS/native realtime/editor/reference
+acceptance and packaging/signing are unverified.

@@ -7,6 +7,7 @@ NATIVE=Path(__file__).resolve().parent
 NAMES=['good','init-fail','no-factory','duplicate','malformed','api-bad','crash','hang','descendant','deinit-hang','bad-utf8','too-many','unclosed-features']
 OFFLINE=['process','process-hang','process-crash','process-nonfinite','process-error','process-descendant','instance-init-fail','state-fail','bus-refuse','restart','sleep','tail']
 MIDI=['midi','midi-sleep','midi-error','midi-crash','midi-hang','midi-descendant','midi-rescan','midi-bad-port','midi-bad-output','midi-unsorted-output','midi-block-overflow','midi-total-overflow','midi-wrong-thread','midi-state-fail','midi-output-thread','midi-late-output']
+DELAY=['delay-0','delay-1','delay-16','delay-31','delay-32','delay-inactive-callback','delay-thread-callback','delay-drift','delay-restart','delay-infinite-tail','delay-shrink-tail','delay-late-error','delay-drain-hang','delay-drain-crash','delay-descendant','delay-late-nonfinite','delay-active-callback','delay-main-tail','delay-large-tail','delay-stop-tail','delay-late-callback','delay-ignored-output','delay-late-output','delay-foreign-output']
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def source_digest():
  h=hashlib.sha256()
@@ -47,6 +48,11 @@ def main():
  for mode,name in enumerate(MIDI):
   target=out/(name+'.clap');build('midi_fixture.cpp',target,['-shared','-fPIC','-Wl,--no-undefined','-pthread','-DFIXTURE_MODE='+str(mode)])
   offline_modules.append({'name':name,'binary':target.name,'sha256':sha(target)})
+ for index,name in enumerate(DELAY):
+  delay=[0,1,16,31,32][index] if index<5 else 16
+  mode=0 if index<5 else index-4
+  target=out/(name+'.clap');build('delay_fixture.cpp',target,['-shared','-fPIC','-Wl,--no-undefined','-pthread','-DFIXTURE_MODE='+str(mode),'-DFIXTURE_DELAY='+str(delay)])
+  offline_modules.append({'name':name,'binary':target.name,'sha256':sha(target)})
  runtime={}
  # Only ORIGINAL freshly built binaries are inspected; never ldd untrusted modules.
  for target in artifacts:
@@ -59,7 +65,7 @@ def main():
  r={'version':1,'scope':'original-controlled-clap-fixtures','platform':'linux-x86_64','sdk':PIN,'native_source_sha256':source_digest(),'helper_sha256':sha(out/'hex-clap-probe'),'launcher_sha256':sha(out/'launch-ignored'),'modules':modules,'compiler':subprocess.check_output(['c++','--version'],text=True).splitlines()[0],'toolchain_sha256':sha(Path(shutil.which('c++')).resolve()),'runtime_closure':runtime,'runtime_notices':notices,'build_closure':closure,'licenses':{'clap':{'sha256':sha(license_path),'text':license_text}}}
  p=out/'controlled-clap-fixtures.json';p.write_text(json.dumps(r,indent=2)+'\n');
  h=hashlib.sha256()
- for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp','midi_fixture.cpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
+ for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp','midi_fixture.cpp','delay_attempt.hpp','delay_wire.hpp','delay_fixture.cpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
  offline={'version':1,'scope':'original-controlled-offline-fixtures','scanner_receipt_sha256':sha(p),'source_sha256':h.hexdigest(),'helper_sha256':sha(out/'hex-clap-offline-helper'),'modules':offline_modules}
  (out/'controlled-offline.json').write_text(json.dumps(offline,indent=2)+'\n');(out/'build-commands.json').write_text(json.dumps(commands,indent=2)+'\n');print('Controlled receipt:',p);print('SHA256:',sha(p));print('Artifacts:',len(artifacts),'headers:',len(closure),'runtime libraries:',len(runtime))
 if __name__=='__main__':main()

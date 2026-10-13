@@ -80,6 +80,7 @@ static clap_event_param_value_t value(uint32_t offset,double gain)  {
   e.value=gain;
   return e;
 }
+#include "delay_attempt.hpp"
 int main(int argc,char** argv)  {
   rlimit core  {
     0,0
@@ -90,6 +91,7 @@ int main(int argc,char** argv)  {
     uint64_t expected=std::stoull(argv[2]);
     uint8_t header[12];
     io(header,12,false);
+    if(!std::memcmp(header,"HCOFFQ03",8))return delay_attempt(header,argv,expected);
     const bool midi=!std::memcmp(header,"HCOFFQ02",8);
     check(midi||!std::memcmp(header,"HCOFFQ01",8),"request magic");
     uint32_t size=0;

@@ -1,6 +1,8 @@
 //! Owned controlled offline fixture messages; no engine or plugin pointer API.
 use crate::{MAX_PACKET, SDK};
 use serde::{Deserialize, Serialize};
+mod delay;
+pub use delay::*;
 pub const GAIN_ID: u32 = 0x200001;
 pub const PLUGIN_ID: &str = "org.hex.controlled.offline-gain";
 pub const MODES: [&str; 12] = [
@@ -181,8 +183,8 @@ fn decode_record(
         || sample_rate != request.sample_rate
         || start_frame != request.start_frame
         || end_frame != request.start_frame + frames as u64
-        || latency != 0
-        || ![0, 2].contains(&tail)
+        || (version != 3 && (latency != 0 || ![0, 2].contains(&tail)))
+        || (version == 3 && (![0, 1, 16, 31, 32].contains(&latency) || tail > 32))
         || r.u32()? != 2
         || r.u32()? != 2
         || r.u32()? != note_inputs
@@ -415,6 +417,18 @@ pub fn source_hash() -> String {
             "midi_fixture.cpp",
             include_bytes!("../native/midi_fixture.cpp").as_slice(),
         ),
+        (
+            "delay_attempt.hpp",
+            include_bytes!("../native/delay_attempt.hpp").as_slice(),
+        ),
+        (
+            "delay_wire.hpp",
+            include_bytes!("../native/delay_wire.hpp").as_slice(),
+        ),
+        (
+            "delay_fixture.cpp",
+            include_bytes!("../native/delay_fixture.cpp").as_slice(),
+        ),
     ] {
         h.update(name);
         h.update([0]);
@@ -430,13 +444,15 @@ impl BuildReceipt {
             || self.scanner_receipt_sha256 != crate::hash(scanner)
             || self.source_sha256 != source_hash()
             || !crate::hex_digest(&self.helper_sha256)
-            || self.modules.len() != MODES.len() + MIDI_MODES.len()
+            || self.modules.len() != MODES.len() + MIDI_MODES.len() + DELAY_MODES.len()
         {
             return Err("offline build identity refused".into());
         }
         let mut names = std::collections::BTreeSet::new();
         for m in &self.modules {
-            if !(MODES.contains(&m.name.as_str()) || MIDI_MODES.contains(&m.name.as_str()))
+            if !(MODES.contains(&m.name.as_str())
+                || MIDI_MODES.contains(&m.name.as_str())
+                || DELAY_MODES.contains(&m.name.as_str()))
                 || !names.insert(m.name.as_str())
                 || !crate::hex_digest(&m.sha256)
                 || m.binary != format!("{}.clap", m.name)

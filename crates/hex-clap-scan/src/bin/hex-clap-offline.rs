@@ -6,7 +6,9 @@ mod supervisor;
 fn main() {
     use hex_clap_scan::{
         Receipt, binary_identity, controlled_path, file_bytes, hash,
-        offline_protocol::{self, BuildReceipt, MIDI_MODES, MODES, MidiRequest, Request},
+        offline_protocol::{
+            self, BuildReceipt, DELAY_MODES, DelayRequest, MIDI_MODES, MODES, MidiRequest, Request,
+        },
     };
     use std::{path::PathBuf, time::Duration};
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -66,12 +68,26 @@ fn main() {
         } else {
             None
         };
-        let legacy: Option<Request> = if midi.is_none() {
+        let delay: Option<DelayRequest> = if json.get("version").and_then(|v| v.as_u64()) == Some(3)
+        {
+            Some(
+                serde_json::from_value(json.clone())
+                    .map_err(|_| "invalid finite-delay request JSON")?,
+            )
+        } else {
+            None
+        };
+        let legacy: Option<Request> = if midi.is_none() && delay.is_none() {
             Some(serde_json::from_value(json).map_err(|_| "invalid offline request JSON")?)
         } else {
             None
         };
-        let (input, request_id) = if let Some(request) = &midi {
+        let (input, request_id) = if let Some(request) = &delay {
+            if !DELAY_MODES.contains(&name) {
+                return Err("finite-delay fixture/profile mismatch".into());
+            }
+            (request.encode_bound(&module_hash)?, request.request)
+        } else if let Some(request) = &midi {
             if !MIDI_MODES.contains(&name) {
                 return Err("MIDI fixture/profile mismatch".into());
             }
@@ -110,7 +126,14 @@ fn main() {
         let decoded = match actual.cause.as_ref() {
             Some(e) => Err(e.clone()),
             None => {
-                if let Some(request) = &midi {
+                if let Some(request) = &delay {
+                    offline_protocol::decode_delay(&actual.packet, request, &module_hash).and_then(
+                        |r| {
+                            serde_json::to_value(r)
+                                .map_err(|_| "finite-delay result encoding".into())
+                        },
+                    )
+                } else if let Some(request) = &midi {
                     offline_protocol::decode_midi(&actual.packet, request, &module_hash).and_then(
                         |r| serde_json::to_value(r).map_err(|_| "MIDI result encoding".into()),
                     )

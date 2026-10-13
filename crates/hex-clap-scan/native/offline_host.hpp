@@ -4,9 +4,26 @@
 #include <clap/ext/thread-check.h>
 #include <thread>
 #include <clap/ext/note-ports.h>
+#include <clap/ext/latency.h>
+#include <clap/ext/tail.h>
 namespace Controlled   {
   struct Host   {
-    bool midi=false;
+    bool midi=false, finite_delay=false;
+    enum Phase { inactive, activating, active, starting, processing, stopping };
+    std::atomic<Phase> phase{inactive};
+    std::atomic<unsigned> latency_changes{0},tail_changes{0};
+    static void latency_changed(const clap_host_t* p) {
+      auto& x=self(p);
+      ++x.total;
+      if(!is_main(p)||x.phase.load()!=activating)x.invalidated=true;
+      ++x.latency_changes;
+    }
+    static void tail_changed(const clap_host_t* p) {
+      auto& x=self(p); ++x.total;
+      auto phase=x.phase.load();
+      if(!is_audio(p)||(phase!=starting&&phase!=processing&&phase!=stopping))x.invalidated=true;
+      ++x.tail_changes;
+    }
     std::atomic<bool> invalidated {
       false
     };
@@ -41,6 +58,10 @@ namespace Controlled   {
       static const clap_host_note_ports_t notes= {
         supported_dialects,rescan
       };
+      static const clap_host_latency_t latency={latency_changed};
+      static const clap_host_tail_t tail={tail_changed};
+      if(self(p).finite_delay&&!std::strcmp(id,CLAP_EXT_LATENCY))return &latency;
+      if(self(p).finite_delay&&!std::strcmp(id,CLAP_EXT_TAIL))return &tail;
       return self(p).midi&&!std::strcmp(id,CLAP_EXT_NOTE_PORTS)?&notes:nullptr;
     }
     static uint32_t supported_dialects(const clap_host_t* p) {
@@ -65,7 +86,7 @@ namespace Controlled   {
       ++self(p).callback;
     }
     void bounded()  {
-      check(!invalidated.load(),"fixed MIDI profile rescan/thread refusal");
+      check(!invalidated.load(),"fixed profile callback phase/thread refusal");
       check(total.load()<=128,"callback capacity");
       check(!restart.load(),"restart invalidates controlled attempt");
     }
