@@ -1090,6 +1090,10 @@ impl EditorView {
             _ => {}
         }
         #[cfg(test)]
+        if let Request::DropBrowserDeviceOnArrangement { destination, .. } = &request {
+            self.last_enqueued_arrangement_device_drop = Some(*destination);
+        }
+        #[cfg(test)]
         if let Request::Edit(command) = &request {
             self.last_enqueued_edit = Some(command.clone());
         }
@@ -1174,6 +1178,7 @@ impl EditorView {
             &request,
             Request::DeviceGesture(_)
                 | Request::DropNativeDevice { .. }
+                | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::SetDeviceParameter { .. }

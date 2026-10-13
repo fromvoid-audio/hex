@@ -6,9 +6,22 @@ use crate::{
 };
 use std::{collections::HashMap, path::PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDeviceSlot {
+    Instrument,
+    Effect,
+}
+
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// One prepared history operation creates a normal hybrid track with a device.
+    InsertTrackWithDevice {
+        name: String,
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -1255,6 +1268,32 @@ impl Project {
                     .ok_or(Invalid("track no longer exists"))?
                     .muted;
                 self.apply(Command::Mute { track, muted })
+            }
+            Command::InsertTrackWithDevice {
+                name,
+                before_track,
+                slot,
+                state,
+            } => {
+                let track = insert_track_before(self, name, before_track)?;
+                match slot {
+                    TrackDeviceSlot::Instrument => {
+                        let device = self
+                            .track(track)
+                            .and_then(|track| track.instrument())
+                            .ok_or(Invalid("new track has no default instrument"))?
+                            .id();
+                        self.apply(Command::ReplaceDeviceState { device, state })?;
+                    }
+                    TrackDeviceSlot::Effect => {
+                        self.apply(Command::InsertDevice {
+                            track,
+                            before: None,
+                            state,
+                        })?;
+                    }
+                }
+                Ok(Created::Track(track))
             }
             Command::AddTrack { name } => {
                 Ok(Created::Track(insert_track_before(self, name, None)?))

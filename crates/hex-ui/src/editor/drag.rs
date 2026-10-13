@@ -122,7 +122,7 @@ pub(super) struct DropPreview {
     pub(super) position: ClipPosition,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LaneBounds {
     pub(super) left: f32,
     pub(super) width: f32,
@@ -738,6 +738,7 @@ impl super::EditorView {
     }
 
     pub(super) fn begin_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
+        self.arrangement_device_preview = None;
         self.active_clip_drag = None;
         self.active_browser_audio_drag = None;
         if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
@@ -802,12 +803,14 @@ impl super::EditorView {
                     && Rc::ptr_eq(&active.destination, &drag.destination)
             })
         {
+            self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
         }
         drag.destination.set(None);
     }
 
     pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
+        self.arrangement_device_preview = None;
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };

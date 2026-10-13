@@ -468,6 +468,7 @@ impl EditorView {
             .absolute()
             .inset_0(),
         );
+        body = body.children(self.arrangement_device_drop_preview());
         let insertion_line_y = if self
             .state()
             .is_some_and(|state| state.project.tracks().is_empty())
@@ -515,6 +516,7 @@ impl EditorView {
     ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
+        let device_entity = entity.clone();
         div()
             .flex_1()
             .min_h_0()
@@ -523,6 +525,28 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
+                let Some(payload) = event
+                    .dragged_item()
+                    .downcast_ref::<super::drag::NativeDeviceDrag>()
+                else {
+                    return;
+                };
+                let pointer = event.event.position;
+                device_entity.update(cx, |view, cx| {
+                    view.update_arrangement_device_drop(
+                        payload,
+                        f32::from(pointer.x),
+                        f32::from(pointer.y),
+                    );
+                    cx.notify();
+                });
+            })
+            .on_drop(cx.listener(
+                |view, payload: &super::drag::NativeDeviceDrag, window, cx| {
+                    view.drop_arrangement_device(payload, window, cx);
+                },
+            ))
             .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
                 view.drop_external_audio_paths(paths.paths(), window, cx);
             }))

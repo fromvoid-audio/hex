@@ -1,5 +1,15 @@
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
+13 October 2026 — Pulse2333 / draft PR183: Arrangement catalog device drops
+use shared painted lane/gap/empty targeting, captured TrackId/instrument identity
+and a bounded worker request. Track creation plus generic device assignment is
+one prepared atomic command/Undo; hybrid defaults, audio/MIDI clips, effect state
+and prior selection are retained. Included original PR172 one-file OS adapter;
+no existing-device Arrangement moves or new DSP/routing/schema. Exact-source
+Linux evidence belongs to PR183; native optimized review build and human
+confirmation remain pending. Ticket blocked/draft under readiness/evidence hold.
+
+
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
 owner-guarded Fine/shell context are implemented. The original rendered
 regressions fail before repair (54px tab jump; Fine B keeps A). Human native

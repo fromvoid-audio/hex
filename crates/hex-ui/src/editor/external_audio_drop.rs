@@ -42,40 +42,42 @@ impl EditorView {
         let snap = self
             .snap_grid
             .with_platform_modifier(window.modifiers().platform);
-        let request =
-            if let Some((before_track, lane, _)) = self.painted_track_insertion_target(x, y) {
-                browser_start(
-                    &state.project,
-                    viewport.start,
-                    viewport.length,
-                    snap,
-                    x,
-                    lane,
-                )
-                .map(|start| Request::ImportToNewTrack {
-                    path: path.clone(),
-                    before_track,
-                    start,
-                })
-            } else if let Some((track, lane)) = self.hovered_drag_target(x, y)
-                && state.project.track(track).is_some()
-            {
-                browser_start(
-                    &state.project,
-                    viewport.start,
-                    viewport.length,
-                    snap,
-                    x,
-                    lane,
-                )
-                .map(|start| Request::ImportToTrackWithOverwrite {
-                    path: path.clone(),
-                    track,
-                    start,
-                })
-            } else {
-                None
-            };
+        let request = match self.painted_arrangement_drop_target(x, y) {
+            Some(super::arrangement_device_drop::ArrangementDropTarget::NewTrack {
+                before_track,
+                lane,
+                ..
+            }) => browser_start(
+                &state.project,
+                viewport.start,
+                viewport.length,
+                snap,
+                x,
+                lane,
+            )
+            .map(|start| Request::ImportToNewTrack {
+                path: path.clone(),
+                before_track,
+                start,
+            }),
+            Some(super::arrangement_device_drop::ArrangementDropTarget::ExistingTrack {
+                track,
+                lane,
+            }) => browser_start(
+                &state.project,
+                viewport.start,
+                viewport.length,
+                snap,
+                x,
+                lane,
+            )
+            .map(|start| Request::ImportToTrackWithOverwrite {
+                path: path.clone(),
+                track,
+                start,
+            }),
+            None => None,
+        };
         let Some(request) = request else {
             self.error = Some(
                 "audio drop canceled · choose a regular track or empty arrangement space".into(),
