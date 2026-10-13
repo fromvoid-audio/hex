@@ -97,9 +97,10 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
     binding
         .entity
         .update(cx, |numeric, cx| numeric.set_enabled(enabled, cx));
+    let entity = &binding.entity;
     div()
         .w(px(76.0))
         .h(px(20.0))
         .flex_shrink_0()
-        .child(binding.entity.clone())
+        .child(entity.clone())
 }

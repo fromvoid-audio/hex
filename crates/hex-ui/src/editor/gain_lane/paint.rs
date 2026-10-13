@@ -96,7 +96,8 @@ pub(in crate::editor) fn view(
             })),
         );
     if let Some(point) = point {
-        controls = controls.child(controls::numeric(view, cx));
+        let control = controls::numeric(view, cx);
+        controls = controls.child(control);
         for (label, mode) in [
             ("step", GainInterpolation::Step),
             ("linear", GainInterpolation::Linear),
@@ -406,7 +407,7 @@ pub(in crate::editor) fn view(
             .inset_0(),
         );
     let details_tooltip = details.clone();
-    let right = div()
+    let details = div()
         .id("gain-point-readout")
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::waveform::ClipTooltip {
@@ -453,7 +454,7 @@ pub(in crate::editor) fn view(
                     .child(theme::text(title)),
             )
             .child(controls)
-            .child(div().h(px(36.0)).flex().child(plot).child(right))
+            .child(div().h(px(36.0)).flex().child(plot).child(details))
             .child(
                 div()
                     .h(px(18.0))
