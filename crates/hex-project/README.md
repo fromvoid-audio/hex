@@ -201,3 +201,8 @@ version, and adapter version. Clones/snapshots/history share immutable evidence;
 normal edits retain it unchanged. Debug output excludes contents and private
 paths. This is unchanged-input pass-through, not editable Ableton export or
 proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+
+Routing proposals use existing owners and validate the complete DAG, including
+implicit Main paths and canonical sends. Non-legacy adoption remains closed;
+see [routing](../../docs/routing.md). No MIDI/device/sidechain bus support is
+inferred from opaque state.

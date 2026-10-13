@@ -9,6 +9,8 @@ use std::{collections::HashMap, path::PathBuf};
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
+    SetRouting(Vec<crate::RoutingEdge>),
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -1005,6 +1007,7 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SetRouting(edges) => self.adopt_routing(edges),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }

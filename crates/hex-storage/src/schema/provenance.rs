@@ -7,33 +7,33 @@ use std::fmt;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentV18 {
-    format: String,
-    version: u32,
-    sample_rate: u32,
-    next_id: u64,
-    assets: Vec<AssetV2>,
-    tracks: Vec<TrackV17>,
-    return_tracks: Vec<ReturnTrackDtoV17>,
+    pub(super) format: String,
+    pub(super) version: u32,
+    pub(super) sample_rate: u32,
+    pub(super) next_id: u64,
+    pub(super) assets: Vec<AssetV2>,
+    pub(super) tracks: Vec<TrackV17>,
+    pub(super) return_tracks: Vec<ReturnTrackDtoV17>,
     #[serde(deserialize_with = "deserialize_required_loop_region")]
-    loop_region: Option<LoopRegionDto>,
-    master_gain: f32,
-    tempo_points: Vec<TempoPointDto>,
-    meter_points: Vec<MeterPointDto>,
-    session: SessionDtoV12,
+    pub(super) loop_region: Option<LoopRegionDto>,
+    pub(super) master_gain: f32,
+    pub(super) tempo_points: Vec<TempoPointDto>,
+    pub(super) meter_points: Vec<MeterPointDto>,
+    pub(super) session: SessionDtoV12,
     #[serde(deserialize_with = "required_provenance")]
-    import_provenance: Option<ProvenanceDto>,
+    pub(super) import_provenance: Option<ProvenanceDto>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProvenanceDto {
+pub(super) struct ProvenanceDto {
     kind: String,
     version: u32,
     adapter_version: u32,
     #[serde(deserialize_with = "bounded_bytes")]
     original_bytes: Vec<u8>,
 }
-fn required_provenance<'de, D: serde::Deserializer<'de>>(
+pub(super) fn required_provenance<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<ProvenanceDto>, D::Error> {
     Option::deserialize(d)
@@ -62,6 +62,12 @@ fn bounded_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::E
 }
 impl DocumentV18 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
+        project
+            .validate_routing_proposal(project.authored_routing())
+            .map_err(|e| StorageError::Invalid(e.0))?;
+        if !project.authored_routing().is_empty() {
+            return Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED));
+        }
         let base = DocumentV17::from_project(project)?;
         Ok(Self {
             format: base.format,
@@ -91,6 +97,10 @@ impl DocumentV18 {
                 "unsupported project format or version",
             ));
         }
+        doc.into_project()
+    }
+    pub(super) fn into_project(self) -> Result<Project, StorageError> {
+        let doc = self;
         let provenance = doc
             .import_provenance
             .map(|p| {

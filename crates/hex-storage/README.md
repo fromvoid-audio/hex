@@ -145,3 +145,8 @@ composition, ownership and tested limits: [project recovery](../../docs/project-
 Imported unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains schema-18 original-document provenance and prepares the complete media
 and playback candidate before adoption, without acquiring an overwrite association.
+
+Schema19 adds a required strict bounded routing envelope on schema18, preserving
+exact original provenance and opaque device state. Only legacy routing is admitted;
+nonempty authored edges validate then refuse before engine use. See
+[routing](../../docs/routing.md).

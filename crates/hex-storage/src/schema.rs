@@ -1,4 +1,5 @@
 pub(crate) mod provenance;
+pub(crate) mod routing;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -1957,6 +1958,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 19 {
+            return routing::DocumentV19::decode(bytes);
         }
         if header.version == 18 {
             return provenance::DocumentV18::decode(bytes);

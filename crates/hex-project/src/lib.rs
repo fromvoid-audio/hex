@@ -22,6 +22,10 @@ mod midi;
 mod midi_batch;
 mod midi_playback;
 mod returns;
+mod routing;
+pub use routing::{
+    MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
+};
 mod session;
 mod snapshot;
 mod split_tracks;
@@ -417,6 +421,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) routing: Vec<RoutingEdge>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
@@ -435,6 +440,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            routing: Vec::new(),
             sample_rate,
             next_id: 1,
             import_provenance: None,

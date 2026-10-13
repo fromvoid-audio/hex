@@ -127,7 +127,7 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema 18 without allocating an oversized output document.
+/// Encode schema 19 without allocating an oversized output document.
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
@@ -148,7 +148,7 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             Ok(())
         }
     }
-    let document = schema::provenance::DocumentV18::from_project(project)?;
+    let document = schema::routing::DocumentV19::from_project(project)?;
     let mut output = BoundedOutput {
         bytes: Vec::new(),
         exceeded: false,
