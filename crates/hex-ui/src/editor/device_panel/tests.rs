@@ -10,6 +10,7 @@ mod auto_pan_ui_tests;
 mod compressor_ui_tests;
 mod gate_ui_tests;
 mod operator_navigation_tests;
+mod operator_routing_readout_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {
