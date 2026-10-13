@@ -90,6 +90,11 @@ caret/selection and inset background without a continuous accent outline;
 invalid input keeps its existing red error outline. The one-pixel transparent
 root border preserves the prior layout inset.
 
+Untouched numeric drafts retain the original exact value when an owner finalizes
+them or the field loses focus. Display rounding is not a parameter edit. Actual
+typed/composed input is tracked separately, so deliberately entering the displayed
+rounded value still commits through the existing edit events and validation.
+
 All knob densities use one normalized rail renderer with explicit `DialLayout`
 semantics. `ReadoutGap` opens at lower right; `BottomGap` opens at the bottom;
 `Pan` uses a bottom opening, a center-up neutral needle and a reset triangle.

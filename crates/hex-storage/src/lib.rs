@@ -1,6 +1,7 @@
 //! Versioned, bounded persistence of canonical metadata; no media or callback work.
 mod files;
 mod journal;
+pub mod preset;
 pub use journal::{Journal, journal_path, load_journal};
 mod replacement;
 mod schema;
@@ -13,10 +14,25 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// Visible checkpoint state when releasing journal ownership failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalChange {
+    Unchanged,
+    CheckpointPublished,
+    CheckpointCleared,
+}
+
 #[derive(Debug)]
 pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
+    /// The operation's visible state is retained; lock cleanup failed.
+    JournalLockRelease {
+        path: PathBuf,
+        change: JournalChange,
+        operation_error: Option<Box<StorageError>>,
+        source: io::Error,
+    },
     Invalid(&'static str),
     /// The document bytes differ from the snapshot captured when it was loaded.
     Conflict {
@@ -39,6 +55,27 @@ pub enum StorageError {
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::JournalLockRelease {
+                path,
+                change,
+                operation_error,
+                source,
+            } => {
+                let state = match change {
+                    JournalChange::Unchanged => "checkpoint unchanged",
+                    JournalChange::CheckpointPublished => "checkpoint published",
+                    JournalChange::CheckpointCleared => "checkpoint cleared",
+                };
+                write!(
+                    f,
+                    "{state} at {}; journal lock release failed: {source}",
+                    path.display()
+                )?;
+                if let Some(error) = operation_error {
+                    write!(f, "; operation reported: {error}")?;
+                }
+                Ok(())
+            }
             Self::Io(error) => write!(f, "project file error: {error}"),
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
@@ -71,6 +108,7 @@ impl fmt::Display for StorageError {
 impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::JournalLockRelease { source, .. } => Some(source),
             Self::Io(e) => Some(e),
             Self::Json(e) => Some(e),
             Self::Invalid(_) | Self::Conflict { .. } => None,
