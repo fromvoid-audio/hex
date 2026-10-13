@@ -1,3 +1,24 @@
+## common wav import encodings — 13 october 2026
+
+The reported `encoding is not pcm or ieee float` rejection is addressed by shared
+extensible PCM/float header validation, PCM8, float64 and G.711 decoding, plus
+bounded resident Microsoft/IMA ADPCM block decoding. Resident imports cover both
+Arrangement and Session, sampler assets and project reopen through the existing
+service path. Seekable/verified readers share the new fixed-frame formats;
+ADPCM is explicitly resident-only. Byte/frame ceilings and the mono/stereo,
+8–192 kHz domain remain unchanged. RF64/RIFX, surround downmix and other compressed
+WAV codecs remain unsupported; do not claim arbitrary WAV-container support.
+
+Independent FFmpeg PCM16 oracles cover every G.711 codeword and multi-block mono/
+stereo ADPCM, including declared final padding. Generated exact-sample tests
+cover extensible GUID/depth/layout validation, PCM8, float64 and seekable windows.
+Malformed ADPCM headers/dimensions/fact extents, custom Microsoft coefficients,
+caller ceilings and nonfinite/unrepresentable float64 have regression coverage.
+Native reimport of the user's failed sample and listening remain pending. Pulse
+intake is blocked because the connected create-ticket schema cannot supply the
+server-required `request_id`; no ticket was created. Full local CI is a separate
+PR delivery gate; cloud tests do not establish native macOS acceptance.
+
 ## Open latest session log from header — 13 october 2026
 
 A compact debug control sits at the far right beside the version in the editor,
