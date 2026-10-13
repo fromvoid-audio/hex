@@ -261,6 +261,19 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
             )
             .expect("prepared Session"),
         );
+        let binding = hex_stream::VerifiedStreamRevision::new(
+            Arc::clone(&revision),
+            control.catalog_lease().expect("catalog lease"),
+        )
+        .expect("complete graph binding");
+        let metadata_owners = Arc::strong_count(binding.revision());
+        let mut bindings = 0;
+        let borrowed = measure(|| {
+            bindings = binding.revision().streamed_sources().count();
+        });
+        assert_eq!(bindings, 1, "this fixture has one Session-only binding");
+        assert_eq!(Arc::strong_count(binding.revision()), metadata_owners);
+        assert_no_allocation(borrowed);
         let mut session = SessionPlayback::new(revision).expect("Session runtime");
         session.apply(SessionPlaybackCommand::Play).expect("play");
         let mut expected = [[0.0; 2]; 31];

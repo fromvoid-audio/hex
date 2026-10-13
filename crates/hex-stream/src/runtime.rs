@@ -602,7 +602,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn final_catalog_lease_joins_worker_on_its_control_reclamation_thread() {
+    fn final_graph_catalog_binding_joins_worker_on_its_control_reclamation_thread() {
         let mut runtime =
             StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).expect("runtime");
         runtime
@@ -610,6 +610,17 @@ mod tests {
             .expect("catalog ready");
         let (control, pages) = runtime.split().ok().expect("runtime split");
         let lease = control.catalog_lease().expect("verified catalog lease");
+        let project = hex_project::Project::new(48_000).expect("project");
+        let graph = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .expect("graph"),
+        );
+        let binding = crate::VerifiedStreamRevision::new(graph, lease).expect("binding");
         let worker_finished = Arc::clone(&control.owner.worker_finished);
 
         drop(control);
@@ -618,7 +629,7 @@ mod tests {
 
         thread::Builder::new()
             .name("hex-stream-control-reclaim-test".to_owned())
-            .spawn(move || drop(lease))
+            .spawn(move || drop(binding))
             .expect("start control reclamation thread")
             .join()
             .expect("control reclamation thread joins");

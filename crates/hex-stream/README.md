@@ -34,6 +34,16 @@ compares the complete metadata value, and `same_catalog` distinguishes catalogs
 even when their generation and keys match. Keep one lease with each prepared graph
 that refers to the catalog.
 
+`VerifiedStreamRevision` consumes an `Arc<PreparedRevision>` and a real ready
+`CatalogLease`, checking every Arrangement and Session stream binding against
+complete verified metadata membership. Validation borrows without allocation or
+owner cloning. Failure returns both inputs in `StreamRevisionMismatch`; successful
+bindings expose borrowed graph/catalog access and actual catalog identity.
+The wrapper has no Clone implementation. Construction, transfer and final
+reclamation belong on control; final lease release may stop/wake/join the worker.
+This first Pulse24 stage adds no callback endpoint or page-readiness proof and
+does not enable native streamed publication or lift resident import limits.
+
 Matching shutdown counts the actual owner references held by the control and page
 endpoint. If graph leases remain, it returns recoverable `ShutdownError::Busy`
 without changing the pair; `into_parts()` restores both halves for a retry after

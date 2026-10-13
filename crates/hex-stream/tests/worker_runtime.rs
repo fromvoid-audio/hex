@@ -8,13 +8,71 @@ use hex_media::{
 use hex_project::{AssetId, Command, Created, Editor, Project};
 use hex_stream::{PageKey, SourceDefinition, StreamConfig, StreamRuntime};
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::PathBuf,
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+fn revision_for_stream(
+    metadata: &StreamedSourceMetadata,
+    session_only: bool,
+) -> Arc<hex_engine::PreparedRevision> {
+    let mut editor = Editor::new(Project::new(metadata.project_rate()).unwrap(), 4).unwrap();
+    let Created::Imported { track, asset, clip } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "binding".into(),
+            path: "binding.wav".into(),
+            source_sample_rate: metadata.source_rate(),
+            source_frames: metadata.source_frames(),
+            playback_frames: metadata.playback_frames(),
+            conversion_version: metadata.conversion_version(),
+        })
+        .unwrap()
+    else {
+        panic!("import result");
+    };
+    assert_eq!(asset, metadata.key().asset());
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene result");
+    };
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "session binding".into(),
+            asset,
+            source_start: 0,
+            source_end: metadata.playback_frames(),
+        })
+        .unwrap();
+    if session_only {
+        editor.execute(Command::RemoveClip(clip)).unwrap();
+    }
+    let bank = BTreeMap::from([(
+        asset,
+        hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(metadata.clone())),
+    )]);
+    Arc::new(
+        hex_engine::PreparedRevision::prepare_with_prepared_audio_sources(
+            editor.project(),
+            &bank,
+            metadata.key().generation(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    )
+}
 
 static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -747,5 +805,295 @@ fn shutdown_reclaims_undrained_ready_queue_and_worker_held_pages() {
             + report.held_return_pages_reclaimed
             + report.worker_pages_reclaimed,
         8,
+    );
+}
+
+#[test]
+fn complete_graph_binding_rejects_metadata_mismatches_and_recovers_both_owners() {
+    let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let asset = asset_id(4096, 48_000);
+    let verified = VerifiedWavReader::open(wav.path(), reader_limits(4096)).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        StreamSourceKey::new(41, asset),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let runtime = StreamRuntime::new(
+        StreamConfig::with_pool_pages(3),
+        vec![SourceDefinition::new(
+            wav.path().to_path_buf(),
+            metadata.clone(),
+            reader_limits(4096),
+        )],
+    )
+    .unwrap();
+    let (mut control, pages) = runtime.split().ok().unwrap();
+    control.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let variants = [
+        StreamedSourceMetadata::new(
+            StreamSourceKey::new(42, asset),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            metadata.fingerprint(),
+        )
+        .unwrap(),
+        StreamedSourceMetadata::new(
+            metadata.key(),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            [0xff; 32],
+        )
+        .unwrap(),
+        StreamedSourceMetadata::new(
+            metadata.key(),
+            44_100,
+            48_000,
+            4096,
+            4458,
+            hex_project::SINC_CONVERSION_V1,
+            metadata.fingerprint(),
+        )
+        .unwrap(),
+        StreamedSourceMetadata::new(
+            metadata.key(),
+            44_100,
+            44_100,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            metadata.fingerprint(),
+        )
+        .unwrap(),
+        StreamedSourceMetadata::new(
+            metadata.key(),
+            48_000,
+            48_000,
+            4095,
+            4095,
+            hex_project::IDENTITY_CONVERSION,
+            metadata.fingerprint(),
+        )
+        .unwrap(),
+    ];
+    // An inconsistent conversion is rejected by the existing immutable metadata
+    // constructor before it can enter any prepared graph or wrapper.
+    assert!(
+        StreamedSourceMetadata::new(
+            metadata.key(),
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::SINC_CONVERSION_V1,
+            metadata.fingerprint()
+        )
+        .is_err()
+    );
+    for variant in variants {
+        for session_only in [false, true] {
+            let graph = revision_for_stream(&variant, session_only);
+            let lease = control.catalog_lease().unwrap();
+            let error = hex_stream::VerifiedStreamRevision::new(Arc::clone(&graph), lease)
+                .expect_err("complete graph must reject a mismatched binding");
+            assert_eq!(error.source(), variant.key());
+            let (returned, lease) = error.into_parts();
+            assert!(Arc::ptr_eq(&graph, &returned));
+            assert!(lease.covers_source(&metadata));
+            assert!(control.catalog_ready());
+            drop((returned, lease));
+        }
+    }
+    let graph = revision_for_stream(&metadata, false);
+    let old = hex_stream::VerifiedStreamRevision::new(
+        Arc::clone(&graph),
+        control.catalog_lease().unwrap(),
+    )
+    .unwrap();
+    let candidate = hex_stream::VerifiedStreamRevision::new(
+        revision_for_stream(&metadata, true),
+        control.catalog_lease().unwrap(),
+    )
+    .unwrap();
+    assert!(old.same_catalog(&candidate));
+    assert!(!Arc::ptr_eq(old.revision(), candidate.revision()));
+    assert_eq!(old.revision().streamed_sources().count(), 2);
+    let stats = pages.stats();
+    let error = control
+        .shutdown(pages)
+        .expect_err("old/candidate graphs retain real catalog owner");
+    let (control, pages) = match error {
+        hex_stream::ShutdownError::Busy(busy) => {
+            assert_eq!(busy.external_references(), 2);
+            busy.into_parts()
+        }
+        other => panic!("expected Busy, got {other:?}"),
+    };
+    assert_eq!(pages.stats(), stats);
+    assert!(control.catalog_ready());
+    assert!(old.catalog().covers_source(&metadata));
+    drop(old);
+    drop(candidate);
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
+fn graph_wrappers_distinguish_real_catalogs_with_identical_source_keys() {
+    let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let verified = VerifiedWavReader::open(wav.path(), reader_limits(4096)).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        StreamSourceKey::new(41, asset_id(4096, 48_000)),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let mut pairs = Vec::new();
+    let mut graphs = Vec::new();
+    let graph = revision_for_stream(&metadata, true);
+    for _ in 0..2 {
+        let runtime = StreamRuntime::new(
+            StreamConfig::with_pool_pages(3),
+            vec![SourceDefinition::new(
+                wav.path().to_path_buf(),
+                metadata.clone(),
+                reader_limits(4096),
+            )],
+        )
+        .unwrap();
+        let (mut control, pages) = runtime.split().ok().unwrap();
+        control.wait_until_ready(Duration::from_secs(2)).unwrap();
+        graphs.push(
+            hex_stream::VerifiedStreamRevision::new(
+                Arc::clone(&graph),
+                control.catalog_lease().unwrap(),
+            )
+            .unwrap(),
+        );
+        pairs.push((control, pages));
+    }
+    assert!(!graphs[0].same_catalog(&graphs[1]));
+    assert!(Arc::ptr_eq(graphs[0].revision(), graphs[1].revision()));
+    drop(graphs);
+    for (control, pages) in pairs {
+        let report = control.shutdown(pages).unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+    }
+}
+
+#[test]
+fn streamed_binding_enumeration_covers_mixed_planes_without_cloning_metadata() {
+    use hex_engine::compile::PreparedAudioSource;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let mut bank = BTreeMap::new();
+    let mut tracks = Vec::new();
+    let mut streamed = Vec::new();
+    for index in 0..3 {
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: format!("track{index}"),
+                path: format!("source{index}.wav").into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap()
+        else {
+            panic!("import result");
+        };
+        tracks.push((track, asset));
+        let source = if index < 2 {
+            let metadata = Arc::new(
+                StreamedSourceMetadata::new(
+                    StreamSourceKey::new(51, asset),
+                    48_000,
+                    48_000,
+                    4,
+                    4,
+                    hex_project::IDENTITY_CONVERSION,
+                    [index as u8; 32],
+                )
+                .unwrap(),
+            );
+            streamed.push(Arc::clone(&metadata));
+            PreparedAudioSource::Streamed(metadata)
+        } else {
+            PreparedAudioSource::Resident(Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap())
+        };
+        bank.insert(asset, source);
+    }
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene result");
+    };
+    // Inventory order is independent of the Arrangement walk. Include resident
+    // Session audio too, so neither plane may treat every audio clip as streamed.
+    for &(track, asset) in tracks.iter().rev() {
+        editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "one shot".into(),
+                asset,
+                source_start: 0,
+                source_end: 4,
+            })
+            .unwrap();
+    }
+    let revision = hex_engine::PreparedRevision::prepare_with_prepared_audio_sources(
+        editor.project(),
+        &bank,
+        51,
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let owners: Vec<_> = streamed.iter().map(Arc::strong_count).collect();
+    let actual: Vec<_> = revision.streamed_sources().collect();
+    assert_eq!(actual.len(), 4);
+    assert!(std::ptr::eq(actual[0], streamed[0].as_ref()));
+    assert!(std::ptr::eq(actual[1], streamed[1].as_ref()));
+    let expected_session: Vec<_> = revision
+        .session()
+        .audio_clips()
+        .iter()
+        .filter_map(|clip| match clip.source() {
+            PreparedAudioSource::Streamed(source) => Some(source.as_ref()),
+            PreparedAudioSource::Resident(_) => None,
+        })
+        .collect();
+    assert_eq!(&actual[2..], expected_session.as_slice());
+    assert_eq!(
+        owners,
+        streamed.iter().map(Arc::strong_count).collect::<Vec<_>>()
+    );
+    let facts: Vec<_> = actual.iter().map(|source| (*source).clone()).collect();
+    drop(bank);
+    drop(streamed);
+    // These are borrowed immutable metadata, still owned by the exact revision
+    // after the preparation bank and its external source handles are gone.
+    assert_eq!(
+        actual
+            .iter()
+            .map(|source| (*source).clone())
+            .collect::<Vec<_>>(),
+        facts
     );
 }

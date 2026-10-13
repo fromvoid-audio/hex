@@ -2264,3 +2264,15 @@ Hardware/compiler differ from the historical busy Mac, so no causal speedup,
 matched Mac idle baseline or physical callback deadline is claimed. No runtime,
 fixture, comparator or admission limit changed. Final exact-head local CI is
 the separate source-review gate; native evidence limitations remain explicit.
+
+
+## long-project streaming graph/catalog stage — pulse24 / draft177
+
+VerifiedStreamRevision binds every Arrangement/Session stream reference to its
+actual verified catalog, with recoverable unchanged owners on mismatch and
+control-only lifetime/reclamation. A borrowed engine metadata iterator adds no
+stream dependency or ownership mutation. Native streamed publication refusal and
+resident import limits are preserved. See [page delivery](docs/page-delivery.md).
+This is the first stage only: endpoint retirement, installed-page readiness and
+all native advancing100-track/edit/seek/launch/fault/human acceptance remain open.
+PR177 remains draft/in progress; full Pulse24 criteria are not narrowed.

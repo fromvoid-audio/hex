@@ -282,3 +282,47 @@ streaming are also open. Ordinary endpoint/lease final Drop is not realtime-safe
 The user requested a pause after this unit to redirect work toward quicker
 practical usefulness. No further implementation or prewarm/native admission
 work was started; preserve the full roadmap for that discussion.
+
+## Graph/catalog binding stage — Pulse24 / draft PR177, 13 October 2026
+
+`hex-stream::VerifiedStreamRevision` pairs the exact immutable prepared graph
+with the actual verified catalog owner. Its control-side constructor consumes
+both owners, borrows every streamed source and checks complete catalog membership:
+generation/asset key, fingerprint, source/project rates, frame counts and
+conversion version. Unused catalog sources are allowed. Failure returns both
+inputs unchanged through `StreamRevisionMismatch::into_parts`; no partial owner
+installation or worker mutation occurs. The first mismatched source key is
+reported. Distinct catalogs remain distinguishable even when metadata/keys and
+the graph Arc are identical. The wrapper intentionally has no Clone implementation.
+
+The engine exposes `PreparedRevision::streamed_sources()` as a borrowed iterator:
+compiled Arrangement track/clip order first, then Session `audio_clips()` inventory
+order. Repeated source references remain separate; resident audio and MIDI are
+omitted. Iteration allocates nothing, clones no Arc and exposes no mutable or
+private clip state. Engine retains no dependency on stream.
+
+Graph owners may retain separate old/candidate bindings to one catalog. Existing
+Busy shutdown refuses while either lease remains and returns the control/pages
+pair unchanged. Releasing the wrappers on control permits the existing exact
+pool-accounting shutdown. If the wrapper holds the final catalog reference after
+control/pages retire, its final release stops/wakes/joins on its control reclamation
+thread. Borrowing a graph or catalog is not authorization to construct, clone or
+finally drop owners on a callback. No native callback integration is added here.
+
+Focused coverage includes wrong generation/fingerprint/source and project rates/
+frame counts/conversion contracts, Session-only mismatches, mixed streamed and
+resident Arrangement/Session enumeration, borrowed metadata remaining valid after
+external preparation handles retire, unchanged Arc counts, distinct same-key
+catalogs, independent old/candidate graphs, transactional Busy recovery and final
+wrapper-owned worker reclamation. The existing real-worker Session allocation
+probe now retains a verified binding and checks allocation-free metadata iteration;
+construction/reclamation remain outside its measured render scopes.
+
+This is the first bounded source stage of the full long-project streaming ticket,
+not completion of Pulse24. Native publication still explicitly refuses streams;
+resident import limits are unchanged. Endpoint publication/retirement,
+control-to-worker prewarm with installed protected-page acknowledgment, complete
+coexisting-catalog budgets, sustained advancing 100-track mixed-rate native
+playback and edit/seek/launch/fault/user acceptance remain unimplemented/unverified.
+PR177 stays draft/in progress. Its complete eight-criterion verification gate,
+including manual human_review and both native criteria, must remain intact.
