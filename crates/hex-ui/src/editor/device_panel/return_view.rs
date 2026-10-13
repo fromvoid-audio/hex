@@ -167,6 +167,7 @@ pub(super) fn render(
         )
         .child(add_button);
     let chain = super::return_drag::render_chain(view, cx, return_id, &devices);
+    let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));

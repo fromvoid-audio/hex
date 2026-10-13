@@ -1,3 +1,24 @@
+## device chain pan and bottom navigator — 13 october 2026
+
+Track and return device chains now share middle-button horizontal drag panning and
+an overview in the bottom status bar. Proportional device silhouettes and a measured
+viewport focus frame support click, drag and wheel navigation; the bottom-right
+chevron opens/closes the device panel and preserves the focused return. Release
+outside the rail, Escape, owner/project changes and workspace-mode changes retire
+capture. Navigation stays out of project history. Root pointer capture protects
+typed device drafts from blur while panning and checks close admission before a
+field can lose its draft; refused finalization keeps the panel open.
+
+Focused device-panel GPUI tests pass (56 tests), including rendered card movement,
+both navigator ends, wheel input, resize clamping, return overflow, short/empty
+chains, toggle ownership and full-queue draft preservation. Final Linux cloud checks
+pass: the full UI suite (414 passed, two existing ignores), strict all-target
+UI-feature Clippy, desktop build, architecture/GPUI/style guards, format and diff
+checks. Native macOS visual and physical middle-button acceptance remain pending.
+The user's screenshot is visual reference only; no new installed-Live behavior experiment was performed.
+Pulse intake is blocked because the connected create-ticket schema cannot supply
+the server-required `request_id`; no ticket was created.
+
 ## device title reordering — 13 october 2026
 
 Regular and return device titles now start metadata-only drags with a compact

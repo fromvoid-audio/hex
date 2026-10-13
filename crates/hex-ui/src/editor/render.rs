@@ -21,7 +21,7 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
-    fn status_bar(&self) -> gpui::Div {
+    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
             .h(px(22.0))
             .flex_shrink_0()
@@ -230,7 +230,7 @@ impl EditorView {
                     .child(theme::text("offline")),
             );
         }
-        bar
+        bar.child(super::device_panel::bottom_bar(self, cx))
     }
 }
 
@@ -309,6 +309,9 @@ impl Render for EditorView {
             } else {
                 self.browser_key_context(window, cx)
             })
+            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_trim_drag.clone()
@@ -431,6 +434,7 @@ impl Render for EditorView {
                 view.active_clip_drag = None;
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
+                view.device_panel.navigation.cancel();
                 view.stop();
                 cx.notify();
             }))
@@ -445,7 +449,8 @@ impl Render for EditorView {
                 };
                 let drag_stopped = cx.stop_active_drag(window);
                 let device_drag_stopped = view.cancel_active_native_device_drag();
-                let pan_canceled = view.cancel_arrangement_pan();
+                let pan_canceled =
+                    view.cancel_arrangement_pan() | view.device_panel.navigation.cancel();
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
@@ -890,7 +895,7 @@ impl Render for EditorView {
             .child(self.title_bar(cx))
             .child(self.transport(cx))
             .child(workspace)
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
