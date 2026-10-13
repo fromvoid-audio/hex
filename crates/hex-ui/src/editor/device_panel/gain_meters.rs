@@ -57,7 +57,7 @@ pub(super) fn render(
                 .state
                 .project
                 .device(id)
-                .is_some_and(|audible| audible.state() == device.state())
+                .is_some_and(|audible| audible == device)
         })
         .and_then(|candidate| candidate.prepared_revision.as_ref())
         .and_then(|revision| revision.arrangement().device_meter(id.value()))
