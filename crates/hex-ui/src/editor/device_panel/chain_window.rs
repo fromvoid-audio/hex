@@ -111,7 +111,8 @@ pub(super) fn spacer(device: DeviceId, width: f32) -> Stateful<Div> {
         .flex_shrink_0()
 }
 
-pub(super) fn rail(view: &EditorView, cx: &Context<EditorView>) -> Div {
+pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
+    super::navigation::sync_rail_scroll(view);
     let width = view.device_panel.chain_window.width.clone();
     let entity = cx.entity();
     let scroll = view.device_panel.chain_window.scroll.clone();

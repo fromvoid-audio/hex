@@ -67,6 +67,8 @@ widgets = (
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
     'gate_column(',
+    # Device-chain navigator is a typed view component; labels use theme::text.
+    'super::device_panel::bottom_bar(', 'overview)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

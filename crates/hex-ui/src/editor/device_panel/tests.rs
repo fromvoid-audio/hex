@@ -13,6 +13,7 @@ mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod gate_ui_tests;
 mod header_style_tests;
+mod navigation_ui_tests;
 mod operator_enable_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
@@ -3947,6 +3948,38 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     enter_typed_value(&mut visual, second_device, parameter, "250%");
+
+    let rail = visual.debug_bounds("device-chain-scroll").expect("rail");
+    visual.simulate_mouse_down(rail.center(), MouseButton::Middle, Modifiers::default());
+    let panned = point(rail.center().x - px(50.0), rail.center().y);
+    visual.simulate_mouse_move(panned, Some(MouseButton::Middle), Modifiers::default());
+    visual.simulate_mouse_up(panned, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: second_device,
+                parameter,
+            })
+        else {
+            panic!("draft control");
+        };
+        assert!(
+            entity.read(cx).is_editing(),
+            "middle pan preserves typed draft"
+        );
+    });
+
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .expect("bottom toggle")
+        .center();
+    visual.simulate_mouse_down(toggle, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.clip_view_open, "full queue preserves pane and draft")
+    });
 
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {

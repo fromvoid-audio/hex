@@ -22,6 +22,7 @@ pub(super) fn render_chain(
             )
         })
         .collect();
+    super::navigation::sync_rail_scroll(view);
     view.device_panel.chain_window.prepare(&geometry);
     let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
