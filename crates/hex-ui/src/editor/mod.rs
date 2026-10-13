@@ -219,14 +219,17 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+// Text drafts own printable keys; modified commands retain their finalization paths.
+const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some("hex_editor")),
+        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
-        KeyBinding::new("s", ToggleSolo, Some("hex_editor")),
-        KeyBinding::new("shift-s", AdditiveSolo, Some("hex_editor")),
+        KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("shift-s", AdditiveSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("up", PreviousTrack, Some("hex_editor")),
         KeyBinding::new("down", NextTrack, Some("hex_editor")),
         KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
@@ -321,7 +324,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some("hex_editor")),
+        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),

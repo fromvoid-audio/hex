@@ -25,6 +25,17 @@ pub struct ControlStyle {
 }
 
 impl ControlStyle {
+    /// Highlight a selected device's shared frame border and title bar.
+    /// Apply this to frame rendering only, keeping parameter control colors stable.
+    pub fn with_device_selection(mut self, selected: bool) -> Self {
+        if selected {
+            self.border = self.accent;
+            self.raised = self.accent;
+            self.text = self.background;
+        }
+        self
+    }
+
     pub fn validate(self) -> Result<Self, &'static str> {
         if self.font_size.is_finite() && (6.0..=32.0).contains(&self.font_size) {
             Ok(self)

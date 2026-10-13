@@ -62,7 +62,10 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
                 format!("device-body-{}", device.value()).into_boxed_str(),
             ))
             .expect("auto pan body");
-        assert_eq!(frame.size.width, px(auto_pan_panel::FRAME_WIDTH));
+        assert_eq!(
+            frame.size.width,
+            px(auto_pan_panel::FRAME_WIDTH + gain_meters::WIDTH)
+        );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in 1..=3 {
             let control = visual
