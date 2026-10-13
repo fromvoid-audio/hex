@@ -422,3 +422,31 @@ Native consumption, combined pages/observer rendering, shared-context handoff,
 installed-page prewarm/readiness, aggregate admission and full optimized native
 playback/edit/seek/launch/fault acceptance remain outstanding. PR177 stays draft
 and Pulse24 blocked under the readiness/evidence hold.
+
+## exact-manifest stream endpoint readiness
+
+PR177's opt-in `PageReadiness` unit reserves bounded active/candidate/transition
+intent/protection storage and one sticky receipt slot per role before installing
+pages. Borrowed control-owned manifests retain actual catalog/pair identity and
+carry exact lifecycle/window tokens. Real decoded pages in the ready queue do
+not authorize playback: every required half-open frame extent must first be
+installed and role-protected transactionally. Missing/short pages, wrong actual
+catalogs, stale windows, cancellation and receipt/capacity pressure cannot yield
+a current receipt or clear other protection. Protected duplicate pages return
+without replacing backing storage; legacy unpin leaves role protection intact.
+
+The callback endpoint remains the sole request producer and ready consumer.
+New operations use preallocated metadata and do not clone owners or introduce
+callback allocation, final drop or join. Actual readiness Vec capacities are
+reported separately and added once to reserved stream data with checked math;
+caller manifest/graph storage and opaque overhead remain excluded. Control
+recovery retains the existing Busy refusal and actual shutdown/pool reporting.
+See [the stream contract](../crates/hex-stream/READINESS.md) for precise ordering,
+backpressure, role cancellation, numeric limits and recovery guarantees.
+
+This proves exact supplied manifests only. Engine-derived demand/handoff,
+native intent delivery, BUFFERING without refused-chunk advancement, native
+publication/consumption and callback-stop escrow remain unimplemented. Existing
+native streaming refusal and resident limits are preserved. Full optimized
+native 100-track mixed-rate/edit/seek/launch/fault acceptance remains pending;
+PR177 remains draft and Pulse24 blocked under the unchanged hold.

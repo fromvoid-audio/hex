@@ -85,6 +85,16 @@ The legacy CatalogFootprint remains a payload/subcomponent view, not an additive
 heap total. Capacity reporting excludes opaque allocator/Arc/OS/thread machinery
 and caller graph storage; it does not establish aggregate admission policy.
 
+`PageReadiness` adds opt-in exact-manifest installed/protected receipts on the
+existing verified endpoint. It preallocates active/candidate/transition roles,
+keeps request/ready SPSC ownership unchanged, and makes extent installation,
+receipt backpressure and cancellation transactional. Control-owned manifests
+retain actual catalog identity; callback service borrows them without owner
+clones. See [exact installed-page readiness](READINESS.md) for limits, ownership,
+capacity accounting and the unimplemented engine/native boundaries. This is not
+engine-demand or native publication readiness; existing publication refusal and
+resident limits remain in force.
+
 `CompactSourceInput` is an opt-in control owner for compact input copying only.
 Construction moves the original Vec without allocating; borrowed preflight
 checks existing configuration, source/scratch/logical-path limits and complete

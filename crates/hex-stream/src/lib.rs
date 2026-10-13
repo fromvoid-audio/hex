@@ -9,6 +9,8 @@ mod construction_transport;
 mod endpoint;
 mod footprint;
 mod page_endpoint;
+mod readiness;
+mod readiness_manifest;
 mod revision;
 mod runtime;
 mod staging;
@@ -27,6 +29,14 @@ pub use footprint::{
     EndpointAllocationFootprint, StreamAllocationFootprint, TransportAllocationFootprint,
 };
 pub use page_endpoint::{PageEndpointMismatch, VerifiedPageEndpoint};
+pub use readiness::{
+    InstalledProtectedReceipt, IntentStatus, PageReadiness, PageRequestStatus, ProtectionRole,
+    ReadinessAllocationFootprint, ReadinessProgress, ReadinessSetupFailure, RequestProgress,
+};
+pub use readiness_manifest::{
+    ManifestRefusal, PageExtent, ReadinessEpochs, ReadinessRefusal, ReadinessStamp,
+    WantedPageManifest,
+};
 pub use revision::{StreamRevisionMismatch, VerifiedStreamRevision};
 pub use runtime::{
     CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,

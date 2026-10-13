@@ -51,7 +51,11 @@ pub(crate) struct EndpointQueues {
 
 enum CacheSlot {
     Empty,
-    Occupied { page: Box<PageBuffer>, pinned: bool },
+    Occupied {
+        page: Box<PageBuffer>,
+        pinned: bool,
+        roles: u8,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +82,8 @@ pub(crate) struct Endpoint {
     coalesced_requests: u64,
     rejected_requests: u64,
     stale_pages: u64,
+    // Pair-lifetime high-water mark survives readiness-owner reconstruction.
+    readiness_epoch: u64,
     #[cfg(test)]
     cache_probe_count: Cell<usize>,
     #[cfg(test)]
@@ -179,6 +185,7 @@ impl Endpoint {
             coalesced_requests: 0,
             rejected_requests: 0,
             stale_pages: 0,
+            readiness_epoch: 0,
             #[cfg(test)]
             cache_probe_count: Cell::new(0),
             #[cfg(test)]
@@ -260,6 +267,49 @@ impl Endpoint {
         }
     }
 
+    pub(crate) fn decoded_pages_waiting(&mut self) -> usize {
+        self.ready_rx.slots()
+    }
+
+    pub(crate) fn readiness_epoch(&self) -> u64 {
+        self.readiness_epoch
+    }
+
+    pub(crate) fn commit_readiness_epoch(&mut self, epoch: u64) {
+        self.readiness_epoch = epoch;
+    }
+
+    pub(crate) fn extent_resident(&self, extent: crate::PageExtent) -> bool {
+        self.cache_lookup(extent.key).is_some_and(|index| {
+            matches!(&self.cache[index], CacheSlot::Occupied { page, .. }
+                if extent.start < extent.end && extent.end <= page.valid_frames)
+        })
+    }
+
+    /// Check every extent before clearing or adding any role protection.
+    pub(crate) fn install_role(&mut self, role: u8, extents: &[crate::PageExtent]) -> bool {
+        if extents.iter().any(|extent| !self.extent_resident(*extent)) {
+            return false;
+        }
+        self.release_role(role);
+        for extent in extents {
+            if let Some(index) = self.cache_lookup(extent.key) {
+                if let CacheSlot::Occupied { roles, .. } = &mut self.cache[index] {
+                    *roles |= role;
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn release_role(&mut self, role: u8) {
+        for slot in &mut self.cache {
+            if let CacheSlot::Occupied { roles, .. } = slot {
+                *roles &= !role;
+            }
+        }
+    }
+
     pub(crate) fn return_cached_pages(&mut self) -> usize {
         let mut returned = 0;
         for index in 0..self.cache.len() {
@@ -325,10 +375,10 @@ impl Endpoint {
         }
     }
 
-    fn queue_request(&mut self, key: PageKey) {
+    pub(crate) fn queue_request(&mut self, key: PageKey) -> crate::PageRequestStatus {
         if self.source_keys.binary_search(&key.source).is_err() {
             self.rejected_requests = self.rejected_requests.saturating_add(1);
-            return;
+            return crate::PageRequestStatus::Refused;
         }
         let mut first_available = None;
         let mut slot = page_slot(key, self.pending_mask);
@@ -339,7 +389,7 @@ impl Endpoint {
             match self.pending[slot] {
                 PendingSlot::Key(found) if found == key => {
                     self.coalesced_requests = self.coalesced_requests.saturating_add(1);
-                    return;
+                    return crate::PageRequestStatus::Pending;
                 }
                 PendingSlot::Key(_) => slot = (slot + 1) & self.pending_mask,
                 PendingSlot::Empty => {
@@ -350,15 +400,17 @@ impl Endpoint {
         }
         let Some(slot) = first_available else {
             self.rejected_requests = self.rejected_requests.saturating_add(1);
-            return;
+            return crate::PageRequestStatus::Refused;
         };
         match self.request_tx.push(PageRequest(key)) {
             Ok(()) => {
                 self.pending[slot] = PendingSlot::Key(key);
                 self.queued_requests = self.queued_requests.saturating_add(1);
+                crate::PageRequestStatus::Accepted
             }
             Err(PushError::Full(_)) => {
                 self.rejected_requests = self.rejected_requests.saturating_add(1);
+                crate::PageRequestStatus::Refused
             }
         }
     }
@@ -386,14 +438,21 @@ impl Endpoint {
             return false;
         };
         if let Some(index) = self.cache_lookup(key) {
+            // Do not replace storage protected by an installed receipt, even
+            // with the same key. The borrowed page remains stable until release.
+            if matches!(self.cache[index], CacheSlot::Occupied { roles, .. } if roles != 0) {
+                self.return_buffer(page);
+                return false;
+            }
             let old = std::mem::replace(
                 &mut self.cache[index],
                 CacheSlot::Occupied {
                     page,
                     pinned: false,
+                    roles: 0,
                 },
             );
-            if let CacheSlot::Occupied { page, pinned } = old {
+            if let CacheSlot::Occupied { page, pinned, .. } = old {
                 if let CacheSlot::Occupied {
                     pinned: current, ..
                 } = &mut self.cache[index]
@@ -420,6 +479,7 @@ impl Endpoint {
         self.cache[index] = CacheSlot::Occupied {
             page,
             pinned: false,
+            roles: 0,
         };
         self.cache_count += 1;
         true
@@ -428,7 +488,7 @@ impl Endpoint {
     fn cache_remove(&mut self, index: usize) -> Option<(Box<PageBuffer>, bool)> {
         let mask = self.cache.len() - 1;
         let removed = std::mem::replace(&mut self.cache[index], CacheSlot::Empty);
-        let CacheSlot::Occupied { page, pinned } = removed else {
+        let CacheSlot::Occupied { page, pinned, .. } = removed else {
             return None;
         };
         self.cache_count = self.cache_count.saturating_sub(1);
@@ -470,7 +530,14 @@ impl Endpoint {
     fn unpinned_victim(&mut self) -> Option<usize> {
         for offset in 0..self.cache.len() {
             let index = (self.eviction_cursor + offset) & (self.cache.len() - 1);
-            if matches!(self.cache[index], CacheSlot::Occupied { pinned: false, .. }) {
+            if matches!(
+                self.cache[index],
+                CacheSlot::Occupied {
+                    pinned: false,
+                    roles: 0,
+                    ..
+                }
+            ) {
                 self.eviction_cursor = (index + 1) & (self.cache.len() - 1);
                 return Some(index);
             }
@@ -654,6 +721,154 @@ mod tests {
         page.valid_frames = 1;
         page.frames[0] = [key.page_index as f32, -(key.page_index as f32)];
         page
+    }
+
+    #[test]
+    fn role_extents_are_transactional_and_protected_duplicates_return_unchanged() {
+        let mut test = endpoint(4, 4, 4);
+        let source = source();
+        let first = PageKey {
+            source,
+            page_index: 0,
+        };
+        let short = PageKey {
+            source,
+            page_index: 1,
+        };
+        let first_page = page(first);
+        let pointer = first_page.frames.as_ptr();
+        test.ready.push(first_page).unwrap();
+        test.ready.push(page(short)).unwrap();
+        assert_eq!(test.endpoint.pump_ready(4), 2);
+        let extent = crate::PageExtent {
+            key: first,
+            start: 0,
+            end: 1,
+        };
+        assert!(test.endpoint.install_role(1, &[extent]));
+        assert!(test.endpoint.install_role(2, &[extent]));
+        assert!(!test.endpoint.install_role(
+            1,
+            &[crate::PageExtent {
+                key: short,
+                start: 0,
+                end: 2
+            }]
+        ));
+        test.endpoint.unpin_all();
+        test.endpoint.release_role(2);
+        let slot = test.endpoint.cache_lookup(first).unwrap();
+        assert!(matches!(
+            test.endpoint.cache[slot],
+            CacheSlot::Occupied { roles: 1, .. }
+        ));
+        let duplicate = page(first);
+        let duplicate_pointer = duplicate.frames.as_ptr();
+        test.ready.push(duplicate).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        let installed = {
+            let mut installed = 0;
+            assert_zero_probe(allocation_counter::measure(|| {
+                installed = test.endpoint.pump_ready(1)
+            }));
+            installed
+        };
+        #[cfg(not(feature = "allocation-probe"))]
+        let installed = test.endpoint.pump_ready(1);
+        assert_eq!(installed, 0);
+        assert_eq!(
+            test.endpoint.page(source, 0).unwrap().frames.as_ptr(),
+            pointer
+        );
+        assert_eq!(
+            test.returns.pop().unwrap().frames.as_ptr(),
+            duplicate_pointer
+        );
+        let third = PageKey {
+            source,
+            page_index: 2,
+        };
+        let fourth = PageKey {
+            source,
+            page_index: 3,
+        };
+        test.ready.push(page(third)).unwrap();
+        assert_eq!(test.endpoint.pump_ready(1), 1);
+        assert!(test.endpoint.install_role(
+            4,
+            &[
+                crate::PageExtent {
+                    key: short,
+                    start: 0,
+                    end: 1
+                },
+                crate::PageExtent {
+                    key: third,
+                    start: 0,
+                    end: 1
+                },
+            ]
+        ));
+        test.ready.push(page(fourth)).unwrap();
+        assert_eq!(test.endpoint.pump_ready(1), 0, "all cached pages protected");
+        assert_eq!(test.returns.pop().unwrap().key, Some(fourth));
+        assert_eq!(
+            test.endpoint.page(source, 0).unwrap().frames.as_ptr(),
+            pointer
+        );
+        test.endpoint.release_role(4);
+        test.ready.push(page(fourth)).unwrap();
+        assert_eq!(test.endpoint.pump_ready(1), 1);
+        assert_ne!(
+            test.returns.pop().unwrap().key,
+            Some(first),
+            "active page cannot be an eviction victim"
+        );
+        assert_eq!(
+            test.endpoint.page(source, 0).unwrap().frames.as_ptr(),
+            pointer
+        );
+        test.endpoint.release_role(1);
+        test.ready.push(page(first)).unwrap();
+        assert_eq!(test.endpoint.pump_ready(1), 1);
+        assert_eq!(test.returns.pop().unwrap().frames.as_ptr(), pointer);
+    }
+
+    #[test]
+    fn typed_requests_distinguish_queue_acceptance_pending_and_refusal() {
+        let mut test = endpoint(3, 1, 3);
+        let source = source();
+        let first = PageKey {
+            source,
+            page_index: 0,
+        };
+        let next = PageKey {
+            source,
+            page_index: 1,
+        };
+        assert_eq!(
+            test.endpoint.queue_request(first),
+            crate::PageRequestStatus::Accepted
+        );
+        assert_eq!(
+            test.endpoint.queue_request(first),
+            crate::PageRequestStatus::Pending
+        );
+        assert_eq!(
+            test.endpoint.queue_request(next),
+            crate::PageRequestStatus::Refused
+        );
+        assert_eq!(test.requests.pop().unwrap().0, first);
+        assert_eq!(
+            test.endpoint.queue_request(next),
+            crate::PageRequestStatus::Accepted
+        );
+        test.ready.push(page(first)).unwrap();
+        test.endpoint.pump_ready(1);
+        assert_eq!(
+            test.endpoint.queue_request(first),
+            crate::PageRequestStatus::Refused
+        );
     }
 
     #[test]

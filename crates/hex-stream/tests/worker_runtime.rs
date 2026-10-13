@@ -18,6 +18,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[path = "worker_runtime/readiness.rs"]
+mod readiness_cases;
+
 fn revision_for_stream(
     metadata: &StreamedSourceMetadata,
     session_only: bool,

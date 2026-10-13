@@ -86,6 +86,16 @@ impl Clone for CatalogLease {
 }
 
 impl CatalogLease {
+    pub(crate) fn source_metadata(
+        &self,
+        key: StreamSourceKey,
+    ) -> Option<&hex_engine::StreamedSourceMetadata> {
+        self.catalog
+            .sources
+            .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+            .ok()
+            .and_then(|index| self.catalog.sources.get(index))
+    }
     pub(crate) fn matches_pages(&self, pages: &StreamCallbackPages) -> bool {
         Arc::ptr_eq(&self.owner, &pages._owner) && Arc::ptr_eq(&self.pair_id, &pages.pair_id)
     }
@@ -650,6 +660,9 @@ impl Drop for CatalogOwner {
 }
 
 impl StreamCallbackPages {
+    pub(crate) fn readiness_endpoint(&mut self) -> &mut Endpoint {
+        &mut self.endpoint
+    }
     /// Endpoint-exclusive reserved capacities. Shared pages/queue payloads are
     /// reported separately and must not be charged again for cached pointers.
     pub fn allocation_footprint(&self) -> crate::EndpointAllocationFootprint {
