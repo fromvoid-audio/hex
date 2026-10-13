@@ -1787,6 +1787,49 @@ fn import_to_session(
         .map_err(|error| error.to_string().to_lowercase())
 }
 
+fn arrangement_device_command(
+    project: &hex_project::Project,
+    class: hex_engine::NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    destination: ArrangementDeviceDestination,
+) -> Result<Command, String> {
+    use hex_engine::NativeDeviceClass;
+    let state = hex_engine::default_native_device_state_for_class(class, type_id)
+        .map_err(|error| error.to_string().to_lowercase())?;
+    match destination {
+        ArrangementDeviceDestination::NewTrack { before_track } => {
+            Ok(Command::InsertTrackWithDevice {
+                name: "new track".into(),
+                before_track,
+                slot: match class {
+                    NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
+                    NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
+                },
+                state,
+            })
+        }
+        ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
+            let target = project
+                .track(track)
+                .ok_or("device drop track no longer exists")?;
+            if target.instrument().map(hex_project::Device::id) != instrument {
+                return Err("instrument replacement target changed".into());
+            }
+            Ok(match class {
+                NativeDeviceClass::Effect => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                NativeDeviceClass::Instrument => match instrument {
+                    Some(device) => Command::ReplaceDeviceState { device, state },
+                    None => Command::InsertInstrument { track, state },
+                },
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod service_tests {
     use super::*;
@@ -5350,48 +5393,5 @@ mod service_tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("detached export worker should finish after release");
         drop_thread.join().expect("drop thread");
-    }
-}
-
-fn arrangement_device_command(
-    project: &hex_project::Project,
-    class: hex_engine::NativeDeviceClass,
-    type_id: hex_lattice_contract::DeviceTypeId,
-    destination: ArrangementDeviceDestination,
-) -> Result<Command, String> {
-    use hex_engine::NativeDeviceClass;
-    let state = hex_engine::default_native_device_state_for_class(class, type_id)
-        .map_err(|error| error.to_string().to_lowercase())?;
-    match destination {
-        ArrangementDeviceDestination::NewTrack { before_track } => {
-            Ok(Command::InsertTrackWithDevice {
-                name: "new track".into(),
-                before_track,
-                slot: match class {
-                    NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
-                    NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
-                },
-                state,
-            })
-        }
-        ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
-            let target = project
-                .track(track)
-                .ok_or("device drop track no longer exists")?;
-            if target.instrument().map(hex_project::Device::id) != instrument {
-                return Err("instrument replacement target changed".into());
-            }
-            Ok(match class {
-                NativeDeviceClass::Effect => Command::InsertDevice {
-                    track,
-                    before: None,
-                    state,
-                },
-                NativeDeviceClass::Instrument => match instrument {
-                    Some(device) => Command::ReplaceDeviceState { device, state },
-                    None => Command::InsertInstrument { track, state },
-                },
-            })
-        }
     }
 }

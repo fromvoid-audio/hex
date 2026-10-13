@@ -1,5 +1,5 @@
 use super::clip_drag_ui_test::{audio_project, editor_window};
-use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_engine::NativeDeviceClass;
 use hex_session::service::ArrangementDeviceDestination;
 use std::sync::Arc;
@@ -192,4 +192,121 @@ fn arrangement_catalog_pointer_refuses_stale_busy_main_and_escape_without_edits(
             }
         });
     }
+}
+
+#[gpui::test]
+fn arrangement_catalog_worker_completion_and_undo_preserve_prior_selection(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::{Request, Service};
+    fn next(service: &Service) -> hex_session::service::Event {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(std::time::Instant::now() < deadline, "worker event timeout");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    fn pump(editor: &gpui::Entity<super::EditorView>, cx: &mut TestAppContext, count: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            editor.update(cx, |view, cx| {
+                view.tick(cx);
+                cx.notify();
+            });
+            if editor.read_with(cx, |view, _| {
+                view.worker_requests_pending == 0
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.project.tracks().len() == count)
+            }) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker-backed drop/undo timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    let service = Service::new(48_000, 16, 128).unwrap();
+    next(&service);
+    for name in ["selected", "anchor"] {
+        service
+            .submit(Request::Edit(hex_project::Command::AddTrack {
+                name: name.into(),
+            }))
+            .unwrap();
+        if name == "selected" {
+            next(&service);
+        }
+    }
+    let state = next(&service).state;
+    let original = state.project.clone();
+    let selected = original.tracks()[0].id();
+    let target = original.tracks()[1].id();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                super::EditorView::new(window, cx, service, Err("offline ui test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(state);
+                view.selected_track = Some(selected);
+                view.mode = super::EditorMode::Arrangement;
+                view.browser.section = super::browser::BrowserSection::Instruments;
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap();
+    let down = point(
+        source.origin.x + source.size.width * 0.5,
+        source.origin.y + source.size.height * 0.5,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let landing = point(lane.origin.x + lane.size.width * 0.5, lane.origin.y);
+    visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, 3);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.tracks()[0], original.tracks()[0]);
+        assert_eq!(project.tracks()[2], original.tracks()[1]);
+        assert_eq!(project.tracks()[1].devices().len(), 1);
+        assert_eq!(view.selected_track, Some(selected));
+        assert!(view.error.is_none(), "{:?}", view.error);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Undo));
+    });
+    pump(&editor, cx, 2);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.tracks(),
+            original.tracks()
+        );
+        assert_eq!(view.selected_track, Some(selected));
+    });
 }
