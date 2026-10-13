@@ -3833,3 +3833,28 @@ picker default. Exceptional external races remain explicit errors preserving
 unexpected displaced data. Capture dependencies remain separate PRs.
 Listening, native macOS behavior and sustained physical throughput require their
 own acceptance evidence; Linux source checks do not establish them.
+
+## Pulse25 — finite project recovery contract, 11 October2026
+
+Continue only PR151 and its claimed branch. The human included untitled recovery
+and explicitly limited it to the most recent project, no history. Storage owns
+one validated checkpoint per slot with serialized publication and exact-generation
+cleanup. Session checkpoints canonical revisions and prepares full media/compiler
+admission before explicit recovery/relink adoption. Recovery opens dirty without
+an overwrite association; source saved files remain intact. The existing prior-save
+sidecar is a separate explicit source, with no automatic precedence.
+
+Ownership, bounded format, native File actions, mixed Save/Save As/Session
+round-trip boundary, failure/restart tests and manual acceptance are specified in
+[project-recovery.md](project-recovery.md). No undo stack, UI state, live route,
+transport or processor-runtime recovery is claimed. Linux source evidence cannot
+prove macOS dialogs/compilation or listening; the full exact-source runner and
+native checks remain separate gates. No merge is authorized by this task.
+
+## stable optimized test delivery — Pulse #2408
+
+The existing native bundler now delegates to the guarded optimized delivery
+workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
+action supplies one stable app plus exact-source CI/included revisions/checklist
+and retains prior-bundle rollback. Source/packaging evidence and native owner
+approval remain separate gates on Pulse #2408.

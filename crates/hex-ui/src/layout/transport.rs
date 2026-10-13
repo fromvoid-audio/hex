@@ -162,6 +162,7 @@ impl Daw {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("first light · demo")),
             )
+            .child(crate::build_info::label())
     }
 
     pub(crate) fn browser(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {

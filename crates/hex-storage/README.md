@@ -10,6 +10,7 @@ enter or leave this boundary.
 
 hex-project for model validation, hex-lattice-contract for bounded device state,
 serde/serde_json for versioned project JSON,
+fs2 0.4.3 for nonblocking control-side advisory file locks (Rust1.85-compatible),
 and std for bounded file access and same-directory publication.
 
 ## Does not own
@@ -120,3 +121,9 @@ during staging refuses the replacement. std does not preserve ACLs or extended
 attributes. Sidecar names must fit a 255-byte
 filesystem component; long names that would exceed that limit are refused
 before publication.
+
+Automatic journal checkpoints are independent of previous-save recovery. The
+strict journal envelope retains one current snapshot, uses a stable generation
+lock to serialize cooperating publication, refuses unknown files, and clears
+only the exact owned generation. No untitled history is retained. Native
+composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).

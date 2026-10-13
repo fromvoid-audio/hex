@@ -2,8 +2,9 @@ use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
     ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, OpenRecentProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection,
-    PreviousTrack, Quit, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
+    OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft, PanTimelineRight,
+    PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
+    RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
     SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
     TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
@@ -472,6 +473,30 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
+            .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
+                view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &RecoverUntitledProject, window, cx| {
+                view.project_recovery_dialog(
+                    super::project_recovery::OpenKind::Untitled,
+                    window,
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|view, _: &RecoverSavedProject, window, cx| {
+                view.project_recovery_dialog(
+                    super::project_recovery::OpenKind::SavedEdits,
+                    window,
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|view, _: &RecoverPreviousSave, window, cx| {
+                view.project_recovery_dialog(
+                    super::project_recovery::OpenKind::PreviousSave,
+                    window,
+                    cx,
+                )
+            }))
             .on_action(cx.listener(|view, action: &OpenRecentProject, _, cx| {
                 if super::device_panel::finalize_controls(view, cx) {
                     view.open_recent_project(action);

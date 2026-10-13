@@ -21,11 +21,13 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 6;
+pub const OPERATOR_STATE_VERSION: u32 = 7;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
 mod feedback_runtime;
+mod lfo;
+mod lfo_runtime;
 mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;
@@ -39,14 +41,16 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + 1
     + OPERATORS * 3
     + VELOCITY_SENSITIVITY_COUNT
-    + FEEDBACK_COUNT;
+    + FEEDBACK_COUNT
+    + lfo::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
 const VELOCITY_PAYLOAD_BYTES: usize =
     TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const FEEDBACK_COUNT: usize = OPERATORS;
-const PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
+const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
+const PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -112,6 +116,20 @@ pub mod parameter {
             return ParameterId::from_static(0);
         }
         ParameterId::from_static(62 + (operator - 1) * 3 + field)
+    }
+
+    pub const LFO_ENABLED: ParameterId = ParameterId::from_static(82);
+    pub const LFO_WAVEFORM: ParameterId = ParameterId::from_static(83);
+    pub const LFO_SYNC: ParameterId = ParameterId::from_static(84);
+    pub const LFO_RATE: ParameterId = ParameterId::from_static(85);
+    pub const LFO_DIVISION: ParameterId = ParameterId::from_static(86);
+    pub const LFO_AMOUNT: ParameterId = ParameterId::from_static(87);
+    pub const LFO_RETRIGGER: ParameterId = ParameterId::from_static(88);
+    pub const fn lfo_destination(operator: u32) -> ParameterId {
+        if operator == 0 || operator > 4 {
+            return ParameterId::from_static(0);
+        }
+        ParameterId::from_static(88 + operator)
     }
 
     /// Derived topology selector. Custom is inferred from the stored routing.
@@ -315,6 +333,12 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         };
         operator += 1;
     }
+    let lfo = lfo::descriptors();
+    let mut offset = 0;
+    while offset < lfo::COUNT {
+        result[PARAMETER_COUNT - lfo::COUNT + offset] = lfo[offset];
+        offset += 1;
+    }
     result
 }
 
@@ -328,6 +352,7 @@ pub struct OperatorSettings {
     tuning: tuning::TuningState,
     amplitude_velocity: [f32; OPERATORS],
     feedback: [f32; OPERATORS],
+    lfo: lfo::LfoSettings,
 }
 
 impl OperatorSettings {
@@ -345,6 +370,7 @@ impl OperatorSettings {
             tuning: tuning::TuningState::default(),
             amplitude_velocity: [0.0; OPERATORS],
             feedback: [0.0; OPERATORS],
+            lfo: lfo::LfoSettings::default(),
         }
     }
 
@@ -357,7 +383,8 @@ impl OperatorSettings {
             WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
-            FEEDBACK_STATE_VERSION | OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
+            FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
+            OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
         if state.payload().len() != expected_len {
@@ -378,7 +405,7 @@ impl OperatorSettings {
         }
         // Versions 1–5 permitted every stage up to 120s. Validate the old
         // domain before clamping; malformed values must remain errors.
-        if state.state_version() < OPERATOR_STATE_VERSION {
+        if state.state_version() < 6 {
             for operator in 0..OPERATORS {
                 for (field, max) in [
                     (3, crate::operator_envelope::MAX_ATTACK_SECONDS),
@@ -428,7 +455,7 @@ impl OperatorSettings {
         }
         let mut feedback = [0.0; OPERATORS];
         if state.state_version() >= FEEDBACK_STATE_VERSION {
-            for (index, bytes) in state.payload()[VELOCITY_PAYLOAD_BYTES..]
+            for (index, bytes) in state.payload()[VELOCITY_PAYLOAD_BYTES..FEEDBACK_PAYLOAD_BYTES]
                 .chunks_exact(size_of::<f32>())
                 .enumerate()
             {
@@ -438,12 +465,18 @@ impl OperatorSettings {
                 feedback[index] = f32::from_le_bytes(bytes);
             }
         }
+        let lfo = if state.state_version() >= OPERATOR_STATE_VERSION {
+            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..])?
+        } else {
+            lfo::LfoSettings::default()
+        };
         let result = Self {
             fields,
             waveforms,
             tuning,
             amplitude_velocity,
             feedback,
+            lfo,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -468,6 +501,7 @@ impl OperatorSettings {
         for amount in self.feedback {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
+        self.lfo.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -483,17 +517,18 @@ impl OperatorSettings {
         DeviceContractError,
     > {
         self.tuning.modes()?;
+        self.lfo.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - OPERATORS - FEEDBACK_COUNT + index]
+            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - OPERATORS - FEEDBACK_COUNT + index]
                 .validate(ParameterValue::Float(*amount))?;
         }
         for (index, amount) in self.feedback.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - FEEDBACK_COUNT + index]
+            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - FEEDBACK_COUNT + index]
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -657,6 +692,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.lfo.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.tuning.read(parameter) {
             return Ok(value);
         }
@@ -722,6 +760,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.lfo.patch(parameter, value) {
+            return settings.to_state();
+        }
         if let Some(index) = OperatorSettings::feedback_index(parameter) {
             let ParameterValue::Float(amount) = value else {
                 return Err(DeviceContractError::InvalidParameterValue);
@@ -787,6 +828,12 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
+        let lfo_runtime = lfo_runtime::prepare_factory(
+            &settings,
+            configuration.clone(),
+            sample_rate,
+            sine_table,
+        )?;
         let feedback_runtime = feedback_runtime::prepare_factory(
             &settings,
             configuration.clone(),
@@ -797,6 +844,7 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             configuration,
             sine_table,
             feedback_runtime,
+            lfo_runtime,
         }))
     }
 }
@@ -805,9 +853,19 @@ struct PreparedOperatorInstrument {
     configuration: PreparedOperatorConfiguration,
     sine_table: &'static SineTable,
     feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
+    lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
+        if self.lfo_runtime.is_some() {
+            self.configuration
+                .prepare_lfo_note(pitch, velocity)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        }
+        Ok(())
+    }
+
     fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
@@ -815,7 +873,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prepare_shared_analytic_context(
         &self,
     ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
-        if self.feedback_runtime.is_some() {
+        if self.feedback_runtime.is_some() || self.lfo_runtime.is_some() {
             // Mutable feedback must never be silently rendered through the
             // legacy analytic sampler. Event-source compilation owns this
             // instrument through `prepare_mutable_runtime` instead.
@@ -831,6 +889,11 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         &self,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
     {
+        if let Some(factory) = self.lfo_runtime.as_ref() {
+            return Ok(Some(
+                Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
+            ));
+        }
         Ok(self.feedback_runtime.as_ref().map(|factory| {
             Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
         }))

@@ -39,7 +39,9 @@ BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               # Raw source-page fingerprints belong to control-side media, never DSP.
               'sha2': {'hex-media'},
               # Safe exclusive/exchange publication belongs to offline export.
-              'rustix': {'hex-export'}}
+              'rustix': {'hex-export'},
+              # Advisory journal locks stay on the storage/control boundary.
+              'fs2': {'hex-storage'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
