@@ -179,8 +179,28 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
             .debug_bounds(selector("effect-device", ids[8]))
             .is_some()
     );
+    let narrow_mounted = ids
+        .iter()
+        .filter(|id| {
+            visual
+                .debug_bounds(selector("effect-device", **id))
+                .is_some()
+        })
+        .count();
     visual.simulate_resize(size(px(1300.0), px(700.0)));
     visual.run_until_parked();
+    let wide_mounted = ids
+        .iter()
+        .filter(|id| {
+            visual
+                .debug_bounds(selector("effect-device", **id))
+                .is_some()
+        })
+        .count();
+    assert!(
+        wide_mounted > narrow_mounted,
+        "resize must expand actual composed geometry"
+    );
     assert_eq!(
         editor.read_with(cx, |view, _| view.device_panel.controls.len()),
         control_count
