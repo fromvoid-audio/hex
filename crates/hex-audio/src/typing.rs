@@ -238,13 +238,9 @@ impl Key {
 }
 
 /// Validate the actual floating value delivered to the supported native sample
-/// converters, including mono summation (finite stereo can overflow there).
+/// converters, using the same overflow-safe mono mean as the host copy path.
 pub fn output_is_finite(frames: &[[f32; 2]], channels: usize) -> bool {
-    channels != 0
-        && frames.iter().all(|frame| {
-            frame.iter().all(|value| value.is_finite())
-                && (channels != 1 || ((frame[0] + frame[1]) * 0.5).is_finite())
-        })
+    crate::device::host_samples_are_finite::<f32>(frames, channels)
 }
 fn encode_refusal(reason: Refusal) -> u64 {
     match reason {

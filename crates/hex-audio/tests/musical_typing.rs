@@ -198,9 +198,9 @@ fn pause_in_the_same_prefix_cancels_unapplied_onsets_instead_of_resurrecting_the
 }
 
 #[test]
-fn final_channel_validation_catches_mono_overflow_and_nonfinite_stereo() {
+fn final_channel_validation_accepts_representable_mono_extrema_and_refuses_nonfinite_stereo() {
     assert!(hex_audio::typing::output_is_finite(&[[0.5, -0.5]], 1));
-    assert!(!hex_audio::typing::output_is_finite(
+    assert!(hex_audio::typing::output_is_finite(
         &[[f32::MAX, f32::MAX]],
         1
     ));

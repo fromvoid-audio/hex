@@ -165,20 +165,20 @@ where
                 let frames = chunk.len() / channels;
                 let block_start_frame = status.position.load(Relaxed);
                 let rendered = callback.render(&mut block[..frames]);
-                let render_valid =
-                    rendered.is_ok() && copy_host_chunk(chunk, &block[..frames], channels);
-                let _ = callback.finish_spectrum_block(start, render_valid);
-                if !render_valid {
-                    chunk.fill(T::from_sample(0.0));
-                    block[..frames].fill([0.0; 2]);
-                    callback.report_render_fault(rendered.as_ref().err(), block_start_frame);
-                }
+                finish_host_chunk(
+                    &mut callback,
+                    chunk,
+                    &mut block[..frames],
+                    channels,
+                    &rendered,
+                    block_start_frame,
+                    start,
+                );
                 for stereo in &block[..frames] {
                     for channel in 0..2 {
                         peaks[channel] = peaks[channel].max(stereo[channel].abs());
                     }
                 }
-                callback.finish_typing_output(render_valid);
             }
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);
@@ -194,6 +194,29 @@ where
         },
         None,
     )
+}
+
+fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
+    callback: &mut prepared::Callback,
+    output: &mut [T],
+    source: &mut [Frame],
+    channels: usize,
+    rendered: &Result<(), hex_engine::Invalid>,
+    block_start_frame: u64,
+    capture_start: Instant,
+) -> bool
+where
+    f32: FromSample<T>,
+{
+    let valid = rendered.is_ok() && copy_host_chunk(output, source, channels);
+    let _ = callback.finish_spectrum_block(capture_start, valid);
+    if !valid {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
+        callback.report_render_fault(rendered.as_ref().err(), block_start_frame);
+    }
+    callback.finish_typing_output(valid);
+    valid
 }
 
 // Preserve the existing rounding (including subnormals) when the sum fits.
@@ -231,15 +254,8 @@ fn copy_host_chunk<T: SizedSample + FromSample<f32>>(
 where
     f32: FromSample<T>,
 {
-    let valid = channels != 0
-        && source.len().checked_mul(channels) == Some(output.len())
-        && source.iter().all(|stereo| {
-            stereo.iter().all(|sample| sample.is_finite())
-                && (0..channels).all(|channel| {
-                    let converted = T::from_sample(host_value(stereo, channels, channel));
-                    f32::from_sample(converted).is_finite()
-                })
-        });
+    let valid = source.len().checked_mul(channels) == Some(output.len())
+        && host_samples_are_finite::<T>(source, channels);
     if !valid {
         output.fill(T::from_sample(0.0));
         return false;
@@ -252,9 +268,34 @@ where
     true
 }
 
+pub(crate) fn host_samples_are_finite<T: SizedSample + FromSample<f32>>(
+    source: &[Frame],
+    channels: usize,
+) -> bool
+where
+    f32: FromSample<T>,
+{
+    channels != 0
+        && source.iter().all(|stereo| {
+            stereo.iter().all(|sample| sample.is_finite())
+                && (0..channels).all(|channel| {
+                    let converted = T::from_sample(host_value(stereo, channels, channel));
+                    f32::from_sample(converted).is_finite()
+                })
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{copy_host_chunk, mono_mean, validate_expected_rate};
+    use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};
+    use crate::prepared;
+    use cpal::{FromSample, SizedSample};
+    use hex_engine::{
+        PlaybackCommand,
+        live_input::{PreparedTypingArm, TypingTarget},
+        typing_protocol::{Action, Token},
+    };
+    use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
     #[test]
     fn recovery_rate_mismatch_is_rejected_before_stream_construction() {
@@ -392,6 +433,216 @@ mod tests {
         assert_eq!(output, [0.0; 3]);
         assert!(!copy_host_chunk(&mut output, &[], 0));
         assert!(!copy_host_chunk(&mut output, &[[0.0; 2]], usize::MAX));
+    }
+
+    fn typing_callback() -> (prepared::Control, prepared::Callback, TypingTarget) {
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "host conversion".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        let target = TypingTarget {
+            project_generation: 0,
+            project_revision: 1,
+            track,
+            device,
+        };
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback =
+            hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+        playback
+            .prepare_typing_input_with_bridge(
+                PreparedTypingArm::prepare(editor.project(), target).unwrap(),
+                1,
+                prepared::input_bridge_storage_bytes().unwrap(),
+            )
+            .unwrap();
+        let (mut control, callback) = prepared::channel(48_000).unwrap();
+        control.publish(playback).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        (control, callback, target)
+    }
+
+    fn checked_host_finish<T: SizedSample + FromSample<f32>>(
+        callback: &mut prepared::Callback,
+        output: &mut [T],
+        source: &mut [hex_engine::Frame],
+        channels: usize,
+        rendered: &Result<(), hex_engine::Invalid>,
+        block_start_frame: u64,
+        capture_start: Instant,
+    ) -> bool
+    where
+        f32: FromSample<T>,
+    {
+        #[cfg(feature = "allocation-probe")]
+        {
+            let mut accepted = false;
+            let measured = allocation_counter::measure(|| {
+                accepted = finish_host_chunk(
+                    callback,
+                    output,
+                    source,
+                    channels,
+                    rendered,
+                    block_start_frame,
+                    capture_start,
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            accepted
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            finish_host_chunk(
+                callback,
+                output,
+                source,
+                channels,
+                rendered,
+                block_start_frame,
+                capture_start,
+            )
+        }
+    }
+
+    fn host_copy_ack_regression<T: SizedSample + FromSample<f32> + std::fmt::Debug>()
+    where
+        f32: FromSample<T>,
+    {
+        for channels in [1, 2, 4] {
+            let (mut control, mut callback, target) = typing_callback();
+            let action = |serial, key| Action::On {
+                owner: target.owner().unwrap(),
+                token: Token { epoch: 1, serial },
+                key,
+                pitch: 60 + key,
+                velocity: 100,
+            };
+            let success_ticket = control.typing_with_ticket(action(1, 0)).unwrap();
+            callback.begin_block();
+            let mut source = [[0.0; 2]; 256];
+            let rendered = callback.render(&mut source);
+            assert!(rendered.is_ok());
+            assert!(control.status.typing.snapshot().unwrap().applications[0].is_none());
+            // Inject finite boundary values after real engine rendering: the
+            // actual host path must accept their representable mono mean.
+            source[0] = [f32::MAX; 2];
+            let count = channels * source.len();
+            let mut output = vec![T::from_sample(0.0); count * 2];
+            assert!(checked_host_finish(
+                &mut callback,
+                &mut output[..count],
+                &mut source,
+                channels,
+                &rendered,
+                0,
+                Instant::now()
+            ));
+            assert_eq!(output[0], T::from_sample(f32::MAX));
+            let success = control.status.typing.snapshot().unwrap().applications[0].unwrap();
+            assert_eq!(success.ticket, success_ticket);
+            assert_eq!(success.result, Ok(()));
+            let prefix = output[..count].to_vec();
+
+            let failed_ticket = control.typing_with_ticket(action(2, 1)).unwrap();
+            callback.begin_block();
+            let rendered = callback.render(&mut source);
+            assert!(rendered.is_ok());
+            assert!(control.status.typing.snapshot().unwrap().applications[1].is_none());
+            source[255][1] = f32::NAN;
+            assert!(!checked_host_finish(
+                &mut callback,
+                &mut output[count..],
+                &mut source,
+                channels,
+                &rendered,
+                256,
+                Instant::now()
+            ));
+            let rejected = control.status.typing.snapshot().unwrap();
+            assert!(!rejected.armed);
+            assert_eq!(rejected.cut_through_epoch, 1);
+            assert_eq!(rejected.applications[0].unwrap().ticket, success_ticket);
+            assert!(rejected.applications[1].is_none());
+            assert!(
+                !rejected
+                    .applications
+                    .iter()
+                    .flatten()
+                    .any(|application| application.ticket == failed_ticket
+                        && application.result.is_ok())
+            );
+            assert_eq!(output[..count], prefix);
+            assert!(
+                output[count..]
+                    .iter()
+                    .all(|value| *value == T::from_sample(0.0))
+            );
+
+            // A subsequent successful/silent copy must not resurrect the failed
+            // onset or its application ACK, nor erase the committed prefix.
+            callback.begin_block();
+            let rendered = callback.render(&mut source);
+            assert!(rendered.is_ok());
+            assert!(source.iter().all(|frame| *frame == [0.0; 2]));
+            assert!(checked_host_finish(
+                &mut callback,
+                &mut output[count..],
+                &mut source,
+                channels,
+                &rendered,
+                512,
+                Instant::now()
+            ));
+            let after = control.status.typing.snapshot().unwrap();
+            assert!(after.applications[1].is_none());
+            assert_eq!(after.applications[0].unwrap().ticket, success_ticket);
+            assert_eq!(output[..count], prefix);
+        }
+    }
+
+    #[test]
+    fn actual_host_copy_commits_extrema_but_failed_chunk_never_publishes_or_resurrects_ack() {
+        host_copy_ack_regression::<f32>();
+        host_copy_ack_regression::<i16>();
+        host_copy_ack_regression::<u16>();
     }
 
     #[cfg(feature = "allocation-probe")]
