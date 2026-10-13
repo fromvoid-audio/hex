@@ -9,6 +9,25 @@ sanity checks remain user acceptance. Automated validation is recorded with the
 task result. Pulse intake is currently blocked: its create-ticket endpoint
 requires a request_id that the installed tool schema does not expose.
 
+## Open latest session log from header — 13 october 2026
+
+A compact debug control sits at the far right beside the version in the editor,
+startup and demo headers. It opens the current session's log with the macOS
+default text editor (`open -t`), using the injected path and a background launcher.
+Repeated pending requests are ignored; missing logging and launch failures show
+a lowercase dialog. The existing header layout test now checks the button's
+right edge, spacing and title-row bounds. See [session diagnostics](docs/diagnostics.md).
+
+Linux source guards, formatting, `cargo check -p hex-ui --locked` and strict
+UI-feature Clippy pass. Focused header/title and diagnostic tests pass, and the
+locked desktop build succeeds. The macOS-only layout test skips its assertions
+on Linux; full exact-commit local CI remains the merge gate.
+Native acceptance: click the control, verify the current session log opens in a
+text editor, and check title/version/button spacing at the minimum window width.
+Pulse ticket creation is blocked by a connector schema mismatch: the live
+server requires request_id but the connector does not pass that field through.
+No ticket update, merge or macOS test bundle is claimed.
+
 ## persistent Arrangement selection — pulse2386 / pr170
 
 The captured time range survives mouse release and subsequent idle controller
@@ -2295,3 +2314,16 @@ Hardware/compiler differ from the historical busy Mac, so no causal speedup,
 matched Mac idle baseline or physical callback deadline is claimed. No runtime,
 fixture, comparator or admission limit changed. Final exact-head local CI is
 the separate source-review gate; native evidence limitations remain explicit.
+
+## device selection fix — 13 october 2026
+
+Device cards now retain a transient selected DeviceId and share an accent
+border/title-bar state across instruments, track effects and Return effects.
+Capture-phase left mouse-down selects even when a nested control consumes input;
+owner changes, removal and project replacement retire selection. Focused rendered
+regressions were added. All 47 device-panel tests pass; disabling the new
+selection handler makes the click regression fail with no selected DeviceId.
+Architecture, GPUI patch, UI style and formatting guards pass. Full local CI
+is the remaining merge gate; native macOS click-through remains pending. Pulse issue intake is blocked: create_ticket
+requires request_id, which the exposed tool schema does not support. This entry
+records implementation evidence and does not replace Pulse planning authority.
