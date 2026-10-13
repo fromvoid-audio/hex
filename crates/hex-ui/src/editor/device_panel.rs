@@ -27,7 +27,9 @@ mod auto_pan_panel;
 mod compressor_panel;
 mod eq8_panel;
 mod gate_panel;
+mod navigation;
 mod numeric_display;
+pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
@@ -124,6 +126,7 @@ fn parameter_control_matches_identity(
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
+    pub(super) navigation: navigation::Navigation,
     generation: u64,
     selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
@@ -802,6 +805,7 @@ fn render_track(
         .p(px(DEVICE_CHAIN_PADDING))
         .overflow_x_scroll()
         .overflow_y_hidden();
+    chain = navigation::rail(view, chain);
     let chain_entity = cx.entity();
     let visible_chain_bounds = std::rc::Rc::new(std::cell::RefCell::new(None));
     let chain_visible_bounds = visible_chain_bounds.clone();
