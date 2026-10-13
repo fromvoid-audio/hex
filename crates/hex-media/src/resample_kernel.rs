@@ -6,6 +6,43 @@ pub(crate) const PHASE_COUNT: usize = 1_024;
 const BASE_SUPPORT_RADIUS: u64 = 32;
 const MAX_KERNEL_TABLE_BYTES: usize = 13 * 1_024 * 1_024;
 
+/// Actual reserved weight data and one shared kernel object, excluding Arc/
+/// allocator metadata and stack. Failed weight storage has been reclaimed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KernelBuildCapacity {
+    pub weight_slots: usize,
+    pub shared_object_bytes: usize,
+    pub reservation_attempted: bool,
+}
+impl KernelBuildCapacity {
+    pub fn weight_bytes(self) -> Option<usize> {
+        self.weight_slots.checked_mul(std::mem::size_of::<f64>())
+    }
+    pub fn data_bytes(self) -> Option<usize> {
+        self.weight_bytes()?.checked_add(self.shared_object_bytes)
+    }
+}
+#[derive(Debug)]
+pub struct KernelBuildFailure {
+    error: ImportError,
+    capacity: KernelBuildCapacity,
+}
+impl KernelBuildFailure {
+    pub fn into_parts(self) -> (ImportError, KernelBuildCapacity) {
+        (self.error, self.capacity)
+    }
+}
+impl fmt::Display for KernelBuildFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl std::error::Error for KernelBuildFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// Cloneable, control-side handle to a prepared v1 sinc kernel.
 ///
 /// Clones share one immutable table. There is no global cache; callers decide
@@ -36,6 +73,42 @@ impl fmt::Debug for ResampleKernel {
 impl ResampleKernel {
     /// Prepares the v1 table for one source/target rate pair.
     pub fn new(source_rate: u32, target_rate: u32) -> Result<Self, ImportError> {
+        Self::new_reported(source_rate, target_rate)
+            .map(|(kernel, _)| kernel)
+            .map_err(|failure| failure.into_parts().0)
+    }
+
+    /// Same v1 kernel math and limits, with actual construction data capacities
+    /// preserved on API-reported refusal. No process/allocator overhead claim.
+    pub fn new_reported(
+        source_rate: u32,
+        target_rate: u32,
+    ) -> Result<(Self, KernelBuildCapacity), KernelBuildFailure> {
+        Self::build_reported(source_rate, target_rate, |weights, count| {
+            weights
+                .try_reserve_exact(count)
+                .map_err(|_| ImportError::AllocationFailed)
+        })
+    }
+
+    fn build_reported(
+        source_rate: u32,
+        target_rate: u32,
+        reserve: impl FnOnce(&mut Vec<f64>, usize) -> Result<(), ImportError>,
+    ) -> Result<(Self, KernelBuildCapacity), KernelBuildFailure> {
+        let mut capacity = KernelBuildCapacity::default();
+        match Self::build(source_rate, target_rate, &mut capacity, reserve) {
+            Ok(kernel) => Ok((kernel, capacity)),
+            Err(error) => Err(KernelBuildFailure { error, capacity }),
+        }
+    }
+
+    fn build(
+        source_rate: u32,
+        target_rate: u32,
+        capacity: &mut KernelBuildCapacity,
+        reserve: impl FnOnce(&mut Vec<f64>, usize) -> Result<(), ImportError>,
+    ) -> Result<Self, ImportError> {
         validate_rates(source_rate, target_rate)?;
         let (radius, taps, weights) = if source_rate == target_rate {
             (0, 0, Vec::new())
@@ -59,7 +132,7 @@ impl ResampleKernel {
             if requested_bytes > MAX_KERNEL_TABLE_BYTES {
                 return Err(ImportError::LimitExceeded("resampling kernel table"));
             }
-            let weights = build_kernel_table(radius, taps, ratio, weight_count)?;
+            let weights = build_kernel_table(radius, taps, ratio, weight_count, capacity, reserve)?;
             let allocated_bytes = weights
                 .capacity()
                 .checked_mul(std::mem::size_of::<f64>())
@@ -69,6 +142,7 @@ impl ResampleKernel {
             }
             (radius, taps, weights)
         };
+        capacity.shared_object_bytes = std::mem::size_of::<KernelData>();
         Ok(Self {
             inner: Arc::new(KernelData {
                 source_rate,
@@ -128,13 +202,16 @@ fn build_kernel_table(
     taps: usize,
     ratio: f64,
     weight_count: usize,
+    capacity: &mut KernelBuildCapacity,
+    reserve: impl FnOnce(&mut Vec<f64>, usize) -> Result<(), ImportError>,
 ) -> Result<Vec<f64>, ImportError> {
     // c is normalized to Nyquist; with normalized sinc, the cycles/sample cutoff is c / 2.
     let cutoff_nyquist = 0.94 * ratio;
     let mut weights = Vec::new();
-    weights
-        .try_reserve_exact(weight_count)
-        .map_err(|_| ImportError::AllocationFailed)?;
+    capacity.reservation_attempted = true;
+    let result = reserve(&mut weights, weight_count);
+    capacity.weight_slots = weights.capacity();
+    result?;
     for phase_index in 0..PHASE_COUNT {
         let phase = phase_index as f64 / PHASE_COUNT as f64;
         let row_start = weights.len();
@@ -172,5 +249,46 @@ fn sinc(value: f64) -> f64 {
     } else {
         let angle = std::f64::consts::PI * value;
         angle.sin() / angle
+    }
+}
+
+#[cfg(test)]
+mod reporting_tests {
+    use super::*;
+    #[test]
+    fn reported_build_matches_legacy_and_preserves_refused_capacity() {
+        for (source, target) in [(48000, 48000), (44100, 48000), (48000, 16000)] {
+            let legacy = ResampleKernel::new(source, target).unwrap();
+            let (reported, capacity) = ResampleKernel::new_reported(source, target).unwrap();
+            assert_eq!(legacy.inner.weights, reported.inner.weights);
+            assert_eq!(
+                capacity.weight_bytes(),
+                Some(reported.table_payload_bytes())
+            );
+            assert_eq!(capacity.shared_object_bytes, reported.shared_object_bytes());
+        }
+        let failure =
+            ResampleKernel::build_reported(44100, 48000, |_, _| Err(ImportError::AllocationFailed))
+                .unwrap_err();
+        let (error, capacity) = failure.into_parts();
+        assert!(matches!(error, ImportError::AllocationFailed));
+        assert!(capacity.reservation_attempted);
+        assert_eq!(capacity.weight_slots, 0);
+        let mut observed = 0;
+        let failure = ResampleKernel::build_reported(44100, 48000, |weights, count| {
+            weights.try_reserve_exact(count).unwrap();
+            observed = weights.capacity();
+            Err(ImportError::AllocationFailed)
+        })
+        .unwrap_err();
+        assert_eq!(failure.into_parts().1.weight_slots, observed);
+        assert_eq!(
+            KernelBuildCapacity {
+                weight_slots: usize::MAX,
+                ..KernelBuildCapacity::default()
+            }
+            .data_bytes(),
+            None
+        );
     }
 }

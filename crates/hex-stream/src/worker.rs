@@ -1,3 +1,4 @@
+use crate::construction_report::{WorkerConstructionObservation, WorkerObserver};
 use crate::{AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint};
 use crate::{
     endpoint::{PageBuffer, PageRequest},
@@ -35,26 +36,115 @@ struct Source {
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
-    mut free_pages: Vec<Box<PageBuffer>>,
-    mut queues: WorkerQueues,
+    free_pages: Vec<Box<PageBuffer>>,
+    queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
 ) -> Vec<Box<PageBuffer>> {
+    run_worker_inner(
+        config,
+        definitions,
+        free_pages,
+        queues,
+        stop,
+        |result, _| catalog_result.send(result).is_ok(),
+        WorkerObserver::legacy(),
+    )
+}
+
+pub(crate) fn run_worker_observed(
+    config: StreamConfig,
+    definitions: Vec<SourceDefinition>,
+    free_pages: Vec<Box<PageBuffer>>,
+    queues: WorkerQueues,
+    stop: Arc<AtomicBool>,
+    result: SyncSender<(
+        Result<VerifiedCatalog, StreamFailureKind>,
+        WorkerConstructionObservation,
+    )>,
+    observer: WorkerObserver,
+) -> Vec<Box<PageBuffer>> {
+    #[cfg(test)]
+    let exit_hold = observer.faults.exit_hold.clone();
+    let pages = run_worker_inner(
+        config,
+        definitions,
+        free_pages,
+        queues,
+        stop,
+        |catalog, observation| result.send((catalog, observation)).is_ok(),
+        observer,
+    );
+    #[cfg(test)]
+    if let Some(hold) = exit_hold {
+        while !hold.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+    }
+    pages
+}
+
+fn run_worker_inner(
+    config: StreamConfig,
+    definitions: Vec<SourceDefinition>,
+    mut free_pages: Vec<Box<PageBuffer>>,
+    mut queues: WorkerQueues,
+    stop: Arc<AtomicBool>,
+    publish: impl FnOnce(
+        Result<VerifiedCatalog, StreamFailureKind>,
+        WorkerConstructionObservation,
+    ) -> bool,
+    mut observer: WorkerObserver,
+) -> Vec<Box<PageBuffer>> {
+    let _ = &observer.faults;
+    #[cfg(test)]
+    if let Some(hold) = &observer.faults.hold {
+        while !hold.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+            thread::park_timeout(Duration::from_millis(1));
+        }
+    }
+    #[cfg(test)]
+    if observer.faults.panic_before_catalog {
+        panic!("injected construction worker panic");
+    }
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
-        .try_reserve_exact(config.source_scratch_frames)
-        .is_ok();
+        .try_reserve_exact(if observer.reserve().is_ok() {
+            config.source_scratch_frames
+        } else {
+            0
+        })
+        .is_ok()
+        && source_scratch.capacity() >= config.source_scratch_frames;
+    observer.data.catalog.source_scratch =
+        AllocationCapacity::of::<hex_engine::Frame>(source_scratch.capacity());
+    observer.publish();
     if scratch_ok {
         source_scratch.resize(config.source_scratch_frames, [0.0; 2]);
     }
     let mut held_pages = Vec::new();
     let mut held_failures = Vec::new();
-    let held_ok = held_pages.try_reserve_exact(config.page_buffers).is_ok()
+    let held_ok = observer.reserve().is_ok()
+        && held_pages.try_reserve_exact(config.page_buffers).is_ok()
+        && observer.reserve().is_ok()
         && held_failures
             .try_reserve_exact(config.request_capacity.saturating_mul(2))
             .is_ok();
+    observer.data.catalog.free_page_handles =
+        AllocationCapacity::of::<Box<PageBuffer>>(free_pages.capacity());
+    observer.data.catalog.held_page_handles =
+        AllocationCapacity::of::<Box<PageBuffer>>(held_pages.capacity());
+    observer.data.catalog.held_failures =
+        AllocationCapacity::of::<StreamFailure>(held_failures.capacity());
+    observer.publish();
     let catalog = if scratch_ok && held_ok {
-        build_catalog(&config, definitions, &mut source_scratch, &stop)
+        build_catalog(
+            &config,
+            definitions,
+            &mut source_scratch,
+            &stop,
+            &mut observer,
+        )
     } else {
         Err(StreamFailureKind::DecodeFailed)
     };
@@ -68,16 +158,35 @@ pub(crate) fn run_worker(
                 AllocationCapacity::of::<Box<PageBuffer>>(held_pages.capacity());
             allocations.held_failures =
                 AllocationCapacity::of::<StreamFailure>(held_failures.capacity());
-            verified_membership(sources, *footprint, allocations, *construction)
+            verified_membership(
+                sources,
+                *footprint,
+                allocations,
+                *construction,
+                &mut observer,
+            )
         },
     );
-    if catalog_result.send(catalog_message).is_err() {
+    observer.data.finalized = true;
+    observer.publish();
+    if !publish(catalog_message, observer.data) {
         return free_pages;
+    }
+    #[cfg(test)]
+    if observer.faults.panic_after_publish {
+        panic!("injected post-publication worker panic");
+    }
+    #[cfg(test)]
+    if observer.faults.lose_page {
+        drop(free_pages.pop());
     }
     let (mut sources, _, _, _) = match catalog {
         Ok(sources) => sources,
         Err(_) => return free_pages,
     };
+    // Construction telemetry is control-owned after publication; it is not
+    // retained by the playback worker or introduced into callback ownership.
+    drop(observer);
     loop {
         while let Ok(page) = queues.returns.pop() {
             free_pages.push(page);
@@ -162,11 +271,15 @@ fn verified_membership(
     footprint: CatalogFootprint,
     mut allocations: CatalogAllocationFootprint,
     construction: ConstructionAllocationFootprint,
+    observer: &mut WorkerObserver,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
-    members
-        .try_reserve_exact(sources.len())
-        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
+    observer.reserve()?;
+    let reservation = members.try_reserve_exact(sources.len());
+    observer.data.catalog.membership_slots =
+        AllocationCapacity::of::<StreamedSourceMetadata>(members.capacity());
+    observer.publish();
+    reservation.map_err(|_| StreamFailureKind::CapacityExhausted)?;
     members.extend(
         sources
             .iter()
@@ -179,6 +292,8 @@ fn verified_membership(
     allocations
         .bytes()
         .ok_or(StreamFailureKind::CapacityExhausted)?;
+    observer.data.catalog = allocations;
+    observer.publish();
     Ok(VerifiedCatalog {
         footprint,
         allocations,
@@ -192,6 +307,7 @@ fn build_catalog(
     mut definitions: Vec<SourceDefinition>,
     source_scratch: &mut Vec<[f32; 2]>,
     stop: &AtomicBool,
+    observer: &mut WorkerObserver,
 ) -> Result<
     (
         Vec<Source>,
@@ -212,6 +328,7 @@ fn build_catalog(
         return Err(StreamFailureKind::CapacityExhausted);
     }
     let definition_slots = AllocationCapacity::of::<SourceDefinition>(definitions.capacity());
+    observer.data.construction.definition_slots = definition_slots;
     let mut definition_path_bytes = 0_usize;
     let mut reader_path_bytes = 0_usize;
     let mut kernel_object_bytes = 0_usize;
@@ -227,6 +344,8 @@ fn build_catalog(
             return Err(StreamFailureKind::CapacityExhausted);
         }
     }
+    observer.data.catalog.definition_path_bytes = definition_path_bytes;
+    observer.publish();
     definitions.sort_unstable_by_key(|definition| definition.key);
     for pair in definitions.windows(2) {
         if pair[0].key == pair[1].key {
@@ -234,9 +353,11 @@ fn build_catalog(
         }
     }
     let mut sources = Vec::new();
-    sources
-        .try_reserve_exact(definitions.len())
-        .map_err(|_| StreamFailureKind::DecodeFailed)?;
+    observer.reserve()?;
+    let reservation = sources.try_reserve_exact(definitions.len());
+    observer.data.catalog.source_slots = AllocationCapacity::of::<Source>(sources.capacity());
+    observer.publish();
+    reservation.map_err(|_| StreamFailureKind::DecodeFailed)?;
     let mut kernels: Vec<(u32, u32, ResampleKernel)> = Vec::new();
     let mut manifest_bytes = 0_usize;
     let mut kernel_bytes = 0_usize;
@@ -251,18 +372,62 @@ fn build_catalog(
         let remaining_manifest = config.max_manifest_bytes.saturating_sub(manifest_bytes);
         let mut reader_limits = definition.reader_limits;
         reader_limits.max_manifest_bytes = reader_limits.max_manifest_bytes.min(remaining_manifest);
-        let mut reader =
-            VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, || {
+        let mut reader = if observer.observed() {
+            observer.reserve()?;
+            let mut path = std::ffi::OsString::new();
+            let reservation = path.try_reserve_exact(definition.path.as_os_str().len());
+            reader_path_bytes = reader_path_bytes
+                .checked_add(path.capacity())
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            observer.data.catalog.reader_path_bytes = reader_path_bytes;
+            observer.publish();
+            reservation.map_err(|_| StreamFailureKind::CapacityExhausted)?;
+            path.push(definition.path.as_os_str());
+            observer.reserve()?;
+            #[cfg(test)]
+            let mut cancel_calls = 0;
+            match VerifiedWavReader::open_owned_with_cancel(path.into(), reader_limits, || {
+                #[cfg(test)]
+                {
+                    if let Some(hook) = &observer.faults.on_cancel {
+                        hook(cancel_calls);
+                    }
+                    cancel_calls += 1;
+                }
                 stop.load(Ordering::Acquire)
-            })
-            .map_err(map_import_error)?;
-        reader_path_bytes = reader_path_bytes
-            .checked_add(reader.path_capacity_bytes())
-            .ok_or(StreamFailureKind::CapacityExhausted)?;
+            }) {
+                Ok(reader) => reader,
+                Err(failure) => {
+                    let (_, error, capacity) = failure.into_parts();
+                    observer.data.catalog.manifest_bytes = manifest_bytes
+                        .checked_add(
+                            capacity
+                                .manifest_bytes()
+                                .ok_or(StreamFailureKind::CapacityExhausted)?,
+                        )
+                        .ok_or(StreamFailureKind::CapacityExhausted)?;
+                    observer.publish();
+                    return Err(map_import_error(error));
+                }
+            }
+        } else {
+            let reader =
+                VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, || {
+                    stop.load(Ordering::Acquire)
+                })
+                .map_err(map_import_error)?;
+            reader_path_bytes = reader_path_bytes
+                .checked_add(reader.path_capacity_bytes())
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            reader
+        };
         let reader_manifest = reader.page_manifest_bytes();
         manifest_bytes = manifest_bytes
             .checked_add(reader_manifest)
             .ok_or(StreamFailureKind::CapacityExhausted)?;
+        observer.data.catalog.reader_path_bytes = reader_path_bytes;
+        observer.data.catalog.manifest_bytes = manifest_bytes;
+        observer.publish();
         if manifest_bytes > config.max_manifest_bytes {
             return Err(StreamFailureKind::CapacityExhausted);
         }
@@ -288,24 +453,47 @@ fn build_catalog(
                     .checked_add(MAX_KERNEL_BYTES)
                     .ok_or(StreamFailureKind::CapacityExhausted)?;
             }
+            observer.data.construction.kernel_table_peak_bound_bytes = kernel_budget_reserved;
+            observer.publish();
             if kernel_budget_reserved > config.max_kernel_table_bytes {
                 return Err(StreamFailureKind::CapacityExhausted);
             }
-            let kernel =
+            let kernel = if observer.observed() {
+                observer.reserve()?;
+                match ResampleKernel::new_reported(
+                    reader.sample_rate(),
+                    definition.metadata.project_rate(),
+                ) {
+                    Ok((kernel, _)) => kernel,
+                    Err(failure) => {
+                        let (error, capacity) = failure.into_parts();
+                        observer.data.failed_kernel = capacity;
+                        observer.publish();
+                        return Err(map_import_error(error));
+                    }
+                }
+            } else {
                 ResampleKernel::new(reader.sample_rate(), definition.metadata.project_rate())
-                    .map_err(map_import_error)?;
+                    .map_err(map_import_error)?
+            };
             kernel_object_bytes = kernel_object_bytes
                 .checked_add(kernel.shared_object_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
             kernel_bytes = kernel_bytes
                 .checked_add(kernel.table_payload_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
+            observer.data.catalog.kernel_object_bytes = kernel_object_bytes;
+            observer.data.catalog.kernel_weight_bytes = kernel_bytes;
+            observer.publish();
             if kernel_bytes > config.max_kernel_table_bytes {
                 return Err(StreamFailureKind::CapacityExhausted);
             }
-            kernels
-                .try_reserve(1)
-                .map_err(|_| StreamFailureKind::DecodeFailed)?;
+            observer.reserve()?;
+            let reservation = kernels.try_reserve(1);
+            observer.data.construction.kernel_cache_slots =
+                AllocationCapacity::of::<(u32, u32, ResampleKernel)>(kernels.capacity());
+            observer.publish();
+            reservation.map_err(|_| StreamFailureKind::DecodeFailed)?;
             kernels.push((
                 reader.sample_rate(),
                 definition.metadata.project_rate(),

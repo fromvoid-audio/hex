@@ -25,7 +25,7 @@ mod resample_plan_tests;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::ResampleKernel;
+pub use resample_kernel::{KernelBuildCapacity, KernelBuildFailure, ResampleKernel};
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
     OwnedVerifiedOpenFailure, VERIFIED_WAV_PAGE_BYTES, VerifiedOpenCapacity, VerifiedWavReader,

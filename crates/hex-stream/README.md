@@ -108,3 +108,52 @@ The legacy consuming constructors and their limits are unchanged. Worker
 integration, failed-construction capacity observation and an owned reader-path
 boundary remain separate work; this copy report does not charge those costs.
 These APIs and all final drops belong on control, never in a callback.
+
+`StreamConstructionRequest` is the opt-in control-owned integration of compact
+input copying with actual worker catalog verification. Its constructor only
+moves existing owners. Callers explicitly reserve a maximum for its reported
+construction data scope; no application/global budget is supplied. Originals
+remain unchanged on control through Unstarted, Pending, CatalogVerified,
+CancellingCleaning and Failed, until successful finish or terminal recovery
+transfers them once and marks the request Consumed.
+
+`start` constructs the private endpoint, pool and transport before spawning.
+An ownership cell retains compact definitions, pool and worker queues until the
+successfully spawned worker takes them once. Setup/spawn refusal reclaims them
+on control with actual created-page counts. The worker fallibly copies a distinct
+reader path and uses owned media opening; compact definition paths move into
+Sources once. `poll`/`poll_timeout` observe actual worker results; a timeout leaves
+Pending. Cancellation wins a queued success and prevents finish. No runtime,
+page endpoint or catalog lease can escape before `try_finish` receives complete
+catalog verification and checks actual component capacities/conservative overlap
+against the caller reservation. CatalogVerified is not installed-page readiness.
+
+`try_recover` retains request/original owners while the worker is active. After
+actual termination it returns originals with a failure and explicit cleanup:
+NotStarted counts, normal full PagePoolReport, incomplete pool accounting, or
+JoinFailed with only known queued/held counts. Panic cannot manufacture a worker
+inventory or complete pool conservation. Cached-page transfers are not additive
+reclamation counts. All methods, recovery and final drops belong on control;
+Drop is best effort and can block joining filesystem work. Cooperative cancel
+cannot promise an I/O deadline. Fatal OOM/abort is outside recovery guarantees.
+
+Fixed-size ConstructionCapacityReport observations survive API-reported worker
+failure, including actual incoming/source/cache/membership slots, path/manifest
+capacities, scratch and held buffers. Unique kernel data/weights are charged once,
+including reported kernel-construction failures. Incoming definition slots are
+construction overlap; transferred compact paths are not charged again. Caller
+retained/construction declarations must be disjoint. Construction-only startup/
+telemetry objects are reclaimed on control; they do not become playback owners.
+The report bounds listed reserved data capacities and conservative construction
+overlaps, not simultaneous process peak/RSS. Opaque allocator/Arc/mpsc/thread/OS
+costs, stack and caller handles remain excluded. Finalized observations mean a
+worker API outcome, not cleanup success; panic observations stay partial and
+cannot authorize a finalized bound. Actual excess capacity may exist before
+being observed/refused. Legacy consuming APIs and all component ceilings remain.
+
+This is headless catalog construction only. It adds no callback ownership work,
+engine/project/storage edits, protected-page prewarm or native streamed
+publication. Native endpoint retirement/readiness/admission and sustained
+optimized 100-track mixed-rate playback/edit/seek/launch/fault acceptance remain
+required before resident limits can be lifted. Full Pulse24 acceptance and HOLD
+remain in effect; this source stage is not issue completion.

@@ -3,6 +3,9 @@
 // moves through the bounded worker, ready and return queues.
 #![allow(clippy::vec_box)]
 
+mod construction;
+mod construction_report;
+mod construction_transport;
 mod endpoint;
 mod footprint;
 mod page_endpoint;
@@ -12,6 +15,12 @@ mod staging;
 mod types;
 mod worker;
 
+pub use construction::{
+    ConstructionCapacityReport, ConstructionCleanup, ConstructionRefusal, ConstructionState,
+    FinishedStreamInput, RecoveredStreamInput, StreamConstructionRequest,
+};
+pub use construction_report::WorkerConstructionObservation;
+pub use construction_transport::TransportSetupObservation;
 pub use endpoint::EndpointStats;
 pub use footprint::{
     AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint,

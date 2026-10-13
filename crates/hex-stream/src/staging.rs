@@ -100,6 +100,15 @@ pub struct CompactSourceInput {
     report: Option<CompactCopyReport>,
 }
 impl CompactSourceInput {
+    pub(crate) fn into_stage_parts(
+        self,
+    ) -> (
+        Vec<SourceDefinition>,
+        Option<Vec<SourceDefinition>>,
+        Option<CompactCopyReport>,
+    ) {
+        (self.originals, self.compact, self.report)
+    }
     pub fn new(originals: Vec<SourceDefinition>) -> Self {
         Self {
             originals,

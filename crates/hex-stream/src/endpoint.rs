@@ -21,10 +21,14 @@ impl PageBuffer {
     }
 
     pub(crate) fn new_with_capacity() -> Result<(Box<Self>, usize), ()> {
+        Self::new_reported(&mut 0)
+    }
+
+    pub(crate) fn new_reported(observed_capacity: &mut usize) -> Result<(Box<Self>, usize), ()> {
         let mut frames = Vec::new();
-        frames
-            .try_reserve_exact(STREAM_PAGE_FRAMES)
-            .map_err(|_| ())?;
+        let reserved = frames.try_reserve_exact(STREAM_PAGE_FRAMES);
+        *observed_capacity = frames.capacity();
+        reserved.map_err(|_| ())?;
         frames.resize(STREAM_PAGE_FRAMES, [0.0; 2]);
         let capacity = frames.capacity();
         Ok((
@@ -110,8 +114,29 @@ impl Endpoint {
         sources: Vec<StreamSourceKey>,
         queues: EndpointQueues,
     ) -> Result<Self, ()> {
+        Self::new_reported(
+            cache_pages,
+            request_capacity,
+            sources,
+            queues,
+            &mut crate::EndpointAllocationFootprint::default(),
+            || Ok(()),
+        )
+    }
+
+    pub(crate) fn new_reported(
+        cache_pages: usize,
+        request_capacity: usize,
+        sources: Vec<StreamSourceKey>,
+        queues: EndpointQueues,
+        observation: &mut crate::EndpointAllocationFootprint,
+        mut before_reserve: impl FnMut() -> Result<(), ()>,
+    ) -> Result<Self, ()> {
         let max_cached_pages = cache_pages.saturating_sub(1);
         let cache_count = max_cached_pages.checked_next_power_of_two().ok_or(())?;
+        observation.source_keys =
+            crate::AllocationCapacity::of::<StreamSourceKey>(sources.capacity());
+        observation.max_cached_pages = max_cached_pages;
         let pending_count = request_capacity
             .checked_mul(2)
             .ok_or(())?
@@ -119,15 +144,23 @@ impl Endpoint {
             .ok_or(())?;
         let mut cache = Vec::new();
         let cache_slots = cache_count.checked_mul(2).ok_or(())?;
-        cache.try_reserve_exact(cache_slots).map_err(|_| ())?;
+        before_reserve()?;
+        let reserved = cache.try_reserve_exact(cache_slots);
+        observation.cache = crate::AllocationCapacity::of::<CacheSlot>(cache.capacity());
+        reserved.map_err(|_| ())?;
         cache.resize_with(cache_slots, || CacheSlot::Empty);
         let mut pending = Vec::new();
-        pending.try_reserve_exact(pending_count).map_err(|_| ())?;
+        before_reserve()?;
+        let reserved = pending.try_reserve_exact(pending_count);
+        observation.pending = crate::AllocationCapacity::of::<PendingSlot>(pending.capacity());
+        reserved.map_err(|_| ())?;
         pending.resize_with(pending_count, || PendingSlot::Empty);
         let mut held_returns = Vec::new();
-        held_returns
-            .try_reserve_exact(cache_pages.checked_add(1).ok_or(())?)
-            .map_err(|_| ())?;
+        before_reserve()?;
+        let reserved = held_returns.try_reserve_exact(cache_pages.checked_add(1).ok_or(())?);
+        observation.held_returns =
+            crate::AllocationCapacity::of::<Box<PageBuffer>>(held_returns.capacity());
+        reserved.map_err(|_| ())?;
         Ok(Self {
             cache,
             max_cached_pages,

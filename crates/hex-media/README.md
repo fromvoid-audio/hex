@@ -144,3 +144,13 @@ allocated payload capacities. The fixed reader scratch is inline in the reader;
 count it once with the owning object, and count a shared kernel/table once across
 handles. These queries allocate, clone and mutate nothing; they exclude opaque
 allocator/Arc headers and provide reporting, not new import/admission policy.
+
+`ResampleKernel::new_reported` uses exactly the same v1 table math and existing
+rate/table limits as `new`. It returns a fixed-size KernelBuildCapacity with
+actual reserved weight slots and one shared kernel object's data size. Every
+API-reported refusal returns the existing ImportError and observations before
+failed weight storage was reclaimed. Weight capacity is observed immediately
+after reservation, including capacity refused by the existing ceiling. Sharing
+handles does not multiply object/table charges. Arithmetic is checked; Arc and
+allocator metadata, stack and process-fatal OOM/abort are excluded. This reports
+construction data; it introduces no global cache, budget or playback policy.

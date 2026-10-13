@@ -214,6 +214,43 @@ pub struct StreamRuntime {
 }
 
 impl StreamRuntime {
+    pub(crate) fn from_construction(
+        config: StreamConfig,
+        allocations: crate::TransportAllocationFootprint,
+        endpoint: Endpoint,
+        stop: Arc<AtomicBool>,
+        worker: JoinHandle<Vec<Box<PageBuffer>>>,
+        catalog: VerifiedCatalog,
+    ) -> Self {
+        let worker_wake = worker.thread().clone();
+        let (_, receiver) = mpsc::sync_channel(1);
+        let owner = Arc::new(CatalogOwner {
+            config,
+            allocations,
+            stop,
+            worker_wake,
+            worker: Mutex::new(Some(worker)),
+            catalog_state: Mutex::new(CatalogState {
+                receiver,
+                result: Some(Ok(Arc::new(catalog))),
+            }),
+            #[cfg(test)]
+            worker_finished: Arc::new(AtomicBool::new(false)),
+        });
+        let pair_id = Arc::new(());
+        Self {
+            control: Some(StreamControl {
+                pair_id: Arc::clone(&pair_id),
+                owner: Arc::clone(&owner),
+            }),
+            pages: Some(StreamCallbackPages {
+                pair_id,
+                endpoint,
+                max_ready_pages_per_pump: config.max_ready_pages_per_pump,
+                _owner: owner,
+            }),
+        }
+    }
     pub fn new(
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
@@ -464,6 +501,10 @@ impl StreamRuntime {
             ShutdownError::Runtime(error) => error,
         })
     }
+}
+
+pub(crate) fn catalog_owner_data_bytes() -> usize {
+    std::mem::size_of::<CatalogOwner>()
 }
 
 impl StreamControl {
