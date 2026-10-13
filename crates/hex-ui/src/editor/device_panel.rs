@@ -24,6 +24,7 @@ use std::{
 };
 
 mod auto_pan_panel;
+mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod gate_panel;
@@ -123,6 +124,7 @@ fn parameter_control_matches_identity(
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
+    chain_window: chain_window::ChainWindow,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -343,7 +345,11 @@ pub(super) fn enqueue_return_edit(
     finalize_controls(view, cx) && view.enqueue_device_barrier(Request::Edit(command))
 }
 
-pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Stateful<Div> {
+pub(super) fn view(
+    view: &mut EditorView,
+    window: Option<&Window>,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
     retire_removed_send_controls(view, cx);
     if view.device_panel.generation != view.project_generation {
         // Project replacement retires the worker gesture. Drop old subscriptions
@@ -370,6 +376,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
             let _ = audio.control.spectrum_target.clear();
             let _ = audio.control.processor_audition.cancel_immediately();
         }
+        view.device_panel.chain_window = Default::default();
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
@@ -443,10 +450,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
                 }
             } else if !finalize_controls(view, cx) {
                 view.device_panel.message = Some("finish the active device value first".into());
-                return render_owner(view, cx, &state, previous);
+                return render_owner(view, window, cx, &state, previous);
             } else if view.device_gesture.snapshot().is_some() {
                 view.device_panel.message = Some("finishing device edit".into());
-                return render_owner(view, cx, &state, previous);
+                return render_owner(view, window, cx, &state, previous);
             }
         }
         view.device_panel.controls.clear();
@@ -464,13 +471,14 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.compressor_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
+        view.device_panel.chain_window = Default::default();
         view.device_panel.owner = desired_owner;
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Track(track)) => render_track(view, cx, &state, track),
+        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
         Some(DevicePanelOwner::Return(return_track)) => {
-            return_view::render(view, cx, &state, return_track)
+            return_view::render(view, window, cx, &state, return_track)
         }
         None => empty_panel("select a track or return to view devices"),
     }
@@ -495,14 +503,15 @@ fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
 
 fn render_owner(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     owner: DevicePanelOwner,
 ) -> Stateful<Div> {
     match owner {
-        DevicePanelOwner::Track(track) => render_track(view, cx, state, track),
+        DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
         DevicePanelOwner::Return(return_track) => {
-            return_view::render(view, cx, state, return_track)
+            return_view::render(view, window, cx, state, return_track)
         }
     }
 }
@@ -595,6 +604,7 @@ fn cancel_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
 
 fn render_track(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     track_id: TrackId,
@@ -773,6 +783,9 @@ fn render_track(
 
     let mut chain = div()
         .id("device-chain-scroll")
+        .track_scroll(&view.device_panel.chain_window.scroll)
+        .relative()
+        .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
         .debug_selector(|| "device-chain-scroll".into())
         .flex_1()
         .min_h_0()
@@ -808,8 +821,24 @@ fn render_track(
             | hex_project::TrackDeviceRef::Effect(device) => device.id(),
         })
         .collect();
+    let geometry: Vec<_> = nodes
+        .iter()
+        .map(|node| {
+            let (device, class) = match node {
+                hex_project::TrackDeviceRef::Instrument(device) => {
+                    (*device, NativeDeviceClass::Instrument)
+                }
+                hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
+            };
+            (
+                device.id(),
+                device_card_width(class, device.state().type_id()),
+            )
+        })
+        .collect();
+    view.device_panel.chain_window.prepare(&geometry);
     let first_device = device_ids.first().copied();
-    let mut effect_index = 0;
+    let mut effect_index: usize = 0;
     for (index, node) in nodes.into_iter().enumerate() {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
@@ -817,6 +846,17 @@ fn render_track(
             }
             hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
         };
+        let mounted = chain_window::must_mount(view, device.id(), window, cx);
+        if !mounted {
+            chain = chain.child(chain_window::spacer(
+                device.id(),
+                device_card_width(class, device.state().type_id()),
+            ));
+            if class == NativeDeviceClass::Effect {
+                effect_index = effect_index.saturating_add(1);
+            }
+            continue;
+        }
         let rendered = match class {
             NativeDeviceClass::Instrument => render_instrument(view, cx, track_id, device),
             NativeDeviceClass::Effect => {
@@ -825,20 +865,24 @@ fn render_track(
                 rendered
             }
         };
-        chain = chain.child(render_device_card_target(
-            view,
-            cx,
-            DeviceCardDropGeometry {
-                track: track_id,
-                device: device.id(),
-                class,
-                width: device_card_width(class, device.state().type_id()),
-                next: device_ids.get(index + 1).copied(),
-                first: first_device,
-                visible_chain_bounds: visible_chain_bounds.clone(),
-            },
-            rendered,
-        ));
+        let focus = view.device_panel.chain_window.focus(device.id(), cx);
+        chain = chain.child(
+            render_device_card_target(
+                view,
+                cx,
+                DeviceCardDropGeometry {
+                    track: track_id,
+                    device: device.id(),
+                    class,
+                    width: device_card_width(class, device.state().type_id()),
+                    next: device_ids.get(index + 1).copied(),
+                    first: first_device,
+                    visible_chain_bounds: visible_chain_bounds.clone(),
+                },
+                rendered,
+            )
+            .track_focus(&focus),
+        );
     }
     chain = chain.child(render_device_end_target(
         view,
@@ -905,6 +949,7 @@ fn render_track(
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }
+    chain = chain.child(chain_window::viewport_observer(view, cx));
     root = root.child(header).child(chain);
     if add_open {
         root = root.child(render_add_menu(

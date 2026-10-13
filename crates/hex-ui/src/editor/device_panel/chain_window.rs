@@ -1,0 +1,192 @@
+//! Window only composition, retaining every live control and its subscriptions.
+use super::*;
+use gpui::{FocusHandle, ScrollHandle, canvas, point};
+use std::{cell::Cell, rc::Rc};
+
+#[derive(Default)]
+pub(super) struct ChainWindow {
+    pub(super) scroll: ScrollHandle,
+    cards: Vec<(DeviceId, f32, f32)>,
+    focus: HashMap<DeviceId, FocusHandle>,
+    width: Rc<Cell<f32>>,
+}
+
+impl ChainWindow {
+    pub(super) fn prepare(&mut self, devices: &[(DeviceId, f32)]) {
+        let mut left = DEVICE_CHAIN_PADDING;
+        let cards: Vec<_> = devices
+            .iter()
+            .map(|(id, width)| {
+                let card = (*id, left, *width);
+                left += width + DEVICE_CHAIN_PADDING;
+                card
+            })
+            .collect();
+        if self.cards != cards {
+            // Keep the leftmost surviving visible card at its prior screen
+            // position when topology changes. Offsets are clamped by GPUI.
+            let offset = f32::from(self.scroll.offset().x);
+            let anchor = self.cards.iter().find(|(id, start, width)| {
+                start + width + offset > 0.0 && cards.iter().any(|card| card.0 == *id)
+            });
+            if let Some((id, old, _)) = anchor
+                && let Some((_, new, _)) = cards.iter().find(|card| card.0 == *id)
+            {
+                self.scroll
+                    .set_offset(point(px(offset + old - new), px(0.0)));
+            }
+            self.focus
+                .retain(|id, _| devices.iter().any(|device| device.0 == *id));
+            self.cards = cards;
+        }
+    }
+
+    pub(super) fn focus(&mut self, device: DeviceId, cx: &App) -> FocusHandle {
+        self.focus
+            .entry(device)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    fn visible(&self, device: DeviceId) -> bool {
+        let width = self.width.get();
+        if width <= 0.0 || !width.is_finite() {
+            return true;
+        }
+        let offset = f32::from(self.scroll.offset().x)
+            .clamp(-f32::from(self.scroll.max_offset().width), 0.0);
+        let overscan = self.cards.iter().map(|card| card.2).fold(0.0_f32, f32::max);
+        self.cards
+            .iter()
+            .find(|card| card.0 == device)
+            .is_none_or(|(_, left, card_width)| {
+                left + card_width + offset >= -overscan && left + offset <= width + overscan
+            })
+    }
+}
+
+pub(super) fn must_mount(
+    view: &EditorView,
+    device: DeviceId,
+    window: Option<&Window>,
+    cx: &App,
+) -> bool {
+    let panel = &view.device_panel;
+    // Callers without a painted window cannot establish focus containment.
+    // Preserve the entire chain in that case rather than risk a focused draft.
+    let Some(window) = window else {
+        return true;
+    };
+    panel.chain_window.visible(device)
+        || panel.chain_window.focus.get(&device).is_some_and(|focus| focus.contains_focused(window, cx))
+        || panel.controls.iter().any(|(key, control)| key.device == device && matches!(control,
+            ParameterControl::Float { entity, .. } if entity.read_with(cx, |control, _| control.is_interacting() || control.is_editing())))
+        || panel.pending_values.keys().any(|key| key.device == device)
+        || view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
+            GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } if target == device))
+        || view.active_native_device_drag.as_ref().is_some_and(|drag| {
+            matches!(drag.source, drag::NativeDeviceDragSource::Existing { device: source, .. } if source == device)
+                || drag.destination.get().is_some_and(|target| target.before == Some(device) || target.replace == Some(device))
+        })
+        || panel.eq8_panels.get(&device).is_some_and(|panel| panel.audition_gesture_active)
+}
+
+pub(super) fn spacer(device: DeviceId, width: f32) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(
+            format!("device-spacer-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("device-spacer-{}", device.value()))
+        .w(px(width))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex_shrink_0()
+}
+
+pub(super) fn viewport_observer(view: &EditorView, cx: &Context<EditorView>) -> impl IntoElement {
+    let width = view.device_panel.chain_window.width.clone();
+    let entity = cx.entity();
+    let scroll = view.device_panel.chain_window.scroll.clone();
+    let expected_offset = scroll.offset();
+    canvas(
+        move |bounds, _, cx| {
+            let measured = f32::from(bounds.size.width);
+            let resized =
+                measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
+            if resized || scroll.offset() != expected_offset {
+                let entity = entity.clone();
+                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
+        },
+        |_, _, _, _| (),
+    )
+    .absolute()
+    .size_full()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_window_geometry_keeps_variable_width_order_and_surviving_anchor() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "geometry".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        for _ in 0..4 {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: hex_engine::default_native_device_state(
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let ids: Vec<_> = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .devices()
+            .iter()
+            .map(|device| device.id())
+            .collect();
+        let mut chain = ChainWindow::default();
+        chain.prepare(&[(ids[0], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
+        assert_eq!(
+            chain.cards,
+            vec![
+                (ids[0], 3.0, 144.0),
+                (ids[1], 150.0, 600.0),
+                (ids[2], 753.0, 286.0)
+            ]
+        );
+        // Topology anchoring reads the requested offset even before a draw;
+        // preparation does not apply native clamping itself.
+        chain.scroll.set_offset(point(px(-160.0), px(0.0)));
+        chain.prepare(&[
+            (ids[3], 144.0),
+            (ids[0], 144.0),
+            (ids[1], 600.0),
+            (ids[2], 286.0),
+        ]);
+        assert_eq!(f32::from(chain.scroll.offset().x), -307.0);
+        chain.prepare(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
+        assert_eq!(f32::from(chain.scroll.offset().x), -160.0);
+        chain.width.set(100.0);
+        assert!(chain.visible(ids[0]), "unknown IDs are conservative");
+        assert!(!chain.visible(ids[2]));
+        chain.width.set(1600.0);
+        assert!(chain.visible(ids[2]), "resizing expands the composed range");
+        chain.width.set(f32::NAN);
+        assert!(chain.visible(ids[2]), "invalid viewport cannot hide a card");
+    }
+}

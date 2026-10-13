@@ -266,7 +266,7 @@ fn status_slot(
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
-        let clip_view = self.clip_detail_view(cx);
+        let clip_view = self.clip_detail_view(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()

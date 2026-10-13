@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) fn render(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     return_id: hex_project::ReturnId,
@@ -162,8 +163,21 @@ pub(super) fn render(
                 .child(theme::text(title)),
         )
         .child(add_button);
+    let geometry: Vec<_> = devices
+        .iter()
+        .map(|device| {
+            (
+                device.id(),
+                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+            )
+        })
+        .collect();
+    view.device_panel.chain_window.prepare(&geometry);
     let mut chain = div()
         .id("device-chain-scroll")
+        .track_scroll(&view.device_panel.chain_window.scroll)
+        .relative()
+        .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
         .debug_selector(|| "device-chain-scroll".into())
         .flex_1()
         .min_h_0()
@@ -181,9 +195,18 @@ pub(super) fn render(
             }),
         );
     for (index, device) in devices.iter().enumerate() {
-        chain = chain.child(render_return_effect(
-            view, cx, return_id, &devices, index, device,
-        ));
+        if chain_window::must_mount(view, device.id(), window, cx) {
+            let focus = view.device_panel.chain_window.focus(device.id(), cx);
+            chain = chain.child(
+                render_return_effect(view, cx, return_id, &devices, index, device)
+                    .track_focus(&focus),
+            );
+        } else {
+            chain = chain.child(chain_window::spacer(
+                device.id(),
+                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+            ));
+        }
     }
     chain = chain.child(
         div()
@@ -191,6 +214,7 @@ pub(super) fn render(
             .h(px(DEVICE_FRAME_HEIGHT))
             .flex_shrink_0(),
     );
+    chain = chain.child(chain_window::viewport_observer(view, cx));
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));

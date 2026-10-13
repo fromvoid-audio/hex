@@ -7,6 +7,7 @@ use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
 
 mod auto_pan_ui_tests;
+mod chain_window_tests;
 mod compressor_ui_tests;
 mod gate_ui_tests;
 mod operator_navigation_tests;
@@ -4300,7 +4301,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     });
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
-        let _ = super::view(view, cx);
+        let _ = super::view(view, None, cx);
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -4925,7 +4926,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
                 parameter,
                 value: ParameterValue::Bool(first_ack_value),
             });
-        let _panel = super::view(view, cx);
+        let _panel = super::view(view, None, cx);
         assert_eq!(
             view.device_panel.pending_values.get(&key),
             Some(&ParameterValue::Bool(first_ack_value))

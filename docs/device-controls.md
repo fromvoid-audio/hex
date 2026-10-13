@@ -452,3 +452,31 @@ remain unchanged. New native appearance acceptance remains required.
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+## windowed chain composition
+
+Track and return rails retain a stable `DeviceId` geometry inventory, an explicit
+GPUI scroll handle and fixed registered card widths. Once the actual rail width
+is observed, composition mounts visible cards plus one maximum-card-width of
+overscan; equal-width placeholders preserve every omitted card's position, gap,
+chain extent and ordered insertion anchors. The first unmeasured composition
+remains complete, so this stage does not eliminate cold first-paint preparation.
+Resize and scroll-clamping observations request a fresh composition. Topology
+changes preserve the first surviving visible card's screen position.
+
+A card stays mounted while its focus container contains keyboard focus, a numeric
+control is interacting or editing, optimistic parameter values are pending, a
+canonical device gesture is active, a device drag captures its source or target,
+or EQ8 audition remains active. Visibility
+does not retire cached entities, descriptors, subscriptions, drafts or previews:
+existing project-generation, owner, identity and removal rules remain authoritative.
+Omitted placeholders have no device hit targets. Mounted targets retain the
+existing viewport-clipped drop contract; return rails retain their existing
+return-owned drop behavior. No audio, controller, numeric-control or Operator
+parameter semantics change.
+
+Linux GPUI test-platform CPU timings use no-op text and native drawing; they do
+not establish native frame time, font shaping, presentation, physical input,
+macOS focus/capture or accessibility acceptance. Optimized native review and
+accessible names/roles, readable meters and remaining compact-control acceptance
+for the broader dense-UI request remain pending.
