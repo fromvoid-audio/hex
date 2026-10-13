@@ -1,3 +1,17 @@
+## device title reordering — 13 october 2026
+
+Regular and return device titles now start metadata-only drags with a compact
+title ghost. Stable insertion markers resolve left/right card halves, inter-card
+gaps and the chain tail. Return effects use canonical `MoveReturnDevice`; regular
+effects and the freely positioned instrument reuse the existing actor drop path.
+Hover does not edit, valid moves produce one revision/Undo entry, and self-drop,
+Escape/outside release and stale/pending input preserve cancellation/refusal.
+Rendered title-move tests and source guards pass; full local CI belongs to the
+focused PR. Native macOS/listening and drag autoscroll remain open. See
+[device controls](docs/device-controls.md). Pulse intake is blocked by the live
+request_id requirement omitted/stripped by the installed create_ticket schema;
+no new ticket ID is claimed.
+
 ## vector synth name — 13 october 2026
 
 Renamed the registered four-operator synth display name to `vector`; the shared
