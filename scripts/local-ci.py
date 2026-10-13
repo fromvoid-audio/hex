@@ -824,9 +824,26 @@ class LocalCiRunner:
         if argv[:2] != ["cargo", "build"] or "--release" not in argv or "--target-dir" in argv:
             raise TargetCacheError("unsupported release build arguments")
         target = Path(str(self.cargo_identity["target_directory"]))
-        resolved = path.resolve()
-        if not resolved.is_relative_to(target) or any(p.is_symlink() for p in (path, *path.parents)) or not path.is_file():
+        lexical = path.absolute()
+        resolved = lexical.resolve()
+        # Cargo's owned target is canonical. System aliases above it (macOS
+        # /var -> /private/var, for example) are not artifact symlinks. Locate
+        # the outermost lexical spelling of that same root, then inspect every
+        # component below it without resolving away an in-target symlink.
+        roots = [p for p in reversed(lexical.parents) if p.resolve() == target]
+        root = roots[0] if roots else None
+        if (target.resolve() != target or root is None or root.is_symlink()
+                or self._directory_identity(root) != self._directory_identity(target)
+                or not resolved.is_relative_to(target) or not lexical.is_file()):
             raise TargetCacheError("release artifact is not a plain file inside the owned target")
+        relative = lexical.relative_to(root)
+        component = root
+        for part in relative.parts:
+            if part == "..":
+                raise TargetCacheError("release artifact traverses outside its target-relative path")
+            component = component / part
+            if component.is_symlink():
+                raise TargetCacheError("release artifact is not a plain file inside the owned target")
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):

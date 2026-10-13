@@ -216,12 +216,42 @@ class LocalCiRunnerTests(unittest.TestCase):
                 report["artifact"] = runner.identify_release_artifact(artifact, report["build_argv"])
                 artifact.write_bytes(b"changed")
         self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+
         recovering = self.runner("failed-consumer")
         with self.assertRaisesRegex(ValueError, "staging refused"):
             with recovering.guarded_release(adopt=True):
                 raise ValueError("staging refused")
         self.assertIsNone(recovering.target_lock)
         self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+
+    def test_release_ancestor_alias_accepts_but_target_symlinks_and_escape_refuse(self):
+        runner = self.runner("path-alias")
+        ancestor_alias = self.base / "platform-alias"
+        ancestor_alias.symlink_to(self.repo, target_is_directory=True)
+        with runner.guarded_release() as report:
+            target = Path(runner.cargo_identity["target_directory"])
+            (target / "release").mkdir(parents=True)
+            artifact = target / "release/fixture"
+            artifact.write_bytes(b"actual optimized artifact")
+            argv = ["cargo", "build", "--release"]
+            alias_path = ancestor_alias / "cargo-target/release/fixture"
+            identified = runner.identify_release_artifact(alias_path, argv)
+            self.assertEqual(identified, runner.identify_release_artifact(artifact, argv))
+            self.assertEqual(identified["path"], str(artifact.resolve()))
+            (target / "artifact-link").symlink_to(artifact)
+            (target / "directory-link").symlink_to(target / "release", target_is_directory=True)
+            (target / "root-link").symlink_to(target, target_is_directory=True)
+            outside = self.base / "outside-artifact"
+            outside.write_bytes(b"outside target")
+            (target / "escape").symlink_to(outside)
+            for rejected in (target / "artifact-link", target / "directory-link/fixture",
+                             target / "root-link/release/fixture", target / "escape", outside,
+                             ancestor_alias / "cargo-target/directory-link/fixture"):
+                with self.subTest(path=rejected):
+                    with self.assertRaises(local_ci.TargetCacheError):
+                        runner.identify_release_artifact(rejected, argv)
+            report.update(build_argv=argv, build_exit_code=0, artifact=identified)
+        self.assertEqual(report["state"], "ready")
 
     def summary(self, run_id: str = "case") -> dict[str, object]:
         return json.loads((self.repo / "artifacts/local-ci" / run_id / "summary.json").read_text())
