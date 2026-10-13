@@ -34,6 +34,13 @@ impl Drop for TestDir {
 
 #[test]
 fn prepared_export_renders_effectful_return_before_master_once() {
+    assert_return_export(false);
+}
+#[test]
+fn prepared_export_includes_authored_additive_return_feed_before_master_once() {
+    assert_return_export(true);
+}
+fn assert_return_export(authored_feed: bool) {
     let samples = [[0.25, -0.5]];
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let asset = match editor
@@ -103,6 +110,23 @@ fn prepared_export_renders_effectful_return_before_master_once() {
         })
         .expect("return effect");
 
+    if authored_feed {
+        let Created::ReturnTrack(destination) = editor
+            .execute(Command::AddReturnTrack {
+                name: "destination".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnFeed {
+                source: return_track,
+                destination,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
     let media = BTreeMap::from([(asset, Audio::new(RATE, samples.to_vec()).expect("audio"))]);
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
@@ -116,7 +140,11 @@ fn prepared_export_renders_effectful_return_before_master_once() {
     let bytes = fs::read(path).expect("read export");
     let left = i16::from_le_bytes([bytes[44], bytes[45]]);
     let right = i16::from_le_bytes([bytes[46], bytes[47]]);
-    let expected = [0.09375_f32, -0.0625_f32];
+    let expected = if authored_feed {
+        [0.109375_f32, -0.03125_f32]
+    } else {
+        [0.09375_f32, -0.0625_f32]
+    };
     for (actual, expected) in [left, right].into_iter().zip(expected) {
         let pcm = (expected * 32_767.0).round() as i16;
         assert!((i32::from(actual) - i32::from(pcm)).abs() <= 1);

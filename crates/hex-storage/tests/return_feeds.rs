@@ -73,13 +73,16 @@ fn explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_def
 }
 
 #[test]
-fn valid_feed_decode_and_load_refuse_without_changing_input() {
+fn valid_feed_decode_load_and_save_preserve_canonical_state_and_input() {
     let doc = with_feed(document());
     let bytes = serde_json::to_vec(&doc).unwrap();
-    assert!(matches!(
-        decode(&bytes),
-        Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED))
-    ));
+    let decoded = decode(&bytes).unwrap();
+    assert_eq!(decoded.authored_routing().len(), 1);
+    assert_eq!(decode(&encode(&decoded).unwrap()).unwrap(), decoded);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&encode(&decoded).unwrap()).unwrap()["version"],
+        20
+    );
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -88,10 +91,11 @@ fn valid_feed_decode_and_load_refuse_without_changing_input() {
     fs::create_dir(&dir).unwrap();
     let path = dir.join("candidate.hex");
     fs::write(&path, &bytes).unwrap();
-    assert!(matches!(
-        load(&path),
-        Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED))
-    ));
+    assert_eq!(load(&path).unwrap(), decoded);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    let saved = dir.join("saved.hex");
+    hex_storage::save_new(&saved, &decoded).unwrap();
+    assert_eq!(load(&saved).unwrap(), decoded);
     assert_eq!(fs::read(&path).unwrap(), bytes);
     fs::remove_dir_all(dir).unwrap();
 }

@@ -451,3 +451,11 @@ render and caller final-output validation succeed. With no Session runtime,
 Playback's new observed path refuses before output/clock/provider/state mutation;
 with no observer it preserves existing page rendering. Existing public methods
 retain their contracts. This adds no stream dependency or native admission.
+
+Canonical stereo Return feeds use a bounded control-prepared topological plan
+with pinned ready ties in Arrangement and prepared Session/export kernels.
+Post-chain/matrix/gain/mute source output feeds destination input additively;
+current Main sums stay pinned, master runs once, and captured old chains remain
+Main-only. The no-feed loops keep their original arithmetic order. See
+[routing](../../docs/routing.md); this adds no latency compensation or native
+deadline/listening evidence.

@@ -816,6 +816,55 @@ impl SessionPlayback {
                 mix.add_frame(destination, source);
             }
         }
+        let arrangement = self.revision.arrangement();
+        if !arrangement.return_feed_plan.is_empty() {
+            for &index in arrangement.return_feed_plan.order() {
+                let bus = &arrangement.return_buses()[index];
+                let frames = &mut self.return_scratch[index][..output.len()];
+                let chain = self
+                    .return_chains
+                    .get_mut(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if let Some(observer) = observer.as_mut() {
+                    let mut observe = |owner, device_id, device_type, offset, frames: &[Frame]| {
+                        observer(
+                            crate::PostNodeIdentity::new(owner, device_id, device_type),
+                            offset,
+                            frames,
+                        );
+                    };
+                    chain.process_block_observed(frames, frame_offset, &mut observe);
+                } else {
+                    chain.process_block(frames);
+                }
+                if let Some(matrix) = bus.matrix {
+                    matrix.apply_block(frames);
+                }
+                if bus.muted {
+                    frames.fill([0.0; 2]);
+                } else {
+                    for frame in frames {
+                        frame[0] *= bus.gain;
+                        frame[1] *= bus.gain;
+                    }
+                }
+                arrangement.return_feed_plan.propagate(
+                    index,
+                    &mut self.return_scratch,
+                    output.len(),
+                );
+            }
+            let count = output.len();
+            for frames in &self.return_scratch {
+                for (destination, source) in output.iter_mut().zip(&frames[..count]) {
+                    destination[0] += source[0];
+                    destination[1] += source[1];
+                }
+            }
+            // Captured chains feed Main only, never any current or old edge.
+            self.return_effect_tails.render_chunk(output);
+            return Ok(());
+        }
         for (index, bus) in self
             .revision
             .arrangement()

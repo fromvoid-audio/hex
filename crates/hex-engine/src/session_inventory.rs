@@ -429,6 +429,7 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
     ) -> Result<Self, crate::Invalid> {
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let shared_contexts = match shared_contexts {
             Some(contexts) => contexts,
             None => crate::shared_analytic::SharedAnalyticContextTable::prepare(

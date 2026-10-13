@@ -1,7 +1,7 @@
-//! Return-feed candidate metadata. Nonempty canonical adoption remains closed.
+//! Canonical bounded stereo Return feeds with atomic DAG admission.
 use crate::{
-    Created, Invalid, Project, ROUTING_UNSUPPORTED, ReturnId, RouteId, RoutingEdge, RoutingOwner,
-    RoutingSignal, SessionCellContentSnapshot, Snapshot, TrackContentSnapshot,
+    Created, Invalid, Project, ReturnId, RouteId, RoutingEdge, RoutingOwner, RoutingSignal,
+    SessionCellContentSnapshot, Snapshot, TrackContentSnapshot,
 };
 use std::collections::BTreeSet;
 
@@ -146,7 +146,7 @@ impl Project {
         Ok(feeds)
     }
 
-    pub(crate) fn set_return_feed_closed(
+    pub(crate) fn set_return_feed(
         &mut self,
         source: ReturnId,
         destination: ReturnId,
@@ -156,9 +156,6 @@ impl Project {
             .snapshot()
             .with_return_feed(source, destination, gain)?;
         let feeds = Self::validate_return_feed_snapshot(&candidate)?;
-        if !feeds.is_empty() {
-            return Err(Invalid(ROUTING_UNSUPPORTED));
-        }
         self.routing = feeds;
         self.next_id = candidate.next_id;
         Ok(Created::None)
@@ -244,19 +241,48 @@ mod tests {
         let recreated = removed.with_return_feed(ids[0], ids[1], 1.0).unwrap();
         assert!(recreated.return_feeds[0].id > first.return_feeds[0].id);
         assert_eq!(
-            Project::from_snapshot(first),
-            Err(Invalid(ROUTING_UNSUPPORTED))
+            Project::from_snapshot(first.clone()).unwrap().snapshot(),
+            first
         );
-        assert_eq!(
-            editor.execute(Command::SetReturnFeed {
+        editor
+            .execute(Command::SetReturnFeed {
                 source: ids[0],
                 destination: ids[1],
-                gain: 0.25
-            }),
-            Err(Invalid(ROUTING_UNSUPPORTED))
+                gain: 0.25,
+            })
+            .unwrap();
+        assert!(!editor.can_redo());
+        let committed = editor.project().snapshot();
+        let back = crate::RoutingEdge {
+            source: crate::RoutingOwner::Return(ids[1]),
+            target: crate::RoutingOwner::Return(ids[0]),
+            signal: crate::RoutingSignal::Audio { channels: 2 },
+        };
+        assert_eq!(
+            editor.execute(Command::SetRouting(vec![back])),
+            Err(Invalid("routing cycles are unsupported"))
         );
-        assert_eq!(editor.project(), &before);
-        assert!(editor.can_redo());
+        assert_eq!(editor.project().snapshot(), committed);
+        let identity = editor.project().authored_routing()[0].id();
+        editor
+            .execute(Command::SetReturnFeed {
+                source: ids[0],
+                destination: ids[1],
+                gain: 0.5,
+            })
+            .unwrap();
+        assert_eq!(editor.project().authored_routing()[0].id(), identity);
+        let committed = editor.project().snapshot();
+        assert!(
+            editor
+                .execute(Command::SetReturnFeed {
+                    source: ids[1],
+                    destination: ids[0],
+                    gain: 1.0,
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), committed);
         editor
             .execute(Command::SetReturnFeed {
                 source: ids[0],
@@ -264,8 +290,18 @@ mod tests {
                 gain: 0.0,
             })
             .unwrap();
-        assert!(editor.can_redo());
+        assert!(editor.project().authored_routing().is_empty());
+        assert!(editor.undo());
+        assert_eq!(editor.project().authored_routing()[0].id(), identity);
         assert!(editor.redo());
+        editor
+            .execute(Command::SetReturnFeed {
+                source: ids[0],
+                destination: ids[1],
+                gain: 1.0,
+            })
+            .unwrap();
+        assert!(editor.project().authored_routing()[0].id().value() > identity.value());
     }
 
     #[test]
@@ -328,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn unadmitted_metadata_history_carries_identity_and_removal_cleans_both_ends() {
+    fn canonical_history_carries_identity_and_removal_cleans_both_ends() {
         let (editor, ids) = fixture(3);
         let candidate = editor
             .project()
@@ -337,12 +373,7 @@ mod tests {
             .unwrap()
             .with_return_feed(ids[1], ids[2], 0.25)
             .unwrap();
-        // Test-only metadata fixture; no production constructor admits these feeds.
-        let feeds = Project::validate_return_feed_snapshot(&candidate).unwrap();
-        let mut legacy = candidate.clone();
-        legacy.return_feeds.clear();
-        let mut metadata = Project::from_snapshot(legacy).unwrap();
-        metadata.routing = feeds;
+        let metadata = Project::from_snapshot(candidate.clone()).unwrap();
         assert_eq!(metadata.snapshot(), candidate);
         let mut history = Editor::new(metadata.clone(), 8).unwrap();
         history.execute(Command::MasterGain { gain: 0.25 }).unwrap();

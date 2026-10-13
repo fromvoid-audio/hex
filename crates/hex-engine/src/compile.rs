@@ -245,6 +245,7 @@ fn compile_project<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let shared_contexts = match shared_contexts {
         Some(contexts) => contexts,
@@ -469,7 +470,7 @@ fn compile_project<'a>(
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
         });
     }
-    let project = Project::with_compiled_tracks(
+    let mut project = Project::with_compiled_tracks(
         snapshot.sample_rate(),
         tracks,
         return_buses,
@@ -477,6 +478,7 @@ fn compile_project<'a>(
         snapshot.master_gain(),
         shared_contexts,
     )?;
+    project.return_feed_plan = return_feed_plan;
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }
 

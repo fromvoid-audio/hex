@@ -65,6 +65,11 @@ impl DocumentV18 {
         if !project.authored_routing().is_empty() {
             return Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED));
         }
+        Self::legacy_fields(project)
+    }
+    // Schema20 reuses these fields, but owns serialization of every feed.
+    // All older envelope entry points retain their refusal above.
+    pub(super) fn legacy_fields(project: &Project) -> Result<Self, StorageError> {
         let base = DocumentV17::from_project(project)?;
         Ok(Self {
             format: base.format,

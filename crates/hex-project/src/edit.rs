@@ -11,7 +11,7 @@ use std::{collections::HashMap, path::PathBuf};
 pub enum Command {
     /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
     SetRouting(Vec<crate::RoutingEdge>),
-    /// Metadata validation only; nonempty adoption remains closed.
+    /// Adopt or change a bounded additive stereo Return feed; zero removes it.
     SetReturnFeed {
         source: ReturnId,
         destination: ReturnId,
@@ -1018,7 +1018,7 @@ impl Project {
                 source,
                 destination,
                 gain,
-            } => self.set_return_feed_closed(source, destination, gain),
+            } => self.set_return_feed(source, destination, gain),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }

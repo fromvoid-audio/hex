@@ -817,8 +817,7 @@ impl Project {
         if !return_feeds.is_empty() {
             let mut candidate = project.snapshot();
             candidate.return_feeds = return_feeds;
-            Self::validate_return_feed_snapshot(&candidate)?;
-            return Err(Invalid(crate::ROUTING_UNSUPPORTED));
+            project.routing = Self::validate_return_feed_snapshot(&candidate)?;
         }
         Ok(project)
     }

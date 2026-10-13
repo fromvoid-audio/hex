@@ -1151,3 +1151,6 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod return_feed_tests;

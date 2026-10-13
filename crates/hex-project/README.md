@@ -203,6 +203,7 @@ paths. This is unchanged-input pass-through, not editable Ableton export or
 proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
 
 Routing proposals use existing owners and validate the complete DAG, including
-implicit Main paths and canonical sends. Non-legacy adoption remains closed;
+implicit Main paths, canonical sends and admitted Return feeds. Generic proposals
+remain closed; typed stereo Return feeds have bounded additive playback;
 see [routing](../../docs/routing.md). No MIDI/device/sidechain bus support is
 inferred from opaque state.

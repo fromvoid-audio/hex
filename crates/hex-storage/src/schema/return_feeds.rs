@@ -1,4 +1,4 @@
-//! Reserved schema20 Return feeds; nonempty load/adoption remains closed.
+//! Strict schema20 canonical Return-feed envelope.
 use super::*;
 use hex_project::{MAX_RETURN_FEEDS, ReturnFeedSnapshot, Snapshot};
 use provenance::{DocumentV18, ProvenanceDto};
@@ -59,8 +59,8 @@ fn bounded_feeds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<FeedDto>,
 }
 impl DocumentV20 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        // Older envelope construction refuses any nonempty canonical routes.
-        let base = DocumentV18::from_project(project)?;
+        // This envelope, unlike older writers, owns all canonical feed records.
+        let base = DocumentV18::legacy_fields(project)?;
         Ok(Self {
             format: base.format,
             sample_rate: base.sample_rate,
@@ -75,7 +75,16 @@ impl DocumentV20 {
             session: base.session,
             import_provenance: base.import_provenance,
             version: 20,
-            routing: Vec::new(),
+            routing: project
+                .authored_routing()
+                .iter()
+                .map(|feed| FeedDto::ReturnFeed {
+                    id: feed.id().value(),
+                    source: feed.source().value(),
+                    destination: feed.destination().value(),
+                    gain: feed.gain(),
+                })
+                .collect(),
         })
     }
     fn into_snapshot(self) -> Result<Snapshot, StorageError> {
@@ -135,7 +144,7 @@ mod tests {
     use hex_project::{Command, Created, Editor};
 
     #[test]
-    fn typed_candidate_serialization_roundtrips_without_playback_admission() {
+    fn typed_candidate_serialization_roundtrips_into_canonical_state() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
         let mut owners = Vec::new();
         for _ in 0..2 {
@@ -154,7 +163,7 @@ mod tests {
             .unwrap();
         let feed = proposed.return_feeds[0];
         let mut doc = DocumentV20::from_project(editor.project()).unwrap();
-        // Transport-only fixture: production encoding/loading never admits it.
+        // Construct a strict transport fixture independently of production encoding.
         doc.next_id = proposed.next_id;
         doc.routing.push(FeedDto::ReturnFeed {
             id: feed.id,
@@ -170,10 +179,11 @@ mod tests {
             Project::validate_return_feed_snapshot(&snapshot).unwrap()[0].gain(),
             0.375
         );
-        assert!(matches!(
-            DocumentV20::decode(&bytes),
-            Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED))
-        ));
+        let admitted = DocumentV20::decode(&bytes).unwrap();
+        assert_eq!(admitted.snapshot(), proposed);
+        let encoded = serde_json::to_vec(&DocumentV20::from_project(&admitted).unwrap()).unwrap();
+        assert_eq!(DocumentV20::decode(&encoded).unwrap(), admitted);
+        assert!(DocumentV18::from_project(&admitted).is_err());
         assert!(editor.project().authored_routing().is_empty());
     }
 }

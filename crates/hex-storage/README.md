@@ -150,3 +150,9 @@ Schema19 adds a required strict bounded routing envelope on schema18, preserving
 exact original provenance and opaque device state. Only legacy routing is admitted;
 nonempty authored edges validate then refuse before engine use. See
 [routing](../../docs/routing.md).
+
+Schema20 strictly persists canonical additive stereo Return feeds, selecting20
+only for nonempty feeds in the ordinary writer. Legacy projects keep the19 byte
+path; old writers refuse feed loss. Provenance, opaque payloads and migrations
+remain intact. See [routing](../../docs/routing.md) for the admitted finite stage
+and the remaining automation/latency/native acceptance.

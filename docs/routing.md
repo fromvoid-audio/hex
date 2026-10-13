@@ -1,83 +1,70 @@
-# routing topology proposals
+# routing topology and first Return feeds
 
-Pulse28 / PR184 adds a control-side structural validator, not general routing
-playback. The entire ticket's routing, automation editing/recording, sample-offset
-playback, cumulative latency and native acceptance remain incomplete.
+Pulse28 / PR184 admits one bounded audio stage: additive Return-to-Return feeds.
+The full routing, automation editing/recording, sample-offset playback, cumulative
+latency and native acceptance ticket remains incomplete. No route UI is exposed.
 
-`RoutingOwner` reuses canonical TrackId and ReturnId with one Main sink. There
-is no independent node allocator, persisted send gain or editing model. Existing
-post-fader sends and implicit track/Return-to-Main connections participate in
-the graph check. Current regular tracks expose stereo output, Returns stereo
-input/output, and Main stereo input. Track inputs and Main outputs are refused.
-MIDI bus, device and sidechain capabilities are not established by current
-canonical notes or opaque device state and are explicitly refused.
+`RoutingOwner` reuses canonical TrackId and ReturnId with one Main sink. Existing
+post-fader sends and implicit track/Return-to-Main paths participate in graph
+validation. Current regular tracks expose stereo output, Returns stereo
+input/output, and Main stereo input. Track inputs, Main outputs, MIDI buses,
+device ports and sidechains remain refused; opaque state implies no capability.
 
-At most4096 additional edges can be proposed. Missing or stale owners,
-duplicate edges (including an existing send/Main connection), incompatible
-channels/roles and every cycle refuse the complete proposal. Validation uses a
-bounded control-side topological traversal. A structurally valid Return-to-Return
-proposal is not an admitted send or a feedback capability.
+## canonical Return feeds
 
-Non-legacy adoption is closed. `Command::SetRouting` validates first, then
-returns `authored routing requires playback support` for any nonempty list
-before project/history mutation. An empty list is a legacy no-op. Failed edits
-preserve IDs, undo and redo. `Project::from_snapshot_with_routing` applies the
-same check to a newly constructed candidate. Canonical Snapshot now carries ReturnFeed records: every admitted Project still
-has empty authored routing. Any future opening of admission must enforce complete
-engine preparation/rendering; changing only the adoption guard would ignore
-routing semantics.
-No route UI is exposed.
+One Project-owned `ReturnFeed` record contains a global monotonic `RouteId`,
+source/destination `ReturnId`, and finite positive gain up to2. Gain edits retain
+identity, zero removes, and recreation allocates above the retained high-water
+mark. The unique DAG on16 Returns admits at most120 feeds. Missing endpoints,
+global ID collisions, duplicate pairs, malformed gains and all cycles refuse
+atomically. Removing a Return cleans both incident directions in the same edit;
+undo restores identities. `Snapshot.return_feeds` is the same canonical state
+used by history and persistence, with no parallel routing envelope.
 
-Schema19 requires an explicit `routing` array and retains every schema18 field,
-including bounded exact original import bytes. Typed edge objects strictly
-reject unknown fields/roles and bounded decoding rejects excess edges. Decode
-checks the candidate graph and refuses even structurally valid nonempty lists;
-they never reach engine preparation. Encode only writes admitted legacy routing
-as an empty array. Older encoders must not discard authored routing, and older
-schemas reject a routing backport. Schemas1–17 migrate to legacy routing with
-absent provenance; schema18 retains its provenance and existing sends/Main
-semantics. Device state versions/payloads remain opaque, including Operator's
-separate reserved v9/v10. No Operator codec change belongs here.
+`SetReturnFeed` and validated snapshots admit only this typed stereo contract.
+A feed adds post-source-chain/matrix/gain/mute samples to destination input
+before its chain. Source output still contributes Main. Each Return chain runs
+once, dependency-ready ties use pinned Return order, and Main sums current
+Return outputs in pinned order before its one master stage. Feed serialization
+order cannot change execution or input summation. With no feeds the original
+render loops and arithmetic order remain intact in both consumers.
 
-Tests cover malformed/unsupported proposals, cycles, duplicate implicit edges,
-exact edge capacity, atomic refusal and redo retention, stale owner removal and
-undo, schema18/19 round trips, strict migration and exact opaque state/provenance
-retention. Linux evidence does not establish native routing, listening or latency
-acceptance. Later graph scheduling/publication changes must be sequenced with
-the streaming owner; this stage changes no engine/session/audio behavior.
+Arrangement rendering and prepared Session/linear-export playback share a
+control-prepared plan. Return processors still require known zero algorithmic
+latency; regular processor admission retains its established policy. This stage
+adds no compensation, automation, MIDI or sidechain behavior. Edge/gain edits
+retain compatible Return-chain history. Removed/changed eligible chains retain
+zero-input Main-only residuals using their old bus coefficients, never replaying
+old feeds. Surviving destinations decay naturally after feed removal. Pause
+freezes history, Stop/Seek reset it, and transport wraps preserve it. Whole-block
+failure keeps committed histories/routes/clocks unchanged and silences output.
+Borrowed pages and post-node observations retain their existing speculative
+transaction and ownership contract.
 
-## Return-feed preparation — admission closed
+## persistence and unsupported proposals
 
-The next prepared model owns one `ReturnFeed` record per directed Return pair:
-global monotonic `RouteId`, source/destination `ReturnId`, and finite positive
-gain up to2. Gain belongs to that record only. Gain edits retain identity, zero
-removes, and recreation allocates above the retained high-water mark. A maximum
-of120 feeds matches the unique DAG bound for16 Returns. Missing endpoints,
-global ID collisions, duplicate pairs, invalid gains and all cycles refuse.
-Removing a Return cleans both incoming and outgoing feed records in the same edit.
+Schema20 requires strict `routing` records tagged `return_feed`, each with
+required id/source/destination/gain, and rejects unknown fields/ports. It retains
+every project field, bounded exact import provenance and opaque device payload.
+The ordinary encoder selects20 for nonempty feeds and keeps the schema19 byte
+path for legacy projects. Explicit `encode_schema20` also handles empty feeds.
+Older envelope writers refuse nonempty canonical feeds instead of discarding
+them. All encoding remains under the existing8MiB document ceiling.
 
-Canonical `Snapshot.return_feeds` carries the same Project-owned records through
-snapshot/history/storage, with no parallel production envelope. `Snapshot::with_return_feed`
-prepares a new validated canonical metadata candidate without mutating its source.
-`SetReturnFeed` and `Project::from_snapshot` still refuse any nonempty result before
-canonical adoption. All publicly admitted Projects have no feeds. Tests may
-construct private unadmitted metadata to check ordinary snapshots, cloning/history
-and removal; that does not authorize rendering or production adoption. Necessary
-legacy snapshot constructors explicitly initialize an empty feed list.
+Schemas1–18 retain their established migrations to legacy sends/Main paths;
+schema19 still accepts only its empty structural proposal array. Nonempty old
+schema19 proposals remain unsupported rather than receiving guessed gains/IDs.
+Operator statev9/v10 and preset envelope1 are separate formats.
 
-Reserved schema20 requires strict `routing` records tagged `return_feed`, each
-with required id/source/destination/gain. It retains bounded original provenance,
-opaque state and every existing project field. Nonempty decode/load validates then
-refuses. The ordinary encoder remains schema19 during this preparation phase;
-explicit `encode_schema20` only encodes admitted legacy Projects, under the same
-document ceiling. Schemas1–19 retain their established migrations; nonempty old
-schema19 proposals remain unsupported rather than receiving guessed IDs/gains.
-Operator state v9/v10 and preset envelope1 are separate formats.
+The generic `SetRouting` proposal API checks up to4096 additional edges against
+canonical sends, admitted feeds and implicit Main paths. Missing owners,
+duplicate edges, incompatible roles/channels and all cycles refuse. Nonempty
+structural proposals still return `authored routing requires playback support`
+before mutation; only the explicit ReturnFeed command adopts playable new edges.
+Empty proposals remain no-ops. This preserves truthful refusal for other ports.
 
-Approved future audio semantics are additive post-source-chain/matrix/gain/mute
-into destination input before its chain. The source still contributes Main.
-Each source runs once, master runs once, and captured old Return residuals stay
-zero-input Main-only without replaying old feeds. Actual adoption must wait for
-both render consumers, prepared capability checks, schema20 writer handoff and
-verified canonical snapshot/history against the frozen combined pages/observer
-API. No MIDI/sidechain/latency capability is added by this metadata preparation.
+Source tests cover PCM, dependency order/permutations, partitioning, transport,
+history/IDs/removal/undo, strict save/load, opaque/provenance preservation,
+rollback, borrowed observation, callback allocation and retirement. Linux does
+not establish native routing interaction, CoreAudio deadlines, optimized macOS
+packaging, listening, Live reference behavior or full-ticket acceptance.

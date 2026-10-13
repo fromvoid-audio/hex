@@ -1,4 +1,4 @@
-//! Control-side structural proposals; non-legacy playback admission is closed.
+//! Structural proposals; only explicit canonical Return feeds have playback support.
 use crate::{Created, Invalid, Project, ReturnId, TrackId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -58,6 +58,12 @@ impl Project {
         for bus in self.return_tracks() {
             edges.insert((RoutingOwner::Return(bus.id()), RoutingOwner::Main));
         }
+        for feed in self.authored_routing() {
+            edges.insert((
+                RoutingOwner::Return(feed.source()),
+                RoutingOwner::Return(feed.destination()),
+            ));
+        }
         for edge in proposed {
             if !nodes.contains_key(&edge.source) || !nodes.contains_key(&edge.target) {
                 return Err(Invalid("routing owner no longer exists"));
@@ -113,8 +119,8 @@ impl Project {
         Ok(Created::None)
     }
 
-    /// Construct a metadata candidate without changing the legacy Snapshot API.
-    /// Any future admission must first extend snapshots/history/persistence.
+    /// Construct a canonical snapshot candidate with additional structural proposals.
+    /// Generic proposals remain closed; typed Return feeds use their own command.
     pub fn from_snapshot_with_routing(
         snapshot: crate::Snapshot,
         proposed: Vec<RoutingEdge>,
@@ -124,8 +130,8 @@ impl Project {
         Ok(project)
     }
 
-    /// Always empty while non-legacy adoption is closed. Existing sends remain
-    /// on regular tracks; this list never duplicates their gains or identities.
+    /// Canonical Return feeds. Existing sends remain on regular tracks; this
+    /// list never duplicates their gains or identities.
     pub fn authored_routing(&self) -> &[crate::ReturnFeed] {
         &self.routing
     }

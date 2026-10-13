@@ -20,6 +20,7 @@ pub use native_device_view::{
     native_effect_frequency_response,
 };
 
+mod return_feed_plan;
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -1254,6 +1255,7 @@ pub struct Project {
     sample_rate: u32,
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
+    return_feed_plan: return_feed_plan::ReturnFeedPlan,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
@@ -1341,6 +1343,7 @@ impl Project {
             sample_rate,
             tracks,
             return_buses: Vec::new(),
+            return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
             loop_region,
             master_gain,
             has_streamed_sources,
@@ -1988,6 +1991,38 @@ impl RendererRuntime {
                         target[frame_index][1] += mixed[1] * send.gain;
                     }
                 }
+            }
+            if !project.return_feed_plan.is_empty() {
+                for &index in project.return_feed_plan.order() {
+                    let bus = &project.return_buses[index];
+                    let frames = &mut self.return_scratch[index][..count];
+                    self.return_chains
+                        .get_mut(index)
+                        .ok_or(Invalid("return runtime is unavailable"))?
+                        .process_block(frames);
+                    if let Some(matrix) = bus.matrix {
+                        matrix.apply_block(frames);
+                    }
+                    if bus.muted {
+                        frames.fill([0.0; 2]);
+                    } else {
+                        for frame in frames {
+                            frame[0] *= bus.gain;
+                            frame[1] *= bus.gain;
+                        }
+                    }
+                    project
+                        .return_feed_plan
+                        .propagate(index, &mut self.return_scratch, count);
+                }
+                // Main always sums in pinned bus order, not dependency order.
+                for frames in &self.return_scratch {
+                    for (destination, source) in output_chunk.iter_mut().zip(&frames[..count]) {
+                        destination[0] += source[0];
+                        destination[1] += source[1];
+                    }
+                }
+                continue;
             }
             for (index, bus) in project.return_buses.iter().enumerate() {
                 let bus_frames = self

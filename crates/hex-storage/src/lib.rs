@@ -127,15 +127,18 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema 19 without allocating an oversized output document.
+/// Encode schema20 for authored feeds, preserving the legacy schema19 byte path.
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::routing::DocumentV19::from_project(project)?)
+    if project.authored_routing().is_empty() {
+        encode_document(&schema::routing::DocumentV19::from_project(project)?)
+    } else {
+        encode_schema20(project)
+    }
 }
 
-/// Explicit schema20 preparation for legacy projects. The ordinary writer stays
-/// schema19 until both feed render consumers are implemented and admitted.
+/// Explicit schema20 encoding, including empty-feed projects.
 pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
 }
