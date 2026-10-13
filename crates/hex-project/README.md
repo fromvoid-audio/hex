@@ -194,3 +194,20 @@ domains and the original clip ID without editing the project or copying PCM.
 Selected-row `InsertTimeRange` opens a frame-based gap and pastes a finite time
 rectangle atomically; bounded shifting/materialization lives in `time_range/insert.rs`.
 No project schema or device callback responsibility is added.
+
+Ticket 32 adds a bounded project-level import provenance envelope independent of
+native device state: exact original input bytes (1 MiB maximum), source kind and
+version, and adapter version. Clones/snapshots/history share immutable evidence;
+normal edits retain it unchanged. Debug output excludes contents and private
+paths. This is unchanged-input pass-through, not editable Ableton export or
+proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+
+Routing proposals use existing owners and validate the complete DAG, including
+implicit Main paths, canonical sends and admitted Return feeds. Generic proposals
+remain closed; typed stereo Return feeds have bounded additive playback;
+see [routing](../../docs/routing.md). No MIDI/device/sidechain bus support is
+inferred from opaque state.
+
+Canonical track gain envelopes now support atomic bounded point editing/history
+with strict BeatTime order. Manual fader and affected time transforms refuse while
+a lane owns gain. See [track gain automation](../../docs/track-gain-automation.md).

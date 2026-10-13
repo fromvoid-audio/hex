@@ -178,6 +178,7 @@ where
                         peaks[channel] = peaks[channel].max(stereo[channel].abs());
                     }
                 }
+                callback.finish_typing_output(render_valid);
             }
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);

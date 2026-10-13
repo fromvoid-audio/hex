@@ -14,12 +14,25 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod provenance;
+pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
+mod gain_envelope;
 mod midi;
 mod midi_batch;
 mod midi_playback;
+pub use gain_envelope::{
+    AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
+    MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
+};
+mod return_feeds;
 mod returns;
+mod routing;
+pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot};
+pub use routing::{
+    MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
+};
 mod session;
 mod snapshot;
 mod split_tracks;
@@ -72,6 +85,7 @@ identifier!(NoteId);
 identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
+identifier!(RouteId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +324,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) gain_envelope: Vec<GainPoint>,
     pub(crate) id: TrackId,
     pub(crate) name: String,
     pub(crate) gain: f32,
@@ -325,6 +340,9 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn gain_envelope(&self) -> &[GainPoint] {
+        &self.gain_envelope
+    }
     pub fn id(&self) -> TrackId {
         self.id
     }
@@ -415,6 +433,8 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) routing: Vec<ReturnFeed>,
+    pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
@@ -432,8 +452,10 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            routing: Vec::new(),
             sample_rate,
             next_id: 1,
+            import_provenance: None,
             assets: BTreeMap::new(),
             tracks: Vec::new(),
             returns: Vec::new(),

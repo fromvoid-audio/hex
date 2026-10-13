@@ -37,3 +37,18 @@ Saved instrument tracks render the original bounded sine instrument through
 hex-engine. MIDI-only projects require no decoded media bank. Export length uses
 the compiled audio/MIDI clip and release-tail horizon; unrenderable candidates
 fail before creating output. Piano-roll authoring remains a native UI work item.
+
+Import the finite Live-set subset into a new 48 kHz Hex project:
+
+```sh
+cargo run -p hex-cli -- import-live-set /path/minimal.als /path/new.hex
+```
+
+Nonneutral pan is refused by default. `--accept-hex-balance` explicitly selects
+Hex's unverified stereo balance law and emits a diagnostic. Device-free MIDI
+retains notes with no instrument, preserving silence. Local matching-rate WAVs
+are validated and the complete candidate compiles before create-new publication;
+existing outputs survive failure. Exact original ALS bytes persist in schema 18.
+See [live-set import](../../docs/live-set-import.md) for the fixture/version field
+table, resource bounds, refusal cases and native/listening gaps. No editable ALS
+export or broad Live-fidelity claim is made.

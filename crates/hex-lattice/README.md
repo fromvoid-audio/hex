@@ -48,6 +48,14 @@ state. See [configuration comparison](../../docs/configuration-comparison.md)
 for fixture bounds, invocation, and interpretation. It does not construct
 deployable effects or measure an audio callback deadline.
 
+The optional `PreparedAnalyticContinuation` capability validates a bounded opaque
+parameter frame, provider format, compact note and source/target compatibility.
+Its immutable five-millisecond clock is sampled at absolute performance frames;
+the engine owns current-device versus detached-tail provenance, leases and
+retirement. Unsupported providers default to no continuation capability. Invalid
+admitted frames or clocks return explicit errors rather than silently changing
+musical state. See [enable continuation](../../docs/operator-enable-continuation.md).
+
 ## Does not own
 
 This crate does not own device algorithms, graph scheduling, project state,

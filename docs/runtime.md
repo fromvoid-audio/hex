@@ -672,6 +672,18 @@ wrap callback allocation probe pass. Full local CI and native acceptance remain
 pending at this checkpoint. Pulse2215 owns this work. Pulse2220 separately tracks
 the pre-existing finite/source-loop aggregate event and device-capacity proof.
 
+## Operator enable continuation
+
+Four canonical oscillator Booleans mask effective level before modulation and
+carrier summation while preserving authored settings. Compatible analytic notes
+use the opt-in provider contract; mutable feedback/LFO uses an independent fixed
+five-millisecond coefficient ramp. Phase, onset age, gate and LFO clock continue.
+Current-owner and detached-tail provenance is explicit, and rapid/coalesced edits
+start from the actual applied boundary. Fixed control-allocated tables and retained
+context leases remain within existing admission/preroll caps. Canonical badges
+queue Boolean edits and restore pending values on queue refusal. See
+[requirements](operator-enable.md) and [source evidence](operator-enable-continuation.md)
+for final automated and native acceptance still required.
 ## candidate-owned handoff scratch — Pulse2371 / PR166
 
 Prepared-playback continuation borrows the candidate's constructor-owned

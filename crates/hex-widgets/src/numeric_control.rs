@@ -181,6 +181,7 @@ pub struct NumericControl {
     pub(crate) editing: bool,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
+    pub(crate) text_modified: bool,
     pub(crate) selected: Range<usize>,
     pub(crate) reversed: bool,
     pub(crate) marked: Option<Range<usize>>,
@@ -233,6 +234,7 @@ impl NumericControl {
             draft: value,
             enabled: true,
             editing: false,
+            text_modified: false,
             invalid_text: false,
             text,
             selected: 0..0,
@@ -325,6 +327,7 @@ impl NumericControl {
         }
         if self.editing {
             self.editing = false;
+            self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.value).unwrap_or_default();
             self.selected = 0..0;
@@ -561,6 +564,7 @@ impl NumericControl {
                 < 3.0
         {
             self.editing = true;
+            self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.draft).unwrap_or_default();
             self.selected = 0..self.text.len();
@@ -652,7 +656,7 @@ impl NumericControl {
         if !self.editing {
             return Ok(());
         }
-        let value = match self.spec.parse(&self.text) {
+        let value = match self.finalized_text_value() {
             Ok(value) => value,
             Err(error) => {
                 self.invalid_text = true;
@@ -679,6 +683,7 @@ impl NumericControl {
         }
         self.text = self.spec.format(value)?;
         self.editing = false;
+        self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
         self.marked = None;
@@ -710,7 +715,7 @@ impl NumericControl {
         if !self.editing {
             return Ok(None);
         }
-        let value = match self.spec.parse(&self.text) {
+        let value = match self.finalized_text_value() {
             Ok(value) => value,
             Err(error) => {
                 self.invalid_text = true;
@@ -727,6 +732,16 @@ impl NumericControl {
         }))
     }
 
+    fn finalized_text_value(&self) -> Result<f64, NumericError> {
+        // A display codec may round the exact value. Focusing then leaving its
+        // readout is not an edit; explicit input of that same text is an edit.
+        if !self.text_modified && self.text == self.spec.format(self.value)? {
+            Ok(self.value)
+        } else {
+            self.spec.parse(&self.text)
+        }
+    }
+
     /// Complete a previously prepared draft after its owner admitted the
     /// canonical change. This method emits no subscription events.
     pub fn accept_finish_edit_for_owner(
@@ -741,6 +756,7 @@ impl NumericControl {
                 self.text = finalized.formatted;
             }
             self.editing = false;
+            self.text_modified = false;
             self.invalid_text = false;
             self.selected = 0..0;
             self.marked = None;
@@ -754,6 +770,7 @@ impl NumericControl {
         self.draft = finalized.value;
         self.text = finalized.formatted;
         self.editing = false;
+        self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
         self.marked = None;

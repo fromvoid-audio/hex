@@ -6,6 +6,13 @@ use hex_lattice_contract::{
 use std::any::Any as StdAny;
 use std::fmt;
 
+mod analytic_continuation;
+pub use analytic_continuation::{
+    ANALYTIC_CONTINUATION_WORDS, AnalyticContinuation, AnalyticContinuationError,
+    AnalyticContinuationFormat, AnalyticContinuationId, AnalyticParameterFrame,
+    MAX_ANALYTIC_CONTINUATION_FRAMES, PreparedAnalyticContinuation,
+};
+
 /// A registered memoryless linear effect definition. Implementations own their
 /// parameter codec in the contract trait and prepare a validated matrix here.
 pub trait NativeDeviceDefinition: NativeDeviceMetadata {
@@ -37,6 +44,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 
 mod instrument;
 mod instrument_runtime;
+mod live_note;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
     NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
@@ -48,6 +56,7 @@ pub use instrument_runtime::{
     NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
     PreparedMutableInstrumentRuntime,
 };
+pub use live_note::{NoteGate, PreparedLiveAnalyticNote};
 
 /// Immutable, control-prepared configuration for one stateful native effect.
 /// Runtime construction happens before publication and is covered by the

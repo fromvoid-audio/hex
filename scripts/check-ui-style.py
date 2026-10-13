@@ -47,6 +47,9 @@ widgets = (
     'lights)', 'crate::build_info::label()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     'device_drag_grip(', 'uniform_list(',
+    # Device preset header actions reuse the themed compact action buttons.
+    'super::device_preset::actions(', 'super::device_panel::action_button_sized(',
+    'super::super::device_preset::actions(',
     'loop_grid_layer(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',

@@ -31,6 +31,15 @@ impl EditorView {
             .child(self.icon("■", "stop · escape", Stop, cx))
             .child(
                 self.control_icon(
+                    self.musical_typing_label(),
+                    super::musical_typing::HELP,
+                    |view, _, cx| view.toggle_musical_typing(cx),
+                    cx,
+                )
+                .w(px(116.0)),
+            )
+            .child(
+                self.control_icon(
                     "↻",
                     "toggle loop on/off · l · cmd+l sets selected clip",
                     |view, _, _| view.toggle_loop(),

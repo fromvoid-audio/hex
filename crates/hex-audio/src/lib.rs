@@ -8,6 +8,7 @@ pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
 pub mod spectrum_worker;
+pub mod typing;
 use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},

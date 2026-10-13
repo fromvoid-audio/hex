@@ -399,6 +399,15 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn prepare_live_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<hex_lattice::PreparedLiveAnalyticNote, DeviceContractError> {
+        Ok(self
+            .prepare_note(pitch, velocity)?
+            .into_live_sampler(super::sample_fm4_live))
+    }
     fn prepare_note(
         &self,
         pitch: u8,
