@@ -1,5 +1,106 @@
 use hex_project::{ClipId, Project, TrackId};
 
+/// One view selection over canonical stable track IDs, independent of time ranges.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(super) struct TrackSelection {
+    ids: std::collections::BTreeSet<TrackId>,
+    anchor: Option<TrackId>,
+}
+
+impl TrackSelection {
+    pub(super) fn contains(&self, track: TrackId) -> bool {
+        self.ids.contains(&track)
+    }
+
+    pub(super) fn ordered(&self, project: &Project) -> Vec<TrackId> {
+        project
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .filter(|id| self.ids.contains(id))
+            .collect()
+    }
+
+    pub(super) fn reconcile(&mut self, project: &Project) {
+        self.ids.retain(|id| project.track(*id).is_some());
+        if self.anchor.is_some_and(|id| project.track(id).is_none()) {
+            self.anchor = self.ordered(project).first().copied();
+        }
+    }
+
+    pub(super) fn select(
+        &mut self,
+        project: &Project,
+        track: TrackId,
+        range: bool,
+        toggle: bool,
+    ) -> bool {
+        let Some(index) = project.tracks().iter().position(|item| item.id() == track) else {
+            return false;
+        };
+        self.reconcile(project);
+        if range {
+            let anchor = self
+                .anchor
+                .and_then(|id| project.tracks().iter().position(|item| item.id() == id))
+                .unwrap_or(index);
+            if !toggle {
+                self.ids.clear();
+            }
+            for item in &project.tracks()[anchor.min(index)..=anchor.max(index)] {
+                self.ids.insert(item.id());
+            }
+            if self.anchor.is_none() {
+                self.anchor = Some(track);
+            }
+        } else {
+            if toggle {
+                if !self.ids.remove(&track) {
+                    self.ids.insert(track);
+                }
+            } else {
+                self.ids.clear();
+                self.ids.insert(track);
+            }
+            self.anchor = Some(track);
+        }
+        true
+    }
+}
+
+impl super::EditorView {
+    pub(super) fn select_track_with_modifiers(
+        &mut self,
+        track: TrackId,
+        modifiers: gpui::Modifiers,
+        window: &mut gpui::Window,
+    ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if self
+            .track_selection
+            .select(&state.project, track, modifiers.shift, modifiers.platform)
+        {
+            self.focus_selected_track(track, window);
+            let count = self.selected_track_ids().len();
+            self.status = match count {
+                0 => "no tracks selected".into(),
+                1 => "track selected".into(),
+                count => format!("{count} tracks selected"),
+            };
+        }
+    }
+
+    /// Every consumer receives explicit members in canonical order; time range
+    /// and focused-clip state never promote unrelated tracks into this selection.
+    pub(super) fn selected_track_ids(&self) -> Vec<TrackId> {
+        self.state.as_ref().map_or_else(Vec::new, |state| {
+            self.track_selection.ordered(&state.project)
+        })
+    }
+}
+
 /// Keep a valid selected clip attached to its canonical owner after edits,
 /// undo, redo or worker-side project changes.
 pub(super) fn reconcile(

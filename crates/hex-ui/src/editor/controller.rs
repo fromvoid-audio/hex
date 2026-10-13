@@ -754,6 +754,7 @@ impl EditorView {
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
             self.selected_track = None;
+            self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
             self.selected_scene = None;
             self.selected_cell = None;
@@ -772,6 +773,7 @@ impl EditorView {
             }) {
                 self.session_copy_source = None;
             }
+            self.track_selection.reconcile(&state.project);
             (self.selected_track, self.selected_clip) =
                 selection::reconcile(&state.project, self.selected_track, self.selected_clip);
             if let Some(clip) = self.selected_clip

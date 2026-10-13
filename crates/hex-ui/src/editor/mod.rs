@@ -65,6 +65,8 @@ mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
 mod time_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_selection_ui_test;
 mod tracks;
 mod transport;
 mod trim;
@@ -408,6 +410,7 @@ pub(super) struct EditorView {
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
+    track_selection: selection::TrackSelection,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -672,6 +675,7 @@ impl EditorView {
             recovery: RecoveryState::default(),
             offline_cursor: 0,
             selected_track: None,
+            track_selection: selection::TrackSelection::default(),
             selected_clip: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -821,6 +825,18 @@ impl EditorView {
     }
 
     pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if self
+            .track_selection
+            .select(&state.project, track, false, false)
+        {
+            self.focus_selected_track(track, window);
+        }
+    }
+
+    pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
