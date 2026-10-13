@@ -1052,6 +1052,8 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
 #[cfg(test)]
 mod canonical_reuse_tests;
 #[cfg(test)]
+mod capture_proof;
+#[cfg(test)]
 mod enable_continuation_tests;
 #[cfg(test)]
 mod enable_tests;
