@@ -12,7 +12,7 @@ mod compressor_ui_tests;
 mod gate_ui_tests;
 mod header_style_tests;
 mod operator_navigation_tests;
-pub(super) mod parameter_rows_tests;
+mod parameter_rows_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {

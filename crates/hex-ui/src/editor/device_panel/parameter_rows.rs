@@ -329,9 +329,47 @@ pub(super) fn body(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::parameter_rows_tests::parameters;
+pub(super) mod tests {
     use super::*;
+    pub(in crate::editor::device_panel) fn parameters() -> Vec<NativeDeviceParameterView> {
+        (1..=72)
+            .map(|id| {
+                let (kind, value) = match id % 6 {
+                    0 | 1 => (
+                        ParameterKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            unit: None,
+                        },
+                        ParameterValue::Float(0.5),
+                    ),
+                    2 | 3 => (ParameterKind::Bool, ParameterValue::Bool(false)),
+                    _ => (
+                        ParameterKind::Choice {
+                            labels: &["first", "second"],
+                        },
+                        ParameterValue::Choice(0),
+                    ),
+                };
+                let descriptor = Box::leak(Box::new(ParameterDescriptor {
+                    id: hex_lattice_contract::ParameterId::from_static(id),
+                    label: "row value",
+                    kind,
+                    default: value,
+                    presentation: ParameterPresentation::Linear,
+                }));
+                NativeDeviceParameterView {
+                    descriptor,
+                    value: if id == 10 {
+                        ParameterValue::Float(0.5)
+                    } else {
+                        value
+                    },
+                    enabled: id != 10,
+                }
+            })
+            .collect()
+    }
 
     #[test]
     fn mixed_rows_preserve_order_extent_resize_and_surviving_scroll_anchor() {
