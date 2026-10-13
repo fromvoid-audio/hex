@@ -974,6 +974,13 @@ impl gpui::Render for NumericControl {
         {
             self.cancel(cx);
         }
+        // A text draft owns printable keys even beneath editor shortcut contexts.
+        // Keep numeric editing actions available in the same focused node.
+        let key_context = if self.editing {
+            "hex_numeric_control hex_text_editing"
+        } else {
+            "hex_numeric_control"
+        };
         let entity = cx.entity();
         let enabled = self.enabled;
         let style = self.style;
@@ -1021,7 +1028,7 @@ impl gpui::Render for NumericControl {
                 .w(px(crate::MICRO_DIAL_WIDTH))
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .absolute()
@@ -1075,7 +1082,7 @@ impl gpui::Render for NumericControl {
                     .gap(px(gap))
                     .items_center()
                     .track_focus(&self.focus)
-                    .key_context("hex_numeric_control")
+                    .key_context(key_context)
                     .child(
                         div()
                             .w(px(width))
@@ -1110,7 +1117,7 @@ impl gpui::Render for NumericControl {
                 .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(value_field_sized(
                     self.id.clone(),
                     value_text,
@@ -1133,7 +1140,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(1.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(48.0))
@@ -1164,7 +1171,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(5.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(42.0))
@@ -1200,7 +1207,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(2.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w_full()
