@@ -784,20 +784,22 @@ fn routing_cell(
         ControlPresentation::InlineValue,
         None,
         Some(codec),
-    );
-    div().w(px(FIELD_WIDTH)).h(px(14.0)).flex_shrink_0().child(
-        control
-            .id(ElementId::Name(selector.clone().into()))
-            .debug_selector(move || selector.clone())
-            // Long typed drafts scroll within their cell, never into a neighbor.
-            .overflow_hidden()
-            .tooltip(move |_, cx| {
-                cx.new(|_| crate::editor::transport::MiniTooltip {
-                    description: description.clone(),
-                })
-                .into()
-            }),
     )
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    // Long typed drafts scroll within their cell, never into a neighbor.
+    .overflow_hidden()
+    .tooltip(move |_, cx| {
+        cx.new(|_| crate::editor::transport::MiniTooltip {
+            description: description.clone(),
+        })
+        .into()
+    });
+    div()
+        .w(px(FIELD_WIDTH))
+        .h(px(14.0))
+        .flex_shrink_0()
+        .child(control)
 }
 
 #[allow(clippy::too_many_arguments)] // Keeps GPUI context, binding identity and presentation explicit.
