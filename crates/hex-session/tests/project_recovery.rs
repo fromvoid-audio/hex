@@ -358,11 +358,9 @@ fn latest_untitled_only_survives_worker_restart_and_failed_checkpoint_preserves_
         }))
         .expect("edit");
     let failed = wait(&restarted);
-    assert!(
-        failed
-            .error
-            .as_deref()
-            .is_some_and(|s| s.contains("checkpoint failed"))
+    assert_eq!(
+        failed.error.as_deref(),
+        Some("automatic recovery: unrecognized recovery journal")
     );
     assert_eq!(failed.state.project.tracks().len(), 2);
     assert!(failed.state.unsaved && failed.state.can_undo && failed.playback.is_some());
