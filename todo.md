@@ -37,6 +37,17 @@ negative controls reproduce both invalid-preview traversal and duplicate-lfo ord
 Full exact-source CI, optimized review build and pending native confirmation are
 recorded in PR178/Pulse2373 under the retained review-only hold.
 
+## 13 October 2026 — header double-click fullscreen
+
+The shared loading/editor title bar now toggles native fullscreen on left
+double-click and restores normal mode on the next double-click. Single/right
+clicks and triple-click continuation do not toggle; window controls retain
+their own stopped-propagation actions. A rendered GPUI pointer regression checks
+entry and exit. Native macOS transitions, header dragging and window-control
+sanity checks remain user acceptance. Automated validation is recorded with the
+task result. Pulse intake is currently blocked: its create-ticket endpoint
+requires a request_id that the installed tool schema does not expose.
+
 ## Open latest session log from header — 13 october 2026
 
 A compact debug control sits at the far right beside the version in the editor,
