@@ -932,7 +932,8 @@ fn render_track(
             let card = chain_window::spacer(
                 device.id(),
                 device_card_width(class, device.state().type_id()),
-            );
+            )
+            .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);
             if class == NativeDeviceClass::Effect {
                 effect_index = effect_index.saturating_add(1);

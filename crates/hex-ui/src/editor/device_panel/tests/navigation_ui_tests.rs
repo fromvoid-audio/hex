@@ -17,6 +17,16 @@ fn device_chain_navigation_pan_overview_release_escape_and_resize(cx: &mut TestA
             .expect("append utility");
         state = receive_service_event(&service).state;
     }
+    let ids: Vec<_> = state
+        .project
+        .track(track)
+        .unwrap()
+        .devices()
+        .iter()
+        .map(|d| d.id())
+        .collect();
+    let first = ids[0];
+    let last = *ids.last().unwrap();
     let card_selector = Box::leak(
         format!(
             "device-drop-card-{}",
@@ -95,6 +105,32 @@ fn device_chain_navigation_pan_overview_release_escape_and_resize(cx: &mut TestA
             "click reaches final device"
         );
     });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("effect-device-{}", last.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "navigator end mounts the actual final card"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-spacer-{}", first.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "offscreen first card is windowed after navigation"
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.navigation.scroll.offset(),
+            view.device_panel.chain_window.scroll.offset()
+        );
+        assert_eq!(
+            view.device_panel.navigation.scroll.max_offset(),
+            view.device_panel.chain_window.scroll.max_offset()
+        );
+    });
     // Drag the focus frame all the way back to the beginning.
     visual.simulate_mouse_down(right, MouseButton::Left, Modifiers::default());
     let left = point(overview.origin.x - px(100.0), overview.center().y);
@@ -152,6 +188,15 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
             .expect("append return device");
         state = receive_service_event(&service).state;
     }
+    let devices = state
+        .project
+        .return_tracks()
+        .iter()
+        .find(|r| r.id() == return_track)
+        .unwrap()
+        .devices();
+    let first = devices[0].id();
+    let last = devices.last().unwrap().id();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, cx| {
@@ -206,6 +251,46 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.navigation.scroll.offset().x, px(-100.0))
     });
+    let overview = visual.debug_bounds("device-chain-overview").unwrap();
+    let right = point(overview.right() - px(1.0), overview.center().y);
+    visual.simulate_mouse_down(right, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(right, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("return-device-drop-card-{}", last.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-spacer-{}", first.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.navigation.scroll.offset(),
+            view.device_panel.chain_window.scroll.offset()
+        );
+        assert_eq!(
+            view.device_panel.navigation.scroll.max_offset(),
+            view.device_panel.chain_window.scroll.max_offset()
+        );
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "Return navigation does not author history"
+        );
+    });
+    assert_eq!(
+        visual.debug_bounds("output-meter").unwrap().size,
+        size(
+            px(crate::output_meter::WIDTH),
+            px(crate::output_meter::HEIGHT)
+        )
+    );
     // Changing to the empty regular chain retires the return navigation identity.
     editor.update(cx, |view, cx| {
         view.focused_return = None;

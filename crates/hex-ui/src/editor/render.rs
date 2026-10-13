@@ -104,7 +104,7 @@ impl EditorView {
                 .id("editor-revision-status")
                 .debug_selector(|| "editor-revision-status".into())
                 .w(px(176.0))
-                .flex_shrink_0()
+                .min_w(px(64.0))
                 .truncate()
                 .text_right()
                 .tooltip({
@@ -194,7 +194,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .tooltip({
@@ -219,7 +219,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -242,7 +242,7 @@ fn status_slot(
         .debug_selector(move || id.into())
         .w(px(width))
         .h_full()
-        .flex_shrink_0()
+        .min_w(px(32.0))
         .truncate()
         .text_right();
     if !label.is_empty() {

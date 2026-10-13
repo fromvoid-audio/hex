@@ -563,3 +563,17 @@ removal, Return control gesture admission and owner/project retirement. Native
 macOS visual acceptance remains pending: click an instrument then an effect,
 click/adjust a Return effect knob, and verify only the clicked card is highlighted
 while its controls still work.
+
+## windowed navigation integration
+
+Track and Return navigator, panning and window selection share one scroll
+instance. Navigation owns its owner/generation reset; the windowed rail observes
+an alias before geometry reconciliation. Mounted drop wrappers and omitted
+spacers include equal chain padding, so mounting and resizing retain full extent
+and the surviving topology anchor. Focus, drafts and active drag destinations
+keep their existing pins. Numeric ownership and project history are unchanged.
+
+The bottom navigator and 248px output meter retain their fixed controls. Existing
+truncated status fields can shrink to bounded minima with their full tooltip
+text retained, so both controls fit the small supported viewport. Actual native
+glyph readability/truncation and physical panning remain pending.
