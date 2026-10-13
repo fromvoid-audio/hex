@@ -792,13 +792,27 @@ impl Render for EditorView {
                 view.pan_timeline(true);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &ToggleSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &ToggleSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, true);
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &AdditiveSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &AdditiveSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, false);
                 }

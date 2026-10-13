@@ -14,6 +14,7 @@ mod operator_tab_tests;
 
 mod operator_routing_readout_tests;
 mod saturator_ui_tests;
+mod shortcut_text_tests;
 
 fn receive_service_event(service: &Service) -> Event {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
