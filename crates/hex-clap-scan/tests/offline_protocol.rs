@@ -179,3 +179,243 @@ fn strict_json_and_impossible_sleep_skip_refuse() {
     b[n - 4..].copy_from_slice(&5u32.to_le_bytes());
     assert!(decode(&b, &r).is_err());
 }
+
+use hex_clap_scan::offline_protocol::{
+    InputEvent, MIDI_PLUGIN_ID, MIDI_PORT_ID, MIDI_PROFILE, MidiBlock, MidiRequest, StateOwner,
+    decode_midi,
+};
+fn midi_request() -> MidiRequest {
+    MidiRequest {
+        version: 2,
+        profile: MIDI_PROFILE.into(),
+        request: 7,
+        sample_rate: 48000,
+        start_frame: 0,
+        initial_gain: 1.0,
+        state: vec![],
+        state_owner: None,
+        blocks: vec![MidiBlock {
+            left: vec![1.0; 4],
+            right: vec![-1.0; 4],
+            events: vec![
+                InputEvent::Midi {
+                    offset: 0,
+                    port: 0,
+                    data: [0xb0, 7, 127],
+                },
+                InputEvent::Gain {
+                    offset: 0,
+                    value: 0.5,
+                },
+            ],
+        }],
+    }
+}
+fn midi_packet() -> Vec<u8> {
+    let mut p = vec![];
+    u(&mut p, 2, 2);
+    u(&mut p, 7, 8);
+    for text in [SDK, "linux-x86_64", MIDI_PLUGIN_ID] {
+        blob(&mut p, text.as_bytes());
+    }
+    u(&mut p, 48000, 4);
+    u(&mut p, 0, 8);
+    u(&mut p, 4, 8);
+    for v in [0, 0, 2, 2, 1, 0, 1, GAIN_ID, 32] {
+        u(&mut p, u64::from(v), 4);
+    }
+    for v in [0.0_f64, 2.0, 1.0] {
+        u(&mut p, v.to_bits(), 8);
+    }
+    blob(&mut p, b"gain");
+    u(&mut p, 4, 4);
+    for v in [0.5_f32, 0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5] {
+        u(&mut p, u64::from(v.to_bits()), 4);
+    }
+    blob(&mut p, &[0; 32]);
+    u(&mut p, 1, 4);
+    blob(&mut p, b"unload main");
+    u(&mut p, 0, 4);
+    u(&mut p, 1, 4);
+    u(&mut p, 1, 4);
+    blob(&mut p, MIDI_PROFILE.as_bytes());
+    u(&mut p, 2, 4);
+    blob(&mut p, "0".repeat(64).as_bytes());
+    for v in [MIDI_PORT_ID, 2, 2] {
+        u(&mut p, u64::from(v), 4);
+    }
+    blob(&mut p, b"original cc7 input");
+    for v in [24, 56, 64] {
+        u(&mut p, v, 4);
+    }
+    u(&mut p, 8192, 8);
+    u(&mut p, 32768, 8);
+    u(&mut p, 0.5_f64.to_bits(), 8);
+    u(&mut p, 1, 4);
+    for v in [0, 0, 2, GAIN_ID] {
+        u(&mut p, u64::from(v), 4);
+    }
+    u(&mut p, 0, 8);
+    u(&mut p, 2.0_f64.to_bits(), 8);
+    let mut b = b"HCOFFR02".to_vec();
+    u(&mut b, p.len() as u64, 4);
+    b.extend(p);
+    b
+}
+#[test]
+fn midi_owned_profile_and_all_response_truncations_refuse() {
+    let b = midi_packet();
+    let r = decode_midi(&b, &midi_request(), &"0".repeat(64)).unwrap();
+    assert_eq!(r.events[0].value, 2.0);
+    assert_eq!(r.final_gain, 0.5);
+    assert_eq!(r.abi.input_reserved_bytes, 8192);
+    for n in 0..b.len() {
+        assert!(
+            decode_midi(&b[..n], &midi_request(), &"0".repeat(64)).is_err(),
+            "{n}"
+        );
+    }
+    let mut trailing = b;
+    trailing.push(0);
+    assert!(decode_midi(&trailing, &midi_request(), &"0".repeat(64)).is_err());
+}
+#[test]
+fn midi_response_profile_owner_port_abi_flags_clock_value_refuse() {
+    let b = midi_packet();
+    let mut positions = vec![0, 8, 12, 14, 26];
+    let tail = b.len() - 32;
+    positions.extend([tail, tail + 4, tail + 8, tail + 12, tail + 16, tail + 23]);
+    let profile_at = b
+        .windows(MIDI_PROFILE.len())
+        .position(|w| w == MIDI_PROFILE.as_bytes())
+        .unwrap();
+    positions.push(profile_at);
+    let owner_at = b
+        .windows(64)
+        .position(|w| w == "0".repeat(64).as_bytes())
+        .unwrap();
+    positions.push(owner_at);
+    let port_at = b
+        .windows(4)
+        .position(|w| w == MIDI_PORT_ID.to_le_bytes())
+        .unwrap();
+    positions.extend([port_at, port_at + 4, port_at + 8]);
+    let abi_at = b.len() - 32 - 4 - 8 - 16 - 12;
+    positions.extend([abi_at, abi_at + 4, abi_at + 8, abi_at + 12, abi_at + 20]);
+    for at in positions {
+        let mut bad = b.clone();
+        bad[at] ^= 0xff;
+        assert!(
+            decode_midi(&bad, &midi_request(), &"0".repeat(64)).is_err(),
+            "{at}"
+        );
+    }
+    let mut bad = b;
+    let n = bad.len();
+    bad[n - 8..].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+    assert!(decode_midi(&bad, &midi_request(), &"0".repeat(64)).is_err());
+}
+#[test]
+fn midi_request_kind_dialect_order_target_and_strict_json_refuse() {
+    let mut r = midi_request();
+    assert!(r.encode_bound(&"0".repeat(64)).is_ok());
+    for event in [
+        InputEvent::Midi {
+            offset: 0,
+            port: 1,
+            data: [0xb0, 7, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0x90, 60, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0xb0, 8, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0xb0, 7, 128],
+        },
+        InputEvent::Gain {
+            offset: 0,
+            value: f64::NAN,
+        },
+    ] {
+        r.blocks[0].events = vec![event];
+        assert!(r.validate().is_err());
+    }
+    r = midi_request();
+    r.blocks[0].events.reverse();
+    assert!(r.validate().is_ok());
+    r.blocks[0].events[0] = InputEvent::Gain {
+        offset: 3,
+        value: 1.0,
+    };
+    assert!(r.validate().is_err());
+    let mut json = serde_json::to_value(midi_request()).unwrap();
+    json["blocks"][0]["events"][0]["cookie"] = serde_json::json!(123);
+    assert!(serde_json::from_value::<MidiRequest>(json).is_err());
+}
+#[test]
+fn midi_state_profile_owner_presence_and_identity_refuse() {
+    let mut r = midi_request();
+    r.state = vec![0; 32];
+    assert!(r.validate().is_err());
+    r.state_owner = Some(StateOwner {
+        profile: MIDI_PROFILE.into(),
+        module_sha256: "0".repeat(64),
+        state_version: 2,
+    });
+    assert!(r.encode_bound(&"0".repeat(64)).is_ok());
+    assert!(r.encode_bound(&"1".repeat(64)).is_err());
+    r.state_owner.as_mut().unwrap().state_version = 1;
+    assert!(r.validate().is_err());
+    r.state.clear();
+    assert!(r.validate().is_err());
+}
+#[test]
+fn midi_combined_capacity_does_not_double_and_output_order_bounds_refuse() {
+    let mut r = midi_request();
+    r.blocks = vec![
+        MidiBlock {
+            left: vec![0.0; 1024],
+            right: vec![0.0; 1024],
+            events: (0..128)
+                .map(|offset| if offset % 2 == 0 {
+                    InputEvent::Midi {
+                        offset,
+                        port: 0,
+                        data: [0xb0, 7, 127],
+                    }
+                } else {
+                    InputEvent::Gain { offset, value: 0.0 }
+                })
+                .collect()
+        };
+        8
+    ];
+    assert_eq!(r.validate().unwrap(), 8192);
+    r.blocks[0].events.push(InputEvent::Gain {
+        offset: 128,
+        value: 0.0,
+    });
+    assert!(r.validate().is_err());
+    r.blocks[0].events.pop();
+    r.blocks.push(r.blocks[0].clone());
+    assert!(r.validate().is_err());
+    let mut b = midi_packet();
+    let n = b.len();
+    let event = b[n - 32..].to_vec();
+    let count_at = n - 36;
+    b[count_at..count_at + 4].copy_from_slice(&129u32.to_le_bytes());
+    for _ in 0..128 {
+        b.extend(&event);
+    }
+    let len = b.len() - 12;
+    b[8..12].copy_from_slice(&(len as u32).to_le_bytes());
+    assert!(decode_midi(&b, &midi_request(), &"0".repeat(64)).is_err());
+}

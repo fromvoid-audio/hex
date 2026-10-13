@@ -42,7 +42,7 @@ fn request() -> Request {
 fn run_at(
     path: &std::path::Path,
     name: &str,
-    r: &Request,
+    r: &impl serde::Serialize,
     deadline: u64,
     cancel: bool,
 ) -> (bool, serde_json::Value) {
@@ -518,4 +518,629 @@ fn actual_maximum_admitted_frames_and_events_are_processed() {
     assert_eq!(a["result"]["end_frame"], 8192);
     let left: Vec<f32> = serde_json::from_value(a["result"]["left"].clone()).unwrap();
     assert_eq!(left, vec![0.5; 8192]);
+}
+
+use hex_clap_scan::offline_protocol::{
+    GAIN_ID, InputEvent, MIDI_PORT_ID, MIDI_PROFILE, MidiBlock, MidiRequest, StateOwner,
+};
+fn midi_request() -> MidiRequest {
+    MidiRequest {
+        version: 2,
+        profile: MIDI_PROFILE.into(),
+        request: 7,
+        sample_rate: 48000,
+        start_frame: 0,
+        initial_gain: 1.0,
+        state: vec![],
+        state_owner: None,
+        blocks: vec![MidiBlock {
+            left: vec![1.0, 2.0, 3.0, 4.0],
+            right: vec![-1.0, -2.0, -3.0, -4.0],
+            events: vec![
+                InputEvent::Midi {
+                    offset: 1,
+                    port: 0,
+                    data: [0xb0, 7, 127],
+                },
+                InputEvent::Gain {
+                    offset: 1,
+                    value: 0.5,
+                },
+            ],
+        }],
+    }
+}
+fn midi_run(name: &str, r: &MidiRequest) -> (bool, serde_json::Value) {
+    run_at(&receipt(), name, r, 2000, false)
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_mixed_pcm_order_owned_output_no_cookie_or_feedback() {
+    let (ok, r) = midi_run("midi", &midi_request());
+    assert!(ok, "{r}");
+    clean(&r);
+    let a = &r["result"];
+    assert_eq!(a["audio"]["left"], serde_json::json!([1.0, 1.0, 1.5, 2.0]));
+    assert_eq!(
+        a["audio"]["right"],
+        serde_json::json!([-1.0, -1.0, -1.5, -2.0])
+    );
+    assert_eq!(a["final_gain"], 0.5);
+    assert_eq!(a["port"]["id"], MIDI_PORT_ID);
+    assert_eq!(a["port"]["supported_dialects"], 2);
+    assert_eq!(
+        a["events"],
+        serde_json::json!([{"block":0,"offset":1,"frame":1,"flags":2,"parameter":GAIN_ID,"value":2.0}])
+    );
+    // The fixture mutates its output value to -999 after try_push. The copied report stays2,
+    // while the later same-offset host gain controls PCM and final state: no output feedback.
+    assert!(a["events"][0].get("cookie").is_none());
+    assert_eq!(a["abi"]["midi_event_bytes"], 24);
+    assert_eq!(a["abi"]["parameter_event_bytes"], 56);
+    assert_eq!(a["abi"]["input_slot_bytes"], 64);
+    assert_eq!(a["abi"]["input_reserved_bytes"], 8192);
+    assert_eq!(a["abi"]["output_reserved_bytes"], 32768);
+    let mut reverse = midi_request();
+    reverse.blocks[0].events.reverse();
+    let (ok, r) = midi_run("midi", &reverse);
+    assert!(ok, "{r}");
+    assert_eq!(
+        r["result"]["audio"]["left"],
+        serde_json::json!([1.0, 4.0, 6.0, 8.0])
+    );
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_independent_all_channel_cc_oracle_and_partition_equivalence() {
+    let mut r = midi_request();
+    r.initial_gain = 0.25;
+    r.blocks = vec![MidiBlock {
+        left: (0..64).map(|n| n as f32 / 8.0 - 4.0).collect(),
+        right: (0..64).map(|n| 4.0 - n as f32 / 8.0).collect(),
+        events: (0..16)
+            .map(|channel| InputEvent::Midi {
+                offset: channel as u32 * 4,
+                port: 0,
+                data: [0xb0 + channel, 7, channel * 8],
+            })
+            .collect(),
+    }];
+    let mut gain = r.initial_gain;
+    let expected: Vec<f32> = r.blocks[0]
+        .left
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            for e in &r.blocks[0].events {
+                if let InputEvent::Midi { offset, data, .. } = e {
+                    if *offset == i as u32 {
+                        gain = 2.0 * f64::from(data[2]) / 127.0;
+                    }
+                }
+            }
+            (f64::from(*v) * gain) as f32
+        })
+        .collect();
+    let (ok, a) = midi_run("midi", &r);
+    assert!(ok, "{a}");
+    let actual: Vec<f32> = serde_json::from_value(a["result"]["audio"]["left"].clone()).unwrap();
+    assert_eq!(
+        actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
+    let events = a["result"]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 16);
+    for (channel, e) in events.iter().enumerate() {
+        assert_eq!(e["frame"], channel * 4);
+        let expected = 2.0 * (channel * 8) as f64 / 127.0;
+        // Compare in the diagnostic JSON representation; PCM above is exact Float32 bits.
+        let expected_json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&expected).unwrap()).unwrap();
+        assert_eq!(e["value"], expected_json);
+        assert_eq!(e["flags"], 2);
+    }
+    let b = r.blocks.remove(0);
+    for (start, end) in [(0, 7), (7, 23), (23, 42), (42, 64)] {
+        r.blocks.push(MidiBlock {
+            left: b.left[start..end].to_vec(),
+            right: b.right[start..end].to_vec(),
+            events: b
+                .events
+                .iter()
+                .filter(|e| (start..end).contains(&(e.offset() as usize)))
+                .map(|e| match e {
+                    InputEvent::Midi { offset, port, data } => InputEvent::Midi {
+                        offset: *offset - start as u32,
+                        port: *port,
+                        data: *data,
+                    },
+                    InputEvent::Gain { .. } => unreachable!(),
+                })
+                .collect(),
+        });
+    }
+    let (ok, b) = midi_run("midi", &r);
+    assert!(ok, "{b}");
+    assert_eq!(a["result"]["audio"]["left"], b["result"]["audio"]["left"]);
+    assert_eq!(a["result"]["audio"]["state"], b["result"]["audio"]["state"]);
+    let frames: Vec<_> = b["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["frame"].clone())
+        .collect();
+    assert_eq!(
+        frames,
+        events
+            .iter()
+            .map(|e| e["frame"].clone())
+            .collect::<Vec<_>>()
+    );
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_state_owner_continuation_no_event_replay_and_endpoints() {
+    let mut request = midi_request();
+    request.blocks[0].events = vec![InputEvent::Midi {
+        offset: 0,
+        port: 0,
+        data: [0xbf, 7, 127],
+    }];
+    let (ok, a) = midi_run("midi", &request);
+    assert!(ok, "{a}");
+    request.state = serde_json::from_value(a["result"]["audio"]["state"].clone()).unwrap();
+    request.state_owner = Some(serde_json::from_value(a["result"]["state_owner"].clone()).unwrap());
+    request.start_frame = 4;
+    request.initial_gain = 0.0;
+    request.blocks[0].events.clear();
+    let (ok, b) = midi_run("midi", &request);
+    assert!(ok, "{b}");
+    assert_eq!(
+        b["result"]["audio"]["left"],
+        serde_json::json!([2.0, 4.0, 6.0, 8.0])
+    );
+    assert!(b["result"]["events"].as_array().unwrap().is_empty());
+    request.blocks[0].events = vec![InputEvent::Midi {
+        offset: 2,
+        port: 0,
+        data: [0xb1, 7, 0],
+    }];
+    let (ok, b) = midi_run("midi", &request);
+    assert!(ok, "{b}");
+    assert_eq!(
+        b["result"]["audio"]["left"],
+        serde_json::json!([2.0, 4.0, 0.0, 0.0])
+    );
+    assert_eq!(b["result"]["events"][0]["frame"], 6);
+    assert_eq!(b["result"]["final_gain"], 0.0);
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_zero_pcm_events_wake_sleep_and_reports_are_preserved() {
+    let mut r = midi_request();
+    let zero = MidiBlock {
+        left: vec![0.0; 4],
+        right: vec![0.0; 4],
+        events: vec![],
+    };
+    r.blocks = vec![zero.clone(), zero.clone(), zero];
+    r.blocks[2].events = vec![InputEvent::Midi {
+        offset: 3,
+        port: 0,
+        data: [0xb0, 7, 127],
+    }];
+    let (ok, a) = midi_run("midi-sleep", &r);
+    assert!(ok, "{a}");
+    assert_eq!(
+        a["result"]["audio"]["statuses"],
+        serde_json::json!([4, 5, 4])
+    );
+    assert_eq!(a["result"]["events"][0]["frame"], 11);
+    assert_eq!(a["result"]["final_gain"], 2.0);
+    assert_eq!(a["result"]["audio"]["end_frame"], 12);
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_all_malformed_output_fields_ignored_rejection_discards() {
+    for bad in 0..13 {
+        let mut r = midi_request();
+        r.blocks[0].events = vec![InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0xb0, 7, bad],
+        }];
+        let (ok, a) = midi_run("midi-bad-output", &r);
+        assert!(!ok, "case{bad}: {a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+        assert!(
+            a["output"]["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("output event rejection discards whole request")
+        );
+    }
+    for name in ["midi-unsorted-output", "midi-block-overflow"] {
+        let (ok, a) = midi_run(name, &midi_request());
+        assert!(!ok, "{a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+    }
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_output_aggregate_boundary_and_late_overflow_no_prefix_state() {
+    let mut r = midi_request();
+    r.blocks = vec![
+        MidiBlock {
+            left: vec![0.0],
+            right: vec![0.0],
+            events: vec![]
+        };
+        8
+    ];
+    let (ok, a) = midi_run("midi-total-overflow", &r);
+    assert!(ok, "{a}");
+    assert_eq!(a["result"]["events"].as_array().unwrap().len(), 1024);
+    r.blocks.push(r.blocks[0].clone());
+    let (ok, a) = midi_run("midi-total-overflow", &r);
+    assert!(!ok, "{a}");
+    clean(&a);
+    assert!(a["result"].is_null());
+    assert_eq!(a["output"]["packet"], serde_json::json!([]));
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_late_process_error_no_successful_events_pcm_or_state() {
+    let mut r = midi_request();
+    r.blocks.insert(
+        0,
+        MidiBlock {
+            left: vec![1.0],
+            right: vec![-1.0],
+            events: vec![InputEvent::Midi {
+                offset: 0,
+                port: 0,
+                data: [0xb0, 7, 127],
+            }],
+        },
+    );
+    let (ok, a) = midi_run("midi-error", &r);
+    assert!(!ok, "{a}");
+    clean(&a);
+    assert!(a["result"].is_null());
+    assert!(
+        a["output"]["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("instance stop")
+    );
+    assert!(
+        a["output"]["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("fixture unload entries=0 instances=0")
+    );
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_rescan_wrong_thread_and_dialect_fail_cleanly() {
+    for name in ["midi-rescan", "midi-wrong-thread", "midi-bad-port"] {
+        let (ok, a) = midi_run(name, &midi_request());
+        assert!(!ok, "{name} {a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+        assert!(
+            a["output"]["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("fixture unload entries=0 instances=0")
+        );
+    }
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_crash_deadline_cancel_and_descendant_reap() {
+    for (name, cancel) in [
+        ("midi-crash", false),
+        ("midi-hang", false),
+        ("midi-hang", true),
+    ] {
+        let start = Instant::now();
+        let (ok, a) = run_at(&receipt(), name, &midi_request(), 200, cancel);
+        assert!(!ok, "{a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+        assert!(start.elapsed() < Duration::from_secs(3));
+        if cancel {
+            assert_eq!(a["error"], "cancelled");
+        }
+    }
+    let (ok, a) = midi_run("midi-descendant", &midi_request());
+    assert!(ok, "{a}");
+    clean(&a);
+    let ids = a["output"]["cleanup"]["descendant_pids"]
+        .as_array()
+        .unwrap();
+    assert!(!ids.is_empty());
+    for pid in ids {
+        assert_eq!(
+            rustix::process::test_kill_process(
+                rustix::process::Pid::from_raw(pid.as_i64().unwrap() as i32).unwrap()
+            ),
+            Err(rustix::io::Errno::SRCH)
+        );
+    }
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_state_class_version_owner_and_malformed_refusal() {
+    let (ok, a) = midi_run("midi", &midi_request());
+    assert!(ok, "{a}");
+    let mut r = midi_request();
+    r.state = serde_json::from_value(a["result"]["audio"]["state"].clone()).unwrap();
+    r.state_owner = Some(serde_json::from_value(a["result"]["state_owner"].clone()).unwrap());
+    r.start_frame = 4;
+    for field in 0..4 {
+        let mut bad = r.clone();
+        match field {
+            0 => bad.state_owner = None,
+            1 => bad.state_owner.as_mut().unwrap().state_version = 1,
+            2 => bad.state_owner.as_mut().unwrap().profile = "legacy".into(),
+            _ => bad.state_owner.as_mut().unwrap().module_sha256 = "0".repeat(64),
+        }
+        let (ok, a) = midi_run("midi", &bad);
+        assert!(!ok, "{a}");
+        assert!(a["output"].is_null());
+    }
+    for state in [vec![0], vec![0; 32], vec![0; 33]] {
+        let mut bad = r.clone();
+        bad.state = state;
+        let (ok, a) = midi_run("midi", &bad);
+        assert!(!ok, "{a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+    }
+    let (ok, old) = run("process", &request());
+    assert!(ok, "{old}");
+    r.state = serde_json::from_value(old["result"]["state"].clone()).unwrap();
+    let (ok, a) = midi_run("midi", &r);
+    assert!(!ok, "{a}");
+    clean(&a);
+    assert!(a["result"].is_null());
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_unsupported_input_and_profile_refused_before_child() {
+    for event in [
+        InputEvent::Midi {
+            offset: 0,
+            port: 1,
+            data: [0xb0, 7, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0x90, 60, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0xb0, 8, 1],
+        },
+        InputEvent::Midi {
+            offset: 0,
+            port: 0,
+            data: [0xb0, 7, 128],
+        },
+        InputEvent::Gain {
+            offset: 4,
+            value: 1.0,
+        },
+        InputEvent::Gain {
+            offset: 0,
+            value: 3.0,
+        },
+    ] {
+        let mut r = midi_request();
+        r.blocks[0].events = vec![event];
+        let (ok, a) = midi_run("midi", &r);
+        assert!(!ok, "{a}");
+        assert!(a["output"].is_null());
+    }
+    let (ok, a) = midi_run("process", &midi_request());
+    assert!(!ok, "{a}");
+    assert!(a["output"].is_null());
+    let (ok, a) = run_at(&receipt(), "midi", &request(), 2000, false);
+    assert!(!ok, "{a}");
+    assert!(a["output"].is_null());
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_maximum_combined_input_capacity_and_checked_abi() {
+    let mut r = midi_request();
+    r.blocks = vec![
+        MidiBlock {
+            left: vec![0.25; 1024],
+            right: vec![-0.25; 1024],
+            events: (0..128)
+                .map(|offset| if offset % 2 == 0 {
+                    InputEvent::Midi {
+                        offset,
+                        port: 0,
+                        data: [0xb0, 7, 127],
+                    }
+                } else {
+                    InputEvent::Gain { offset, value: 2.0 }
+                })
+                .collect()
+        };
+        8
+    ];
+    let (ok, a) = midi_run("midi", &r);
+    assert!(ok, "{a}");
+    clean(&a);
+    let left: Vec<f32> = serde_json::from_value(a["result"]["audio"]["left"].clone()).unwrap();
+    assert_eq!(left, vec![0.5; 8192]);
+    assert_eq!(a["result"]["events"].as_array().unwrap().len(), 512);
+    assert_eq!(a["result"]["abi"]["input_reserved_bytes"], 8 * 128 * 64);
+    r.blocks[0].events.push(InputEvent::Gain {
+        offset: 129,
+        value: 1.0,
+    });
+    let (ok, a) = midi_run("midi", &r);
+    assert!(!ok, "{a}");
+    assert!(a["output"].is_null());
+}
+
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_state_load_failure_and_memoryless_state_validation() {
+    let (ok, a) = midi_run("midi", &midi_request());
+    assert!(ok, "{a}");
+    let mut r = midi_request();
+    r.state = serde_json::from_value(a["result"]["audio"]["state"].clone()).unwrap();
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(receipt()).unwrap()).unwrap();
+    let hash = receipt["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "midi-state-fail")
+        .unwrap()["sha256"]
+        .as_str()
+        .unwrap();
+    r.state_owner = Some(StateOwner {
+        profile: MIDI_PROFILE.into(),
+        module_sha256: hash.into(),
+        state_version: 2,
+    });
+    let (ok, a) = midi_run("midi-state-fail", &r);
+    assert!(!ok, "{a}");
+    clean(&a);
+    assert!(a["result"].is_null());
+    assert!(
+        a["output"]["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("state load failed")
+    );
+    let hash = receipt["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "midi")
+        .unwrap()["sha256"]
+        .as_str()
+        .unwrap();
+    r.state_owner.as_mut().unwrap().module_sha256 = hash.into();
+    for at in [4, 12, 20, 24, 28] {
+        let mut bad = r.clone();
+        if at == 4 {
+            bad.state[4..12].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        } else if at == 12 {
+            bad.state[12..20].copy_from_slice(&u64::MAX.to_le_bytes());
+        } else {
+            bad.state[at] = 1;
+        }
+        let (ok, a) = midi_run("midi", &bad);
+        assert!(!ok, "{a}");
+        clean(&a);
+        assert!(a["result"].is_null());
+    }
+}
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_raw_wire_malformed_cases_refuse_before_module_load() {
+    use hex_clap_scan::offline_protocol::{MIDI_PLUGIN_ID, MIDI_PROFILE};
+    use std::{
+        io::Read,
+        net::Shutdown,
+        os::{fd::OwnedFd, unix::net::UnixStream},
+    };
+    let root = receipt().parent().unwrap().to_path_buf();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(receipt()).unwrap()).unwrap();
+    let hash = manifest["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "midi")
+        .unwrap()["sha256"]
+        .as_str()
+        .unwrap();
+    let valid = midi_request().encode_bound(hash).unwrap();
+    let event_at = 12
+        + 2
+        + 8
+        + 4
+        + MIDI_PLUGIN_ID.len()
+        + 4
+        + 8
+        + 8
+        + 4
+        + MIDI_PROFILE.len()
+        + 4
+        + 4
+        + 64
+        + 4
+        + 4
+        + 4
+        + 4;
+    assert_eq!(valid[event_at], 1);
+    for case in 0..9 {
+        let mut packet = valid.clone();
+        match case {
+            0 => packet[0] ^= 0xff,
+            1 => packet[12] = 1,
+            2 => packet[event_at] = 255,
+            3 => packet[event_at + 1..event_at + 5].copy_from_slice(&4u32.to_le_bytes()),
+            4 => packet[event_at + 5] = 1,
+            5 => packet[event_at + 7] = 0x70,
+            6 => packet[event_at + 8] = 8,
+            7 => packet[event_at + 9] = 128,
+            _ => {
+                packet.push(0);
+                let n = packet.len() - 12;
+                packet[8..12].copy_from_slice(&(n as u32).to_le_bytes());
+            }
+        }
+        let (mut parent, child) = UnixStream::pair().unwrap();
+        let child = Command::new(root.join("hex-clap-offline-helper"))
+            .arg(root.join("midi.clap"))
+            .arg("7")
+            .stdin(Stdio::from(OwnedFd::from(child)))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        parent.write_all(&packet).unwrap();
+        parent.shutdown(Shutdown::Write).unwrap();
+        let mut response = vec![];
+        let transfer = parent.read_to_end(&mut response);
+        let output = child.wait_with_output().unwrap();
+        if let Err(e) = transfer {
+            assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset);
+        }
+        assert!(!output.status.success(), "case{case}");
+        assert!(response.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("entry init"));
+    }
+}
+
+#[test]
+#[ignore = "requires original optimized native receipt"]
+fn midi_actual_output_on_foreign_thread_or_destroy_discards_all() {
+    for name in ["midi-output-thread", "midi-late-output"] {
+        let (ok, r) = midi_run(name, &midi_request());
+        assert!(!ok, "{r}");
+        clean(&r);
+        assert!(r["result"].is_null());
+        let log = r["output"]["stderr"].as_str().unwrap();
+        assert!(log.contains("instance destroy"));
+        assert!(log.contains("fixture unload entries=0 instances=0"));
+        if name == "midi-late-output" {
+            assert!(log.contains("late output rejection discards whole request"));
+        }
+    }
 }

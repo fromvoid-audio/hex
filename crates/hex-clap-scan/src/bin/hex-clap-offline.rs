@@ -6,7 +6,7 @@ mod supervisor;
 fn main() {
     use hex_clap_scan::{
         Receipt, binary_identity, controlled_path, file_bytes, hash,
-        offline_protocol::{self, BuildReceipt, Request},
+        offline_protocol::{self, BuildReceipt, MIDI_MODES, MODES, MidiRequest, Request},
     };
     use std::{path::PathBuf, time::Duration};
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -59,13 +59,34 @@ fn main() {
         module_hash = module.sha256.clone();
         let request_bytes = file_bytes(&PathBuf::from(&args[2]), 1024 * 1024)?;
         request_hash = hash(&request_bytes);
-        let request: Request =
+        let json: serde_json::Value =
             serde_json::from_slice(&request_bytes).map_err(|_| "invalid offline request JSON")?;
-        let input = request.encode()?;
+        let midi: Option<MidiRequest> = if json.get("version").and_then(|v| v.as_u64()) == Some(2) {
+            Some(serde_json::from_value(json.clone()).map_err(|_| "invalid MIDI request JSON")?)
+        } else {
+            None
+        };
+        let legacy: Option<Request> = if midi.is_none() {
+            Some(serde_json::from_value(json).map_err(|_| "invalid offline request JSON")?)
+        } else {
+            None
+        };
+        let (input, request_id) = if let Some(request) = &midi {
+            if !MIDI_MODES.contains(&name) {
+                return Err("MIDI fixture/profile mismatch".into());
+            }
+            (request.encode_bound(&module_hash)?, request.request)
+        } else {
+            if !MODES.contains(&name) {
+                return Err("legacy fixture/profile mismatch".into());
+            }
+            let request = legacy.as_ref().ok_or("request missing")?;
+            (request.encode()?, request.request)
+        };
         let (mut actual, mut pending) = supervisor::run(
             &helper,
             &module_path,
-            request.request,
+            request_id,
             Duration::from_millis(deadline),
             &input,
         )?;
@@ -88,7 +109,19 @@ fn main() {
         }
         let decoded = match actual.cause.as_ref() {
             Some(e) => Err(e.clone()),
-            None => offline_protocol::decode(&actual.packet, &request),
+            None => {
+                if let Some(request) = &midi {
+                    offline_protocol::decode_midi(&actual.packet, request, &module_hash).and_then(
+                        |r| serde_json::to_value(r).map_err(|_| "MIDI result encoding".into()),
+                    )
+                } else {
+                    offline_protocol::decode(
+                        &actual.packet,
+                        legacy.as_ref().ok_or("request missing")?,
+                    )
+                    .and_then(|r| serde_json::to_value(r).map_err(|_| "result encoding".into()))
+                }
+            }
         };
         output = Some(actual);
         if file_bytes(&manifest, 64 * 1024)? != bytes

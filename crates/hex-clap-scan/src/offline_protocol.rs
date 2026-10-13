@@ -148,9 +148,22 @@ pub struct ResultRecord {
     pub statuses: Vec<u32>,
 }
 pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
-    let frames = request.validate()?;
     let mut r = Reader::packet(bytes, b"HCOFFR01")?;
-    if r.u16()? != 1 || r.u64()? != request.request {
+    let result = decode_record(&mut r, request, 1, PLUGIN_ID, 0)?;
+    if r.at != r.bytes.len() {
+        return Err("trailing offline bytes refused".into());
+    }
+    Ok(result)
+}
+fn decode_record(
+    r: &mut Reader<'_>,
+    request: &Request,
+    version: u16,
+    expected_id: &str,
+    note_inputs: u32,
+) -> Result<ResultRecord, String> {
+    let frames = request.validate()?;
+    if r.u16()? != version || r.u64()? != request.request {
         return Err("offline response version/request refused".into());
     }
     let sdk = r.text(40)?;
@@ -164,7 +177,7 @@ pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
     // This protocol is explicitly the original zero-latency stereo fixture profile.
     if sdk != SDK
         || platform != "linux-x86_64"
-        || plugin_id != PLUGIN_ID
+        || plugin_id != expected_id
         || sample_rate != request.sample_rate
         || start_frame != request.start_frame
         || end_frame != request.start_frame + frames as u64
@@ -172,7 +185,7 @@ pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
         || ![0, 2].contains(&tail)
         || r.u32()? != 2
         || r.u32()? != 2
-        || r.u32()? != 0
+        || r.u32()? != note_inputs
         || r.u32()? != 0
     {
         return Err("offline identity/capability refused".into());
@@ -247,9 +260,6 @@ pub fn decode(bytes: &[u8], request: &Request) -> Result<ResultRecord, String> {
             return Err("invalid sleep skip refused".into());
         }
     }
-    if r.at != r.bytes.len() {
-        return Err("trailing offline bytes refused".into());
-    }
     Ok(ResultRecord {
         sdk,
         platform,
@@ -273,6 +283,9 @@ struct Writer {
     bytes: Vec<u8>,
 }
 impl Writer {
+    fn u8(&mut self, v: u8) {
+        self.bytes.push(v);
+    }
     fn u16(&mut self, v: u16) {
         self.bytes.extend(v.to_le_bytes());
     }
@@ -398,6 +411,10 @@ pub fn source_hash() -> String {
             "processing_fixture.cpp",
             include_bytes!("../native/processing_fixture.cpp").as_slice(),
         ),
+        (
+            "midi_fixture.cpp",
+            include_bytes!("../native/midi_fixture.cpp").as_slice(),
+        ),
     ] {
         h.update(name);
         h.update([0]);
@@ -413,13 +430,13 @@ impl BuildReceipt {
             || self.scanner_receipt_sha256 != crate::hash(scanner)
             || self.source_sha256 != source_hash()
             || !crate::hex_digest(&self.helper_sha256)
-            || self.modules.len() != MODES.len()
+            || self.modules.len() != MODES.len() + MIDI_MODES.len()
         {
             return Err("offline build identity refused".into());
         }
         let mut names = std::collections::BTreeSet::new();
         for m in &self.modules {
-            if !MODES.contains(&m.name.as_str())
+            if !(MODES.contains(&m.name.as_str()) || MIDI_MODES.contains(&m.name.as_str()))
                 || !names.insert(m.name.as_str())
                 || !crate::hex_digest(&m.sha256)
                 || m.binary != format!("{}.clap", m.name)
@@ -429,4 +446,350 @@ impl BuildReceipt {
         }
         Ok(())
     }
+}
+
+/// Closed ORIGINAL MIDI1 CC7 fixture profile. No general MIDI/device host API.
+pub const MIDI_PLUGIN_ID: &str = "org.hex.controlled.offline-midi-gain";
+pub const MIDI_PROFILE: &str = "midi1-cc7-gain-v1";
+pub const MIDI_PORT_ID: u32 = 0x200101;
+pub const MIDI_MODES: [&str; 16] = [
+    "midi",
+    "midi-sleep",
+    "midi-error",
+    "midi-crash",
+    "midi-hang",
+    "midi-descendant",
+    "midi-rescan",
+    "midi-bad-port",
+    "midi-bad-output",
+    "midi-unsorted-output",
+    "midi-block-overflow",
+    "midi-total-overflow",
+    "midi-wrong-thread",
+    "midi-state-fail",
+    "midi-output-thread",
+    "midi-late-output",
+];
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateOwner {
+    pub profile: String,
+    pub module_sha256: String,
+    pub state_version: u32,
+}
+impl StateOwner {
+    fn verify(&self, module: &str) -> Result<(), String> {
+        if self.profile != MIDI_PROFILE
+            || self.state_version != 2
+            || !crate::hex_digest(module)
+            || self.module_sha256 != module
+        {
+            return Err("MIDI state owner/profile refused".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InputEvent {
+    Gain {
+        offset: u32,
+        value: f64,
+    },
+    Midi {
+        offset: u32,
+        port: u16,
+        data: [u8; 3],
+    },
+}
+impl InputEvent {
+    pub fn offset(&self) -> u32 {
+        match self {
+            Self::Gain { offset, .. } | Self::Midi { offset, .. } => *offset,
+        }
+    }
+    fn point(&self) -> Result<Point, String> {
+        match self {
+            Self::Gain { offset, value } if plain(*value) => Ok(Point {
+                offset: *offset,
+                value: *value,
+            }),
+            Self::Midi { offset, port, data }
+                if *port == 0
+                    && (0xb0..=0xbf).contains(&data[0])
+                    && data[1] == 7
+                    && data[2] < 128 =>
+            {
+                Ok(Point {
+                    offset: *offset,
+                    value: 2.0 * f64::from(data[2]) / 127.0,
+                })
+            }
+            _ => Err("unsupported MIDI/gain event refused".into()),
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MidiBlock {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub events: Vec<InputEvent>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MidiRequest {
+    pub version: u16,
+    pub profile: String,
+    pub request: u64,
+    pub sample_rate: u32,
+    pub start_frame: u64,
+    pub initial_gain: f64,
+    pub state: Vec<u8>,
+    pub state_owner: Option<StateOwner>,
+    pub blocks: Vec<MidiBlock>,
+}
+impl MidiRequest {
+    fn base(&self) -> Result<Request, String> {
+        if self.version != 2
+            || self.profile != MIDI_PROFILE
+            || self.blocks.len() > 32
+            || self.state.len() > 65536
+            || self
+                .blocks
+                .iter()
+                .any(|b| b.events.len() > 128 || b.left.len() > 1024 || b.right.len() > 1024)
+        {
+            return Err("MIDI request profile/capacity refused".into());
+        }
+        if self.state.is_empty() != self.state_owner.is_none() {
+            return Err("MIDI state owner presence refused".into());
+        }
+        if let Some(owner) = &self.state_owner {
+            owner.verify(&owner.module_sha256)?;
+        }
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|b| {
+                Ok(Block {
+                    left: b.left.clone(),
+                    right: b.right.clone(),
+                    points: b
+                        .events
+                        .iter()
+                        .map(InputEvent::point)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Request {
+            version: 1,
+            request: self.request,
+            sample_rate: self.sample_rate,
+            start_frame: self.start_frame,
+            initial_gain: self.initial_gain,
+            state: self.state.clone(),
+            blocks,
+        })
+    }
+    pub fn validate(&self) -> Result<usize, String> {
+        self.base()?.validate()
+    }
+    pub fn encode_bound(&self, module: &str) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        if !crate::hex_digest(module) {
+            return Err("MIDI module identity refused".into());
+        }
+        if let Some(owner) = &self.state_owner {
+            owner.verify(module)?;
+        }
+        let mut w = Writer::default();
+        w.u16(2);
+        w.u64(self.request);
+        w.blob(MIDI_PLUGIN_ID.as_bytes());
+        w.u32(self.sample_rate);
+        w.u64(self.start_frame);
+        w.f64(self.initial_gain);
+        w.blob(MIDI_PROFILE.as_bytes());
+        w.u32(2);
+        w.blob(module.as_bytes());
+        w.blob(&self.state);
+        w.u32(self.blocks.len() as u32);
+        for b in &self.blocks {
+            w.u32(b.left.len() as u32);
+            w.u32(b.events.len() as u32);
+            for e in &b.events {
+                match e {
+                    InputEvent::Gain { offset, value } => {
+                        w.u8(0);
+                        w.u32(*offset);
+                        w.f64(*value);
+                    }
+                    InputEvent::Midi { offset, port, data } => {
+                        w.u8(1);
+                        w.u32(*offset);
+                        w.u16(*port);
+                        w.bytes.extend(data);
+                    }
+                }
+            }
+            for v in b.left.iter().chain(&b.right) {
+                w.u32(v.to_bits());
+            }
+        }
+        packet(b"HCOFFQ02", w.bytes)
+    }
+}
+#[derive(Debug, Serialize)]
+pub struct MidiPort {
+    pub id: u32,
+    pub supported_dialects: u32,
+    pub preferred_dialect: u32,
+    pub name: String,
+}
+#[derive(Debug, Serialize)]
+pub struct OutputEvent {
+    pub block: u32,
+    pub offset: u32,
+    pub frame: u64,
+    pub flags: u32,
+    pub parameter: u32,
+    pub value: f64,
+}
+#[derive(Debug, Serialize)]
+pub struct AbiDemand {
+    pub midi_event_bytes: u32,
+    pub parameter_event_bytes: u32,
+    pub input_slot_bytes: u32,
+    pub input_reserved_bytes: u64,
+    pub output_reserved_bytes: u64,
+}
+#[derive(Debug, Serialize)]
+pub struct MidiResult {
+    pub audio: ResultRecord,
+    pub profile: String,
+    pub port: MidiPort,
+    pub events: Vec<OutputEvent>,
+    pub abi: AbiDemand,
+    pub state_owner: StateOwner,
+    pub final_gain: f64,
+}
+pub fn decode_midi(
+    bytes: &[u8],
+    request: &MidiRequest,
+    module: &str,
+) -> Result<MidiResult, String> {
+    request.validate()?;
+    if !crate::hex_digest(module) {
+        return Err("MIDI module identity refused".into());
+    }
+    let mut r = Reader::packet(bytes, b"HCOFFR02")?;
+    let audio = decode_record(&mut r, &request.base()?, 2, MIDI_PLUGIN_ID, 1)?;
+    if audio.tail != 0 {
+        return Err("MIDI tail capability refused".into());
+    }
+    let profile = r.text(64)?;
+    let state_owner = StateOwner {
+        profile: profile.clone(),
+        state_version: r.u32()?,
+        module_sha256: r.text(64)?,
+    };
+    state_owner.verify(module)?;
+    let port = MidiPort {
+        id: r.u32()?,
+        supported_dialects: r.u32()?,
+        preferred_dialect: r.u32()?,
+        name: r.text(256)?,
+    };
+    if profile != MIDI_PROFILE
+        || port.id != MIDI_PORT_ID
+        || port.supported_dialects != 2
+        || port.preferred_dialect != 2
+        || port.name.trim().is_empty()
+    {
+        return Err("MIDI port/profile refused".into());
+    }
+    let abi = AbiDemand {
+        midi_event_bytes: r.u32()?,
+        parameter_event_bytes: r.u32()?,
+        input_slot_bytes: r.u32()?,
+        input_reserved_bytes: r.u64()?,
+        output_reserved_bytes: r.u64()?,
+    };
+    // Declared pinned Linux x86_64 ABI, checked against emitted compiled sizeof demand.
+    if abi.midi_event_bytes != 24
+        || abi.parameter_event_bytes != 56
+        || abi.input_slot_bytes != 64
+        || abi.input_reserved_bytes != request.blocks.len() as u64 * 128 * 64
+        || abi.output_reserved_bytes != 1024 * 32
+    {
+        return Err("MIDI ABI reservation refused".into());
+    }
+    let final_gain = r.f64()?;
+    if !plain(final_gain) {
+        return Err("MIDI final gain refused".into());
+    }
+    let count = r.u32()? as usize;
+    if count > 1024 {
+        return Err("MIDI output capacity refused".into());
+    }
+    let mut events = Vec::with_capacity(count);
+    let mut prior = None;
+    let mut counts = [0u32; 32];
+    for _ in 0..count {
+        let block = r.u32()?;
+        let offset = r.u32()?;
+        let flags = r.u32()?;
+        let parameter = r.u32()?;
+        let reported_frame = r.u64()?;
+        let value = r.f64()?;
+        let b = request
+            .blocks
+            .get(block as usize)
+            .ok_or("output block refused")?;
+        if audio.statuses[block as usize] == 5
+            || offset as usize >= b.left.len()
+            || flags != 2
+            || parameter != GAIN_ID
+            || !plain(value)
+            || prior.is_some_and(|p| p > (block, offset))
+        {
+            return Err("MIDI output event refused".into());
+        }
+        counts[block as usize] += 1;
+        if counts[block as usize] > 128 {
+            return Err("MIDI block output capacity refused".into());
+        }
+        let frame = request.start_frame
+            + request.blocks[..block as usize]
+                .iter()
+                .map(|b| b.left.len() as u64)
+                .sum::<u64>()
+            + u64::from(offset);
+        if reported_frame != frame {
+            return Err("MIDI output frame refused".into());
+        }
+        events.push(OutputEvent {
+            block,
+            offset,
+            frame,
+            flags,
+            parameter,
+            value,
+        });
+        prior = Some((block, offset));
+    }
+    if r.at != r.bytes.len() {
+        return Err("MIDI trailing response refused".into());
+    }
+    Ok(MidiResult {
+        audio,
+        profile,
+        port,
+        events,
+        abi,
+        state_owner,
+        final_gain,
+    })
 }

@@ -41,3 +41,11 @@ No new dependencies, public engine contract or unsafe exception is introduced.
 Official contract source paths: include/clap/{entry,plugin,process,events,stream}.h,
 ext/{render,audio-ports,note-ports,params,state,latency,tail,thread-check}.h at the
 retained commit. Scanner and offline receipts bind the full emitted build closure.
+
+The MIDI1 CC7 unit adds only original midi_fixture.cpp and a closed version2 owned
+protocol/profile within this same boundary. Official pinned note-ports.h, events.h,
+params.h and plugin.h define main-thread inactive bus discovery, ordered borrowed
+input events, synchronous output-copy lifetime and DONT_RECORD for MIDI-derived
+parameter output. Native variant/array layouts are compiled and explicitly charged;
+no new dependencies, Clack/Rust FFI, event-filter draft, renderer or policy exceptions.
+The original legacy gain and descriptor paths remain independently verified.

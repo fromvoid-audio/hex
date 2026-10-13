@@ -75,10 +75,10 @@ HEX_CLAP_FIXTURE_RECEIPT and `cargo test -p hex-clap-scan --test native --locked
 -- --ignored --test-threads=1`; default workspace runs visibly ignore those tests.
 
 
-## controlled offline gain unit
+## controlled offline gain unit (legacy version1)
 
 The same offline builder additionally produces `controlled-offline.json`, bound
-by digest to the complete scanner build receipt and four original offline sources.
+by digest to the complete scanner build receipt and five original offline sources.
 `hex-clap-offline <controlled-offline.json> <original-name> <request.json>
 [deadline-ms]` uses the existing owned supervisor with bounded duplex IPC.
 Only the twelve freshly built ORIGINAL processing fixtures are accepted; descriptor
@@ -127,3 +127,66 @@ Process-group cleanup is still not an OS sandbox. Third-party containment, gener
 extension/callback negotiation, realtime scheduling/ownership, routing/latency,
 project/UI/device integration, editors and optimized macOS packaging/signing/native
 listening remain required for full20 and are unproved here.
+
+## controlled offline MIDI1 CC7 profile
+
+Version2 messages add a distinct ORIGINAL `org.hex.controlled.offline-midi-gain`
+fixture and `midi1-cc7-gain-v1` profile. The same CLI/helper supports both versions;
+legacy version1 gain fixtures retain their plugin ID/state/PCM laws and refuse MIDI
+or output events. Module names and message profiles must match before launch.
+No production event adapter, instrument, device/editor/project or realtime
+capability is introduced. The16 MIDI fixture variants are original source only.
+
+The fixed inactive main-thread note-port contract is one MIDI1 input (index0,
+stable ID0x200101), MIDI1 preferred/supported, zero output note ports. Main stereo
+Float32, plain global gain0..2, offline mode, zero latency and zero tail remain
+required. Unsupported dialect/port metadata refuses. Host note-port extension
+advertises MIDI1 representation; any rescan invalidates this fixed attempt.
+General params callbacks/rescan/flush scheduling are not advertised. Extension
+contexts survive destroy; process input storage is borrowed only during process.
+
+Request events form one ordered list of global gain changes and three-byte CC7:
+status0xb0..0xbf, controller7, value0..127, port0. Each CC7 sets gain to2*value/127;
+it applies before its addressed sample. Equal-offset events retain supplied order;
+the last gain change controls that sample. This law belongs to the original fixture.
+Other MIDI messages, running status, notes/MPE/MIDI2/SysEx, modulation, targeted
+parameters, custom event spaces and flags are refused. No implicit sorting occurs.
+A nonempty MIDI event list wakes sleep even with zero PCM.
+
+MIDI-derived parameter output carries DONT_RECORD and is copied synchronously
+inside try_push as owned scalar fields. Cookie is never dereferenced, retained or
+serialized; output is never reinjected. A report can precede a later same-offset
+host gain change, so it does not assert the final audible value or hardware/recording
+ACK. The response contains final main-thread queried gain separately. The fixture
+mutates its stack output after try_push; tests verify that owned reports survive.
+
+Existing payload1MiB/state64KiB,32blocks,1..1024frames/block,8192frames/request
+bounds remain. Input gain+MIDI counts COMBINE at128/block and1024/request.
+Output has independent128/block and1024/request bounds. Native aligned variant
+slots and output scalar arrays are preallocated with checked sizeof arithmetic,
+not unaligned byte casts. Pinned Linux x86_64 sizes are MIDI24, parameter56,
+input slot64, output slot32bytes; static assertions and response decoding refuse
+other layouts. Input slot reservation is blocks*128*64 (max262144bytes); output
+slot reservation32768bytes. These are slot charges, excluding PCM, state, container
+metadata, logs and process/runtime overhead; no OS memory containment or realtime
+allocation/deadline claim follows. try_push allocates no storage. Any malformed
+header/type/space/target/flag/order/value, wrong-thread/late push or capacity refusal
+latches failure even if the fixture ignores false. The whole request then exposes
+no successful PCM, state or events. Earlier successful blocks remain unpublished.
+
+Version2 continuation requires a matching state owner (profile, state_version2,
+module SHA-256), checked before child launch. The original fixture additionally
+validates its distinct opaque magic, exact length, finite gain, frame bound and
+zero unsupported residual fields before committing load. State preserves held
+gain through7-byte partial transfers; input/output events are never replayed.
+Changed fixture identity needs an explicit later compatibility decision. Caller-owned
+receipts/owner records are provenance, not third-party authenticity or containment.
+
+Use the same explicit HEX_CLAP_OFFLINE_RECEIPT native test invocation above.
+Tests cover independent Float32 bit PCM and emitted-event oracles, all channels,
+coincident ordering, partitions, state/endpoints/sleep-wake, malformed raw packets
+and output, ignored try_push failure, both output limits, late discard, unsupported
+profiles/dialects/rescan/thread calls, crash/hang/cancel and kernel descendant reap.
+Legacy native/scanner/protocol checks remain. Third-party containment and the
+full20/native blockers listed above are unchanged; this is offline controlled CC7
+support only. Rust unsafe-forbid and the existing dependency boundaries remain.
