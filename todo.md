@@ -1,15 +1,19 @@
 ## Operator Tab review repairs — pulse2373 / PR178
 
-Oscillator selectors precede coarse/fine/fixed/level controls in forward traversal;
-Shift-Tab reverses the same order. Shared Toggle, Selector, NumericControl and
-ResponseGraph retain owner navigation intent while availability updates remove
-and restore their effective Tab stops. Section containers do not participate in
-Tab traversal: descendant widget focus reveals the row's gutter background,
-and the routing icon owns the global keyboard target. Audio enable flags and
-canonical sound state are preserved. Focused rendered regressions cover exact
-shell order and preview focus entry/exit, alongside existing draft/owner tests.
-Full final-source CI and an optimized review candidate are recorded in PR178;
-native visual/user review remains pending under its existing review-only hold.
+Oscillator squares remain visually at the right while preceding their controls
+in the focus tree. Selector focus activates its oscillator and uses a distinct
+thicker focus border. Section backgrounds follow descendant focus only, including
+lfo summary/detail and routing preset; previous groups deactivate even when their
+view context remains selected. Common lfo widgets mount once in the summary,
+with remaining controls in detail, avoiding duplicate GPUI focus ancestry/Tab IDs.
+Fine/filter/pitch/global invalid previews refuse both Tab directions before blur;
+valid preview drafts finish locally without authoring canonical sound. The routing
+icon retains its lowercase Enter/Space tooltip. Shared disabled-widget navigation
+intent/restoration remains preserved. Rendered regressions cover geometry/order,
+all lfo widgets, routing, group exit and preview drafts; restored-old-behavior
+negative controls reproduce both invalid-preview traversal and duplicate-lfo order.
+Full exact-source CI, optimized review build and pending native confirmation are
+recorded in PR178/Pulse2373 under the retained review-only hold.
 
 ## persistent Arrangement selection — pulse2386 / pr170
 

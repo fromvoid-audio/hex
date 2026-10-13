@@ -208,11 +208,13 @@ pub(super) fn section_focus(
 }
 
 pub(super) fn section_listener(
+    view: &EditorView,
     cx: &Context<EditorView>,
     device: DeviceId,
     section: super::Section,
 ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
     let entity = cx.weak_entity();
+    let owner = Owner::capture(view, device);
     move |_, window, cx| {
         let _ = entity.update(cx, |view, cx| {
             let key = (device, section);
@@ -223,10 +225,43 @@ pub(super) fn section_listener(
                 return;
             }
             let handle = state.handle.clone();
-            let focus_in = cx.on_focus_in(&handle, window, move |view, _, cx| {
+            let focus_in = cx.on_focus_in(&handle, window, move |view, window, cx| {
                 if let Some(state) = view.device_panel.operator_section_focus.get_mut(&key) {
                     state.focused = true;
                     cx.notify();
+                }
+                if let Some(owner) = owner {
+                    let excluded: Vec<_> = view
+                        .device_panel
+                        .controls
+                        .iter()
+                        .filter_map(|(key, control)| {
+                            let focus = match control {
+                                ParameterControl::Float { entity, .. } => entity.focus_handle(cx),
+                                ParameterControl::Bool { entity, .. } => entity.focus_handle(cx),
+                                ParameterControl::Choice { entity, .. } => entity.focus_handle(cx),
+                            };
+                            (key.device == device && focus.is_focused(window)).then_some(*key)
+                        })
+                        .collect();
+                    match section {
+                        super::Section::Oscillator(operator) => {
+                            select_oscillator(view, cx, owner, operator, &excluded);
+                        }
+                        super::Section::Preview("lfo") => {
+                            if owner.is_current(view)
+                                && super::super::finalize_controls_except(view, cx, &excluded)
+                            {
+                                view.device_panel
+                                    .operator_pages
+                                    .entry(device)
+                                    .or_default()
+                                    .page = super::OperatorPage::Lfo;
+                                cx.notify();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             });
             let focus_out = cx.on_focus_out(&handle, window, move |view, _, _, cx| {

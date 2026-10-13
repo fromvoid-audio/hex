@@ -269,7 +269,7 @@ fn row(
     let section = super::Section::Preview(title);
     let (section_focus, focused) = super::context::section_focus(view, cx, device, section);
     let mut row = div()
-        .on_children_prepainted(super::context::section_listener(cx, device, section))
+        .on_children_prepainted(super::context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
         ))
@@ -324,20 +324,11 @@ fn row(
     }
     row = row.child(dials);
     row = row
-        .bg(rgb(
-            if focused
-                || (title == "global"
-                    && view
-                        .device_panel
-                        .operator_pages
-                        .get(&device)
-                        .is_some_and(|state| state.page == super::OperatorPage::Routing))
-            {
-                super::RAIL_GUTTER
-            } else {
-                super::RAIL_BACKGROUND
-            },
-        ))
+        .bg(rgb(if focused {
+            super::RAIL_GUTTER
+        } else {
+            super::RAIL_BACKGROUND
+        }))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
         row = row.capture_any_mouse_down(cx.listener(
@@ -393,6 +384,12 @@ fn routing_link(
         .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
         .track_focus(&focus)
         .key_context("hex_operator_routing")
+        .tooltip(|_, cx| {
+            cx.new(|_| super::super::super::transport::MiniTooltip {
+                description: theme::text("routing and global context · enter or space").into(),
+            })
+            .into()
+        })
         .border_1()
         .border_color(rgb(super::RAIL_GUTTER))
         .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
@@ -421,6 +418,30 @@ fn routing_link(
                 cx.stop_propagation();
             }
         }))
+}
+
+/// Refuse Tab traversal before blur can leave an invalid view-only numeric draft.
+pub(super) fn finalize_controls(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: hex_project::DeviceId,
+) -> bool {
+    let controls: Vec<_> = view
+        .device_panel
+        .operator_previews
+        .get(&device)
+        .into_iter()
+        .flat_map(|state| state.controls.values())
+        .map(|control| control.entity.clone())
+        .collect();
+    for entity in controls {
+        if let Err(error) = entity.update(cx, |control, cx| control.finish_edit(cx)) {
+            view.error = Some(format!("finish the operator preview value edit: {error}"));
+            cx.notify();
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn control(

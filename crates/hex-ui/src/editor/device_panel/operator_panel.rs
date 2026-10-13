@@ -71,6 +71,7 @@ pub(super) enum NavigationTarget {
 pub(super) enum Section {
     Oscillator(usize),
     Preview(&'static str),
+    Detail,
 }
 
 fn navigation_focus(
@@ -163,6 +164,7 @@ pub(super) fn render_body(
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
     };
+    let (detail_focus, detail_focused) = context::section_focus(view, cx, device, Section::Detail);
     div()
         .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
@@ -182,6 +184,12 @@ pub(super) fn render_body(
         .child(shell)
         .child(
             div()
+                .on_children_prepainted(context::section_listener(
+                    view,
+                    cx,
+                    device,
+                    Section::Detail,
+                ))
                 .id(ElementId::Name(
                     format!("operator-detail-{}", device.value()).into(),
                 ))
@@ -189,7 +197,12 @@ pub(super) fn render_body(
                 .flex_1()
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
-                .bg(rgb(DISPLAY_BACKGROUND))
+                .track_focus(&detail_focus)
+                .bg(rgb(if detail_focused {
+                    RAIL_GUTTER
+                } else {
+                    DISPLAY_BACKGROUND
+                }))
                 .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
                 .overflow_hidden()
                 .relative()
@@ -218,7 +231,7 @@ pub(super) fn render_body(
                     && !event.keystroke.modifiers.platform
                     && owner.is_some_and(|owner| owner.is_current(view))
                 {
-                    if finalize_controls(view, cx) {
+                    if preview::finalize_controls(view, cx, device) && finalize_controls(view, cx) {
                         if event.keystroke.modifiers.shift {
                             window.focus_prev();
                         } else {
@@ -337,6 +350,7 @@ fn operator_row(
         context::section_focus(view, cx, device, Section::Oscillator(operator));
     let mut row = div()
         .on_children_prepainted(context::section_listener(
+            view,
             cx,
             device,
             Section::Oscillator(operator),
@@ -351,15 +365,22 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .px(px(4.0))
+        .pl(px(4.0))
+        .pr(px(18.0))
+        .relative()
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .track_focus(&section_focus)
-        .bg(rgb(if selected || focused {
+        .bg(rgb(if focused {
             RAIL_GUTTER
         } else {
             RAIL_BACKGROUND
         }))
-        .child(operator_label(view, cx, device, operator, selected))
+        .child(
+            operator_label(view, cx, device, operator, selected)
+                .absolute()
+                .right(px(4.0))
+                .top(px(14.0)),
+        )
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -404,7 +425,11 @@ fn operator_label(
         .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
         .track_focus(&focus)
         .key_context("hex_operator_section")
-        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
+        .focus(|style| {
+            style
+                .border_2()
+                .border_color(rgb(theme::color(theme::PaletteRole::Text)))
+        })
         .w(px(12.0))
         .h(px(12.0))
         .flex()
@@ -1029,9 +1054,14 @@ fn lfo_detail(
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
     let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    let sync = matches!(
+        value(view, device, parameters, id(84)),
+        Some(ParameterValue::Bool(true))
+    );
+    // Shared widget entities must have exactly one rendered focus parent.
+    // On/wave/active-rate/amount live in the summary; detail owns the remainder.
     for ids in [
-        &[82, 83, 84][..],
-        &[85, 86, 87][..],
+        &[84, if sync { 85 } else { 86 }][..],
         &[88, 89, 90, 91, 92][..],
     ] {
         let mut row = div().w_full().flex().items_center().gap(px(3.0));
@@ -1085,14 +1115,22 @@ pub(super) fn lfo_summary(
         value(view, device, parameters, id(84)),
         Some(ParameterValue::Bool(true))
     );
+    let section = Section::Preview("lfo");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
     let mut row = div()
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-lfo", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
         .px(px(4.0))
-        .bg(rgb(RAIL_BACKGROUND))
+        .track_focus(&focus)
+        .bg(rgb(if focused {
+            RAIL_GUTTER
+        } else {
+            RAIL_BACKGROUND
+        }))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .flex()
