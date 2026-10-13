@@ -1,5 +1,10 @@
 # local ci
 
+For the private reusable Codex Cloud setup, startup activation, command network
+permissions and Linux/native validation boundaries, see
+[cloud environment](cloud-environment.md). Portable cloud checks are useful
+evidence but do not replace the complete runner below.
+
 Run the project validation pipeline from any working directory with:
 
 ```sh
@@ -12,8 +17,9 @@ target/cache configuration, and executes checks sequentially. It does not instal
 tools or hooks, change the machine's Cargo configuration, launch the app, bundle
 an application, or contact a hosted CI service.
 
-The full run executes its own runner tests, the architecture, GPUI patch, dependency patch and UI
-style guards, formatting, denied dependency future-lint regressions, locked workspace and UI-feature tests, audio and stream
+The full run executes its runner and native delivery regression tests, the
+architecture, GPUI patch, dependency patch and UI style guards, formatting, denied
+dependency future-lint regressions, locked workspace and UI-feature tests, audio and stream
 allocation probes, strict workspace and feature-specific Clippy, and a locked
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
@@ -164,3 +170,10 @@ checks passed on clean `5033c02` in 294.905 s, with unchanged source digest and
 `stale=false`: `artifacts/local-ci/20261009T183220Z-a37843f7/summary.json`.
 [PR32](https://github.com/PORTALSURFER/hex/pull/32) contains the focused guard.
 The combined application build follows the remaining implementation work.
+
+## native test post-action
+
+After the shared exact-source local checks and authorized merge, deliver the
+optimized app at the configured stable location using [test-builds.md](test-builds.md).
+Packaging consumes the full runner evidence; it does not introduce another CI
+pipeline or infer user approval from merge/disk activation.

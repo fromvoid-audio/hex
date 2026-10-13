@@ -73,5 +73,32 @@ shared Lattice widget behaviors, with Utility as the current testbed.
 
 Compact square switches, directly selectable compact segments and flat panel tabs
 are reusable density variants with injected display/style. Shared compact dials
-use open rails, short value arcs and needles; micro dials place labels above and
+use open rails, progressive value arcs and needles; micro dials place labels above and
 readouts beside their lower edge. Owners retain canonical bindings and gestures.
+
+Rectangular numeric readouts retain an arrow pointer during hover and typing.
+On macOS, an active value-field drag requests GPUI's window-scoped invisible
+cursor after the movement threshold. Click-to-type and the insertion caret stay
+available. Release, cancellation, focus/deactivation, disable and removal end
+that override. Control-surface knob/slider cursors remain unchanged. See
+`docs/device-controls.md` for the native acceptance gate and platform limits.
+
+All numeric controls share noninteractive three-pixel corner marks for enabled
+focus, active pointer presses and typed drafts. The caller injects neutral
+`focus_marker` and unfilled `dial_rail` colors. Valid typed drafts retain their
+caret/selection and inset background without a continuous accent outline;
+invalid input keeps its existing red error outline. The one-pixel transparent
+root border preserves the prior layout inset.
+
+All knob densities use one normalized rail renderer with explicit `DialLayout`
+semantics. `ReadoutGap` opens at lower right; `BottomGap` opens at the bottom;
+`Pan` uses a bottom opening, a center-up neutral needle and a reset triangle.
+Orientation is independent of density and parameter scale. Ordinary values fill
+from normalized minimum; bipolar values fill from neutral center toward either
+signed endpoint. Disabled controls keep muted artwork and no value fill.
+The renderer consumes NumericSpec's mapping without changing parameter laws.
+`MICRO_DIAL_WIDTH`, `MICRO_DIAL_HEIGHT` and `MICRO_DIAL_DIAMETER` define the shared
+58x40 label-above tile used by both MicroDial and MiniDial. Compact and Standard
+retain their footprints. The transient pointer-capture element is absolute so
+pressing cannot insert a flex gap or move the dial/readout.
+See research/observations/knob-focus-001.md for reference limits.

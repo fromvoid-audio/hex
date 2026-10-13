@@ -277,7 +277,7 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, StorageError> {
     Ok(bytes)
 }
 
-fn encode_envelope(basename: &str, payload: &[u8]) -> Result<Vec<u8>, StorageError> {
+pub(crate) fn encode_envelope(basename: &str, payload: &[u8]) -> Result<Vec<u8>, StorageError> {
     if payload.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid(
             "recovery project exceeds document byte limit",
@@ -311,7 +311,7 @@ fn encode_envelope(basename: &str, payload: &[u8]) -> Result<Vec<u8>, StorageErr
     Ok(bytes)
 }
 
-fn decode_envelope(
+pub(crate) fn decode_envelope(
     bytes: &[u8],
     expected_basename: &str,
 ) -> Result<(Project, FileToken), StorageError> {
@@ -370,13 +370,13 @@ fn decode_envelope(
     Ok((project, FileToken(Arc::from(payload))))
 }
 
-struct Temporary {
-    path: PathBuf,
+pub(crate) struct Temporary {
+    pub(crate) path: PathBuf,
     armed: bool,
 }
 
 impl Temporary {
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -389,7 +389,7 @@ impl Drop for Temporary {
     }
 }
 
-fn prepare_temp(
+pub(crate) fn prepare_temp(
     parent: &Path,
     bytes: &[u8],
     permissions: Option<Permissions>,
@@ -461,7 +461,7 @@ fn publish_recovery(
     Ok(())
 }
 
-fn sync_parent(parent: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent(parent: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         File::open(parent)?.sync_all()

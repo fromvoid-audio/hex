@@ -87,6 +87,7 @@ pub(super) fn title_bar(
     div()
         .id("project-title-bar")
         .debug_selector(|| "project-title-bar".into())
+        .relative()
         .h(px(TITLE_HEIGHT))
         .flex_shrink_0()
         .flex()
@@ -94,11 +95,23 @@ pub(super) fn title_bar(
         .justify_center()
         // Equal padding on both sides keeps the title centered while protecting
         // the first row beneath macOS traffic lights.
-        .px(px(theme::TITLEBAR_LEADING_INSET))
+        .px(px(
+            crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)
+        ))
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(lights)
+        .child(
+            div()
+                .absolute()
+                .right_2()
+                .top_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .child(crate::build_info::label()),
+        )
         .child(
             div()
                 .id("project-title-label")
@@ -204,6 +217,9 @@ mod ui_tests {
         let title_label = visual
             .debug_bounds("project-title-label")
             .expect("centered title label");
+        let version = visual
+            .debug_bounds("application-build-version")
+            .expect("build version remains visible at minimum width");
         let toolbar = visual
             .debug_bounds("editor-toolbar")
             .expect("compact toolbar row");
@@ -234,6 +250,17 @@ mod ui_tests {
         assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
         assert!((toolbar_top - title_bottom).abs() < 1.0);
         assert!((title_center - window_center).abs() < 1.0);
+        assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
+        assert!(version.size.width > px(0.0));
+        assert!(
+            (f32::from(
+                window.origin.x + window.size.width - version.origin.x - version.size.width
+            ) - 8.0)
+                .abs()
+                < 1.0
+        );
+        assert!(version.origin.y >= title.origin.y);
+        assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
         assert!((f32::from(import.size.width) - super::CONTROL_SIZE).abs() < 1.0);
         assert!((f32::from(import.size.height) - super::CONTROL_SIZE).abs() < 1.0);
         assert!(f32::from(import.origin.x) < crate::theme::TITLEBAR_LEADING_INSET);

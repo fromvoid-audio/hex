@@ -23,5 +23,5 @@ gpui = { path = "third_party/gpui" }
 block = { path = "third_party/block" }
 proc-macro-error2 = { path = "third_party/proc-macro-error2" }
 
-# Adopted merged PR161 Linux prerequisite; see docs/xattr-compatibility.md.
+# Pinned external xattr Linux errno repair; see docs/xattr-compatibility.md.
 xattr = { path = "third_party/xattr" }

@@ -43,8 +43,8 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
         (34, ParameterValue::Float(1.0)),
         (35, ParameterValue::Float(1.0)),
         (36, ParameterValue::Float(0.0)),
-        (37, ParameterValue::Float(0.0)),
-        (38, ParameterValue::Float(0.0)),
+        (37, ParameterValue::Float(0.001)),
+        (38, ParameterValue::Float(0.001)),
         (63, ParameterValue::Float(220.0)),
         (64, ParameterValue::Float(2.0)),
         (62, ParameterValue::Bool(true)),
@@ -128,8 +128,21 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 }
 
 #[test]
+fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
+-> Result<(), Box<dyn Error>> {
+    for sync in [false, true] {
+        operator_modulation_allocations(Some(sync))?;
+    }
+    Ok(())
+}
+
+#[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
+    operator_modulation_allocations(None)
+}
+
+fn operator_modulation_allocations(lfo_sync: Option<bool>) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
         name: "operator feedback allocation".into(),
@@ -154,7 +167,7 @@ fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
         (34, ParameterValue::Float(1.0)),
         (35, ParameterValue::Float(1.0)),
         (36, ParameterValue::Float(0.0)),
-        (37, ParameterValue::Float(0.0)),
+        (37, ParameterValue::Float(0.001)),
         (38, ParameterValue::Float(0.005)),
         (78, ParameterValue::Float(0.4)),
     ] {
@@ -164,6 +177,21 @@ fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
             ParameterId::from_static(id),
             value,
         )?;
+    }
+    if let Some(sync) = lfo_sync {
+        for (id, value) in [
+            (82, ParameterValue::Bool(true)),
+            (84, ParameterValue::Bool(sync)),
+            (87, ParameterValue::Float(75.0)),
+            (85, ParameterValue::Float(13.0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )?;
+        }
     }
     editor.execute(Command::ReplaceDeviceState { device, state })?;
     let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
@@ -183,13 +211,15 @@ fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
         velocity: 100,
     })?;
 
-    let revision = Arc::new(PreparedRevision::prepare(
+    let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
         Arc::new(SineTable::new()),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
+    oracle.apply(PlaybackCommand::Play);
     let (mut control, mut callback) = prepared::channel(48_000)?;
     control
         .publish(playback)
@@ -199,11 +229,63 @@ fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
         .map_err(|_| "play refused")?;
     let mut output = [[0.0; 2]; 128];
     let mut saw_active_feedback = false;
-    for _ in 0..80 {
+    for block in 0..80 {
+        control.reclaim();
+        let mut accepted = None;
+        if lfo_sync.is_some() && (2..5).contains(&block) {
+            let current = editor
+                .project()
+                .track(track)
+                .and_then(|t| t.instrument())
+                .ok_or("instrument missing")?
+                .state();
+            let state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                current,
+                ParameterId::from_static(87),
+                ParameterValue::Float(20.0 * block as f32),
+            )?;
+            editor.execute(Command::ReplaceDeviceState { device, state })?;
+            let next = Arc::new(PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                Some(revision.session()),
+            )?);
+            let candidate = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
+            let mut next_oracle = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
+            next_oracle
+                .try_inherit_runtime_from(&mut oracle)
+                .map_err(|_| "lfo oracle transfer refused")?;
+            accepted = Some(
+                control
+                    .publish_with_policy_and_context_generation(
+                        candidate,
+                        prepared::PublicationPolicy::InheritRuntime,
+                        1,
+                    )
+                    .map_err(|e| e.reason)?,
+            );
+            oracle = next_oracle;
+            revision = next;
+        }
+        let mut expected = [[0.0; 2]; 128];
+        oracle.render(&mut expected)?;
         let counts = measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("feedback render");
         });
+        assert!(
+            output == expected,
+            "lfo callback transfer PCM block={block} accepted={accepted:?} applied={}",
+            control.status.applied_revision.load(Ordering::Acquire)
+        );
+        if let Some(accepted) = accepted {
+            assert_eq!(
+                control.status.applied_revision.load(Ordering::Acquire),
+                accepted
+            );
+        }
         saw_active_feedback |= output.iter().any(|frame| frame[0].abs() > 1.0e-6);
         assert_eq!(counts.count_total, 0, "callback allocated");
         assert_eq!(counts.bytes_total, 0, "callback allocated bytes");

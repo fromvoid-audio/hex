@@ -44,7 +44,7 @@ QUICK_STEPS = (
 FULL_STEPS = (
     Step(
         "runner-tests",
-        ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_local_ci.py"),
+        ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
     ),
     *QUICK_STEPS,
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),

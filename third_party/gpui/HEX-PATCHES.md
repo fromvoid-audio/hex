@@ -48,3 +48,9 @@ production layout or input behavior.
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and
 removes Rust 1.98.1's float fallback warning without suppressing the lint.
+
+11 October value-drag cursor: cached transparent `CursorStyle::Hidden` on macOS,
+arrow fallback elsewhere. Window-scoped frame override persists outside hover
+bounds and restores through deactivation/removal/destruction, without NSCursor
+hide-count changes. Test-only platform cursor readout verifies restoration after
+rendered gesture termination; native appearance/delivery acceptance is separate.

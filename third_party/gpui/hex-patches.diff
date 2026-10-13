@@ -1,8 +1,21 @@
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -675,6 +675,12 @@
+@@ -120,6 +120,12 @@
  }
- 
+
+ impl TestAppContext {
++    /// Cursor last delivered to the test platform, independent of hit testing.
++    /// This is not evidence of physical native cursor appearance.
++    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
++        self.test_platform.cursor_style()
++    }
++
+     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
+     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
+         let arc_dispatcher = Arc::new(dispatcher.clone());
+@@ -675,6 +681,12 @@
+ }
+
  impl VisualTestContext {
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
@@ -25,9 +38,9 @@
 +
      /// The position of the mouse on the window.
      pub position: Point<Pixels>,
- 
+
 @@ -372,6 +376,20 @@
- 
+
      /// The phase of the touch event.
      pub touch_phase: TouchPhase,
 +}
@@ -45,7 +58,7 @@
 +        }
 +    }
  }
- 
+
  impl Sealed for ScrollWheelEvent {}
 --- a/src/platform.rs
 +++ b/src/platform.rs
@@ -58,7 +71,7 @@
              focus: true,
              show: true,
 @@ -1255,6 +1256,10 @@
- 
+
      /// The position of the macOS traffic light buttons
      pub traffic_light_position: Option<Point<Pixels>>,
 +
@@ -66,9 +79,20 @@
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
  }
- 
+
  /// The kind of window to create
-@@ -1436,6 +1441,12 @@
+@@ -1409,6 +1414,10 @@
+     /// The default cursor
+     Arrow,
+
++    /// A persistent invisible cursor for a window-scoped pointer adjustment.
++    /// macOS uses a transparent image, without changing NSCursor hide counts.
++    Hidden,
++
+     /// A text input cursor
+     /// corresponds to the CSS cursor value `text`
+     IBeam,
+@@ -1436,6 +1445,12 @@
      /// A resize right cursor
      /// corresponds to the CSS cursor value `e-resize`
      ResizeRight,
@@ -78,11 +102,20 @@
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
- 
+
      /// A resize cursor to the left and right
      /// corresponds to the CSS cursor value `ew-resize`
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
+@@ -702,7 +702,7 @@
+         // Based on cursor names from chromium:
+         // https://github.com/chromium/chromium/blob/d3069cf9c973dc3627fa75f64085c6a86c8f41bf/ui/base/cursor/cursor_factory.cc#L113
+         match self {
+-            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
++            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
+             CursorStyle::IBeam => &["text", "xterm"],
+             CursorStyle::Crosshair => &["crosshair", "cross"],
+             CursorStyle::ClosedHand => &["closedhand", "grabbing", "hand2"],
 @@ -710,6 +710,8 @@
              CursorStyle::PointingHand => &["pointer", "hand", "hand2"],
              CursorStyle::ResizeLeft => &["w-resize", "left_side"],
@@ -94,6 +127,15 @@
              CursorStyle::ResizeDown => &["s-resize", "bottom_side"],
 --- a/src/platform/linux/wayland.rs
 +++ b/src/platform/linux/wayland.rs
+@@ -14,7 +14,7 @@
+ impl CursorStyle {
+     pub(super) fn to_shape(self) -> Shape {
+         match self {
+-            CursorStyle::Arrow => Shape::Default,
++            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
+             CursorStyle::IBeam => Shape::Text,
+             CursorStyle::Crosshair => Shape::Crosshair,
+             CursorStyle::ClosedHand => Shape::Grabbing,
 @@ -22,6 +22,8 @@
              CursorStyle::PointingHand => Shape::Pointer,
              CursorStyle::ResizeLeft => Shape::WResize,
@@ -136,7 +178,7 @@
 @@ -233,7 +233,10 @@
                          ScrollDelta::Lines(raw_data)
                      };
- 
+
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
                      Self::ScrollWheel(ScrollWheelEvent {
@@ -157,7 +199,7 @@
      foundation::{
 -        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
 -        NSUInteger, NSURL,
-+        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange,
++        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
 +        NSSize, NSString, NSUInteger, NSURL,
      },
  };
@@ -170,10 +212,32 @@
      sel, sel_impl,
  };
  use parking_lot::Mutex;
-@@ -68,6 +69,73 @@
+@@ -68,6 +69,95 @@
  const MAC_PLATFORM_IVAR: &str = "platform";
  static mut APP_CLASS: *const Class = ptr::null();
  static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
++
++/// A cached transparent cursor avoids NSCursor's process-wide hide count.
++fn make_hidden_cursor() -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(1.0, 1.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let color: id = msg_send![class!(NSColor), clearColor];
++        let _: () = msg_send![color, set];
++        let _: () = msg_send![class!(NSBezierPath), fillRect: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0))];
++        let _: () = msg_send![*image, unlockFocus];
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(0.0, 0.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
 +
 +/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
 +fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
@@ -241,20 +305,21 @@
 +        Some(StrongPtr::new(cursor))
 +    }
 +}
- 
+
  #[ctor]
  unsafe fn build_classes() {
-@@ -177,6 +245,8 @@
+@@ -177,6 +267,9 @@
      dock_menu: Option<id>,
      menus: Option<Vec<OwnedMenu>>,
      keyboard_mapper: Rc<MacKeyboardMapper>,
++    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
  }
- 
+
  impl Default for MacPlatform {
-@@ -197,6 +267,11 @@
- 
+@@ -197,6 +290,11 @@
+
          let keyboard_layout = MacKeyboardLayout::new();
          let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
@@ -262,26 +327,29 @@
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
- 
+
          Self(Mutex::new(MacPlatformState {
              headless,
-@@ -219,6 +294,8 @@
+@@ -219,6 +317,9 @@
              on_keyboard_layout_change: None,
              menus: None,
              keyboard_mapper,
++            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
          }))
      }
- 
-@@ -970,7 +1047,21 @@
+
+@@ -970,8 +1071,23 @@
                  return;
              }
- 
+
 -            let new_cursor: id = match style {
+-                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
 +                let state = self.0.lock();
 +                match style {
++                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
 +                    CursorStyle::ResizeLeftBracket => state
 +                        .resize_left_bracket_cursor
 +                        .as_ref()
@@ -294,10 +362,11 @@
 +                }
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
-                 CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
++                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
                  CursorStyle::IBeam => msg_send![class!(NSCursor), IBeamCursor],
                  CursorStyle::Crosshair => msg_send![class!(NSCursor), crosshairCursor],
-@@ -981,6 +1072,8 @@
+                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],
+@@ -981,6 +1097,8 @@
                  CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
                  CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
                  CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],
@@ -306,13 +375,13 @@
                  CursorStyle::ResizeColumn => msg_send![class!(NSCursor), resizeLeftRightCursor],
                  CursorStyle::ResizeRow => msg_send![class!(NSCursor), resizeUpDownCursor],
                  CursorStyle::ResizeUp => msg_send![class!(NSCursor), resizeUpCursor],
-@@ -1005,7 +1098,7 @@
+@@ -1005,7 +1123,7 @@
                  CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
                  CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
                  CursorStyle::None => unreachable!(),
 -            };
 +            });
- 
+
              let old_cursor: id = msg_send![class!(NSCursor), currentCursor];
              if new_cursor != old_cursor {
 --- a/src/platform/mac/window.rs
@@ -341,7 +410,7 @@
      previous_modifiers_changed_event: Option<PlatformInput>,
      keystroke_for_do_command: Option<Keystroke>,
 @@ -423,6 +432,25 @@
- 
+
  impl MacWindowState {
      fn move_traffic_light(&self) {
 +        if self.hide_native_window_controls {
@@ -418,13 +487,118 @@
 
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -751,6 +751,9 @@
-         self.deferred_draws.clear();
+@@ -752,6 +752,9 @@
          self.tab_stops.clear();
          self.focus = None;
-+
+
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-
++
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
+             self.next_inspector_instance_ids.clear();
+@@ -815,11 +818,21 @@
+     }
+ }
+
++// A frame-owned cursor override must restore even when its window is destroyed.
++struct HiddenCursorRestore(Rc<dyn crate::Platform>);
++
++impl Drop for HiddenCursorRestore {
++    fn drop(&mut self) {
++        self.0.set_cursor_style(CursorStyle::Arrow);
++    }
++}
++
+ /// Holds the state for a specific window.
+ pub struct Window {
+     pub(crate) handle: AnyWindowHandle,
+     pub(crate) invalidator: WindowInvalidator,
+     pub(crate) removed: bool,
++    hidden_cursor_restore: Option<HiddenCursorRestore>,
+     pub(crate) platform_window: Box<dyn PlatformWindow>,
+     display_id: Option<DisplayId>,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
+@@ -1095,6 +1108,9 @@
+                 handle
+                     .update(&mut cx, |_, window, cx| {
+                         window.active.set(active);
++                        if !active {
++                            window.hidden_cursor_restore.take();
++                        }
+                         window.modifiers = window.platform_window.modifiers();
+                         window.capslock = window.platform_window.capslock();
+                         window
+@@ -1208,6 +1224,7 @@
+             handle,
+             invalidator,
+             removed: false,
++            hidden_cursor_restore: None,
+             platform_window,
+             display_id,
+             sprite_atlas,
+@@ -1371,8 +1388,16 @@
+         }
+     }
+
++    /// Whether this window currently owns an invisible cursor override.
++    /// Test support only: this does not establish physical cursor appearance.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn has_hidden_cursor_override(&self) -> bool {
++        self.hidden_cursor_restore.is_some()
++    }
++
+     /// Close this window.
+     pub fn remove_window(&mut self) {
++        self.hidden_cursor_restore.take();
+         self.removed = true;
+     }
+
+@@ -3524,14 +3549,27 @@
+         subscription
+     }
+
+-    fn reset_cursor_style(&self, cx: &mut App) {
+-        // Set the cursor only if we're the active window.
+-        if self.is_window_hovered() {
+-            let style = self
+-                .rendered_frame
+-                .cursor_style(self)
+-                .unwrap_or(CursorStyle::Arrow);
++    fn reset_cursor_style(&mut self, cx: &mut App) {
++        let style = self
++            .rendered_frame
++            .cursor_style(self)
++            .unwrap_or(CursorStyle::Arrow);
++        // A captured value drag remains invisible outside window bounds. The
++        // override is renewed by paint, so removing its widget restores it.
++        if style == CursorStyle::Hidden && self.is_window_active() {
++            if self.hidden_cursor_restore.is_none() {
++                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
++            }
+             cx.platform.set_cursor_style(style);
++        } else {
++            self.hidden_cursor_restore.take();
++            if self.is_window_hovered() {
++                cx.platform.set_cursor_style(if style == CursorStyle::Hidden {
++                    CursorStyle::Arrow
++                } else {
++                    style
++                });
++            }
+         }
+     }
+
+--- a/src/platform/test/platform.rs
++++ b/src/platform/test/platform.rs
+@@ -91,6 +91,10 @@
+ }
+
+ impl TestPlatform {
++    pub(crate) fn cursor_style(&self) -> CursorStyle {
++        *self.active_cursor.lock()
++    }
++
+     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
+         #[cfg(target_os = "windows")]
+         let bitmap_factory = unsafe {
