@@ -1498,7 +1498,7 @@ fn run_worker(
                 Ok(())
             };
             if let Err(reason) = journal_result {
-                let message = format!("automatic recovery checkpoint failed: {reason}");
+                let message = format!("automatic recovery: {reason}");
                 error = Some(match error {
                     Some(existing) => format!("{existing}; {message}"),
                     None => message,
