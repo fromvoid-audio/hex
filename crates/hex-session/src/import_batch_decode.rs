@@ -68,12 +68,34 @@ pub enum AudioBatchCancel {
 /// Phase and counts are atomic together. Commit/cancel arbitration is separate;
 /// an intermediate poll may straddle a phase transition. Terminal polls after
 /// completion observe the final member counts via acquire/release publication.
+#[derive(Debug)]
 pub struct AudioBatchControl {
     state: AtomicU8,
     progress: AtomicU64,
     total: usize,
 }
 impl AudioBatchControl {
+    pub(crate) fn new(total: usize) -> Result<Self, AudioBatchError> {
+        if total == 0 || total > hex_project::MAX_ASSETS {
+            return Err(SessionError::Invalid("audio batch must contain 1..4096 members").into());
+        }
+        Ok(Self {
+            state: AtomicU8::new(OPEN),
+            progress: AtomicU64::new(0),
+            total,
+        })
+    }
+    pub(crate) fn refuse(&self) {
+        // A rejection must never rewrite a prior accepted operation's outcome.
+        let _ = self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                OPEN => Some(FAILED),
+                CANCEL_REQUESTED => Some(CANCELED),
+                _ => None,
+            });
+    }
+
     pub fn request_cancel(&self) -> AudioBatchCancel {
         match self.state.compare_exchange(
             OPEN,
@@ -199,10 +221,30 @@ impl AudioBatchImport {
         session: &Session,
         context: AudioBatchContext,
     ) -> Result<Self, AudioBatchError> {
+        let control = Arc::new(AudioBatchControl::new(paths.len())?);
+        Self::capture_with_control(paths, destination, session, context, control)
+    }
+
+    pub(crate) fn capture_with_control(
+        paths: Vec<PathBuf>,
+        destination: AudioBatchDestination,
+        session: &Session,
+        context: AudioBatchContext,
+        control: Arc<AudioBatchControl>,
+    ) -> Result<Self, AudioBatchError> {
         if context.active_gesture {
             return Err(AudioBatchError::ContextChanged);
         }
         let count = paths.len();
+        if count != control.total {
+            return Err(SessionError::Invalid("audio batch control count differs").into());
+        }
+        control.check_cancel()?;
+        match control.state.load(Ordering::Acquire) {
+            OPEN => {}
+            CANCEL_REQUESTED | CANCELED => return Err(AudioBatchError::Canceled),
+            _ => return Err(SessionError::Invalid("audio batch control already used").into()),
+        }
         if count == 0
             || count > hex_project::MAX_ASSETS
             || session
@@ -240,11 +282,7 @@ impl AudioBatchImport {
             }
         }
         Ok(Self {
-            control: Arc::new(AudioBatchControl {
-                state: AtomicU8::new(OPEN),
-                progress: AtomicU64::new(0),
-                total: count,
-            }),
+            control,
             paths,
             destination,
             context,

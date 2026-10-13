@@ -21,7 +21,7 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
-    fn status_bar(&self) -> gpui::Div {
+    fn status_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
             .h(px(22.0))
             .flex_shrink_0()
@@ -72,6 +72,20 @@ impl EditorView {
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(&self.status)),
+            );
+        }
+        if self.audio_batch.is_some() {
+            bar = bar.child(
+                div()
+                    .id("cancel-audio-import")
+                    .debug_selector(|| "cancel-audio-import".into())
+                    .px_1()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text("cancel import"))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.cancel_audio_batch(cx);
+                    })),
             );
         }
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
@@ -462,6 +476,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_audio_batch(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
@@ -908,7 +926,7 @@ impl Render for EditorView {
             .child(self.title_bar(cx))
             .child(self.transport(cx))
             .child(workspace)
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())

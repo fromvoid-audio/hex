@@ -60,9 +60,7 @@ fn external_audio_drop_uses_regular_lane_and_gap_import_contracts(cx: &mut TestA
 }
 
 #[gpui::test]
-fn external_audio_drop_refuses_main_stale_geometry_busy_and_multiple_paths(
-    cx: &mut TestAppContext,
-) {
+fn external_audio_drop_refuses_main_stale_geometry_busy_and_empty_paths(cx: &mut TestAppContext) {
     for refusal in 0..4 {
         let (project, _, target, _) = audio_project();
         let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -82,7 +80,7 @@ fn external_audio_drop_refuses_main_stale_geometry_busy_and_multiple_paths(
         visual.simulate_mouse_move(pointer, None, Modifiers::default());
         let mut paths = vec![PathBuf::from("/Original Case/Loop.WAV")];
         if refusal == 3 {
-            paths.push(PathBuf::from("/other.wav"));
+            paths.clear();
         }
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
@@ -150,4 +148,262 @@ fn external_audio_drop_in_empty_or_trailing_space_appends_one_track(cx: &mut Tes
         })
         .expect("native empty-space adapter");
     }
+}
+
+struct BatchFiles(std::path::PathBuf);
+impl BatchFiles {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "hex-batch-ui-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&p).unwrap();
+        Self(p)
+    }
+    fn wav(&self, name: &str, rate: u32, count: u32) -> PathBuf {
+        let n = count * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + n).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&n.to_le_bytes());
+        for _ in 0..count {
+            bytes.extend_from_slice(&8192_i16.to_le_bytes());
+        }
+        let p = self.0.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+}
+impl Drop for BatchFiles {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+fn receive_worker(
+    editor: &gpui::Entity<super::EditorView>,
+    cx: &mut TestAppContext,
+    initial: bool,
+) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = editor.update(cx, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            if initial {
+                view.state.as_ref().is_some_and(|s| s.revision == 0)
+            } else {
+                view.worker_requests_pending == 0 && view.audio_batch.is_none()
+            }
+        });
+        if done {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < end,
+            "real worker completion timed out"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[gpui::test]
+fn external_audio_batch_ui_to_real_service_orders_media_and_whole_undo_redo(
+    cx: &mut TestAppContext,
+) {
+    let files = BatchFiles::new();
+    let paths = vec![files.wav("Z.WAV", 24_000, 3), files.wav("a.wav", 48_000, 7)];
+    let (handle, editor) = editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    // Replace the layout fixture's model with the actual worker's initial state.
+    receive_worker(&editor, cx, true);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("arrangement-content").unwrap();
+    visual.simulate_mouse_move(
+        point(
+            body.origin.x + body.size.width * 0.4,
+            body.origin.y + body.size.height * 0.5,
+        ),
+        None,
+        Modifiers::default(),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.drop_external_audio_paths(&paths, window, cx);
+            assert!(view.audio_batch.is_some());
+            assert!(view.error.is_none());
+            assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 0);
+        })
+    })
+    .unwrap();
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, 1);
+        assert!(state.unsaved);
+        assert_eq!(state.waveforms.len(), 2);
+        assert!(view.audio_batch.is_none());
+        assert_eq!(state.project.tracks().len(), 2);
+        for (i, t) in state.project.tracks().iter().enumerate() {
+            let clip = &t.clips()[0];
+            let asset = state
+                .project
+                .assets()
+                .find(|a| a.id() == clip.asset())
+                .unwrap();
+            assert_eq!(asset.path(), paths[i]);
+            assert_eq!(clip.duration(), if i == 0 { 6 } else { 7 });
+        }
+        assert_eq!(
+            state.project.tracks()[0].clips()[0].start(),
+            state.project.tracks()[1].clips()[0].start()
+        );
+    });
+    for path in paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let s = view.state.as_ref().unwrap();
+        assert!(s.project.tracks().is_empty());
+        assert!(!s.can_undo);
+        assert!(s.can_redo);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 2)
+    });
+}
+
+#[gpui::test]
+fn external_audio_batch_ui_to_real_service_bad_member_and_stale_context_are_atomic(
+    cx: &mut TestAppContext,
+) {
+    let files = BatchFiles::new();
+    let good = files.wav("good.wav", 48_000, 4);
+    let bad = files.0.join("bad.mp3");
+    std::fs::write(&bad, b"unsupported").unwrap();
+    for stale in [false, true] {
+        let (handle, editor) = editor_window(
+            cx,
+            hex_project::Project::new(48_000).unwrap(),
+            Arc::default(),
+        );
+        receive_worker(&editor, cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let body = visual.debug_bounds("arrangement-content").unwrap();
+        visual.simulate_mouse_move(
+            point(
+                body.origin.x + body.size.width * 0.5,
+                body.origin.y + body.size.height * 0.5,
+            ),
+            None,
+            Modifiers::default(),
+        );
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                if stale {
+                    view.project_generation = 1;
+                }
+                view.drop_external_audio_paths(&[good.clone(), bad.clone()], window, cx);
+                assert!(view.audio_batch.is_some());
+            })
+        })
+        .unwrap();
+        receive_worker(&editor, cx, false);
+        editor.read_with(cx, |view, _| {
+            let s = view.state.as_ref().unwrap();
+            assert_eq!(s.revision, 0);
+            assert!(s.project.tracks().is_empty());
+            assert!(s.waveforms.is_empty());
+            assert!(!s.unsaved);
+            assert!(!s.can_undo);
+            assert!(view.error.is_some());
+            assert!(view.audio_batch.is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn external_audio_cancel_button_reaches_real_worker_without_fifo_cancel_command(
+    cx: &mut TestAppContext,
+) {
+    let files = BatchFiles::new();
+    let paths = vec![
+        files.wav("first.wav", 48_000, 4),
+        files.wav("second.wav", 48_000, 4),
+    ];
+    let (handle, editor) = editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    receive_worker(&editor, cx, true);
+    let (request, control) = editor.read_with(cx, |view, _| {
+        hex_session::service::Request::audio_batch(
+            paths,
+            hex_session::import_batch::AudioBatchDestination::NewTracks {
+                before_track: None,
+                start: 0,
+            },
+            hex_session::import_batch_decode::AudioBatchContext {
+                project_generation: view.project_generation,
+                revision: view.state.as_ref().unwrap().revision,
+                active_gesture: false,
+            },
+        )
+        .unwrap()
+    });
+    // Render actual queued metadata before submission, so cancellation wins
+    // deterministically rather than depending on filesystem/thread speed.
+    editor.update(cx, |view, cx| {
+        view.audio_batch = Some(Arc::clone(&control));
+        view.poll_audio_batch();
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("cancel-audio-import")
+        .expect("rendered cancel target");
+    visual.simulate_click(button.center(), Modifiers::default());
+    assert!(control.progress().cancellation_requested);
+    editor.update(cx, |view, _| assert!(view.enqueue(request)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let s = view.state.as_ref().unwrap();
+        assert_eq!(s.revision, 0);
+        assert!(s.project.tracks().is_empty());
+        assert!(s.waveforms.is_empty());
+        assert!(!s.unsaved);
+        assert!(!s.can_undo);
+        assert!(view.audio_batch.is_none());
+        assert!(view.error.as_ref().unwrap().contains("canceled"));
+    });
+    assert_eq!(
+        control.progress().phase,
+        hex_session::import_batch_decode::AudioBatchPhase::Canceled
+    );
 }
