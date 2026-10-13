@@ -110,7 +110,6 @@ impl Project {
         if !proposed.is_empty() {
             return Err(Invalid(ROUTING_UNSUPPORTED));
         }
-        self.routing = proposed;
         Ok(Created::None)
     }
 
@@ -127,7 +126,7 @@ impl Project {
 
     /// Always empty while non-legacy adoption is closed. Existing sends remain
     /// on regular tracks; this list never duplicates their gains or identities.
-    pub fn authored_routing(&self) -> &[RoutingEdge] {
+    pub fn authored_routing(&self) -> &[crate::ReturnFeed] {
         &self.routing
     }
 }

@@ -62,9 +62,6 @@ fn bounded_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::E
 }
 impl DocumentV18 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        project
-            .validate_routing_proposal(project.authored_routing())
-            .map_err(|e| StorageError::Invalid(e.0))?;
         if !project.authored_routing().is_empty() {
             return Err(StorageError::Invalid(hex_project::ROUTING_UNSUPPORTED));
         }

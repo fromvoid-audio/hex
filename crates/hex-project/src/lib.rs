@@ -21,8 +21,10 @@ pub use time_range::{RangeClipboard, TimeRange};
 mod midi;
 mod midi_batch;
 mod midi_playback;
+mod return_feeds;
 mod returns;
 mod routing;
+pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot, RoutingSnapshot};
 pub use routing::{
     MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
 };
@@ -78,6 +80,7 @@ identifier!(NoteId);
 identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
+identifier!(RouteId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,7 +424,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
-    pub(crate) routing: Vec<RoutingEdge>,
+    pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,

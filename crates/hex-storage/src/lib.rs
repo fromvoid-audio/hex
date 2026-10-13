@@ -131,6 +131,16 @@ impl From<serde_json::Error> for StorageError {
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&schema::routing::DocumentV19::from_project(project)?)
+}
+
+/// Explicit schema20 preparation for legacy projects. The ordinary writer stays
+/// schema19 until both feed render consumers are implemented and admitted.
+pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
+}
+
+fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
     struct BoundedOutput {
         bytes: Vec<u8>,
         exceeded: bool,
@@ -148,12 +158,11 @@ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             Ok(())
         }
     }
-    let document = schema::routing::DocumentV19::from_project(project)?;
     let mut output = BoundedOutput {
         bytes: Vec::new(),
         exceeded: false,
     };
-    let result = serde_json::to_writer(&mut output, &document);
+    let result = serde_json::to_writer(&mut output, document);
     if output.exceeded {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
     }

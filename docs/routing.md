@@ -45,3 +45,39 @@ undo, schema18/19 round trips, strict migration and exact opaque state/provenanc
 retention. Linux evidence does not establish native routing, listening or latency
 acceptance. Later graph scheduling/publication changes must be sequenced with
 the streaming owner; this stage changes no engine/session/audio behavior.
+
+## Return-feed preparation — admission closed
+
+The next prepared model owns one `ReturnFeed` record per directed Return pair:
+global monotonic `RouteId`, source/destination `ReturnId`, and finite positive
+gain up to2. Gain belongs to that record only. Gain edits retain identity, zero
+removes, and recreation allocates above the retained high-water mark. A maximum
+of120 feeds matches the unique DAG bound for16 Returns. Missing endpoints,
+global ID collisions, duplicate pairs, invalid gains and all cycles refuse.
+Removing a Return cleans both incoming and outgoing feed records in the same edit.
+
+`RoutingSnapshot` is a routing-aware transport envelope for candidate metadata,
+not a playable Project or a second history owner. It preserves the base Snapshot
+and feed records without breaking engine/audio snapshot constructors while their
+owners work. `with_return_feed` prepares a new validated envelope without mutating
+its source. `SetReturnFeed` and `from_routing_snapshot` still refuse any nonempty
+result before canonical adoption. All publicly admitted Projects have no feeds.
+Tests may construct private unadmitted metadata to check cloning/history/removal;
+that does not authorize rendering or production adoption.
+
+Reserved schema20 requires strict `routing` records tagged `return_feed`, each
+with required id/source/destination/gain. It retains bounded original provenance,
+opaque state and every existing project field. Nonempty decode/load validates then
+refuses. The ordinary encoder remains schema19 during this preparation phase;
+explicit `encode_schema20` only encodes admitted legacy Projects, under the same
+document ceiling. Schemas1–19 retain their established migrations; nonempty old
+schema19 proposals remain unsupported rather than receiving guessed IDs/gains.
+Operator state v9/v10 and preset envelope1 are separate formats.
+
+Approved future audio semantics are additive post-source-chain/matrix/gain/mute
+into destination input before its chain. The source still contributes Main.
+Each source runs once, master runs once, and captured old Return residuals stay
+zero-input Main-only without replaying old feeds. Actual adoption must wait for
+both render consumers, prepared capability checks, schema20 writer handoff and
+complete snapshot/history integration against the frozen combined pages/observer
+API. No MIDI/sidechain/latency capability is added by this metadata preparation.

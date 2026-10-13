@@ -1,4 +1,5 @@
 pub(crate) mod provenance;
+pub(crate) mod return_feeds;
 pub(crate) mod routing;
 use crate::StorageError;
 use hex_project::{
@@ -1958,6 +1959,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 20 {
+            return return_feeds::DocumentV20::decode(bytes);
         }
         if header.version == 19 {
             return routing::DocumentV19::decode(bytes);
