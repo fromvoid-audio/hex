@@ -1,3 +1,53 @@
+## common wav import encodings — 13 october 2026
+
+The reported `encoding is not pcm or ieee float` rejection is addressed by shared
+extensible PCM/float header validation, PCM8, float64 and G.711 decoding, plus
+bounded resident Microsoft/IMA ADPCM block decoding. Resident imports cover both
+Arrangement and Session, sampler assets and project reopen through the existing
+service path. Seekable/verified readers share the new fixed-frame formats;
+ADPCM is explicitly resident-only. Byte/frame ceilings and the mono/stereo,
+8–192 kHz domain remain unchanged. RF64/RIFX, surround downmix and other compressed
+WAV codecs remain unsupported; do not claim arbitrary WAV-container support.
+
+Independent FFmpeg PCM16 oracles cover every G.711 codeword and multi-block mono/
+stereo ADPCM, including declared final padding. Generated exact-sample tests
+cover extensible GUID/depth/layout validation, PCM8, float64 and seekable windows.
+Malformed ADPCM headers/dimensions/fact extents, custom Microsoft coefficients,
+caller ceilings and nonfinite/unrepresentable float64 have regression coverage.
+Native reimport of the user's failed sample and listening remain pending. Pulse
+intake is blocked because the connected create-ticket schema cannot supply the
+server-required `request_id`; no ticket was created. Full local CI is a separate
+PR delivery gate; cloud tests do not establish native macOS acceptance.
+
+
+## Operator Tab review repairs — pulse2373 / PR178
+
+Oscillator squares remain visually at the right while preceding their controls
+in the focus tree. Selector focus activates its oscillator and uses a distinct
+thicker focus border. Section backgrounds follow descendant focus only, including
+lfo summary/detail and routing preset; previous groups deactivate even when their
+view context remains selected. Common lfo widgets mount once in the summary,
+with remaining controls in detail, avoiding duplicate GPUI focus ancestry/Tab IDs.
+Fine/filter/pitch/global invalid previews refuse both Tab directions before blur;
+valid preview drafts finish locally without authoring canonical sound. The routing
+icon retains its lowercase Enter/Space tooltip. Shared disabled-widget navigation
+intent/restoration remains preserved. Rendered regressions cover geometry/order,
+all lfo widgets, routing, group exit and preview drafts; restored-old-behavior
+negative controls reproduce both invalid-preview traversal and duplicate-lfo order.
+Full exact-source CI, optimized review build and pending native confirmation are
+recorded in PR178/Pulse2373 under the retained review-only hold.
+
+## 13 October 2026 — header double-click fullscreen
+
+The shared loading/editor title bar now toggles native fullscreen on left
+double-click and restores normal mode on the next double-click. Single/right
+clicks and triple-click continuation do not toggle; window controls retain
+their own stopped-propagation actions. A rendered GPUI pointer regression checks
+entry and exit. Native macOS transitions, header dragging and window-control
+sanity checks remain user acceptance. Automated validation is recorded with the
+task result. Pulse intake is currently blocked: its create-ticket endpoint
+requires a request_id that the installed tool schema does not expose.
+
 ## Open latest session log from header — 13 october 2026
 
 A compact debug control sits at the far right beside the version in the editor,

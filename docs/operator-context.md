@@ -19,6 +19,37 @@ invalid-draft refusal, pointer drag/undo, focused keyboard adjustment, stationar
 typed editing and neighboring Utility state. This is source-level UI evidence;
 native visual acceptance remains pending.
 
+## Operator Tab navigation
+
+The Operator body forms one Tab group. Tab walks the currently rendered controls
+in layout order, and Shift-Tab reverses that order and wraps within the group.
+The shell visits d, c, b, a: each oscillator selector followed by its available
+controls, while the squares stay visually at the far right. Focusing a square
+selects its oscillator context; its thicker focus border remains distinct from
+selection. The detail pane contributes its visible envelope, lfo or
+oscillator controls and page selectors; the preview contributes its available
+controls and routing/global icon. Section containers are not Tab targets: focusing
+any child widget reveals its containing row or detail pane's gutter background,
+without changing its enable flag. Leaving a group restores its normal background,
+even when its oscillator or detail page remains selected. All lfo summary/detail
+controls and the routing preset participate; each shared lfo widget is mounted
+once, with common controls in the summary and remaining controls in detail. The routing icon remains keyboard-operable with Enter/Space. Hidden or
+disabled controls are excluded.
+Changing detail pages changes that page's available targets, without changing
+sound parameters. Enter/Space activates a focused oscillator or page selector;
+routing retains its existing keyboard activation. Numeric controls keep their
+typing and adjustment bindings. Graph nodes cycle with Ctrl-Tab/Ctrl-Shift-Tab
+so plain Tab can leave the graph.
+
+Traversal finishes a valid canonical typed draft through the canonical edit path
+and finishes view-only preview drafts through their local edit path. Invalid
+fine/filter/pitch/global previews refuse forward and reverse traversal before
+blur, just as invalid canonical drafts do. Focus alone does not author state. Stable
+per-device focus handles retire on project or track-owner changes; stale section
+activation is rejected. Shared controls outside Operator retain their existing
+Tab behavior. Native focus visibility, exact optimized macOS build delivery and
+user confirmation remain separate acceptance requirements.
+
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`

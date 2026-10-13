@@ -330,6 +330,12 @@ stays centered and header heights remain unchanged. Other platforms and the
 separate generated demo retain their native chrome. Option-click on the green
 control invokes native zoom; ordinary click toggles fullscreen.
 
+Left double-click on the shared loading/editor title row toggles native fullscreen;
+another double-click restores normal window mode. Single clicks, right clicks and
+the third click of a triple-click do not toggle. Window-control clicks stop
+propagation and retain their existing behavior. Native macOS transitions and
+title dragging remain user acceptance checks.
+
 Custom Close invokes the existing guarded window-close contract, including
 pending work and repeated requests. Native controls are hidden only through the
 opt-in excluded-GPUI option documented in [native input](native-input.md). The
