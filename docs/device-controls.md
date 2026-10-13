@@ -452,3 +452,20 @@ remain unchanged. New native appearance acceptance remains required.
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+## device card selection — 13 october 2026
+
+Left mouse-down anywhere in an instrument, track effect or Return effect card
+selects that device. The shared frame uses the accent border/title bar with dark
+title text; parameter controls keep their existing colors. Selecting another
+card replaces the selection, which persists after release and redraw. Capture
+routing allows knobs, toggles and drag grips to retain their own input handling.
+Selection is transient editor state keyed by DeviceId; it sends no project edit
+and clears when the panel owner changes, the selected device disappears or the
+project generation changes. Right-click leaves the selection unchanged.
+
+Focused rendered GPUI regressions cover card clicks, selection persistence,
+removal, Return control gesture admission and owner/project retirement. Native
+macOS visual acceptance remains pending: click an instrument then an effect,
+click/adjust a Return effect knob, and verify only the clicked card is highlighted
+while its controls still work.
