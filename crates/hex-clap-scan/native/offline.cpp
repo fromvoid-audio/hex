@@ -19,6 +19,8 @@ struct Block {
 };
 struct Owner  {
   Host host;
+  // Both host and state adapter contexts outlive plugin destruction, including unwind.
+  Stream stream;
   void* module=nullptr;
   const clap_plugin_entry_t* entry=nullptr;
   const clap_plugin_t* plugin=nullptr;
@@ -176,7 +178,7 @@ int main(int argc,char** argv) {
     };
     check(params->get_info(p,0,&param)&&param.id==gain_id&&param.flags==CLAP_PARAM_IS_AUTOMATABLE&&param.min_value==0&&param.max_value==2&&param.default_value==1&&std::memchr(param.name,0,sizeof param.name),"plain gain profile");
     owner.lifecycle.push_back("extensions offline stereo gain main");
-    Stream stream;
+    auto& stream=owner.stream;
     if(!state_bytes.empty()) {
       stream.bytes=state_bytes;
       check(state->load(p,&stream.in)&&!stream.fault&&stream.at==stream.bytes.size(),"state load failed");
