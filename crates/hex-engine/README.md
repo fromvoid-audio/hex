@@ -441,3 +441,13 @@ For the additive shared-context sampling comparison, run
 It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
 outside timing, and reports render versus control construction separately.
 It is a headless benchmark, not a native callback deadline test.
+
+`SessionPlayback` and `playback::Playback` expose the combined borrowed
+`render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>` path. It uses
+the existing Session render transaction with both inputs; page and observer
+borrows are never retained. Observer code must not allocate, block, clone owners
+or retain sample slices. Post-node samples are speculative until both block
+render and caller final-output validation succeed. With no Session runtime,
+Playback's new observed path refuses before output/clock/provider/state mutation;
+with no observer it preserves existing page rendering. Existing public methods
+retain their contracts. This adds no stream dependency or native admission.

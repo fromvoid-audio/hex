@@ -43,6 +43,20 @@ impl SessionPlayback {
         self.render_internal(output, Some(pages), None)
     }
 
+    /// Render with borrowed pages and optional borrowed post-node observation.
+    /// Neither borrow is retained. Observers must not allocate, block, clone
+    /// owners or retain sample slices. Samples are speculative: commit them
+    /// only after this block and the caller's final output validation succeed.
+    pub fn render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
+        self.render_internal(output, Some(pages), observer)
+    }
+
     fn render_internal<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -1335,5 +1349,79 @@ impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentCl
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
         self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
+    }
+}
+
+#[cfg(test)]
+mod observed_page_tests {
+    use super::*;
+    struct NoPages {
+        accesses: usize,
+    }
+    impl MediaPages for NoPages {
+        fn page(
+            &mut self,
+            _: crate::StreamSourceKey,
+            _: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            self.accesses += 1;
+            None
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            self.accesses += 1;
+        }
+    }
+    #[test]
+    fn observed_pages_clock_exhaustion_rolls_back_before_provider_or_observer() {
+        let project = hex_project::Project::new(48_000).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        // Fault-inject the otherwise impractical end of a lifetime clock. No
+        // production seam or new state/ownership behavior is introduced.
+        runtime.performance_frame = u64::MAX - 1;
+        let before = (
+            runtime.performance_frame,
+            runtime.arrangement_frame,
+            runtime.route_state_generation,
+            runtime.playing,
+        );
+        let owners = Arc::strong_count(&revision);
+        let mut pages = NoPages { accesses: 0 };
+        let mut output = [[9.0; 2]; 2];
+        let mut observed = 0;
+        assert_eq!(
+            runtime.render_with_pages_and_post_node_observer(
+                &mut output,
+                &mut pages,
+                Some(&mut |_, _, _: &[Frame]| observed += 1)
+            ),
+            Err(SessionPlaybackError::ArithmeticOverflow)
+        );
+        assert_eq!(output, [[0.0; 2]; 2]);
+        assert_eq!(
+            (
+                runtime.performance_frame,
+                runtime.arrangement_frame,
+                runtime.route_state_generation,
+                runtime.playing
+            ),
+            before
+        );
+        assert_eq!(pages.accesses, 0);
+        assert_eq!(observed, 0);
+        assert_eq!(Arc::strong_count(&revision), owners);
+        assert!(
+            !runtime.candidate_admission_open,
+            "existing render-attempt admission closure remains"
+        );
     }
 }

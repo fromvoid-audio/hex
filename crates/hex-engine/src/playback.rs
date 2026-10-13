@@ -806,6 +806,39 @@ impl Playback {
                 .render_with_pages(output, pages)
                 .map_err(|error| Invalid(error.diagnostic_message()));
         }
+        self.render_pages_fallback(output, pages)
+    }
+
+    /// Borrow pages and optional post-node observation for one block. Neither
+    /// borrow is retained; the observer must not allocate, block, clone owners
+    /// or retain samples. Observations commit only after successful block and
+    /// final output validation. Observed rendering requires a Session runtime;
+    /// refusal leaves output, clocks, page provider and playback state unchanged.
+    /// With no observer, the existing finite page-rendering fallback is retained.
+    pub fn render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            return runtime
+                .render_with_pages_and_post_node_observer(output, pages, observer)
+                .map_err(|error| Invalid(error.diagnostic_message()));
+        }
+        if observer.is_some() {
+            return Err(Invalid(
+                "post-node observation requires a prepared session runtime",
+            ));
+        }
+        self.render_pages_fallback(output, pages)
+    }
+
+    fn render_pages_fallback<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+    ) -> Result<(), Invalid> {
         if self.session_unavailable.is_some()
             && (self
                 .prepared_revision
