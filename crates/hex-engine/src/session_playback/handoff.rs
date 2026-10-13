@@ -781,11 +781,16 @@ impl SessionPlayback {
                                         self.release_capacity,
                                         &mut next_order,
                                         ReleaseEntry {
-                                            track_index: usize::MAX,
+                                            location: match ReleaseLocation::new(usize::MAX, None) {
+                                                Ok(location) => location,
+                                                Err(error) => {
+                                                    failure = Some(error);
+                                                    return;
+                                                }
+                                            },
                                             track_id: old_route.id,
                                             order: 0,
                                             mix: old_track.mix(),
-                                            tail_group: None,
                                             continuation: None,
                                             voice,
                                         },
@@ -1186,11 +1191,16 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut next_order,
                             ReleaseEntry {
-                                track_index: new_index,
+                                location: match ReleaseLocation::new(new_index, None) {
+                                    Ok(location) => location,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        return;
+                                    }
+                                },
                                 track_id: old_route.id,
                                 order: 0,
                                 mix: old_track.mix(),
-                                tail_group: None,
                                 continuation: None,
                                 voice,
                             },
@@ -1321,7 +1331,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             let route_changed = midi_route_changed
-                .get(entry.track_index)
+                .get(entry.location.track_index())
                 .copied()
                 .unwrap_or(false);
             let remapped_gate = if route_changed {
@@ -1347,16 +1357,16 @@ impl SessionPlayback {
             }
             let old_index = previous
                 .routes
-                .get(entry.track_index)
+                .get(entry.location.track_index())
                 .filter(|route| route.id == entry.track_id)
-                .map(|_| entry.track_index);
+                .map(|_| entry.location.track_index());
             let new_index = old_index
                 .and_then(|index| track_map.get(index).copied())
                 .filter(|index| *index != usize::MAX);
             if let Some(index) = new_index {
-                copied.track_index = index;
+                copied.location = ReleaseLocation::new(index, copied.location.tail_group())?;
             } else {
-                copied.track_index = usize::MAX;
+                copied.location = ReleaseLocation::new(usize::MAX, copied.location.tail_group())?;
             }
             self.release_scratch.push(copied);
             if route_changed && let Some(continuation) = copied.continuation {
@@ -1506,11 +1516,10 @@ impl SessionPlayback {
                         self.release_capacity,
                         &mut next_order,
                         ReleaseEntry {
-                            track_index,
+                            location: ReleaseLocation::new(track_index, None)?,
                             track_id: old_route.id,
                             order: 0,
                             mix,
-                            tail_group: None,
                             continuation,
                             voice,
                         },
@@ -1534,8 +1543,13 @@ impl SessionPlayback {
                 }
             }
         }
-        self.release_scratch
-            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
+        self.release_scratch.sort_unstable_by_key(|entry| {
+            (
+                entry.location.track_index(),
+                entry.location.tail_group(),
+                entry.order,
+            )
+        });
         self.suppression_scratch.sort_unstable_by_key(|entry| {
             (
                 entry.track,
@@ -1552,7 +1566,7 @@ impl SessionPlayback {
         // `previous` for control-side graph retirement.
         let mut active_tail_groups = [false; SESSION_TAIL_GROUP_CAPACITY];
         for release in &self.release_scratch {
-            let Some(group) = release.tail_group else {
+            let Some(group) = release.location.tail_group() else {
                 continue;
             };
             let group_index = usize::from(group);
@@ -1684,7 +1698,7 @@ impl SessionPlayback {
             }
         }
         for release in &mut self.release_scratch {
-            if release.tail_group.is_some() {
+            if release.location.tail_group().is_some() {
                 continue;
             }
             let Some(old_index) = previous
@@ -1763,11 +1777,8 @@ impl SessionPlayback {
                     return Err(SessionPlaybackError::ReleaseBankFull);
                 }
             }
-            release.tail_group = u16::try_from(slot).ok();
-            if release.tail_group.is_none() {
-                return Err(SessionPlaybackError::ReleaseBankFull);
-            }
-            release.track_index = usize::MAX;
+            let group = u16::try_from(slot).map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
+            release.location = ReleaseLocation::new(usize::MAX, Some(group))?;
         }
 
         // A source can be silent while its committed effect suffix still has
@@ -1991,8 +2002,13 @@ impl SessionPlayback {
             }
             old_track_mutable_tail_slots[old_index] = Some(slot);
         }
-        self.release_scratch
-            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
+        self.release_scratch.sort_unstable_by_key(|entry| {
+            (
+                entry.location.track_index(),
+                entry.location.tail_group(),
+                entry.order,
+            )
+        });
 
         // Check every candidate history copy against the final tail-retention
         // plan before any runtime owner is moved or mutated.

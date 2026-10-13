@@ -355,8 +355,13 @@ impl SessionPlayback {
             _ => return Err(SessionPlaybackError::InvalidCommand),
         }
         self.check_release_reservations(&self.route_scratch, self.release_scratch.len())?;
-        self.release_scratch
-            .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
+        self.release_scratch.sort_unstable_by_key(|entry| {
+            (
+                entry.location.track_index(),
+                entry.location.tail_group(),
+                entry.order,
+            )
+        });
         let route_changed = self.routes != self.route_scratch;
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -527,11 +532,16 @@ impl SessionPlayback {
                                 self.release_capacity,
                                 &mut next_order,
                                 ReleaseEntry {
-                                    track_index: index,
+                                    location: match ReleaseLocation::new(index, None) {
+                                        Ok(location) => location,
+                                        Err(error) => {
+                                            failure = Some(error);
+                                            return;
+                                        }
+                                    },
                                     track_id: route.id,
                                     order: 0,
                                     mix: track.mix(),
-                                    tail_group: None,
                                     continuation: None,
                                     voice,
                                 },
@@ -628,11 +638,10 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut self.release_order_scratch,
                             ReleaseEntry {
-                                track_index: index,
+                                location: ReleaseLocation::new(index, None)?,
                                 track_id: route.id,
                                 order: 0,
                                 mix,
-                                tail_group: None,
                                 continuation: None,
                                 voice,
                             },

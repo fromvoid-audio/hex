@@ -684,6 +684,8 @@ delaying until silence, and raising the budget are not authorized substitutes.
 
 ### First checked release-location proof (13 October 2026)
 
+Historical checkpoint `5ee222e`, before authorized production replacement:
+
 The test-only release_location module measures the actual unchanged entry at
 488 bytes and a candidate using identical payload types at480, both alignment8
 on Rust1.94 Linux x86_64. Its private four-byte encoding preserves route indices
@@ -705,3 +707,42 @@ allocation/performance and full final CI remain required after separately
 reviewed replacement. Current-main merge preview has Operator UI/test semantic
 conflicts requiring coordinator ownership resolution; those files are untouched.
 The full harmonic painter/state/provider/native scope remains incomplete.
+
+
+### Authorized production replacement (13 October 2026)
+
+The checked private encoding is now used by production ReleaseEntry, with
+independent route and tail values decoded for the original sort comparisons.
+Normal construction and remapping remain in fallible release staging before
+predecessor owner transfer; valid prepared domains are unchanged. Compile-time
+bounds guard the sentinel domains. The exact corrupt detached u16::MAX tail
+remains available only to the original rollback fixture. No public metadata,
+state version, pool, registry, admission cap or duplicate charge is changed.
+
+Actual Linux x86_64 ReleaseEntry is480 bytes, alignment8. Both16,384-entry banks
+save262,144 bytes. The real EQ handoff still retains256 chains, all16,384
+allocated entries and4,096 processed suffix entries: existing30,728,168 plus
+full proposedpool2,639,456 =33,367,624, margin186,808 under32MiB. Its test also
+reconstructs the original33,629,768 over-budget counterexample by adding the
+old eight bytes across both banks. The real mutable-tail case is29,880,296 plus
+fullpool =32,519,752. These prove finite fixtures; the harmonic pool remains
+uninstalled and universal bridge admission/lifecycle is not claimed.
+
+Focused engine/refusal/retry/PCM and callback allocation evidence is retained
+in the PR handoff. The existing optimized profile_session_handoff was compared
+against5ee222e on Linux x86_64 AMD EPYC9V74:100 tracks,50 Session/50 Arrangement,
+48kHz,100 gain handoffs,64-frame steps, constant and repeating-tempo modes,
+five interleaved process trials per variant/mode. Preparation, rendering/oracle
+comparison and drops are outside the handoff timer. Every run checks independent
+finite-oracle PCM and transport cursors; before/after checksums match. Median of
+run p50s:43.165→36.425us constant,43.044→36.114us repeating tempo. Tail timing is
+noisy (candidate maxima up to323.967us); no sustained/native deadline or general
+speedup is established. Raw comparison/binary identities are retained outside
+source and linked in the exact-source PR evidence. The profiler's code is
+unchanged; it does not exercise the uninstalled harmonic bridge or maximal EQ
+suffix workload. Native arm64 layout, CoreAudio/listening/reference painting and
+complete feature acceptance remain pending.
+
+Current-main Operator conflicts remain deferred to the coordinator. This
+engine-only stage does not change the UI, resolve duplicate LFO tabs, alter
+preview context/visibility, or replace either branch's navigation/visual tests.

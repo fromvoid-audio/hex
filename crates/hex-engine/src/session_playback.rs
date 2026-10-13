@@ -246,11 +246,10 @@ struct TransitionMoment {
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
-    track_index: usize,
+    location: ReleaseLocation,
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
-    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -1089,6 +1088,8 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod release_location;
+use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or
 /// rendering. Refusal/destruction of their storage belongs to control.
 fn reserve_analytic_continuations()
@@ -1192,6 +1193,3 @@ mod render_diagnostic_tests {
         );
     }
 }
-
-#[cfg(test)]
-mod release_location;

@@ -185,8 +185,8 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
     );
     assert_eq!(tails, hex_project::MAX_TRACKS);
     assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    assert_eq!(existing, 30_142_440);
-    assert_eq!(proposed, 32_781_896);
+    assert_eq!(existing, 29_880_296);
+    assert_eq!(proposed, 32_519_752);
     assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
 
@@ -225,10 +225,13 @@ fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
     );
     assert_eq!(tails, hex_project::MAX_TRACKS);
     assert_eq!(suffixes, MAX_RETAINED_SUFFIX_ENTRIES);
-    assert_eq!(existing, 30_990_312);
-    assert_eq!(proposed, 33_629_768);
+    assert_eq!(existing, 30_728_168);
+    assert_eq!(proposed, 33_367_624);
     assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    // A negative admission proof is a blocker, not authorization to lower
-    // suffix/voice/recipe capacity or to raise the existing budget.
-    assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    // Reconstruct the original c048995 negative control with identical
+    // capacities/payload: only the old location's eight extra bytes differ.
+    let legacy_proposed = proposed + 2 * SESSION_RELEASE_CAPACITY * 8;
+    assert_eq!(legacy_proposed, 33_629_768);
+    assert!(legacy_proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
