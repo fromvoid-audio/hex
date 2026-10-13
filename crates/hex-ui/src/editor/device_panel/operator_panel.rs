@@ -6,7 +6,7 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
-use hex_lattice_contract::{ParameterId, ParameterValue};
+use hex_lattice_contract::{ParameterId, ParameterKind, ParameterValue};
 use hex_project::DeviceId;
 
 pub(super) mod context;
@@ -683,26 +683,24 @@ fn routing_detail(
                 continue;
             }
             let parameter_id = 12 + source * 4 + target + 1;
-            row = row.child(compact_control(
+            row = row.child(routing_cell(
                 view,
                 cx,
                 device,
                 identity,
                 parameters,
                 id(parameter_id),
-                ControlPresentation::InlineValue,
-                None,
+                super::numeric_display::NumericDisplayCodec::Turns,
             ));
         }
-        let carrier = compact_control(
+        let carrier = routing_cell(
             view,
             cx,
             device,
             identity,
             parameters,
             id(29 + source),
-            ControlPresentation::InlineValue,
-            None,
+            super::numeric_display::NumericDisplayCodec::LinearGain,
         );
         row = row.child(carrier);
         rows = rows.child(row);
@@ -748,6 +746,60 @@ fn routing_header_cell(
         .text_size(px(7.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(text))
+}
+
+#[allow(clippy::too_many_arguments)] // Keeps the existing parameter binding and view codec explicit.
+fn routing_cell(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+    parameter: ParameterId,
+    codec: super::numeric_display::NumericDisplayCodec,
+) -> Div {
+    let description = parameters
+        .iter()
+        .find(|entry| entry.descriptor.id == parameter)
+        .map(|entry| {
+            let unit = match entry.descriptor.kind {
+                ParameterKind::Float { unit, .. } => unit.unwrap_or(""),
+                _ => "",
+            };
+            theme::text(format!("{} · {unit}", entry.descriptor.label))
+        })
+        .unwrap_or_else(|| theme::text("unavailable routing parameter"));
+    let selector = format!(
+        "operator-routing-cell-{}-{}",
+        device.value(),
+        parameter.value()
+    );
+    let control = compact_control_with_codec(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        parameter,
+        ControlPresentation::InlineValue,
+        None,
+        Some(codec),
+    )
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    // Long typed drafts scroll within their cell, never into a neighbor.
+    .overflow_hidden()
+    .tooltip(move |_, cx| {
+        cx.new(|_| crate::editor::transport::MiniTooltip {
+            description: description.clone(),
+        })
+        .into()
+    });
+    div()
+        .w(px(FIELD_WIDTH))
+        .h(px(14.0))
+        .flex_shrink_0()
+        .child(control)
 }
 
 #[allow(clippy::too_many_arguments)] // Keeps GPUI context, binding identity and presentation explicit.
