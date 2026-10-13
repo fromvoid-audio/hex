@@ -1,3 +1,16 @@
+## 13 October 2026 — drops above the first track (pulse2333 / pr183)
+
+The existing catalog-device Arrangement implementation is retained. Shared painted
+insertion targeting now recognizes the top three pixels of the first track for
+samples and devices, without adding a spacer. Sample insertion preview remains
+visible at the content's top edge. Rendered regressions failed before the fix
+(missing sample insertion line; device targeted the existing first track) and
+cover the repaired above-first destination plus device trailing-space appends.
+Automated results are retained with this task; native macOS user acceptance and
+the existing PR183 readiness/evidence hold remain pending. The linked Pulse task
+was resumed through Start Task; no duplicate issue was created. This follow-up
+extends PR183's existing implementation.
+
 ## device chain pan and bottom navigator — 13 october 2026
 
 Track and return device chains now share middle-button horizontal drag panning and
