@@ -10,6 +10,7 @@ enter or leave this boundary.
 
 hex-project for model validation, hex-lattice-contract for bounded device state,
 serde/serde_json for versioned project JSON,
+fs2 0.4.3 for nonblocking control-side advisory file locks (Rust1.85-compatible),
 and std for bounded file access and same-directory publication.
 
 ## Does not own
@@ -132,5 +133,15 @@ Schema 18 requires nullable `import_provenance`. Schemas 1–17 migrate to absen
 provenance; their strict readers reject the new field. Unknown envelope kinds or
 versions, empty input and oversized arrays are rejected. Schema-18 JSON is compact
 and retains the 8 MiB document ceiling, including provenance. Serialization stops
-at that ceiling; saving never drops evidence to fit. The musical adapter and
-real Live-authored fixture acceptance remain blocked.
+at that ceiling; saving never drops evidence to fit. The finite musical adapter
+uses the genuine Live-authored fixture; native interaction and listening
+acceptance remain separate.
+Automatic journal checkpoints are independent of previous-save recovery. The
+strict journal envelope retains one current snapshot, uses a stable generation
+lock to serialize cooperating publication, refuses unknown files, and clears
+only the exact owned generation. No untitled history is retained. Native
+composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).
+
+Imported unsaved projects use that same latest-untitled checkpoint path. Recovery
+retains schema-18 original-document provenance and prepares the complete media
+and playback candidate before adoption, without acquiring an overwrite association.

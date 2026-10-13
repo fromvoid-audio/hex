@@ -13,7 +13,7 @@ use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
-    ControlStyle, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
+    ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
     compact_device_frame, device_frame,
@@ -29,6 +29,7 @@ mod eq8_panel;
 mod gate_panel;
 mod numeric_display;
 mod operator_panel;
+pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod saturator_panel;
 mod send_controls;
 mod utility_panel;
@@ -137,6 +138,7 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
     operator_envelope_graphs:
@@ -200,6 +202,8 @@ pub(super) fn control_style() -> ControlStyle {
         ),
         muted: theme::color(theme::PaletteRole::Muted),
         accent: theme::color(theme::PaletteRole::Secondary),
+        focus_marker: 0xaaaaaa,
+        dial_rail: 0x000000,
         hover: theme::color(theme::PaletteRole::Hover),
         font_size: 9.0,
     }
@@ -350,6 +354,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
@@ -448,6 +453,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
         view.device_panel.eq8_panels.clear();
@@ -706,6 +712,9 @@ fn render_track(
             .then_some(*device)
         })
         .collect();
+    view.device_panel
+        .operator_context_focus
+        .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
     let alive_eq8: HashSet<_> = identities
         .iter()
@@ -1802,7 +1811,7 @@ fn render_instrument(
                 let body = operator_panel::render_body(view, cx, device_id, device_view);
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    operator_panel::frame_style(),
                     header_actions,
                     body,
                 )
@@ -2270,7 +2279,15 @@ fn parameter_control_with_presentation(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> Div {
-    let style = control_style();
+    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && presentation == ControlPresentation::InlineValue
+    {
+        let mut style = operator_panel::display_style();
+        style.text = style.accent;
+        style
+    } else {
+        control_style()
+    };
     let display_label = display.label;
     let key = ParameterKey {
         device,
@@ -2353,8 +2370,10 @@ fn parameter_control_with_presentation(
             }
             let (width, height) = match presentation {
                 ControlPresentation::CompactDial => (64.0, 52.0),
-                ControlPresentation::MiniDial => (46.0, 40.0),
-                ControlPresentation::MicroDial => (46.0, 40.0),
+                ControlPresentation::MiniDial | ControlPresentation::MicroDial => (
+                    hex_widgets::MICRO_DIAL_WIDTH,
+                    hex_widgets::MICRO_DIAL_HEIGHT,
+                ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 _ => (136.0, 26.0),
             };
@@ -2423,6 +2442,7 @@ fn create_parameter_control(
 ) -> Option<()> {
     let descriptor = parameter.descriptor;
     let value = parameter.value;
+    let operator_context_owner = operator_panel::context::Owner::capture(view, key.device);
     let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
         && presentation == ControlPresentation::InlineValue
     {
@@ -2489,7 +2509,14 @@ fn create_parameter_control(
                 style,
             )
             .ok()?
-            .with_appearance(appearance);
+            .with_appearance(appearance)
+            .with_dial_layout(
+                if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
+                    DialLayout::Pan
+                } else {
+                    DialLayout::ReadoutGap
+                },
+            );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
@@ -2503,31 +2530,14 @@ fn create_parameter_control(
                         && let Some(operator) =
                             operator_panel::shell_operator_for_numeric_parameter(key.parameter)
                     {
-                        let current_page = view
-                            .device_panel
-                            .operator_pages
-                            .get(&key.device)
-                            .copied()
-                            .unwrap_or_default()
-                            .page;
-                        let context = operator_panel::OperatorPanelState {
-                            selected_operator: operator,
-                            page: if current_page == operator_panel::OperatorPage::Envelope {
-                                operator_panel::OperatorPage::Envelope
-                            } else {
-                                operator_panel::OperatorPage::Oscillator
-                            },
-                        };
-                        if view
-                            .device_panel
-                            .operator_pages
-                            .get(&key.device)
-                            .copied()
-                            .unwrap_or_default()
-                            != context
-                            && finalize_controls_except(view, cx, &[key])
-                        {
-                            view.device_panel.operator_pages.insert(key.device, context);
+                        if let Some(owner) = operator_context_owner {
+                            operator_panel::context::select_oscillator(
+                                view,
+                                cx,
+                                owner,
+                                operator,
+                                &[key],
+                            );
                         }
                     }
                     let value = ParameterValue::Float(event.value as f32);

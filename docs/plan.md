@@ -3809,3 +3809,29 @@ algorithmic latency. Scratch and runtimes are prepared on control, compatible
 bus history is preflighted before handoff, and removal uses the bounded release
 policy in [return tracks](return-tracks.md). General latency compensation and
 native pinned rows/interactions remain separate gates; UI2178 owns the latter.
+
+
+## Pulse25 — finite project recovery contract, 11 October2026
+
+Continue only PR151 and its claimed branch. The human included untitled recovery
+and explicitly limited it to the most recent project, no history. Storage owns
+one validated checkpoint per slot with serialized publication and exact-generation
+cleanup. Session checkpoints canonical revisions and prepares full media/compiler
+admission before explicit recovery/relink adoption. Recovery opens dirty without
+an overwrite association; source saved files remain intact. The existing prior-save
+sidecar is a separate explicit source, with no automatic precedence.
+
+Ownership, bounded format, native File actions, mixed Save/Save As/Session
+round-trip boundary, failure/restart tests and manual acceptance are specified in
+[project-recovery.md](project-recovery.md). No undo stack, UI state, live route,
+transport or processor-runtime recovery is claimed. Linux source evidence cannot
+prove macOS dialogs/compilation or listening; the full exact-source runner and
+native checks remain separate gates. No merge is authorized by this task.
+
+## stable optimized test delivery — Pulse #2408
+
+The existing native bundler now delegates to the guarded optimized delivery
+workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
+action supplies one stable app plus exact-source CI/included revisions/checklist
+and retains prior-bundle rollback. Source/packaging evidence and native owner
+approval remain separate gates on Pulse #2408.

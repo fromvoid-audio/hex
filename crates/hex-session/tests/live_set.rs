@@ -103,3 +103,53 @@ fn worker_resident_limit_refuses_without_replacing_current_project() {
     assert_eq!(failed.state.project, original.state.project);
     assert!(!failed.state.unsaved);
 }
+
+#[test]
+fn imported_unsaved_project_recovery_retains_exact_original_provenance() {
+    let directory = std::env::temp_dir().join(format!(
+        "hex-live-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let slot = directory.join("recovery/untitled.hex-journal");
+    let service = Service::with_recovery(48_000, 8, 8_000_000, slot.clone()).unwrap();
+    let initial = wait(&service);
+    let imported = import(&service, true, 0, initial.state.revision, fixture());
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    assert!(imported.state.unsaved && imported.state.document_path.is_none());
+    assert_eq!(
+        hex_storage::load_journal(&slot).unwrap(),
+        *imported.state.project
+    );
+    drop(service);
+
+    let restarted = Service::with_recovery(48_000, 8, 8_000_000, slot.clone()).unwrap();
+    wait(&restarted);
+    restarted
+        .submit(Request::OpenWith {
+            source: hex_session::service::ProjectSource::Journal(slot),
+            relinks: std::collections::BTreeMap::new(),
+        })
+        .unwrap();
+    let recovered = wait(&restarted);
+    assert!(recovered.error.is_none(), "{:?}", recovered.error);
+    assert!(recovered.open_complete && recovered.project_replaced && recovered.playback.is_some());
+    assert!(recovered.state.unsaved && recovered.state.document_path.is_none());
+    assert_eq!(recovered.state.project, imported.state.project);
+    assert_eq!(recovered.state.waveforms.len(), 1);
+    assert_eq!(
+        recovered
+            .state
+            .project
+            .import_provenance()
+            .unwrap()
+            .original_bytes(),
+        std::fs::read(fixture()).unwrap()
+    );
+    drop(restarted);
+    std::fs::remove_dir_all(directory).unwrap();
+}

@@ -190,3 +190,12 @@ reordering, prepared inventory order, undo/redo, Save As and fresh-worker reopen
 It explicitly launches original and duplicate cells and checks identical PCM
 across different render partitions; runtime route state is created by those
 launch commands rather than persisted in the project.
+
+Native startup opts into `Service::with_recovery`. Committed canonical revisions
+are checkpointed on the worker before acknowledgment; failure preserves working
+edits and reports the recovery gap. `OpenWith` admits explicit journals, previous
+saves or path-only missing-media relinks only after complete decode/compilation.
+Recovery opens dirty without an overwrite association; ordinary relinked Open
+retains its original exact-byte document token. Untitled recovery retains only
+the latest project, with no history. Contracts, source tests and native gaps:
+[project recovery](../../docs/project-recovery.md).

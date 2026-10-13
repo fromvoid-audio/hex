@@ -44,7 +44,7 @@ widgets = (
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
-    'lights)',
+    'lights)', 'crate::build_info::label()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     'device_drag_grip(', 'uniform_list(',
     'loop_grid_layer(',
@@ -80,7 +80,7 @@ for root_view in ('app.rs', 'editor/render.rs'):
 # editor startup and the loaded editor both use that component. The generated
 # demo still owns its separate toolbar and retains the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
-if '.px(px(theme::TITLEBAR_LEADING_INSET))' not in header:
+if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
     errors.append('editor/header.rs: center title with balanced native-control insets')
 for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
@@ -92,8 +92,8 @@ demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')
 for key in ('CFBundleName', 'CFBundleDisplayName'):
-    source = (ROOT / 'scripts/bundle-macos.sh').read_text()
-    if f'<key>{key}</key><string>hex</string>' not in source:
+    source = (ROOT / 'scripts/hex-test-build.py').read_text()
+    if f'"{key}": "hex"' not in source:
         errors.append(f'{key} must be lowercase hex')
 if errors:
     print('\n'.join(errors), file=sys.stderr)

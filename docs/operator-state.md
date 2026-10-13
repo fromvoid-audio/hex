@@ -10,7 +10,7 @@ The standalone and registered bounded self-feedback contracts are documented in
 [Operator feedback](operator-feedback.md). Filters, further waveform controls,
 transport-specific behavior and remaining Operator behavior remain separate work.
 
-`hex.instrument.operator`, state version6, owns exactly320 bytes: the original
+`hex.instrument.operator`, state version7, owns exactly364 bytes: the original
 224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32
 waveform choices (version2's 240-byte prefix), then four 12-byte tuning records.
 Each tuning record stores a u32 fixed flag, f32 frequency in Hz, and f32 multiplier.
@@ -22,7 +22,7 @@ operator order; the next16 are source-major modulation depths, including four
 reserved zero diagonal entries; the next4 are carrier weights. The final24 fields of the original prefix are
 initial, peak, sustain, attack, decay and release for each of four operators.
 Parameter IDs are one-based field indices, excluding reserved diagonals; waveform
-selectors use stable IDs57–60. There are77 editable descriptors:52 original floats, four
+selectors use stable IDs57–60. There are88 editable descriptors, including the eleven LFO controls below; the earlier77 comprise52 original floats, four
 waveform choices (`sine`, `saw`, `square`, `triangle`) and one derived routing
 preset choice (`custom`, `serial`, `parallel`, `two pairs`), plus four fixed switches and eight
 frequency/multiplier floats. Tuning uses stable IDs62–73. Routing preset ID61
@@ -46,17 +46,18 @@ readback to `custom` unless it exactly matches a named layout. See the
 Every decode, migration and patch validates all fields and the acyclic routing
 graph. Unknown types/versions, wrong lengths, nonfinite values, invalid ranges,
 invalid diagonal routing and cycles are refused. Patches return a new opaque state, leaving
-the original intact on failure. Migration accepts versions1–6. Versions1–3
+the original intact on failure. Migration accepts versions1–7. Versions1–3
 preserve their in-range existing prefix byte-for-byte and append neutral amplitude-
 velocity amounts; version3 fixed tuning remains intact. Version4 is validated
-as an exact 304-byte prefix and migrates with neutral feedback. Versions5–6 validate the same 320-byte layout. Version6 changes the time
-domains without adding fields. Valid legacy1–5 Attack/Decay/Release values up to
-120s clamp to attack[0,20]s and decay/release[0.001,60]s on decode and migration, without a notice;
-nonfinite, negative or above120s legacy values are refused. Other fields and
-prefix bytes are preserved. Version6 is strict and refuses values outside the new
-bounds. Opaque legacy state can remain in a project snapshot until a canonical
-parameter edit writes version6; its control readback and prepared audio already
-use clamped durations, including after save/reopen. Inactive fixed and feedback settings are validated too. See the
+as an exact 304-byte prefix and migrates with neutral feedback. Version5 validates
+and preserves in-range fields in the 320-byte prefix, then appends neutral LFO defaults.
+Version6 retains the320-byte layout and strictly validates the revised envelope
+domains; it appends the same LFO defaults. Legacy versions1–5 validate their
+original0–120s envelope domain then clamp attack to0–20s and decay/release to
+0.001–60s. Version6 and7 refuse out-of-domain durations. Version7 adds
+eleven validated four-byte LFO fields (IDs82–92). All earlier versions append
+the same disabled defaults. See [Operator LFO](operator-lfo.md) for the timing,
+modulation, live-transfer and admission contract. Inactive fixed and feedback settings are validated too. See the
 [fixed tuning contract](operator-fixed-tuning.md).
 Storage needs no special Operator branch: this uses the existing opaque
 native-device state contract.
@@ -73,7 +74,7 @@ creates a bounded immutable context and compacts each prepared note to four phas
 steps, velocity and four harmonic-cap indices packed into one u32. The existing
 eight-word analytic note payload stores four prepared amplitude scales in its two
 previously reserved-zero words; it remains64 bytes and does not change the
-generic contract. Nonzero feedback deliberately exposes no analytic context;
+generic contract. Nonzero feedback or enabled LFO deliberately exposes no analytic context;
 generic event-source compilation routes it through the fixed mutable runtime.
 Inline analytic sampling explicitly refuses this processing class. See the
 [waveform contract](operator-waveforms.md)
