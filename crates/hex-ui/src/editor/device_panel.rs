@@ -848,10 +848,11 @@ fn render_track(
         };
         let mounted = chain_window::must_mount(view, device.id(), window, cx);
         if !mounted {
-            chain = chain.child(chain_window::spacer(
+            let card = chain_window::spacer(
                 device.id(),
                 device_card_width(class, device.state().type_id()),
-            ));
+            );
+            chain = chain.child(card);
             if class == NativeDeviceClass::Effect {
                 effect_index = effect_index.saturating_add(1);
             }
@@ -949,7 +950,8 @@ fn render_track(
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }
-    chain = chain.child(chain_window::viewport_observer(view, cx));
+    let element = chain_window::viewport_observer(view, cx);
+    chain = chain.child(element);
     root = root.child(header).child(chain);
     if add_open {
         root = root.child(render_add_menu(

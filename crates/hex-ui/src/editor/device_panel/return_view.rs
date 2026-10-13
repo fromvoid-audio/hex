@@ -202,10 +202,11 @@ pub(super) fn render(
                     .track_focus(&focus),
             );
         } else {
-            chain = chain.child(chain_window::spacer(
+            let card = chain_window::spacer(
                 device.id(),
                 device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-            ));
+            );
+            chain = chain.child(card);
         }
     }
     chain = chain.child(
@@ -214,7 +215,8 @@ pub(super) fn render(
             .h(px(DEVICE_FRAME_HEIGHT))
             .flex_shrink_0(),
     );
-    chain = chain.child(chain_window::viewport_observer(view, cx));
+    let element = chain_window::viewport_observer(view, cx);
+    chain = chain.child(element);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));
