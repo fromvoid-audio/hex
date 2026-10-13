@@ -1,5 +1,6 @@
 """Deterministic tests for exact-source delivery and interruption recovery."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import shutil
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -20,6 +21,19 @@ SPEC.loader.exec_module(delivery)
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_cli_release_ownership_refusal_is_controlled_and_never_activates(self):
+        arguments = ["hex-test-build", "--ci-report", "report.json", "--candidate", "a" * 40,
+                     "--included", "included.json", "--checklist", "checklist.md"]
+        errors = io.StringIO()
+        with patch.object(delivery.sys, "argv", arguments), \
+                patch.object(delivery.signal, "signal"), \
+                patch.object(delivery, "build", side_effect=delivery.ci.TargetCacheError("release ownership is pending")), \
+                patch.object(delivery, "activate") as activate, redirect_stderr(errors):
+            self.assertEqual(delivery.main(), 1)
+        self.assertIn("release ownership is pending", errors.getvalue())
+        self.assertIn("staged artifacts retained", errors.getvalue())
+        activate.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

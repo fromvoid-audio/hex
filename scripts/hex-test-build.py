@@ -364,7 +364,8 @@ def main() -> int:
         receipt = build(args)
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
-    except (DeliveryError, OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
+    except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
+            KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"test delivery incomplete: {error}; previous app/rollback and staged artifacts retained. "
               "save and quit hex before retrying; no process was terminated", file=sys.stderr)
         return 1

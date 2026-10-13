@@ -664,8 +664,8 @@ class LocalCiRunner:
     def _write_release_owner(path: Path, payload: dict[str, object]) -> None:
         if path.is_symlink():
             raise TargetCacheError("release ownership marker is a symlink")
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        with temporary.open("x", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
@@ -805,6 +805,9 @@ class LocalCiRunner:
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
             self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
+        except BaseException as error:
+            self.summary["release_target_error"] = {"type": type(error).__name__, "message": str(error)}
+            raise
         finally:
             try:
                 self._write_summary()
