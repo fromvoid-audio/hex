@@ -207,6 +207,7 @@ pub struct NativeDeviceState {
     type_id: DeviceTypeId,
     state_version: u32,
     payload: Arc<[u8]>,
+    output_gain_millidb: i32,
 }
 impl NativeDeviceState {
     pub fn new(
@@ -225,6 +226,7 @@ impl NativeDeviceState {
             type_id,
             state_version,
             payload: Arc::from(payload),
+            output_gain_millidb: 0,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -232,6 +234,39 @@ impl NativeDeviceState {
     }
     pub const fn state_version(&self) -> u32 {
         self.state_version
+    }
+    /// Host-owned output trim, independent of the device's opaque DSP payload.
+    pub const fn output_gain_millidb(&self) -> i32 {
+        self.output_gain_millidb
+    }
+    pub fn output_gain_db(&self) -> f32 {
+        self.output_gain_millidb as f32 / 1000.0
+    }
+    pub fn with_output_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
+        if !(-60_000..=24_000).contains(&gain) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.output_gain_millidb = gain;
+        Ok(self)
+    }
+    pub fn with_output_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
+        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.with_output_gain_millidb((gain * 1000.0).round() as i32)
+    }
+    pub fn without_output_gain(mut self) -> Self {
+        self.output_gain_millidb = 0;
+        self
+    }
+    /// DSP configuration identity excludes independent host gain staging.
+    pub fn processing_eq(&self, other: &Self) -> bool {
+        self.type_id == other.type_id
+            && self.state_version == other.state_version
+            && self.payload == other.payload
+    }
+    pub fn output_gain_linear(&self) -> f32 {
+        10.0_f32.powf(self.output_gain_db() / 20.0)
     }
     pub fn payload(&self) -> &[u8] {
         &self.payload
