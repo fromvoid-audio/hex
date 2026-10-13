@@ -114,6 +114,8 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
+        crate::gain_envelope::validate_project(project)?;
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
         let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
@@ -201,6 +203,8 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
+        crate::gain_envelope::validate_project(project)?;
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
         let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
@@ -272,6 +276,28 @@ impl PreparedRevision {
 
     pub fn contains_streamed_sources(&self) -> bool {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
+    }
+
+    /// Borrow every streamed binding without allocating or cloning an owner.
+    /// Arrangement bindings follow compiled track/clip order, then Session
+    /// bindings follow `audio_clips()` inventory order. Repeated references to
+    /// one source are yielded separately; resident audio and MIDI are omitted.
+    /// Metadata remains immutable and borrowed from this exact revision.
+    pub fn streamed_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> + '_ {
+        self.arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .filter_map(|clip| clip.metadata.as_ref()?.streamed.as_deref())
+            .chain(
+                self.session
+                    .audio_clips()
+                    .iter()
+                    .filter_map(|clip| match clip.source() {
+                        PreparedAudioSource::Streamed(source) => Some(source.as_ref()),
+                        PreparedAudioSource::Resident(_) => None,
+                    }),
+            )
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.

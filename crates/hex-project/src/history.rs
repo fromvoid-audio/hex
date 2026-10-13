@@ -68,6 +68,41 @@ impl Editor {
         self.redo.clear();
         Ok((result, prepared))
     }
+    /// Apply at most MAX_CLIPS ordered commands to one private candidate and
+    /// prepare it once. Preparation sees each command's result in input order.
+    /// Any refusal preserves IDs, both history stacks and the current project.
+    pub fn execute_many_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        if commands.len() > crate::MAX_CLIPS {
+            return Err(E::from(Invalid("batch command limit reached")));
+        }
+        let mut results = Vec::new();
+        results
+            .try_reserve_exact(commands.len())
+            .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
+        let mut candidate = self.project.clone();
+        for command in commands {
+            results.push(candidate.apply(command)?);
+        }
+        // Reserve before preparation/commit. No history allocation follows it.
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
+        let prepared = prepare(&candidate, &results)?;
+        if candidate != self.project {
+            let previous = std::mem::replace(&mut self.project, candidate);
+            if self.undo.len() == self.capacity {
+                self.undo.pop_front();
+            }
+            self.undo.push_back(previous);
+            self.redo.clear();
+        }
+        Ok((results, prepared))
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(mut previous) = self.undo.pop_back() else {
             return false;
@@ -137,5 +172,117 @@ impl Editor {
         self.undo
             .push_back(std::mem::replace(&mut self.project, candidate));
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    #[test]
+    fn batch_prepares_once_and_one_undo_restores_all_commands() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let mut calls = 0;
+        let (results, tracks) = editor
+            .execute_many_prepared(
+                vec![
+                    Command::AddTrack {
+                        name: "first".into(),
+                    },
+                    Command::AddTrack {
+                        name: "second".into(),
+                    },
+                ],
+                |candidate, results| {
+                    calls += 1;
+                    assert_eq!(results.len(), 2);
+                    Ok::<_, Invalid>(candidate.tracks().len())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(tracks, 2);
+        assert!(matches!(results[0], Created::Track(_)));
+        assert!(matches!(results[1], Created::Track(_)));
+        assert!(editor.undo());
+        assert!(editor.project().tracks().is_empty());
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project().tracks().len(), 2);
+    }
+    #[test]
+    fn late_command_and_preparation_refusal_preserve_ids_and_redo() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "prior".into(),
+            })
+            .unwrap();
+        assert!(editor.undo());
+        let before = editor.project().clone();
+        let mut called = false;
+        assert!(
+            editor
+                .execute_many_prepared(
+                    vec![
+                        Command::AddTrack {
+                            name: "valid".into()
+                        },
+                        Command::AddTrack {
+                            name: String::new()
+                        }
+                    ],
+                    |_, _| {
+                        called = true;
+                        Ok::<_, Invalid>(())
+                    }
+                )
+                .is_err()
+        );
+        assert!(!called);
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_redo());
+        assert!(!editor.can_undo());
+        assert!(
+            editor
+                .execute_many_prepared(
+                    vec![Command::AddTrack {
+                        name: "valid".into()
+                    }],
+                    |_, _| Err::<(), _>(Invalid("preparation refused"))
+                )
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_redo());
+        assert!(!editor.can_undo());
+    }
+    #[test]
+    fn empty_batch_preserves_redo_and_oversized_refuses_before_preparation() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "prior".into(),
+            })
+            .unwrap();
+        editor.undo();
+        let before = editor.project().clone();
+        editor
+            .execute_many_prepared(Vec::new(), |_, results| {
+                assert!(results.is_empty());
+                Ok::<_, Invalid>(())
+            })
+            .unwrap();
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_redo());
+        assert!(
+            editor
+                .execute_many_prepared(
+                    vec![Command::MasterGain { gain: 1.0 }; crate::MAX_CLIPS + 1],
+                    |_, _| -> Result<(), Invalid> { panic!("must refuse before preparation") }
+                )
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_redo());
     }
 }

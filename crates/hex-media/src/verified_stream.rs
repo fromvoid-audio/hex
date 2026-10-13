@@ -179,6 +179,13 @@ impl VerifiedWavReader {
         self.page_digests.capacity() * DIGEST_BYTES
     }
 
+    /// Capacity of this reader's independently owned path allocation. Borrowed
+    /// reporting only; excludes allocator metadata. The fixed verification
+    /// scratch is inline in `Self`, not a second heap allocation.
+    pub fn path_capacity_bytes(&self) -> usize {
+        self.path.capacity()
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.layout.format.sample_rate
     }

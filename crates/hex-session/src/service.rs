@@ -1,13 +1,19 @@
 //! Bounded control worker for decoding, project edits, saves, and graph compilation.
+mod live_set;
 use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
+use crate::import_batch::AudioBatchDestination;
+use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+#[cfg(test)]
+mod audio_batch_tests;
+pub mod preset;
 mod recovery;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
@@ -37,6 +43,8 @@ pub struct ViewState {
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
+    pub gain_preview: Result<Arc<hex_engine::GainAutomationPreview>, hex_engine::Invalid>,
     pub timeline_frames: u64,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -55,6 +63,8 @@ pub struct Event {
     pub status: Option<String>,
     pub error: Option<String>,
     pub request_complete: bool,
+    /// Correlates one final batch result; contains metadata only, never PCM.
+    pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
     pub open_complete: bool,
@@ -134,9 +144,56 @@ pub fn prepare_audio_preview(
     })
 }
 
+/// Only gain-envelope commands may cross this revision-stamped UI boundary.
+#[derive(Clone, Debug)]
+pub enum GainLaneEdit {
+    Replace(Vec<hex_project::GainPoint>),
+    Upsert(hex_project::GainPoint),
+    Move {
+        from: hex_project::BeatTime,
+        to: hex_project::BeatTime,
+    },
+    Remove(hex_project::BeatTime),
+    Clear,
+}
+impl GainLaneEdit {
+    fn command(self, track: hex_project::TrackId) -> Command {
+        match self {
+            Self::Replace(points) => Command::ReplaceTrackGainEnvelope { track, points },
+            Self::Upsert(point) => Command::UpsertTrackGainPoint { track, point },
+            Self::Move { from, to } => Command::MoveTrackGainPoint { track, from, to },
+            Self::Remove(beat) => Command::RemoveTrackGainPoint { track, beat },
+            Self::Clear => Command::ClearTrackGainEnvelope { track },
+        }
+    }
+}
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    ArmMusicalTyping {
+        target: hex_engine::live_input::TypingTarget,
+        epoch: u64,
+        bridge_bytes: usize,
+    },
+    DisarmMusicalTyping {
+        project_generation: u64,
+        epoch: u64,
+    },
+    SaveDevicePreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
+    LoadDevicePreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
+    /// Check all stamps before preparation or history, including requests delayed in either queue.
+    GainLane {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        edit: GainLaneEdit,
+    },
     DeviceGesture(GestureRequest),
     /// One metadata-only browser/rail device drop, admitted only against the
     /// exact project generation and canonical revision captured at drag start.
@@ -165,6 +222,12 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    ImportAudioBatch {
+        paths: Vec<PathBuf>,
+        destination: AudioBatchDestination,
+        context: AudioBatchContext,
+        control: Arc<AudioBatchControl>,
+    },
     ImportToTrack {
         path: PathBuf,
         track: hex_project::TrackId,
@@ -184,6 +247,12 @@ pub enum Request {
         path: PathBuf,
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
+    },
+    ImportLiveSet {
+        path: PathBuf,
+        accept_hex_balance: bool,
+        project_generation: u64,
+        revision: u64,
     },
     Open(PathBuf),
     /// Recovery/relink opens prepare a complete candidate before adoption.
@@ -213,8 +282,29 @@ pub enum Request {
 }
 
 impl Request {
+    /// Construct bounded owned-path metadata without decoding on the UI thread.
+    pub fn audio_batch(
+        paths: Vec<PathBuf>,
+        destination: AudioBatchDestination,
+        context: AudioBatchContext,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        let control = Arc::new(AudioBatchControl::new(paths.len()).map_err(|e| e.to_string())?);
+        Ok((
+            Self::ImportAudioBatch {
+                paths,
+                destination,
+                context,
+                control: Arc::clone(&control),
+            },
+            control,
+        ))
+    }
+
     pub fn is_project_open(&self) -> bool {
-        matches!(self, Self::Open(_) | Self::OpenWith { .. })
+        matches!(
+            self,
+            Self::Open(_) | Self::OpenWith { .. } | Self::ImportLiveSet { .. }
+        )
     }
 }
 
@@ -508,6 +598,7 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
         midi_preview,
@@ -535,6 +626,7 @@ fn preview_view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
         midi_preview: Arc::clone(prepared.midi_preview()),
@@ -628,6 +720,7 @@ fn run_worker(
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut project_generation = 0_u64;
     let mut device_gesture = GestureMachine::default();
+    let mut musical_typing: Option<(hex_engine::live_input::TypingTarget, u64, usize, bool)> = None;
     let initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
@@ -639,6 +732,7 @@ fn run_worker(
                 status: Some("project ready".into()),
                 error: None,
                 request_complete: false,
+                audio_batch_complete: None,
                 save_complete: false,
                 open_complete: false,
                 project_replaced: false,
@@ -658,6 +752,7 @@ fn run_worker(
             status: None,
             error: Some(error),
             request_complete: false,
+            audio_batch_complete: None,
             save_complete: false,
             open_complete: false,
             project_replaced: false,
@@ -676,6 +771,7 @@ fn run_worker(
     }
 
     while let Ok(request) = requests.recv() {
+        let mut audio_batch_complete = None;
         let mut open_complete = false;
         let mut save_complete = false;
         let mut project_replaced = false;
@@ -685,6 +781,7 @@ fn run_worker(
         let mut duplicate_complete = false;
         let mut restore_complete = None;
         let mut restore_prepared = None;
+        let mut prepared_typing_playback = None;
         let mut status = None;
         let mut error = None;
         let mut export_completion = None;
@@ -697,11 +794,14 @@ fn run_worker(
         let barrier = matches!(
             &request,
             Request::Open(_)
+                | Request::ImportLiveSet { .. }
                 | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
         );
         let mut barrier_failure = None;
@@ -912,6 +1012,48 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::ImportAudioBatch {
+                    paths,
+                    destination,
+                    context,
+                    control,
+                } => {
+                    audio_batch_complete = Some(Arc::clone(&control));
+                    let actual = AudioBatchContext {
+                        project_generation,
+                        revision,
+                        active_gesture: device_gesture.snapshot().is_some(),
+                    };
+                    let result = if context != actual {
+                        Err(crate::import_batch_decode::AudioBatchError::ContextChanged)
+                    } else {
+                        AudioBatchImport::capture_with_control(
+                            paths,
+                            destination,
+                            &session,
+                            actual,
+                            Arc::clone(&control),
+                        )
+                        .and_then(|job| {
+                            job.run(
+                                &mut session,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                || actual,
+                            )
+                        })
+                    };
+                    match result {
+                        Ok((_, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("audio batch imported · one undo".into());
+                        }
+                        Err(reason) => {
+                            control.refuse();
+                            error = Some(reason.to_string());
+                        }
+                    }
+                }
                 Request::Import(path) => match import(
                     &mut session,
                     path,
@@ -988,6 +1130,43 @@ fn run_worker(
                     }
                     Err(reason) => error = Some(reason),
                 },
+                Request::ImportLiveSet {
+                    path,
+                    accept_hex_balance,
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                } => {
+                    open_complete = true;
+                    if unsaved {
+                        error = Some("save current work and retry live-set import".into());
+                    } else if expected_generation != project_generation
+                        || expected_revision != revision
+                    {
+                        error = Some("project changed · retry live-set import".into());
+                    } else {
+                        match live_set::candidate(
+                            &session,
+                            history_capacity,
+                            &path,
+                            accept_hex_balance,
+                        )
+                        .and_then(|(candidate, diagnostics)| {
+                            compile(&candidate, None)
+                                .map(|prepared| (candidate, diagnostics, prepared))
+                        }) {
+                            Ok((candidate, diagnostics, prepared)) => {
+                                session = candidate;
+                                document = None;
+                                media_base = None;
+                                unsaved = true;
+                                project_replaced = true;
+                                replacement_revision = Some(prepared);
+                                status = Some(diagnostics);
+                            }
+                            Err(reason) => error = Some(reason),
+                        }
+                    }
+                }
                 request @ (Request::Open(_) | Request::OpenWith { .. }) => {
                     open_complete = true;
                     let (source, relinks) = match request {
@@ -1231,6 +1410,68 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::SaveDevicePreset { owner, path } => {
+                    match preset::save(&session, project_generation, revision, owner, &path) {
+                        Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::LoadDevicePreset { owner, path } => {
+                    let candidate =
+                        preset::load_command(&session, project_generation, revision, owner, &path);
+                    match candidate {
+                        Ok(command) => {
+                            let before = session.project().clone();
+                            match session.command_prepared_revision(
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some(
+                                        "device preset loaded · undo restores previous state"
+                                            .into(),
+                                    );
+                                }
+                                Ok(_) => status = Some("device preset already matches".into()),
+                                Err(reason) => {
+                                    error = Some(format!("device preset refused · {reason}"))
+                                }
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::GainLane {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                    edit,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain draft refused · project changed".into());
+                    } else if session.project().track(track).is_none() {
+                        error = Some("gain draft refused · track no longer exists".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("gain draft refused · device edit is still applying".into());
+                    } else {
+                        let before = session.project().clone();
+                        match session.command_prepared_revision(
+                            edit.command(track),
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((result, prepared)) if session.project() != &before => {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                                created = Some(result);
+                                status = Some("gain edit committed".into());
+                            }
+                            Ok(_) => status = Some("no change".into()),
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                }
                 Request::Edit(command) => {
                     duplicate_complete = matches!(&command, Command::DuplicateClip(_));
                     let before = session.project().clone();
@@ -1389,6 +1630,57 @@ fn run_worker(
                         },
                     }
                 }
+                Request::ArmMusicalTyping {
+                    target,
+                    epoch,
+                    bridge_bytes,
+                } => {
+                    if target.project_generation != project_generation
+                        || target.project_revision != revision
+                    {
+                        error = Some(
+                            "typing target changed; select the instrument and arm again".into(),
+                        );
+                    } else if device_gesture.snapshot().is_some() {
+                        error =
+                            Some("finish parameter editing before arming musical typing".into());
+                    } else {
+                        let prepared = compiled
+                            .as_ref()
+                            .filter(|(stamp, _)| *stamp == revision)
+                            .map(|(_, artifact)| Arc::clone(artifact));
+                        match prepared {
+                            Some(prepared) => {
+                                let mut playback = native_playback(Arc::clone(&prepared));
+                                match hex_engine::live_input::PreparedTypingArm::prepare(session.project(), target)
+                                    .and_then(|arm| playback.prepare_typing_input_with_bridge(arm, epoch, bridge_bytes)) {
+                                    Ok(()) => { musical_typing = Some((target, epoch, bridge_bytes, true)); prepared_typing_playback = Some(playback);
+                                        status = Some("musical typing arm prepared; awaiting audio admission".into()); }
+                                    Err(reason) => error = Some(reason.0.into()),
+                                }
+                            }
+                            None => error = Some("typing needs a prepared native playback graph; retry after audio recovery".into()),
+                        }
+                    }
+                }
+                Request::DisarmMusicalTyping {
+                    project_generation: expected,
+                    epoch,
+                } => {
+                    if expected != project_generation
+                        || musical_typing.is_some_and(|(_, current, _, _)| current != epoch)
+                    {
+                        error = Some("typing disarm belongs to an older project or arm".into());
+                    } else {
+                        musical_typing = musical_typing
+                            .map(|(target, epoch, bytes, _)| (target, epoch, bytes, false));
+                        restore_prepared = compiled
+                            .as_ref()
+                            .filter(|(stamp, _)| *stamp == revision)
+                            .map(|(_, artifact)| Arc::clone(artifact));
+                        status = Some("musical typing disarmed".into());
+                    }
+                }
             }
         }
 
@@ -1396,6 +1688,7 @@ fn run_worker(
             range_clipboard = None;
             device_gesture.reset();
             project_generation = project_generation.saturating_add(1);
+            musical_typing = None;
         }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
@@ -1473,13 +1766,40 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if let Some(prepared) = canonical_prepared {
-            Some(native_playback(prepared))
+        let playback_source = if let Some(prepared) = canonical_prepared {
+            Some(prepared)
         } else if let Some(prepared) = preview_prepared {
-            Some(native_playback(prepared))
+            Some(prepared)
         } else {
-            restore_prepared.map(native_playback)
+            restore_prepared
         };
+        let playback = prepared_typing_playback.or_else(|| {
+            playback_source.map(|prepared| {
+                let mut playback = native_playback(prepared);
+                if let Some((mut target, epoch, bridge_bytes, armed)) = musical_typing {
+                    target.project_revision = revision;
+                    let project = device_preview
+                        .as_ref()
+                        .map_or(session.project(), |preview| preview.state.project.as_ref());
+                    match hex_engine::live_input::PreparedTypingArm::prepare(project, target)
+                        .and_then(|arm| {
+                            playback.prepare_typing_input_with_bridge(arm, epoch, bridge_bytes)
+                        }) {
+                        Ok(()) => {
+                            if !armed {
+                                playback.cut_typing_input(epoch);
+                            }
+                            musical_typing = Some((target, epoch, bridge_bytes, armed));
+                        }
+                        Err(reason) => {
+                            musical_typing = None;
+                            error = Some(format!("musical typing needs rearming: {}", reason.0));
+                        }
+                    }
+                }
+                playback
+            })
+        });
         if !send_event(
             &events,
             Event {
@@ -1488,6 +1808,7 @@ fn run_worker(
                 status,
                 error,
                 request_complete: true,
+                audio_batch_complete,
                 save_complete,
                 open_complete,
                 project_replaced,
@@ -1746,6 +2067,89 @@ mod service_tests {
 
     struct TestDir(PathBuf);
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn musical_typing_preparation_is_history_free_stamped_and_disarmable() {
+        let service = Service::new(48_000, 16, 0).unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "typing".into(),
+            }))
+            .unwrap();
+        let added = next_event(&service);
+        let track = added.state.project.tracks()[0].id();
+        let device = added
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let target = hex_engine::live_input::TypingTarget {
+            project_generation: 0,
+            project_revision: added.state.revision,
+            track,
+            device,
+        };
+        service
+            .submit(Request::ArmMusicalTyping {
+                target,
+                epoch: 1,
+                bridge_bytes: 31_088,
+            })
+            .unwrap();
+        let armed = next_event(&service);
+        assert!(armed.error.is_none(), "{:?}", armed.error);
+        assert_eq!(armed.state.project, added.state.project);
+        assert_eq!(armed.state.revision, added.state.revision);
+        assert_eq!(armed.state.can_undo, added.state.can_undo);
+        let mut playback = armed.playback.unwrap();
+        assert!(!playback.playing(), "arming must never implicitly play");
+        let admission = playback.typing_admission().unwrap();
+        assert!(admission.armed);
+        assert_eq!(admission.owner, target.owner().unwrap());
+        assert_eq!(admission.allowed_keys, 0xfff);
+        service
+            .submit(Request::ArmMusicalTyping {
+                target: hex_engine::live_input::TypingTarget {
+                    project_generation: 1,
+                    ..target
+                },
+                epoch: 2,
+                bridge_bytes: 31_088,
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_deref().unwrap().contains("target changed"));
+        assert!(
+            refused.playback.is_none(),
+            "stale request must not replace existing audio ownership"
+        );
+        assert_eq!(refused.state.project, added.state.project);
+        service
+            .submit(Request::DisarmMusicalTyping {
+                project_generation: 0,
+                epoch: 1,
+            })
+            .unwrap();
+        let disarmed = next_event(&service);
+        assert!(disarmed.error.is_none());
+        assert_eq!(disarmed.state.revision, added.state.revision);
+        assert_eq!(disarmed.state.project, added.state.project);
+        let mut next = disarmed.playback.unwrap();
+        next.try_inherit_runtime_from(&mut playback).unwrap();
+        let admission = next.typing_admission().unwrap();
+        assert!(!admission.armed);
+        assert_eq!(admission.cut_through_epoch, 1);
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        assert!(
+            undone.state.project.track(track).is_none(),
+            "arm/disarm must not add undo steps"
+        );
+    }
 
     #[test]
     fn service_seek_worker_returns_exact_prepared_revision_and_destination() {

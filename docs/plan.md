@@ -3810,6 +3810,17 @@ bus history is preflighted before handoff, and removal uses the bounded release
 policy in [return tracks](return-tracks.md). General latency compensation and
 native pinned rows/interactions remain separate gates; UI2178 owns the latter.
 
+### canonical output capture prerequisite — pulse2346 / pr159
+
+The finite [capture contract](output-capture.md) is implemented independently of
+active export30 / PR152: control-built runtime/revision/generation-bound plans,
+borrowed stereo buffers, one canonical Arrangement render, original-ID retained
+tails and whole-block output validity. Interactive admission requires an
+Arrangement-only cut without loop/pending Session scheduling; linear export
+keeps its inheritance refusal. Required final-source local CI and native/manual
+acceptance remain separate gates; this implementation does not finish export30.
+Pulse cannot link the prerequisite while30's workflow is active; no bypass.
+
 
 ## Pulse25 — finite project recovery contract, 11 October2026
 

@@ -411,7 +411,7 @@ pub(crate) fn compile_instrument_track(
             span.iteration,
         )
     });
-    validate_density(&spans, mutable_limits)?;
+    let max_active_voices = validate_density_peak(&spans, mutable_limits)?;
     let mut nodes = Vec::with_capacity(spans.len());
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
     Ok(Some(crate::InstrumentTrack {
@@ -422,6 +422,7 @@ pub(crate) fn compile_instrument_track(
         bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
         shared_contexts,
         mutable,
+        max_active_voices,
     }))
 }
 
@@ -443,10 +444,17 @@ impl DensitySpan for CompiledNoteSpan {
     }
 }
 
+#[cfg(test)]
 fn validate_density<S: DensitySpan>(
     spans: &[S],
     mutable_limits: Option<MutableInstrumentLimits>,
 ) -> Result<(), Invalid> {
+    validate_density_peak(spans, mutable_limits).map(|_| ())
+}
+fn validate_density_peak<S: DensitySpan>(
+    spans: &[S],
+    mutable_limits: Option<MutableInstrumentLimits>,
+) -> Result<usize, Invalid> {
     let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
     validate_onset_density(&onset_frames)?;
 
@@ -457,9 +465,11 @@ fn validate_density<S: DensitySpan>(
     }
     edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
     let mut active = 0_usize;
+    let mut peak = 0;
     for (_, is_start) in edges {
         if is_start {
             active += 1;
+            peak = peak.max(active);
             let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
                 limits
                     .max_active_occurrences
@@ -485,7 +495,7 @@ fn validate_density<S: DensitySpan>(
                 .min(crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY),
         )?;
     }
-    Ok(())
+    Ok(peak)
 }
 
 fn validate_event_density<S: DensitySpan>(spans: &[S], max_events: usize) -> Result<(), Invalid> {

@@ -526,6 +526,36 @@ fn audible_operator_ancestors(levels: &[f64; OPERATORS], routing: &Routing) -> [
     audible
 }
 
+fn sample_fm4_live(
+    payload: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age: u64,
+    gate: hex_lattice::NoteGate,
+    release: u64,
+) -> StereoFrame {
+    match gate {
+        hex_lattice::NoteGate::Released { at_age_frames } => {
+            sample_fm4_note(payload, age, at_age_frames, release)
+        }
+        hex_lattice::NoteGate::Held => {
+            let Some(table) = crate::shared_sine_table_if_prepared() else {
+                return [0.0; 2];
+            };
+            let envelope = PreparedEnvelope {
+                attack: payload[36],
+                decay: payload[37],
+                sustain: f64::from_bits(payload[38]),
+                release: payload[39],
+            };
+            sample_fm4_at_amplitude(
+                payload,
+                age,
+                table,
+                envelope.held_level(age) * f64::from_bits(payload[40]),
+            )
+        }
+    }
+}
+
 fn sample_fm4_note(
     payload: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     age_frames: u64,
@@ -542,6 +572,15 @@ fn sample_fm4_note(
         release: payload[39],
     };
     let amplitude = envelope.level(age_frames, gate_frames) * f64::from_bits(payload[40]);
+    sample_fm4_at_amplitude(payload, age_frames, table, amplitude)
+}
+
+fn sample_fm4_at_amplitude(
+    payload: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age_frames: u64,
+    table: &SineTable,
+    amplitude: f64,
+) -> StereoFrame {
     if amplitude == 0.0 {
         return [0.0; 2];
     }

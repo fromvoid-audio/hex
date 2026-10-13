@@ -1,3 +1,7 @@
+pub(crate) mod gain_envelopes;
+pub(crate) mod provenance;
+pub(crate) mod return_feeds;
+pub(crate) mod routing;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -1223,6 +1227,8 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1254,6 +1260,8 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1285,6 +1293,8 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1323,6 +1333,8 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1361,6 +1373,8 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1399,6 +1413,8 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1437,6 +1453,8 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1493,6 +1511,8 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1892,6 +1912,7 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
                     id: track.id,
                     name: track.name,
                     gain: track.gain,
@@ -1914,6 +1935,8 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc
@@ -1947,6 +1970,18 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 21 {
+            return gain_envelopes::DocumentV21::decode(bytes);
+        }
+        if header.version == 20 {
+            return return_feeds::DocumentV20::decode(bytes);
+        }
+        if header.version == 19 {
+            return routing::DocumentV19::decode(bytes);
+        }
+        if header.version == 18 {
+            return provenance::DocumentV18::decode(bytes);
         }
         if header.version == 17 {
             return DocumentV17::decode(bytes);
@@ -2138,6 +2173,7 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            gain_envelope: Vec::new(),
                             id: t.id,
                             name: t.name,
                             gain: t.gain,
@@ -2153,6 +2189,8 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    return_feeds: Vec::new(),
+                    import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
                     assets: doc
@@ -2264,6 +2302,7 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
                     id: t.id,
                     name: t.name,
                     gain: t.gain,
@@ -2279,6 +2318,8 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc
@@ -2538,6 +2579,7 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2559,6 +2601,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2580,6 +2623,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2625,6 +2669,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2670,6 +2715,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,

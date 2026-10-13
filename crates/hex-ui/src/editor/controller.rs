@@ -45,6 +45,8 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.poll_musical_typing();
+        visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -75,6 +77,12 @@ impl EditorView {
                         replace_error(&mut self.error, "an export is already pending");
                 }
                 Err(SubmitError::Closed(request)) => {
+                    if matches!(&request, Request::ImportAudioBatch { .. }) {
+                        if let Some(control) = self.audio_batch.take() {
+                            control.request_cancel();
+                        }
+                        self.audio_batch_progress = None;
+                    }
                     if matches!(request, Request::Export(_)) {
                         self.export_pending = false;
                     }
@@ -82,7 +90,7 @@ impl EditorView {
                         self.saving_project = false;
                     }
                     visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if matches!(request, Request::Open(_) | Request::OpenWith { .. }) {
+                    if request.is_project_open() {
                         self.opening_project = false;
                     }
                     clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
@@ -299,25 +307,20 @@ impl EditorView {
             rejected_revision.map(|(revision, _)| revision),
         );
         if let Some(candidate) = audible {
-            let preview_source_is_valid =
-                candidate.device_preview_identity.is_none_or(|identity| {
-                    preview_source_is_current(
-                        identity,
-                        candidate.project_generation,
-                        candidate.state.revision,
-                        self.project_generation,
-                        self.state.as_ref().map(|state| state.revision),
-                        active_gesture,
-                    )
-                });
-            if preview_source_is_valid {
+            let source = applied_candidate_source(
+                &candidate,
+                self.project_generation,
+                self.state.as_ref().map(|state| state.revision),
+                active_gesture,
+            );
+            if source == AppliedCandidateSource::Current {
                 if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
                 }
                 self.audible_playback = Some(candidate);
-            } else {
+            } else if source == AppliedCandidateSource::InvalidPreview {
                 visible_change |= replace_error(
                     &mut self.error,
                     "device preview source did not match its prepared revision",
@@ -632,6 +635,18 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if event
+            .audio_batch_complete
+            .as_ref()
+            .is_some_and(|completed| {
+                self.audio_batch
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, completed))
+            })
+        {
+            self.audio_batch = None;
+            self.audio_batch_progress = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -713,8 +728,15 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.gain_lane.reconcile(
+            self.project_generation,
+            revision,
+            &event.state.project,
+            event.project_replaced,
+        );
         self.state = Some(event.state);
         if event.project_replaced {
+            self.cut_musical_typing(hex_engine::typing_protocol::CutReason::Reset);
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
             self.midi_hit_cycle = None;
@@ -1132,6 +1154,27 @@ impl EditorView {
             });
         }
         #[cfg(test)]
+        if let Request::ImportAudioBatch {
+            paths, destination, ..
+        } = &request
+        {
+            if let [path] = paths.as_slice() {
+                match destination {
+                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                        self.last_enqueued_import_to_track =
+                            Some((path.clone(), *track, *start, true))
+                    }
+                    hex_session::import_batch::AudioBatchDestination::NewTracks {
+                        before_track,
+                        start,
+                    } => {
+                        self.last_enqueued_import_to_new_track =
+                            Some((path.clone(), *before_track, *start))
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));
@@ -1153,13 +1196,19 @@ impl EditorView {
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
-        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
-            && !allows_non_open_request(
-                self.close_prompt_open,
-                self.opening_project,
-                duplicate_continuation,
-            )
-        {
+        if request.is_project_open() {
+            if let Some(control) = &self.audio_batch {
+                control.request_cancel();
+            }
+        }
+        if !matches!(
+            &request,
+            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
+        ) && !allows_non_open_request(
+            self.close_prompt_open,
+            self.opening_project,
+            duplicate_continuation,
+        ) {
             self.error = Some(if self.opening_project {
                 "opening project · editing is paused".into()
             } else {
@@ -1167,7 +1216,10 @@ impl EditorView {
             });
             return false;
         }
-        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. }) {
+        if !matches!(
+            &request,
+            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
+        ) {
             self.pending_open_path = None;
         }
         if matches!(
@@ -1176,14 +1228,18 @@ impl EditorView {
                 | Request::DropNativeDevice { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::ImportLiveSet { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::GainLane { .. }
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
@@ -1197,11 +1253,14 @@ impl EditorView {
         if matches!(
             &request,
             Request::Open(_)
+                | Request::ImportLiveSet { .. }
                 | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
         ) && self.device_gesture.snapshot().is_some()
         {
@@ -1689,6 +1748,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.cut_musical_typing(hex_engine::typing_protocol::CutReason::Stop);
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
@@ -1798,6 +1858,44 @@ fn preview_source_is_current(
         && identity.canonical_revision == candidate_revision
         && Some(identity.canonical_revision) == current_revision
         && active_gesture == Some((identity.key, identity.sequence))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppliedCandidateSource {
+    Current,
+    SupersededPreview,
+    InvalidPreview,
+}
+
+fn applied_candidate_source(
+    candidate: &PlaybackCandidate,
+    generation: u64,
+    revision: Option<u64>,
+    active: Option<(GestureKey, u64)>,
+) -> AppliedCandidateSource {
+    let Some(identity) = candidate.device_preview_identity else {
+        return AppliedCandidateSource::Current;
+    };
+    // A terminal gesture or newer owner/sequence can overtake callback receipt.
+    // Keep such notifications out of current state and error reporting.
+    if identity.project_generation != generation
+        || Some(identity.canonical_revision) != revision
+        || active != Some((identity.key, identity.sequence))
+    {
+        return AppliedCandidateSource::SupersededPreview;
+    }
+    if preview_source_is_current(
+        identity,
+        candidate.project_generation,
+        candidate.state.revision,
+        generation,
+        revision,
+        active,
+    ) {
+        AppliedCandidateSource::Current
+    } else {
+        AppliedCandidateSource::InvalidPreview
+    }
 }
 
 fn pending_playback_for_state(
@@ -1947,6 +2045,60 @@ mod tests {
     use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
     use hex_project::{ClipId, Command, Created, Editor, Project};
     use hex_session::device_gesture::GestureKey;
+
+    #[test]
+    fn delayed_preview_application_distinguishes_superseded_and_invalid_current_sources() {
+        use super::{AppliedCandidateSource, applied_candidate_source};
+        let preview = preview_candidate(17, 40, 3);
+        let identity = preview.device_preview_identity.unwrap();
+        let active = Some((identity.key, identity.sequence));
+        let mut queued = VecDeque::from([candidate(16, 40, 3), preview.clone()]);
+        let applied = promote_playback_candidates(&mut queued, 17, None).unwrap();
+        assert_eq!(
+            applied_candidate_source(&applied, 3, Some(40), active),
+            AppliedCandidateSource::Current
+        );
+        for (generation, revision, active) in [
+            (3, Some(40), None),   // cancel/commit terminal retired the gesture
+            (3, Some(41), active), // canonical commit overtook callback receipt
+            (4, Some(40), active), // project/owner replaced
+            (3, Some(40), Some((identity.key, identity.sequence + 1))),
+            (
+                3,
+                Some(40),
+                Some((
+                    GestureKey {
+                        generation: 3,
+                        token: identity.key.token + 1,
+                    },
+                    identity.sequence,
+                )),
+            ),
+        ] {
+            assert_eq!(
+                applied_candidate_source(&applied, generation, revision, active),
+                AppliedCandidateSource::SupersededPreview
+            );
+        }
+        let mut wrong_generation = preview.clone();
+        wrong_generation.project_generation = 2;
+        assert_eq!(
+            applied_candidate_source(&wrong_generation, 3, Some(40), active),
+            AppliedCandidateSource::InvalidPreview
+        );
+        let mut wrong_revision = preview_candidate(18, 39, 3);
+        wrong_revision.device_preview_identity = Some(identity);
+        assert_eq!(
+            applied_candidate_source(&wrong_revision, 3, Some(40), active),
+            AppliedCandidateSource::InvalidPreview
+        );
+        let mut rejected = VecDeque::from([preview]);
+        assert!(promote_playback_candidates(&mut rejected, 17, Some(17)).is_none());
+        assert_eq!(
+            applied_candidate_source(&candidate(18, 40, 3), 3, Some(40), None),
+            AppliedCandidateSource::Current
+        );
+    }
     use hex_session::service::{DevicePreviewIdentity, Request, ViewState};
     use std::{collections::VecDeque, sync::Arc};
 
@@ -2199,6 +2351,7 @@ mod tests {
                 project,
                 waveforms: Default::default(),
                 midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 0,
                 can_undo: false,
                 can_redo: false,

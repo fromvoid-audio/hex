@@ -1,3 +1,4 @@
+use crate::{AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint};
 use crate::{
     endpoint::{PageBuffer, PageRequest},
     types::{
@@ -59,12 +60,21 @@ pub(crate) fn run_worker(
     };
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
-        |(sources, footprint)| verified_membership(sources, *footprint),
+        |(sources, footprint, allocations, construction)| {
+            let mut allocations = *allocations;
+            allocations.free_page_handles =
+                AllocationCapacity::of::<Box<PageBuffer>>(free_pages.capacity());
+            allocations.held_page_handles =
+                AllocationCapacity::of::<Box<PageBuffer>>(held_pages.capacity());
+            allocations.held_failures =
+                AllocationCapacity::of::<StreamFailure>(held_failures.capacity());
+            verified_membership(sources, *footprint, allocations, *construction)
+        },
     );
     if catalog_result.send(catalog_message).is_err() {
         return free_pages;
     }
-    let (mut sources, _footprint) = match catalog {
+    let (mut sources, _, _, _) = match catalog {
         Ok(sources) => sources,
         Err(_) => return free_pages,
     };
@@ -150,6 +160,8 @@ pub(crate) fn run_worker(
 fn verified_membership(
     sources: &[Source],
     footprint: CatalogFootprint,
+    mut allocations: CatalogAllocationFootprint,
+    construction: ConstructionAllocationFootprint,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
     members
@@ -161,8 +173,16 @@ fn verified_membership(
             .map(|source| source.definition.metadata.clone()),
     );
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
+    allocations.membership_slots =
+        AllocationCapacity::of::<StreamedSourceMetadata>(members.capacity());
+    allocations.catalog_object_bytes = std::mem::size_of::<VerifiedCatalog>();
+    allocations
+        .bytes()
+        .ok_or(StreamFailureKind::CapacityExhausted)?;
     Ok(VerifiedCatalog {
         footprint,
+        allocations,
+        construction,
         sources: members,
     })
 }
@@ -172,7 +192,15 @@ fn build_catalog(
     mut definitions: Vec<SourceDefinition>,
     source_scratch: &mut Vec<[f32; 2]>,
     stop: &AtomicBool,
-) -> Result<(Vec<Source>, CatalogFootprint), StreamFailureKind> {
+) -> Result<
+    (
+        Vec<Source>,
+        CatalogFootprint,
+        CatalogAllocationFootprint,
+        ConstructionAllocationFootprint,
+    ),
+    StreamFailureKind,
+> {
     if definitions.len() > config.max_sources {
         return Err(StreamFailureKind::CapacityExhausted);
     }
@@ -183,8 +211,15 @@ fn build_catalog(
     if verified_reader_scratch_bytes > config.max_reader_scratch_bytes {
         return Err(StreamFailureKind::CapacityExhausted);
     }
+    let definition_slots = AllocationCapacity::of::<SourceDefinition>(definitions.capacity());
+    let mut definition_path_bytes = 0_usize;
+    let mut reader_path_bytes = 0_usize;
+    let mut kernel_object_bytes = 0_usize;
     let mut catalog_path_bytes = 0_usize;
     for definition in &definitions {
+        definition_path_bytes = definition_path_bytes
+            .checked_add(definition.path.capacity())
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
         catalog_path_bytes = catalog_path_bytes
             .checked_add(definition.path.as_os_str().len())
             .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -221,6 +256,9 @@ fn build_catalog(
                 stop.load(Ordering::Acquire)
             })
             .map_err(map_import_error)?;
+        reader_path_bytes = reader_path_bytes
+            .checked_add(reader.path_capacity_bytes())
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
         let reader_manifest = reader.page_manifest_bytes();
         manifest_bytes = manifest_bytes
             .checked_add(reader_manifest)
@@ -256,6 +294,9 @@ fn build_catalog(
             let kernel =
                 ResampleKernel::new(reader.sample_rate(), definition.metadata.project_rate())
                     .map_err(map_import_error)?;
+            kernel_object_bytes = kernel_object_bytes
+                .checked_add(kernel.shared_object_bytes())
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
             kernel_bytes = kernel_bytes
                 .checked_add(kernel.table_payload_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -305,6 +346,7 @@ fn build_catalog(
         .checked_mul(std::mem::size_of::<hex_engine::Frame>())
         .ok_or(StreamFailureKind::CapacityExhausted)?;
     let source_count = sources.len();
+    let source_slots = AllocationCapacity::of::<Source>(sources.capacity());
     Ok((
         sources,
         CatalogFootprint {
@@ -315,6 +357,23 @@ fn build_catalog(
             kernel_peak_bound_bytes: kernel_budget_reserved,
             verified_reader_scratch_bytes,
             source_scratch_bytes: scratch_bytes,
+        },
+        CatalogAllocationFootprint {
+            source_slots,
+            definition_path_bytes,
+            reader_path_bytes,
+            manifest_bytes,
+            kernel_object_bytes,
+            kernel_weight_bytes: kernel_bytes,
+            source_scratch: AllocationCapacity::of::<hex_engine::Frame>(source_scratch.capacity()),
+            ..CatalogAllocationFootprint::default()
+        },
+        ConstructionAllocationFootprint {
+            definition_slots,
+            kernel_cache_slots: AllocationCapacity::of::<(u32, u32, ResampleKernel)>(
+                kernels.capacity(),
+            ),
+            kernel_table_peak_bound_bytes: kernel_budget_reserved,
         },
     ))
 }

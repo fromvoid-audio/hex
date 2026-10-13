@@ -59,6 +59,7 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("operator {track_index:03}"),
             gain: 1.0,
@@ -88,6 +89,8 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        import_provenance: None,
         sample_rate: SAMPLE_RATE,
         next_id,
         assets: Vec::new(),

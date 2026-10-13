@@ -246,3 +246,7 @@ for native acceptance and finite MIDI limitations.
 
 Session logging is injected by desktop through `hex-diagnostics`; only that
 crate's worker owns log file I/O. See [session diagnostics](../../docs/diagnostics.md).
+
+The file menu dispatches bounded Live-set import to `hex-session`; compatibility
+consent is explicit, unsaved work must be saved first, and failed candidates
+never replace the current project. Format parsing belongs to `hex-live-set`.

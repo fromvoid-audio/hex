@@ -1393,6 +1393,13 @@ fn render_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let mut header_actions = device_actions(track, effects, index, cx);
+    if device_view.is_ok() {
+        header_actions = header_actions.child(super::device_preset::actions(
+            device_id,
+            NativeDeviceClass::Effect,
+            cx,
+        ));
+    }
     header_actions = header_actions.child(device_drag_grip(
         device,
         NativeDeviceClass::Effect,
@@ -1872,7 +1879,7 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
-    let header_actions = instrument_actions(track, device, cx).child(device_drag_grip(
+    let mut header_actions = instrument_actions(track, device, cx).child(device_drag_grip(
         device,
         NativeDeviceClass::Instrument,
         view.project_generation,
@@ -1880,6 +1887,13 @@ fn render_instrument(
         is_operator,
         cx,
     ));
+    if device_view.is_ok() {
+        header_actions = header_actions.child(super::device_preset::actions(
+            device_id,
+            NativeDeviceClass::Instrument,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -2221,7 +2235,7 @@ fn action_button(
     action_button_sized(id, icon, tooltip, color, 14.0)
 }
 
-fn action_button_sized(
+pub(super) fn action_button_sized(
     id: String,
     icon: &'static str,
     tooltip: &'static str,
