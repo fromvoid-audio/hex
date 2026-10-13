@@ -24,9 +24,9 @@ pub(super) fn render_chain(
         .collect();
     view.device_panel.chain_window.prepare(&geometry);
     let mut chain = chain_window::rail(view, cx)
+        .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)
         .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
-        .id("device-chain-scroll")
         .debug_selector(|| "device-chain-scroll".into())
         .flex_1()
         .min_h_0()

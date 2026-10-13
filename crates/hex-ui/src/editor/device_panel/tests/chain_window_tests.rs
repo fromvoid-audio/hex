@@ -168,7 +168,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
             .debug_bounds(selector("effect-device", *ids.last().unwrap()))
             .is_some()
     );
-    if !is_return {
+    {
         editor.update(cx, |view, cx| {
             view.active_native_device_drag = Some(drag::NativeDeviceDrag {
                 project_generation: view.project_generation,
@@ -178,11 +178,17 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
                     class: NativeDeviceClass::Effect,
                     type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
                 },
-                destination: std::rc::Rc::new(std::cell::Cell::new(Some(
+                destination: std::rc::Rc::new(std::cell::Cell::new((!is_return).then_some(
                     drag::NativeDeviceDropTarget {
                         track,
                         before: Some(ids[8]),
                         replace: None,
+                    },
+                ))),
+                return_destination: std::rc::Rc::new(std::cell::Cell::new(return_id.map(
+                    |owner| drag::ReturnDeviceDropTarget {
+                        owner,
+                        before: Some(ids[8]),
                     },
                 ))),
             });
@@ -191,12 +197,26 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
         visual.run_until_parked();
         assert!(
             visual
-                .debug_bounds(selector("device-drop-card", first))
+                .debug_bounds(selector(
+                    if is_return {
+                        "return-device-drop-card"
+                    } else {
+                        "device-drop-card"
+                    },
+                    first
+                ))
                 .is_some()
         );
         assert!(
             visual
-                .debug_bounds(selector("device-drop-card", ids[8]))
+                .debug_bounds(selector(
+                    if is_return {
+                        "return-device-drop-card"
+                    } else {
+                        "device-drop-card"
+                    },
+                    ids[8]
+                ))
                 .is_some()
         );
         editor.update(cx, |view, cx| {
