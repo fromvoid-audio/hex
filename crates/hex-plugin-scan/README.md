@@ -73,3 +73,68 @@ protocol/identity tests still run. The final exact-source validation must supply
 that receipt and retain build plus test provenance. Linux fixture enumeration,
 unload and fault containment do not prove production plugin compatibility,
 Mac native packaging/signing, processing/state/editor support or physical audio.
+
+## controlled offline component stage
+
+`hex-vst3-offline <controlled-offline.json> <process-fixture-name> <request.json>
+[deadline-ms]` owns one fresh native child for a bounded non-realtime attempt.
+Only separately built ORIGINAL processing fixtures are accepted. The existing
+factory-only scanner/CLI is preserved. No engine, audio, service, editor or project
+host integration exists. Installed/third-party modules and realtime processing
+remain refused; a same-user child is not a security sandbox.
+
+The pinned SDK interfaces now exercise a component plus separate controller,
+bounded host messages/attributes and edit callbacks, bidirectional connections,
+state synchronization, negotiated stereo Main buses, Float32 `kOffline` setup,
+activation, a joined processing thread, deactivation, state capture, disconnection,
+termination and complete release/unload. Failed initialization releases without
+terminate. Processing errors unwind only successful lifecycle transitions. Missing
+or combined controllers, event/MIDI/sidechain buses, other sample formats/rates,
+nonzero latency/tails, restart requests and other context requirements are refused.
+
+Request JSON has version1, nonzero request ID, sample_rate44100/48000,
+start_frame (checked signed sample clock, fresh fixtures require zero), controller_value0..1, component_state
+and controller_state byte arrays, and blocks with left/right Float32 arrays and
+ordered unique `{offset,value}` points. Controller presentation values and callback
+reports are not processor application acknowledgements. Processor queues carry
+actual changes. The ORIGINAL effect maps normalized gain0..1 to multiplier0..2,
+default unity; it follows SDK linear queue segments including previous-block
+carry and adjacent points for jumps. Its opaque versioned component state retains
+gain/carry and processed-frame count; request start_frame must match continuation.
+Controller state retains a separate presentation preference and cannot change PCM.
+
+Limits belong to this controlled unit:32 blocks,1..1024 frames/block,8192 total
+frames;128 parameter descriptors;128 points/block and1024 total;64KiB per state;
+128 lifecycle/callback records;32 simultaneous messages and32 attributes/message,
+128-byte IDs,256 UTF16 code units/string,1KiB binary attributes. Input and output
+packets each fit1MiB, with diagnostics independently capped64KiB. These are not
+new production engine caps or proofs of arbitrary plugin memory/process bounds.
+Event capacity is zero. The single original connection message does not establish
+general recursive-message handling or arbitrary foreign-thread compatibility.
+
+Strict versioned binary IPC is duplex on a dedicated inherited socket; no pointer
+or foreign object escapes the child. Rust validates the whole request before
+spawn; native independently validates wire bounds before loading. Output is
+published only after successful processing, finite PCM, strict response validation,
+normal helper exit, native unload, complete reaping and unchanged request/module/
+helper/receipt identity. Any failed later block or teardown discards the whole
+attempt; this is not a hardware callback transaction or recording ACK. The existing
+owned deadline/cancel/process-group/reaper contract and cleanup-pending failure
+apply unchanged. Request/result packets are absent from persistent diagnostics.
+
+The offline receipt binds its native source/helper/modules to the original scanner
+receipt (which carries pinned SDK, compiler, all emitted headers, runtime closure
+and license notices). It is caller-owned build provenance, not plugin authenticity.
+The builder audits runtime libraries for ALL scanner/offline fixtures and helpers.
+No additional Rust dependency or native SDK implementation library is added.
+
+On this cloud executor, Rust UnixStream send needs the supported command-scoped
+network permission even for local child IPC; default-sandbox `EPERM` is retained
+as failed-attempt evidence. No proxy/network-policy change or credential copying
+is needed. Linux tests require `HEX_OFFLINE_FIXTURE_RECEIPT` and explicit
+`cargo test -p hex-plugin-scan --test offline_native --locked -- --ignored
+--test-threads=1`. Default workspace tests visibly ignore native fixture suites.
+Run the existing scanner native suite with `HEX_SCAN_FIXTURE_RECEIPT` as well.
+Native Mac packaging/signing, editors, realtime deadlines/queues, production
+containment, broad buses/events/automation, graph/state integration, listening and
+whole VST3 hosting remain unverified or unimplemented.

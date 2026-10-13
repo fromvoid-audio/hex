@@ -43,22 +43,34 @@ def main():
    closures[key]=sha(path)
  build('probe.cpp',output/'hex-vst3-probe',['-ldl'])
  build('launch_ignored.cpp',output/'launch-ignored',[])
+ build('offline.cpp',output/'hex-vst3-offline-helper',['-ldl','-pthread'])
+ offline_modules=[]
+ for mode,name in enumerate(['process','process-hang','process-crash','process-nonfinite','process-error','process-descendant','initialize-fail','controller-fail','connect-fail','state-fail','bus-refuse','restart','unload-hang']):
+  relative=Path(name+'.vst3')/'Contents'/'x86_64-linux'/(name+'.so');destination=output/relative;destination.parent.mkdir(parents=True,exist_ok=True)
+  build('processing_fixture.cpp',destination,['-shared','-fPIC','-Wl,--no-undefined','-DFIXTURE_MODE='+str(mode)])
+  offline_modules.append({'name':name,'binary':str(relative),'sha256':sha(destination)})
  modules=[]
  for name,mode in [('good',0),('hang',1),('crash',2),('descendant',3),('discardable',4)]:
   relative=Path(name+'.vst3')/'Contents'/'x86_64-linux'/(name+'.so');destination=output/relative;destination.parent.mkdir(parents=True,exist_ok=True)
   build('fixture.cpp',destination,['-shared','-fPIC','-Wl,--no-undefined','-DFIXTURE_MODE='+str(mode)])
   modules.append({'name':name,'binary':str(relative),'sha256':sha(destination)})
  runtime={}
- for line in subprocess.check_output(['ldd',str(output/'hex-vst3-probe')],text=True).splitlines():
-  match=re.search(r'(/[^ ]+)',line)
-  if match:
-   path=Path(match.group(1)).resolve();runtime[str(path)]=sha(path)
+ for artifact in [output/'hex-vst3-probe',output/'hex-vst3-offline-helper',output/'launch-ignored']+[output/m['binary'] for m in modules+offline_modules]:
+  for line in subprocess.check_output(['ldd',str(artifact)],text=True).splitlines():
+   match=re.search(r'(/[^ ]+)',line)
+   if match:
+    path=Path(match.group(1)).resolve();runtime[str(path)]=sha(path)
  runtime_notices={}
  for name in ['libstdc++6','libgcc-s1','libc6','linux-libc-dev']:
   path=Path('/usr/share/doc')/name/'copyright'
   runtime_notices[name]={'sha256':sha(path),'text':path.read_text()}
  receipt={'version':1,'scope':'original-controlled-sdk-fixtures','platform':'linux-x86_64','sdk':PINS['sdk'],'public_sdk':PINS['public.sdk'],'native_source_sha256':native_digest(),'helper_sha256':sha(output/'hex-vst3-probe'),'launcher_sha256':sha(output/'launch-ignored'),'modules':modules,'toolchain_sha256':sha(Path(shutil.which('c++')).resolve()),'runtime_closure':runtime,'runtime_notices':runtime_notices,'compiler':subprocess.check_output(['c++','--version'],text=True).splitlines()[0],'build_closure':closures,'licenses':licenses}
  receipt_path=output/'controlled-fixtures.json';receipt_path.write_text(json.dumps(receipt,indent=2)+'\n')
+ h=hashlib.sha256()
+ for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp']:
+  h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
+ offline={'version':1,'scope':'original-controlled-offline-fixtures','scanner_receipt_sha256':sha(receipt_path),'source_sha256':h.hexdigest(),'helper_sha256':sha(output/'hex-vst3-offline-helper'),'modules':offline_modules}
+ (output/'controlled-offline.json').write_text(json.dumps(offline,indent=2)+'\n')
  (output/'build-commands.json').write_text(json.dumps(commands,indent=2)+'\n')
  print('Controlled fixture receipt:',receipt_path);print('Receipt SHA256:',sha(receipt_path))
 if __name__=='__main__':main()

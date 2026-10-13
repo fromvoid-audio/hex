@@ -88,8 +88,13 @@ fn main() {
         binary_identity(&helper, &receipt.helper_sha256)?;
         #[cfg(target_os = "linux")]
         {
-            let (output, mut pending) =
-                supervisor::run(&helper, &module_path, 1, Duration::from_millis(deadline))?;
+            let (output, mut pending) = supervisor::run(
+                &helper,
+                &module_path,
+                1,
+                Duration::from_millis(deadline),
+                &[],
+            )?;
             if let Some(lease) = pending.as_mut() {
                 report.output = Some(output);
                 report.catalog.record(Err(

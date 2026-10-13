@@ -1,4 +1,5 @@
 //! Controlled discovery records only; no plugin loading or audio-host API.
+pub mod offline_protocol;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{

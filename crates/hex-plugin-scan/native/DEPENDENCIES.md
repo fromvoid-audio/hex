@@ -43,3 +43,14 @@ installed-directory scanning stay refused pending OS containment review. A
 caller-owned controlled build receipt is the trust root, not cryptographic proof
 that hostile actors cannot forge files or escape groups. The finite Linux tests
 prove the original controlled fixtures only.
+
+The ORIGINAL offline component helper adds only pinned SDK interface headers:
+IComponent/IAudioProcessor/IEditController/IConnectionPoint, IHostApplication/
+IComponentHandler/IMessage/IAttributeList, IBStream/IParameterChanges and
+ProcessContext requirements. All original implementations remain separately built
+C++17/O2, with no SDK hosting source, GUI, callback Rust wrapper, audio backend or
+new package. A child control thread owns setup/state/teardown; one joined thread
+owns processing. Host/interface/state/queue references stay inside this child.
+All artifact runtime closures now enter the retained union audit. The existing
+safe Rust supervisor adds bounded duplex writes; its process-global subreaper
+still runs ONLY in the standalone supervisor, never embedded in primary Hex.

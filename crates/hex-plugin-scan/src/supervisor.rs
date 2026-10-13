@@ -2,7 +2,7 @@
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions, WaitOptions};
 use serde::Serialize;
 use std::{
-    io::Read,
+    io::{Read, Write},
     os::{
         fd::OwnedFd,
         unix::{net::UnixStream, process::CommandExt},
@@ -111,7 +111,11 @@ pub fn run(
     module: &std::path::Path,
     request: u64,
     deadline: Duration,
+    input: &[u8],
 ) -> Result<(Output, Option<Pending>), String> {
+    if input.len() > hex_plugin_scan::MAX_PACKET + 12 {
+        return Err("request capacity refused".into());
+    }
     if deadline.is_zero() || deadline > Duration::from_secs(30) {
         return Err("deadline outside controlled bound".into());
     }
@@ -155,11 +159,30 @@ pub fn run(
         "spawn never returns init PID"
     );
     eprintln!("scanner: controlled helper started");
+    let mut sent = 0;
+    let mut write_closed = input.is_empty();
     let mut packet = Vec::new();
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut cause = None;
     loop {
+        if sent < input.len() {
+            let end = (sent + 16384).min(input.len());
+            match protocol.write(&input[sent..end]) {
+                Ok(0) => cause = Some("request write closed".into()),
+                Ok(n) => sent += n,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => cause = Some(format!("request write failed: {e}")),
+            }
+        }
+        if sent == input.len() && !write_closed {
+            if protocol.shutdown(std::net::Shutdown::Write).is_err() {
+                cause = Some("request close failed".into());
+            }
+            write_closed = true;
+        }
         for result in [
             drain(&mut protocol, &mut packet, hex_plugin_scan::MAX_PACKET + 12),
             drain(&mut stdout, &mut out, 64 * 1024),
@@ -185,6 +208,9 @@ pub fn run(
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         ) {
             Ok(Some(status)) => {
+                if sent != input.len() {
+                    cause = Some("incomplete request refused".into());
+                }
                 if !status.exited() || status.exit_status() != Some(0) {
                     cause = Some("native helper failed or crashed".into());
                 }
