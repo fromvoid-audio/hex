@@ -11,6 +11,13 @@ pub mod saturator;
 pub mod utility;
 pub mod utility_filters;
 
+// Private mathematical precursor; no native registration or production API.
+#[cfg(test)]
+mod signed_envelope;
+#[cfg(test)]
+#[path = "signed_envelope/tests.rs"]
+mod signed_envelope_tests;
+
 use hex_lattice::{
     NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
 };
