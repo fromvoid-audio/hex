@@ -124,6 +124,7 @@ fn parameter_control_matches_identity(
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
     generation: u64,
+    selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
@@ -377,6 +378,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
             let _ = audio.control.processor_audition.cancel_immediately();
         }
         view.device_panel.owner = None;
+        view.device_panel.selected_device = None;
         view.device_panel.generation = view.project_generation;
     }
     let Some(state) = view.state.as_ref().cloned() else {
@@ -473,6 +475,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.owner = desired_owner;
+        view.device_panel.selected_device = None;
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
@@ -632,6 +635,10 @@ fn render_track(
         })
         .collect();
     let alive: HashSet<_> = identities.keys().copied().collect();
+    view.device_panel.selected_device = view
+        .device_panel
+        .selected_device
+        .filter(|id| alive.contains(id));
     clear_removed_spectrum_target(
         view,
         hex_engine::ProcessorChainOwner::Track(track_id.value()),
@@ -1295,6 +1302,20 @@ impl gpui::Render for NativeDeviceDragGhost {
     }
 }
 
+// Capture selection before nested controls consume their pointer event. Selection
+// is local view state and never finalizes or dispatches a parameter edit.
+fn device_selection_listener(
+    device: DeviceId,
+    cx: &Context<EditorView>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+    cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
+        if event.button == MouseButton::Left && view.device_panel.selected_device != Some(device) {
+            view.device_panel.selected_device = Some(device);
+            cx.notify();
+        }
+    })
+}
+
 fn render_effect(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -1304,6 +1325,7 @@ fn render_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
+    let selected = view.device_panel.selected_device == Some(device_id);
     let device_view = view
         .device_panel
         .views
@@ -1394,14 +1416,14 @@ fn render_effect(
             ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    control_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
             } else {
                 device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    control_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
@@ -1442,9 +1464,19 @@ fn render_effect(
                     .unwrap_or("unknown device"),
             );
             if compact {
-                compact_device_frame(title, control_style(), header_actions, body)
+                compact_device_frame(
+                    title,
+                    control_style().with_device_selection(selected),
+                    header_actions,
+                    body,
+                )
             } else {
-                device_frame(title, control_style(), header_actions, body)
+                device_frame(
+                    title,
+                    control_style().with_device_selection(selected),
+                    header_actions,
+                    body,
+                )
             }
         }
     };
@@ -1472,6 +1504,7 @@ fn render_effect(
         .w(px(frame_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .capture_any_mouse_down(device_selection_listener(device_id, cx))
         .child(rendered)
 }
 
@@ -1798,6 +1831,7 @@ fn render_instrument(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
+    let selected = view.device_panel.selected_device == Some(device_id);
     let cached = view
         .device_panel
         .views
@@ -1825,7 +1859,7 @@ fn render_instrument(
                 let body = operator_panel::render_body(view, cx, device_id, device_view);
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
-                    operator_panel::frame_style(),
+                    operator_panel::frame_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
@@ -1861,7 +1895,7 @@ fn render_instrument(
                 }
                 device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    control_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
@@ -1891,7 +1925,7 @@ fn render_instrument(
                         .as_str()
                         .unwrap_or("unknown instrument"),
                 ),
-                control_style(),
+                control_style().with_device_selection(selected),
                 header_actions,
                 body,
             )
@@ -1917,6 +1951,7 @@ fn render_instrument(
         .w(px(frame_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .capture_any_mouse_down(device_selection_listener(device_id, cx))
         .child(rendered)
 }
 
