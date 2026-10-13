@@ -2252,6 +2252,17 @@ signature validation participates in activation/recovery rollback. A real macOS
 linker/codesign regression reproduces the prior failure and checks resource/code
 tampering. Full exact-source CI, actual stable optimized delivery and combined
 owner acceptance remain pending; prior application untouched.
+
+
+13 October 2026 — Pulse2450 / PR175: journal slot ownership now explicitly
+releases acquired locks on success/error and validates retained-description
+release with deterministic source regressions. Unlock errors retain actual
+unchanged/published/cleared checkpoint disposition and the original error;
+recreated newer generations remain protected. Linux source verification and
+exact-head CI evidence belong to Pulse/PR175; native macOS lock/durability checks
+remain pending. Separate storage repair, no merge/deployment/Done in this batch.
+
+
 ## configuration comparator Linux guest evidence — pulse2219
 
 PR176 retains three optimized direct-binary runs of the unchanged original
