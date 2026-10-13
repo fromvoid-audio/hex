@@ -656,7 +656,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         unobserved.render(&mut unobserved_pcm).unwrap();
         assert_eq!(routed_main, unobserved_pcm);
         let gain = 2.0_f32;
-        for index in 0..512 {
+        for (index, main_frame) in routed_main.iter().enumerate() {
             let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
             let level = if index < 379 { 0.25 } else { 0.0 };
             let processed = audio.map(|sample| {
@@ -675,8 +675,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
                         < 1e-7
                 );
                 assert!(
-                    (routed_main[index][channel] - (track[channel] + returned[channel]) * 0.25)
-                        .abs()
+                    (main_frame[channel] - (track[channel] + returned[channel]) * 0.25).abs()
                         < 1e-7
                 );
             }
