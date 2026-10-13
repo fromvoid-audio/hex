@@ -21,7 +21,9 @@ pub use native_device_view::{
 };
 
 mod gain_envelope;
-pub use gain_envelope::{GainAutomationCapacity, MAX_PREPARED_GAIN_KNOTS};
+pub use gain_envelope::{
+    GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS,
+};
 mod return_feed_plan;
 mod streamed;
 pub use streamed::{
@@ -842,6 +844,18 @@ impl Track {
             self.source_mix = PreparedTrackMix::identity();
         }
         Ok(self)
+    }
+    /// Read-only prepared curve metadata. Empty means static fallback; this is not an applied-value acknowledgment.
+    pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
+        self.gain_envelope
+            .as_ref()
+            .map_or(&[], |envelope| envelope.knots())
+    }
+    /// Logical prepared gain at an Arrangement frame, independent of the runtime source owner.
+    pub fn prepared_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
     }
     pub(crate) fn has_gain_automation(&self) -> bool {
         self.gain_envelope.is_some()

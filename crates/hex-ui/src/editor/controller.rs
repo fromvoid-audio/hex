@@ -713,6 +713,12 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.gain_lane.reconcile(
+            self.project_generation,
+            revision,
+            &event.state.project,
+            event.project_replaced,
+        );
         self.state = Some(event.state);
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -1189,6 +1195,7 @@ impl EditorView {
                 | Request::ImportLiveSet { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::GainLane { .. }
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
@@ -2205,6 +2212,7 @@ mod tests {
                 project,
                 waveforms: Default::default(),
                 midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 0,
                 can_undo: false,
                 can_redo: false,

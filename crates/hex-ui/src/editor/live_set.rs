@@ -141,6 +141,9 @@ mod tests {
                     project: state.project.clone(),
                     waveforms: state.waveforms.clone(),
                     midi_preview: state.midi_preview.clone(),
+                    gain_preview: Ok(std::sync::Arc::new(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: state.timeline_frames,
                     can_undo: state.can_undo,
                     can_redo: state.can_redo,

@@ -493,3 +493,67 @@ fn detached_effect_tail_freezes_the_effective_transition_gain_and_current_gain_e
     next.render(&mut actual).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn readonly_preview_matches_compiled_pcm_law_at_tempo_cuts_and_coincident_frames() {
+    let mut f = fixture(60002);
+    f.editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ONE,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    lane(
+        &mut f,
+        vec![
+            point(BeatTime::from_raw(1), 0.1, GainInterpolation::Step),
+            point(BeatTime::from_raw(2), 0.25, GainInterpolation::Linear),
+            point(
+                BeatTime::from_quarters(2).unwrap(),
+                1.0,
+                GainInterpolation::Step,
+            ),
+        ],
+    );
+    let preview = hex_engine::GainAutomationPreview::prepare(f.editor.project()).unwrap();
+    let graph = compile::project(f.editor.project(), &media(&f)).unwrap();
+    let track = &graph.tracks()[0];
+    assert_eq!(
+        preview
+            .knots(f.track)
+            .iter()
+            .map(|k| (k.frame(), k.gain(), k.outgoing()))
+            .collect::<Vec<_>>(),
+        track
+            .gain_envelope_knots()
+            .iter()
+            .map(|k| (k.frame(), k.gain(), k.outgoing()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(preview.value_at(f.track, 0), Some(0.25));
+    let pcm = arrangement(&f);
+    for frame in [0, 12000, 24000, 48000, 60000] {
+        let gain = preview.value_at(f.track, frame).unwrap();
+        assert_eq!(pcm[frame as usize], [0.25 * gain, -0.5 * gain]);
+    }
+
+    for frame in [0, 12000, 24000, 48000, 60000] {
+        assert_eq!(
+            preview.value_at(f.track, frame),
+            track.prepared_gain_at(frame)
+        );
+    }
+    assert!((preview.value_at(f.track, 24000).unwrap() - 0.625).abs() < 1e-6);
+    assert_eq!(
+        f.editor.project().track(f.track).unwrap().gain_envelope()[0]
+            .beat
+            .raw(),
+        1
+    );
+    assert_eq!(
+        f.editor.project().track(f.track).unwrap().gain_envelope()[1]
+            .beat
+            .raw(),
+        2
+    );
+}

@@ -4,14 +4,62 @@ use hex_project::{GainInterpolation, GainPoint, Project, TempoMap};
 
 pub const MAX_PREPARED_GAIN_KNOTS: usize = 327_680;
 #[derive(Clone, Copy, Debug)]
-struct Knot {
+pub struct GainEnvelopeKnot {
     frame: u64,
     gain: f64,
     outgoing: GainInterpolation,
 }
+impl GainEnvelopeKnot {
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+    pub fn gain(&self) -> f64 {
+        self.gain
+    }
+    pub fn outgoing(&self) -> GainInterpolation {
+        self.outgoing
+    }
+}
+/// Control-side display cache, prepared by the same law as playback. Never an audio acknowledgment.
+#[derive(Clone, Debug, Default)]
+pub struct GainAutomationPreview {
+    tracks: Vec<(hex_project::TrackId, PreparedGainEnvelope)>,
+}
+impl GainAutomationPreview {
+    pub fn prepare(project: &Project) -> Result<Self, Invalid> {
+        validate_project(project)?;
+        let mut tracks = Vec::new();
+        tracks
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| Invalid("could not reserve gain preview"))?;
+        for track in project.tracks() {
+            if let Some(envelope) = PreparedGainEnvelope::prepare(
+                track.gain_envelope(),
+                project.tempo_map(),
+                PreparedTrackMix::new(1.0, 0.0, false)?,
+            )? {
+                tracks.push((track.id(), envelope));
+            }
+        }
+        Ok(Self { tracks })
+    }
+    pub fn knots(&self, track: hex_project::TrackId) -> &[GainEnvelopeKnot] {
+        self.tracks
+            .iter()
+            .find(|(id, _)| *id == track)
+            .map(|(_, envelope)| envelope.knots.as_slice())
+            .unwrap_or(&[])
+    }
+    pub fn value_at(&self, track: hex_project::TrackId, frame: u64) -> Option<f32> {
+        self.tracks
+            .iter()
+            .find(|(id, _)| *id == track)
+            .map(|(_, envelope)| envelope.value_at(frame))
+    }
+}
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedGainEnvelope {
-    knots: Vec<Knot>,
+    knots: Vec<GainEnvelopeKnot>,
     mix: PreparedTrackMix,
     authored_points: usize,
 }
@@ -83,12 +131,15 @@ impl PreparedGainEnvelope {
                         outgoing: GainInterpolation|
          -> Result<(), Invalid> {
             let frame = tempo.beat_to_frame(beat).map_err(|e| Invalid(e.0))?;
-            let knot = Knot {
+            let knot = GainEnvelopeKnot {
                 frame,
                 gain,
                 outgoing,
             };
-            if knots.last().is_some_and(|old: &Knot| old.frame == frame) {
+            if knots
+                .last()
+                .is_some_and(|old: &GainEnvelopeKnot| old.frame == frame)
+            {
                 *knots.last_mut().expect("existing knot") = knot;
             } else {
                 knots.push(knot);
@@ -115,10 +166,13 @@ impl PreparedGainEnvelope {
             authored_points: points.len(),
         }))
     }
+    pub(crate) fn knots(&self) -> &[GainEnvelopeKnot] {
+        &self.knots
+    }
     pub(crate) fn mix_at(&self, frame: u64) -> PreparedTrackMix {
         self.mix.with_absolute_gain(self.value_at(frame))
     }
-    fn value_at(&self, frame: u64) -> f32 {
+    pub(crate) fn value_at(&self, frame: u64) -> f32 {
         let index = self
             .knots
             .partition_point(|knot| knot.frame <= frame)
@@ -138,7 +192,7 @@ impl PreparedGainEnvelope {
             self.authored_points,
             self.knots.len(),
             self.knots.capacity(),
-            self.knots.capacity() * std::mem::size_of::<Knot>(),
+            self.knots.capacity() * std::mem::size_of::<GainEnvelopeKnot>(),
         )
     }
 }
@@ -201,11 +255,11 @@ mod tests {
         assert!(totals.allocated_knot_slots <= MAX_PREPARED_GAIN_KNOTS);
         assert_eq!(
             totals.allocated_knot_bytes,
-            totals.allocated_knot_slots * std::mem::size_of::<Knot>()
+            totals.allocated_knot_slots * std::mem::size_of::<GainEnvelopeKnot>()
         );
         eprintln!(
             "measured prepared gain plan capacity: {totals:?}; knot layout {} bytes; not a process-memory or hardware-deadline bound",
-            std::mem::size_of::<Knot>()
+            std::mem::size_of::<GainEnvelopeKnot>()
         );
     }
 }
