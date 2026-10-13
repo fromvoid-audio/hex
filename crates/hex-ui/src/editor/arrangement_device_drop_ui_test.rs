@@ -9,7 +9,7 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
     cx: &mut TestAppContext,
 ) {
     for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
-        for destination in 0..3 {
+        for destination in 0..5 {
             let (project, first, target, _) = audio_project();
             let project = if destination == 2 {
                 hex_project::Project::new(48_000).unwrap()
@@ -52,17 +52,19 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                     body.origin.y + body.size.height * 0.5,
                 )
             } else {
+                let lane_track = if destination == 3 { first } else { target };
                 let lane = visual
                     .debug_bounds(Box::leak(
-                        format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+                        format!("arrangement-lane-{}", lane_track.value()).into_boxed_str(),
                     ))
                     .expect("target lane");
                 point(
                     lane.origin.x + lane.size.width * 0.5,
-                    if destination == 1 {
-                        lane.origin.y
-                    } else {
-                        lane.origin.y + lane.size.height * 0.5
+                    match destination {
+                        1 => lane.origin.y,
+                        3 => lane.origin.y + px(1.0),
+                        4 => lane.origin.y + lane.size.height + px(10.0),
+                        _ => lane.origin.y + lane.size.height * 0.5,
                     },
                 )
             };
@@ -90,6 +92,9 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                     },
                     1 => ArrangementDeviceDestination::NewTrack {
                         before_track: Some(target),
+                    },
+                    3 => ArrangementDeviceDestination::NewTrack {
+                        before_track: Some(first),
                     },
                     _ => ArrangementDeviceDestination::NewTrack { before_track: None },
                 };

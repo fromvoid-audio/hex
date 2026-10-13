@@ -870,6 +870,16 @@ impl super::EditorView {
             return Some((None, timeline, pointer_y));
         }
 
+        let first = tracks.first()?;
+        if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
+            let first_lane = *self.drag_lanes.get(&first.id())?;
+            // Reserve the same narrow insertion band at the first row's top,
+            // without adding empty layout space above the tracks.
+            if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
+                return Some((Some(first.id()), timeline, first_lane.top));
+            }
+        }
+
         for index in 1..tracks.len() {
             let previous = tracks.get(index - 1)?;
             let next = tracks.get(index)?;
