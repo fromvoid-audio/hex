@@ -13,6 +13,8 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
+    pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
     pub assets: Vec<AssetSnapshot>,
@@ -83,6 +85,7 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub gain_envelope: Vec<crate::GainPoint>,
     pub id: u64,
     pub name: String,
     pub gain: f32,
@@ -192,6 +195,17 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            return_feeds: self
+                .routing
+                .iter()
+                .map(|feed| crate::ReturnFeedSnapshot {
+                    id: feed.id.value(),
+                    source: feed.source.value(),
+                    destination: feed.destination.value(),
+                    gain: feed.gain,
+                })
+                .collect(),
+            import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
             next_id: self.next_id,
             assets: self
@@ -210,6 +224,7 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    gain_envelope: track.gain_envelope.clone(),
                     id: track.id.0,
                     name: track.name.clone(),
                     gain: track.gain,
@@ -372,8 +387,20 @@ impl Project {
     }
 
     /// Validate untrusted snapshot metadata before constructing a live model.
-    pub fn from_snapshot(snapshot: Snapshot) -> Result<Self, Invalid> {
+    pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        let mut gain_points = 0_usize;
+        for track in &snapshot.tracks {
+            crate::validate_gain_envelope(&track.gain_envelope)?;
+            gain_points = gain_points
+                .checked_add(track.gain_envelope.len())
+                .ok_or(Invalid("gain point count overflow"))?;
+            if gain_points > crate::MAX_GAIN_POINTS {
+                return Err(Invalid("project gain envelope point limit reached"));
+            }
+        }
+        let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
         project.meter_map = crate::MeterMap::new(snapshot.meter_points)?;
         if snapshot.next_id == 0 {
@@ -650,6 +677,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                gain_envelope: track.gain_envelope,
                 id: TrackId(track.id),
                 name: track.name,
                 gain: track.gain,
@@ -799,6 +827,11 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
+        if !return_feeds.is_empty() {
+            let mut candidate = project.snapshot();
+            candidate.return_feeds = return_feeds;
+            project.routing = Self::validate_return_feed_snapshot(&candidate)?;
+        }
         Ok(project)
     }
 }

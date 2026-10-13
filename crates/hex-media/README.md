@@ -115,3 +115,11 @@ extrema hierarchy. `peaks_for_frames` performs bounded allocation-free cache
 queries; sample ranges of at most 64 frames inspect shared immutable PCM for
 exact deep-zoom detail. `cached_bin_count` includes hierarchy bins for resident
 accounting. Source data is not copied into a second PCM allocation.
+
+Read-only streaming capacity queries expose `VerifiedWavReader::path_capacity_bytes`
+for its separately owned path and `ResampleKernel::shared_object_bytes` for the
+one shared kernel object's data size. Existing manifest/table APIs report their
+allocated payload capacities. The fixed reader scratch is inline in the reader;
+count it once with the owning object, and count a shared kernel/table once across
+handles. These queries allocate, clone and mutate nothing; they exclude opaque
+allocator/Arc headers and provide reporting, not new import/admission policy.

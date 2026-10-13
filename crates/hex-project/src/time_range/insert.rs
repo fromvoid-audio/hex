@@ -50,6 +50,7 @@ fn insert_rows(
         .checked_add(clipboard.duration)
         .ok_or(Invalid("insert end overflow"))?;
 
+    project.refuse_automation_transform(rows)?;
     for destination in rows {
         open_audio_gap(project, *destination, frame, clipboard.duration)?;
         open_midi_gap(project, *destination, frame, clipboard.duration)?;

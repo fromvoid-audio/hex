@@ -170,6 +170,8 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
@@ -181,6 +183,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: 2,
             name: "full".into(),
             gain: 1.0,

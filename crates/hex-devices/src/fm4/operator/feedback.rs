@@ -95,11 +95,13 @@ impl PreparedOperatorFeedbackVoice {
                 "operator feedback voice does not match its prepared configuration",
             ));
         }
-        let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
         let (sample, outputs) = if self.feedback_turns == [0.0; OPERATORS] {
             // Preserve the existing analytic sampling route bit-for-bit.
             (
-                configuration.sample(table, &self.note, self.age_frames, gate_frame),
+                match self.gate_frame {
+                    Some(frame) => configuration.sample(table, &self.note, self.age_frames, frame),
+                    None => configuration.sample_held(table, &self.note, self.age_frames),
+                },
                 [0.0; OPERATORS],
             )
         } else {
@@ -107,7 +109,7 @@ impl PreparedOperatorFeedbackVoice {
                 table,
                 &self.note,
                 self.age_frames,
-                gate_frame,
+                self.gate_frame,
                 self.feedback_turns,
                 self.previous_outputs,
             )

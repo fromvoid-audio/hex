@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id,
             name: format!("track {index}"),
             gain: 1.0,
@@ -39,6 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {

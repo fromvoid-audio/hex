@@ -17,6 +17,7 @@ mod context_menu;
 mod controller;
 mod device_gesture;
 mod device_panel;
+mod device_preset;
 mod dialogs;
 mod drag;
 mod duplicate;
@@ -28,7 +29,9 @@ mod external_audio_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod external_audio_drop_ui_test;
 mod fades;
+mod gain_lane;
 mod header;
+mod live_set;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -46,6 +49,7 @@ mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
 mod musical_time;
+mod musical_typing;
 mod overview;
 mod play_intent;
 mod project_recovery;
@@ -159,6 +163,7 @@ actions!(
         LaunchSessionSelection,
         Stop,
         ImportAudio,
+        ImportLiveSet,
         OpenProject,
         OpenRelinkedProject,
         RecoverUntitledProject,
@@ -306,6 +311,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
+        KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
@@ -404,6 +410,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 }
 
 pub(super) struct EditorView {
+    musical_typing: musical_typing::MusicalTyping,
     service: Service,
     audio: Option<PreparedOutput>,
     recovery_open: Option<hex_audio::RecoveryOpen>,
@@ -411,6 +418,7 @@ pub(super) struct EditorView {
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
+    gain_lane: gain_lane::GainLane,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -465,6 +473,7 @@ pub(super) struct EditorView {
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
+    preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<String>,
     focus: FocusHandle,
@@ -647,6 +656,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cut_musical_typing(hex_engine::typing_protocol::CutReason::WindowInactive);
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.processor_audition.cancel_immediately();
@@ -668,6 +678,7 @@ impl EditorView {
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
+            musical_typing: musical_typing::MusicalTyping::default(),
             service,
             audio,
             state: None,
@@ -675,6 +686,7 @@ impl EditorView {
             recovery: RecoveryState::default(),
             offline_cursor: 0,
             selected_track: None,
+            gain_lane: gain_lane::GainLane::default(),
             selected_clip: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -730,6 +742,7 @@ impl EditorView {
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
+            preset_dialog_open: false,
             status,
             error: None,
             focus,
@@ -829,6 +842,9 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        if let Some(state) = self.state.as_ref() {
+            self.gain_lane.change_owner(track, &state.project);
+        }
         self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
@@ -913,6 +929,17 @@ impl EditorView {
     }
 
     pub(super) fn gain_by(&mut self, track: TrackId, amount: f32) {
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .is_some_and(|track| !track.gain_envelope().is_empty())
+        {
+            self.error = Some(
+                "automation owns gain · edit the gain lane or clear it for static fallback".into(),
+            );
+            return;
+        }
         self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
@@ -951,6 +978,16 @@ impl EditorView {
     }
 
     fn visible_viewport(&self, horizon: u64) -> Viewport {
+        // Display all authored points while this editor is open. Canonical content/export
+        // extent stays unchanged; a held gain endpoint is not an audible source duration.
+        let gain_end = self.state.as_ref().and_then(|state| {
+            self.gain_lane
+                .track
+                .and_then(|id| state.project.track(id))
+                .and_then(|track| track.gain_envelope().last())
+                .and_then(|point| state.project.tempo_map().beat_to_frame(point.beat).ok())
+        });
+        let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)

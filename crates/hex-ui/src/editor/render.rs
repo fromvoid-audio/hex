@@ -1,12 +1,12 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft, PanTimelineRight,
-    PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
-    RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
-    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    ImportAudio, ImportLiveSet, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NextTrack, OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
+    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
+    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
+    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -265,6 +265,15 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.clip_view_open && self.gain_lane.track.is_some() {
+            self.cancel_gain_draft(cx);
+            self.gain_lane.track = None;
+        }
+        if let Some(state) = self.state.as_ref() {
+            if let Some(track) = self.selected_track {
+                self.gain_lane.change_owner(track, &state.project);
+            }
+        }
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
@@ -306,6 +315,8 @@ impl Render for EditorView {
                 "hex_theme_settings"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.gain_numeric_editing(cx) {
+                "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
             })
@@ -375,6 +386,18 @@ impl Render for EditorView {
                     }
                 }),
             )
+            .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if view.musical_key_down(event, window) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if view.musical_key_up(&event.keystroke.key) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
                     cx.stop_active_drag(window);
@@ -419,6 +442,10 @@ impl Render for EditorView {
                     if view.theme_settings.open {
                         view.cancel_theme_settings(window, cx);
                         cx.stop_propagation();
+                    } else if view.cancel_gain_draft(cx) {
+                        view.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
                     }
                 }),
             )
@@ -435,6 +462,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
@@ -449,7 +477,8 @@ impl Render for EditorView {
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled
+                if !gain_canceled
+                    && !midi_canceled
                     && !selection_cleared
                     && !time_selection_canceled
                     && !drag_stopped
@@ -472,6 +501,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
+            .on_action(
+                cx.listener(|view, _: &ImportLiveSet, window, cx| view.live_set_dialog(window, cx)),
+            )
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
@@ -512,7 +544,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }

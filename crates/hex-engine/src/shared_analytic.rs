@@ -102,13 +102,17 @@ pub(crate) struct SharedContextIdentity {
 pub(crate) struct SharedContextId(u64);
 
 impl SharedContextId {
-    fn fresh() -> Result<Self, Invalid> {
+    pub(crate) fn fresh() -> Result<Self, Invalid> {
         NEXT_CONTEXT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .map(Self)
             .map_err(|_| Invalid("shared instrument context identity exhausted"))
+    }
+    pub(crate) fn continuation_id(self) -> Result<hex_lattice::AnalyticContinuationId, Invalid> {
+        hex_lattice::AnalyticContinuationId::new(self.0)
+            .map_err(|_| Invalid("shared analytic continuation identity is invalid"))
     }
 }
 
@@ -137,12 +141,55 @@ impl SharedContextOwner {
         self.id
     }
 
+    pub(crate) fn device_id(&self) -> DeviceId {
+        self.identity.device
+    }
+
     pub(crate) fn declared_bytes(&self) -> usize {
         self.declared_bytes
     }
 
     pub(crate) fn context(&self) -> &dyn PreparedSharedAnalyticContext {
         self.context.as_ref()
+    }
+
+    pub(crate) fn continuation_id(&self) -> Result<hex_lattice::AnalyticContinuationId, Invalid> {
+        hex_lattice::AnalyticContinuationId::new(self.id.0)
+            .map_err(|_| Invalid("shared analytic continuation identity is invalid"))
+    }
+
+    /// Evaluate only the actually applied owner. Desired intermediate revisions
+    /// are never an input, and an in-flight ramp collapses to its exact boundary.
+    pub(crate) fn continue_from(
+        &self,
+        previous: &Self,
+        transition: Option<hex_lattice::AnalyticContinuation>,
+        performance_frame: u64,
+    ) -> Result<Option<hex_lattice::AnalyticContinuation>, Invalid> {
+        if self.id == previous.id {
+            return Ok(transition);
+        }
+        if self.identity.track != previous.identity.track
+            || self.identity.device != previous.identity.device
+            || self.identity.device_type != previous.identity.device_type
+            || self.identity.sample_rate != previous.identity.sample_rate
+        {
+            return Ok(None);
+        }
+        context_transition(
+            self.context(),
+            self.continuation_id()?,
+            previous.context(),
+            previous.continuation_id()?,
+            self.identity == previous.identity,
+            transition,
+            performance_frame,
+            self.identity.sample_rate,
+        )
+    }
+
+    pub(crate) fn same_configuration(&self, other: &Self) -> bool {
+        self.identity == other.identity
     }
 
     fn compatible_identity(&self, identity: &SharedContextIdentity) -> bool {
@@ -264,6 +311,21 @@ impl SharedAnalyticContextTable {
         }))
     }
 
+    pub(crate) fn owners(&self) -> impl Iterator<Item = (u16, &SharedContextOwner)> {
+        self.owners.iter().enumerate().filter_map(|(index, owner)| {
+            u16::try_from(index)
+                .ok()
+                .map(|index| (index, owner.as_ref()))
+        })
+    }
+
+    pub(crate) fn index_for_track(&self, track: TrackId) -> Option<u16> {
+        self.owners
+            .iter()
+            .position(|owner| owner.identity.track == track)
+            .and_then(|index| u16::try_from(index).ok())
+    }
+
     pub(crate) fn owner_for_device(&self, device: DeviceId) -> Option<&SharedContextOwner> {
         self.owners
             .binary_search_by_key(&device, |owner| owner.identity.device)
@@ -323,6 +385,71 @@ impl SharedAnalyticContextTable {
 
 #[allow(dead_code)]
 fn _prepared_config_is_send_sync<T: PreparedNativeInstrument>() {}
+
+/// Shared pure provider preflight, used by authored and transient owners.
+#[allow(clippy::too_many_arguments)] // Explicit identities, applied boundary and immutable provider pair.
+pub(crate) fn context_transition(
+    target_context: &dyn PreparedSharedAnalyticContext,
+    target_id: hex_lattice::AnalyticContinuationId,
+    source_context: &dyn PreparedSharedAnalyticContext,
+    source_id: hex_lattice::AnalyticContinuationId,
+    same_configuration: bool,
+    transition: Option<hex_lattice::AnalyticContinuation>,
+    performance_frame: u64,
+    sample_rate: u32,
+) -> Result<Option<hex_lattice::AnalyticContinuation>, Invalid> {
+    let Some(target) = target_context.analytic_continuation() else {
+        return Ok(None);
+    };
+    let Some(source) = source_context.analytic_continuation() else {
+        return Ok(None);
+    };
+    if target.format() != source.format() {
+        return Ok(None);
+    }
+    if same_configuration {
+        // A control preparation may recreate an identical context without
+        // reuse. Rebind the fixed original start, retaining absolute clock
+        // and duration; unrelated publication must not restart its ramp.
+        return transition
+            .map(|transition| {
+                let start = target
+                    .prepare_start(target_id, source, source_id, transition.start())
+                    .map_err(|_| {
+                        Invalid("shared analytic continuation identity rebinding was refused")
+                    })?;
+                hex_lattice::AnalyticContinuation::new(
+                    target_id,
+                    start,
+                    transition.start_frame(),
+                    transition.duration(),
+                )
+                .map_err(|_| Invalid("shared analytic continuation clock is invalid"))
+            })
+            .transpose();
+    }
+    let boundary = match transition {
+        Some(transition) => source
+            .parameters_at(source_id, &transition, performance_frame)
+            .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?,
+        None => source.endpoint(source_id),
+    };
+    let start = match target.prepare_start(target_id, source, source_id, &boundary) {
+        Ok(start) => start,
+        Err(hex_lattice::AnalyticContinuationError::IncompatibleSource) => return Ok(None),
+        Err(_) => return Err(Invalid("shared analytic continuation source was refused")),
+    };
+    let duration = hex_lattice::AnalyticContinuation::default_duration(sample_rate)
+        .map_err(|_| Invalid("shared analytic continuation duration is invalid"))?;
+    let transition =
+        hex_lattice::AnalyticContinuation::new(target_id, start, performance_frame, duration)
+            .map_err(|_| Invalid("shared analytic continuation clock is invalid"))?;
+    // Check the provider's clock/identity law before admitting any voice.
+    target
+        .parameters_at(target_id, &transition, performance_frame)
+        .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?;
+    Ok(Some(transition))
+}
 
 #[cfg(test)]
 mod tests {
