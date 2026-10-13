@@ -44,6 +44,166 @@ struct MutableCandidateSpan {
 }
 
 impl SessionPlayback {
+    #[allow(clippy::too_many_arguments)] // Disjoint borrowed transaction buffers; no callback Arc clone.
+    fn carry_typing_arrangement_analytic(
+        revision: &PreparedRevision,
+        routes: &[super::TrackRoute],
+        previous: &Self,
+        track_id: TrackId,
+        releases: &mut Vec<ReleaseEntry>,
+        suppressions: &mut Vec<MidiOccurrenceSuppression>,
+        release_capacity: usize,
+        next_order: &mut u64,
+    ) -> Result<(), SessionPlaybackError> {
+        use crate::mutable_instrument::{MutableOccurrenceKey, MutableOccurrenceSignature};
+        let old_index = previous
+            .routes
+            .iter()
+            .position(|route| route.id == track_id)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if !matches!(previous.routes[old_index].owner, RouteOwner::Arrangement) {
+            return Ok(());
+        }
+        let new_index = routes
+            .iter()
+            .position(|route| route.id == track_id)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let old_track = &previous.revision.arrangement().tracks()[old_index];
+        let new_track = &revision.arrangement().tracks()[new_index];
+        if old_track.typing_arrangement_sources_match(new_track)
+            && previous
+                .revision
+                .session()
+                .timing()
+                .same_map(revision.session().timing())
+            && previous.revision.arrangement().loop_region() == revision.arrangement().loop_region()
+        {
+            return Ok(());
+        }
+        let cut = previous.arrangement_frame;
+        let frame = previous.performance_frame;
+        let pass = previous.arrangement_loop_pass;
+        let signature = |span: &crate::midi_compile::CompiledNoteSpan| {
+            MutableOccurrenceSignature::from_parts(
+                MutableOccurrenceKey::new(track_id, span.clip, span.note, span.iteration, pass),
+                span.onset_beat,
+                span.gate_end_beat,
+                span.pitch,
+                span.channel,
+                span.velocity,
+            )
+        };
+        // Pre-cut edits are permitted only against original physical ownership
+        // or an already retained suppression. They cannot chase a new onset.
+        if let Some(instrument) = &new_track.instrument {
+            for span in instrument
+                .spans
+                .iter()
+                .filter(|span| span.start < cut && span.end > cut)
+            {
+                let key = signature(span).key();
+                let inherited = old_track.instrument.as_ref().is_some_and(|old| {
+                    old.spans
+                        .iter()
+                        .any(|old| old.start < cut && old.end > cut && signature(old).key() == key)
+                }) || previous.suppressions.iter().any(|entry| {
+                    entry.until_frame > frame
+                        && entry
+                            .mutable_signature
+                            .is_some_and(|proof| proof.key() == key)
+                });
+                if !inherited {
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                }
+                let end = frame
+                    .checked_add(span.end - cut)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                add_or_extend_suppression(
+                    suppressions,
+                    release_capacity,
+                    MidiOccurrenceSuppression {
+                        track: track_id,
+                        clip: span.clip,
+                        note: span.note,
+                        iteration: span.iteration,
+                        loop_pass: pass,
+                        until_frame: end,
+                        mutable_signature: Some(signature(span)),
+                    },
+                )?;
+            }
+        }
+        let mut failure = None;
+        old_track
+            .for_each_active_midi_span(cut, |span, sampler| {
+                if failure.is_some() || span.start >= cut {
+                    return;
+                }
+                let proof = signature(span);
+                if previous.suppressions.iter().any(|entry| {
+                    entry.until_frame > frame
+                        && (entry.mutable_signature == Some(proof)
+                            || entry.mutable_signature.is_none()
+                                && entry.track == track_id
+                                && (entry.clip, entry.note, entry.iteration)
+                                    == (span.clip, span.note, span.iteration))
+                }) {
+                    return;
+                }
+                let voice = match MidiReleaseVoice::from_finite_span_preserving_gate(
+                    span.start,
+                    span.gate_end,
+                    span.end,
+                    sampler,
+                    cut,
+                    frame,
+                ) {
+                    Ok(Some(voice)) => voice,
+                    Ok(None) => return,
+                    Err(_) => {
+                        failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                        return;
+                    }
+                };
+                if let Err(error) = append_release(
+                    releases,
+                    release_capacity,
+                    next_order,
+                    ReleaseEntry {
+                        track_index: new_index,
+                        track_id,
+                        order: 0,
+                        mix: old_track.mix_at(cut),
+                        tail_group: None,
+                        continuation: None,
+                        voice,
+                    },
+                ) {
+                    failure = Some(error);
+                    return;
+                }
+                if let Err(error) = add_or_extend_suppression(
+                    suppressions,
+                    release_capacity,
+                    MidiOccurrenceSuppression {
+                        track: track_id,
+                        clip: span.clip,
+                        note: span.note,
+                        iteration: span.iteration,
+                        loop_pass: pass,
+                        until_frame: voice.end_frame(),
+                        mutable_signature: Some(proof),
+                    },
+                ) {
+                    failure = Some(error);
+                }
+            })
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(())
+    }
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
         revision: &PreparedRevision,
         track_index: usize,
@@ -207,6 +367,13 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionSampleRateMismatch);
         }
+        let typing_transition = self.preflight_typing_handoff(previous)?;
+        let typing_track = typing_transition.and(
+            previous
+                .typing
+                .as_ref()
+                .map(|input| input.arm().target().track),
+        );
         let old_loop = previous
             .revision
             .arrangement()
@@ -319,8 +486,18 @@ impl SessionPlayback {
         }
         let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
         let mut mutable_retarget_new_for_old = [usize::MAX; MAX_TRACKS];
-        if !timing_changed {
+        if !timing_changed || typing_track.is_some() {
             for (old_index, old_route) in previous.routes.iter().enumerate() {
+                if timing_changed && typing_track != Some(old_route.id) {
+                    continue;
+                }
+                if typing_transition.is_none()
+                    && previous.typing.as_ref().is_some_and(|input| {
+                        input.arm().target().track == old_route.id && input.active_voices() != 0
+                    })
+                {
+                    continue;
+                }
                 let Some(old_runtime) = previous
                     .mutable_instruments
                     .get(old_index)
@@ -352,42 +529,53 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
-                let exact_source_matches = match old_route.owner {
-                    RouteOwner::Arrangement => previous
+                let exact_source_matches = if typing_track == Some(old_route.id) {
+                    previous
                         .revision
-                        .mutable_arrangement_track_matches(&self.revision, old_route.id),
-                    RouteOwner::Session { clip, .. } => {
-                        let old = previous.revision.session().midi_clip(clip);
-                        let new = self.revision.session().midi_clip(clip);
-                        previous
+                        .mutable_track_topology_matches(&self.revision, old_route.id)
+                } else {
+                    match old_route.owner {
+                        RouteOwner::Arrangement => previous
                             .revision
-                            .mutable_track_topology_matches(&self.revision, old_route.id)
-                            && old.zip(new).is_some_and(|(old, new)| {
-                                old.id == new.id
-                                    && old.track == old_route.id
-                                    && new.track == old_route.id
-                                    && old.scene == new.scene
-                                    && old.source_content_matches(new)
-                                    && old.instrument_config_matches(new)
-                            })
+                            .mutable_arrangement_track_matches(&self.revision, old_route.id),
+                        RouteOwner::Session { clip, .. } => {
+                            let old = previous.revision.session().midi_clip(clip);
+                            let new = self.revision.session().midi_clip(clip);
+                            previous
+                                .revision
+                                .mutable_track_topology_matches(&self.revision, old_route.id)
+                                && old.zip(new).is_some_and(|(old, new)| {
+                                    old.id == new.id
+                                        && old.track == old_route.id
+                                        && new.track == old_route.id
+                                        && old.scene == new.scene
+                                        && old.source_content_matches(new)
+                                        && old.instrument_config_matches(new)
+                                })
+                        }
+                        RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                     }
-                    RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                 };
                 let retarget_proof = self
                     .revision
                     .session()
                     .mutable_history_retarget(old_route.id);
-                let retarget_owner_matches = match old_route.owner {
-                    RouteOwner::Arrangement => previous
+                let retarget_owner_matches = if typing_track == Some(old_route.id) {
+                    previous
                         .revision
-                        .mutable_arrangement_retarget_matches(&self.revision, old_route.id),
-                    RouteOwner::Session { clip, .. } => {
-                        let old = previous.revision.session().midi_clip(clip);
-                        let new = self.revision.session().midi_clip(clip);
-                        previous
+                        .mutable_track_retarget_topology_matches(&self.revision, old_route.id)
+                } else {
+                    match old_route.owner {
+                        RouteOwner::Arrangement => previous
                             .revision
-                            .mutable_track_retarget_topology_matches(&self.revision, old_route.id)
-                            && old.zip(new).is_some_and(|(old, new)| {
+                            .mutable_arrangement_retarget_matches(&self.revision, old_route.id),
+                        RouteOwner::Session { clip, .. } => {
+                            let old = previous.revision.session().midi_clip(clip);
+                            let new = self.revision.session().midi_clip(clip);
+                            previous.revision.mutable_track_retarget_topology_matches(
+                                &self.revision,
+                                old_route.id,
+                            ) && old.zip(new).is_some_and(|(old, new)| {
                                 old.id == new.id
                                     && old.track == old_route.id
                                     && new.track == old_route.id
@@ -395,8 +583,9 @@ impl SessionPlayback {
                                     && old.source_content_matches(new)
                                     && old.instrument_retarget_compatible(new)
                             })
+                        }
+                        RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                     }
-                    RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                 };
                 let retarget_source_matches =
                     !exact_source_matches && retarget_proof.is_some() && retarget_owner_matches;
@@ -629,10 +818,12 @@ impl SessionPlayback {
                 .routes
                 .iter()
                 .position(|route| route.id == new_route.id);
-            if old_index.is_some_and(|old_index| {
-                mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
-                    || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
-            }) {
+            if typing_track != Some(new_route.id)
+                && old_index.is_some_and(|old_index| {
+                    mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                        || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
+                })
+            {
                 continue;
             }
             let candidate_owner = if let Some(old_index) = old_index {
@@ -705,10 +896,30 @@ impl SessionPlayback {
                                 && entry.until_frame > previous.performance_frame
                                 && entry.mutable_signature.is_some()
                         });
-                if candidate.source_frame < source_frame && exact.is_none() && !carried {
+                let inherited_input_owner = typing_track == Some(new_route.id)
+                    && old_index.is_some_and(|old_index| {
+                        mutable_continuity_new_for_old[old_index] == new_index
+                            || mutable_retarget_new_for_old[old_index] == new_index
+                    });
+                let inherited_original = inherited_input_owner
+                    && old_index
+                        .and_then(|index| previous.mutable_instruments.get(index))
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| {
+                            runtime.proofs().any(|proof| {
+                                proof.signature.key() == candidate.signature.key()
+                                    && proof.onset_frame < previous.performance_frame
+                                    && proof.quiet_deadline_frame > previous.performance_frame
+                            })
+                        });
+                if candidate.source_frame < source_frame
+                    && exact.is_none()
+                    && !carried
+                    && !inherited_original
+                {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                if same_key && exact.is_none() && !carried {
+                if same_key && exact.is_none() && !carried && !inherited_original {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
             }
@@ -990,12 +1201,13 @@ impl SessionPlayback {
         self.suppression_scratch
             .extend(previous.suppressions.iter().copied().filter(|entry| {
                 entry.until_frame > previous.performance_frame
-                    && previous
-                        .routes
-                        .iter()
-                        .position(|route| route.id == entry.track)
-                        .and_then(|index| midi_route_changed.get(index))
-                        .is_none_or(|changed| !changed)
+                    && (typing_track == Some(entry.track)
+                        || previous
+                            .routes
+                            .iter()
+                            .position(|route| route.id == entry.track)
+                            .and_then(|index| midi_route_changed.get(index))
+                            .is_none_or(|changed| !changed))
             }));
         // Previous suppressions are sorted by their occurrence key. Keep this
         // boundary: later tracks may append fresh entries before an existing
@@ -1289,6 +1501,26 @@ impl SessionPlayback {
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
                 let proof_deadline =
                     mutable_proof_deadline(previous, route.id, candidate.signature);
+                let inherited_deadline = if typing_track == Some(route.id) {
+                    previous
+                        .routes
+                        .iter()
+                        .position(|old| old.id == route.id)
+                        .and_then(|index| previous.mutable_instruments[index].as_ref())
+                        .and_then(|runtime| {
+                            runtime
+                                .proofs()
+                                .filter(|proof| {
+                                    proof.signature.key() == candidate.signature.key()
+                                        && proof.onset_frame < previous.performance_frame
+                                        && proof.quiet_deadline_frame > previous.performance_frame
+                                })
+                                .map(|proof| proof.quiet_deadline_frame)
+                                .max()
+                        })
+                } else {
+                    None
+                };
                 let carried_deadline = previous
                     .suppressions
                     .iter()
@@ -1298,7 +1530,11 @@ impl SessionPlayback {
                     })
                     .map(|entry| entry.until_frame)
                     .max();
-                let Some(old_deadline) = proof_deadline.into_iter().chain(carried_deadline).max()
+                let Some(old_deadline) = proof_deadline
+                    .into_iter()
+                    .chain(carried_deadline)
+                    .chain(inherited_deadline)
+                    .max()
                 else {
                     continue;
                 };
@@ -1325,10 +1561,11 @@ impl SessionPlayback {
             if self.release_scratch.len() >= self.release_capacity {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
-            let route_changed = midi_route_changed
-                .get(entry.track_index)
-                .copied()
-                .unwrap_or(false);
+            let route_changed = typing_track != Some(entry.track_id)
+                && midi_route_changed
+                    .get(entry.track_index)
+                    .copied()
+                    .unwrap_or(false);
             let remapped_gate = if route_changed {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
@@ -1380,6 +1617,23 @@ impl SessionPlayback {
             }
         }
 
+        if let Some(track) = typing_track
+            && previous
+                .typing
+                .as_ref()
+                .is_some_and(|input| !input.arm().is_mutable())
+        {
+            Self::carry_typing_arrangement_analytic(
+                &self.revision,
+                &self.routes,
+                previous,
+                track,
+                &mut self.release_scratch,
+                &mut self.suppression_scratch,
+                self.release_capacity,
+                &mut next_order,
+            )?;
+        }
         if source_changed || midi_route_changed.iter().any(|changed| *changed) {
             for (old_index, old_route) in previous.routes.iter().enumerate() {
                 if !midi_route_changed.get(old_index).copied().unwrap_or(false) {
@@ -1453,8 +1707,9 @@ impl SessionPlayback {
                             && occurrence.channel == span.channel
                             && occurrence.velocity == span.velocity
                     });
-                    let mapped_gate = if matches && span.gate_end_frame > previous.performance_frame
-                    {
+                    let mapped_gate = if typing_track == Some(old_route.id) {
+                        Some(span.gate_end_frame)
+                    } else if matches && span.gate_end_frame > previous.performance_frame {
                         Some(
                             candidate_timing
                                 .beat_to_frame(span.gate_end_beat)
@@ -1537,6 +1792,24 @@ impl SessionPlayback {
         }
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
+        if let Some(track) = typing_track
+            && let Some(input) = self.typing.as_mut()
+            && !input.arm().is_mutable()
+        {
+            let mut count = 0usize;
+            let mut until = 0;
+            for release in self.release_scratch.iter().filter(|release| {
+                release.track_id == track
+                    && release.tail_group.is_none()
+                    && release.voice.end_frame() > previous.performance_frame
+            }) {
+                count = count
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                until = until.max(release.voice.end_frame());
+            }
+            input.reserve_inherited_authored(count, until);
+        }
         self.suppression_scratch.sort_unstable_by_key(|entry| {
             (
                 entry.track,
@@ -1599,6 +1872,17 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
             *active = true;
+        }
+        for (slot, typing) in previous.tail_typing.iter().enumerate() {
+            if typing
+                .as_ref()
+                .is_some_and(|typing| typing.active_voices() != 0)
+            {
+                if previous.tail_groups[slot].is_none() || self.tail_typing[slot].is_some() {
+                    return Err(SessionPlaybackError::ReleaseBankFull);
+                }
+                active_tail_groups[slot] = true;
+            }
         }
         if active_tail_groups.iter().enumerate().any(|(slot, active)| {
             *active
@@ -1997,6 +2281,139 @@ impl SessionPlayback {
 
         // Check every candidate history copy against the final tail-retention
         // plan before any runtime owner is moved or mutated.
+        let mut outgoing_typing_slot = None;
+        if typing_transition.is_none()
+            && let Some(input) = previous
+                .typing
+                .as_ref()
+                .filter(|input| input.active_voices() != 0)
+        {
+            let old_index = previous
+                .routes
+                .iter()
+                .position(|route| route.id == input.arm().target().track)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let old_track = &previous.revision.arrangement().tracks()[old_index];
+            let chain = &previous.device_chains[old_index];
+            if let Some(target) = self.typing.as_mut().filter(|target| {
+                target.arm().target().track == input.arm().target().track
+                    && target.arm().target().device == input.arm().target().device
+            }) {
+                let authored =
+                    previous.mutable_instruments[old_index]
+                        .as_ref()
+                        .map_or(0, |runtime| {
+                            runtime
+                                .proofs()
+                                .filter(|proof| {
+                                    proof.quiet_deadline_frame > previous.performance_frame
+                                })
+                                .count()
+                        });
+                let retained = previous
+                    .tail_typing
+                    .iter()
+                    .flatten()
+                    .filter(|typing| {
+                        typing.arm().target().track == target.arm().target().track
+                            && typing.arm().target().device == target.arm().target().device
+                    })
+                    .map(|typing| typing.active_voices())
+                    .sum::<usize>();
+                let (candidate, _) = target.authored_reservation();
+                let combined = candidate
+                    .checked_add(authored)
+                    .and_then(|count| count.checked_add(input.active_voices()))
+                    .and_then(|count| count.checked_add(retained))
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                if !target.can_reserve_authored(combined) {
+                    return Err(SessionPlaybackError::ReleaseBankFull);
+                }
+                target
+                    .refresh_live_limit(combined)
+                    .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?;
+            }
+            let slot = old_track_tail_slots[old_index]
+                .or_else(|| {
+                    (0..self.tail_groups.len()).find(|slot| {
+                        !active_tail_groups[*slot]
+                            && self.tail_groups[*slot].is_none()
+                            && self.tail_typing[*slot].is_none()
+                            && !old_track_tail_slots.contains(&Some(*slot))
+                            && !old_track_mutable_tail_slots.contains(&Some(*slot))
+                    })
+                })
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if old_track_tail_slots[old_index].is_none() {
+                let suffix_start =
+                    tail_runtime_suffix_start(chain, old_track.instrument_position())?;
+                old_track_tail_slots[old_index] = Some(slot);
+                old_track_tail_metadata[old_index] =
+                    Some((suffix_start, old_track.instrument_suffix_matrix()));
+                suffix_entry_count = suffix_entry_count
+                    .checked_add(validate_tail_suffix(chain, suffix_start, sample_rate)?)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                tail_processor_count = tail_processor_count
+                    .checked_add(chain.stateful_count())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                tail_runtime_bytes = tail_runtime_bytes
+                    .checked_add(chain.declared_runtime_bytes())
+                    .and_then(|bytes| bytes.checked_add(chain.declared_runtime_bytes()))
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            }
+            // The retained palette/ledger and any prior typed tails are real
+            // owners, not authored clips. Bound their complete storage before
+            // moving the old chain, runtime, or ledger.
+            let typing_bytes = previous
+                .tail_typing
+                .iter()
+                .flatten()
+                .try_fold(
+                    input
+                        .declared_storage_bytes()
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    |bytes, typing| bytes.checked_add(typing.declared_storage_bytes()?),
+                )
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            let complete = self
+                .accounted_runtime_storage_bytes()
+                .and_then(|bytes| bytes.checked_add(typing_bytes))
+                .and_then(|bytes| bytes.checked_add(tail_runtime_bytes))
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if complete > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+                || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
+                || tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            outgoing_typing_slot = Some(slot);
+            self.tail_typing_sends[slot].fill(None);
+            for (index, send) in old_track.sends().iter().enumerate() {
+                let owner = previous
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .get(send.return_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .id;
+                if !self
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .any(|bus| bus.id == owner)
+                {
+                    // A removed Return cannot be replaced by its old numeric
+                    // slot or a new owner. Keep the complete predecessor until
+                    // this physical release is quiet or explicitly stopped.
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                *self.tail_typing_sends[slot]
+                    .get_mut(index)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)? = Some((owner, send.gain));
+            }
+        }
+
         for (old_index, old_route) in previous.routes.iter().enumerate() {
             let Some(new_index) = self
                 .routes
@@ -2025,10 +2442,7 @@ impl SessionPlayback {
                     .tracks()
                     .get(old_index)
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
-                let suffix_start = track.instrument_position();
-                if suffix_start > old.len() {
-                    return Err(SessionPlaybackError::DeviceRuntime);
-                }
+                let suffix_start = tail_runtime_suffix_start(old, track.instrument_position())?;
                 Some(suffix_start..old.len())
             } else {
                 None
@@ -2059,7 +2473,9 @@ impl SessionPlayback {
                 .position(|route| route.id == release.track_id);
             let still_owned = old_route.is_some_and(|index| {
                 track_map[index] != usize::MAX
-                    && (!midi_route_changed[index] || release.continuation.is_some())
+                    && (!midi_route_changed[index]
+                        || release.continuation.is_some()
+                        || typing_track == Some(release.track_id))
                     && !arrangement_instrument_changed[index]
                     && source.is_some_and(|index| analytic_owner_matches[usize::from(index)])
             });
@@ -2086,6 +2502,317 @@ impl SessionPlayback {
             }
         }
         self.preflight_shared_context_leases(previous)?;
+        // A candidate may have no live arm (for example, a new authored peak
+        // leaves no typing capacity). Its real authored voices still share the
+        // original device with retained physical input releases.
+        for source in previous
+            .typing
+            .iter()
+            .map(Box::as_ref)
+            .chain(previous.tail_typing.iter().flatten().map(Box::as_ref))
+        {
+            if source.active_voices() == 0 {
+                continue;
+            }
+            let Some(index) = self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .position(|track| {
+                    track.canonical_track_id() == Some(source.arm().target().track)
+                        && track.instrument_id == Some(source.arm().target().device)
+                        && !track.instrument_bypassed
+                })
+            else {
+                continue;
+            };
+            let track = &self.revision.arrangement().tracks()[index];
+            let mut authored = track
+                .instrument
+                .as_ref()
+                .map_or(0, |instrument| instrument.max_active_voices);
+            for clip in self
+                .revision
+                .session()
+                .midi_clips()
+                .iter()
+                .filter(|clip| clip.track == source.arm().target().track)
+            {
+                authored = authored.max(clip.instrument_template().max_active_voices());
+            }
+            let retained = previous
+                .typing
+                .iter()
+                .map(Box::as_ref)
+                .chain(previous.tail_typing.iter().flatten().map(Box::as_ref))
+                .filter(|input| input.owner() == source.owner())
+                .try_fold(0usize, |count, input| {
+                    count.checked_add(input.active_voices())
+                })
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            let limit = self.mutable_instruments[index]
+                .as_ref()
+                .map_or(64, |runtime| runtime.max_active_occurrences());
+            if authored
+                .checked_add(retained)
+                .is_none_or(|count| count > limit)
+            {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            if self
+                .revision
+                .arrangement()
+                .loop_region()
+                .is_some_and(|region| region.enabled())
+                && authored != 0
+                && self.typing.is_none()
+            {
+                // No control-prepared live density certificate exists for
+                // this periodic candidate; never invent a gate horizon.
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+        }
+        let mut typing_id_floor = None;
+        if let Some(target) = self
+            .typing
+            .as_ref()
+            .filter(|target| target.arm().is_mutable())
+        {
+            let index = self
+                .routes
+                .iter()
+                .position(|route| route.id == target.arm().target().track)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let mut floor = self.mutable_instruments[index]
+                .as_ref()
+                .ok_or(SessionPlaybackError::MutableInstrumentActive)?
+                .next_occurrence_id();
+            if previous
+                .typing
+                .as_ref()
+                .is_some_and(|input| input.owner() == target.owner())
+                && let Some(old_index) = previous
+                    .routes
+                    .iter()
+                    .position(|route| route.id == target.arm().target().track)
+                && let Some(runtime) = &previous.mutable_instruments[old_index]
+            {
+                floor = floor.max(runtime.next_occurrence_id());
+            }
+            for (slot, input) in previous.tail_typing.iter().enumerate() {
+                if input
+                    .as_ref()
+                    .is_some_and(|input| input.owner() == target.owner())
+                    && let Some(tail) = &previous.tail_mutable_instruments[slot]
+                {
+                    floor = floor.max(tail.runtime.next_occurrence_id());
+                }
+            }
+            floor
+                .checked_add((crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY + 32) as u64)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            typing_id_floor = Some((index, floor));
+        }
+        if let Some(target) = &mut self.typing {
+            let mut retained = target.inherited_authored(previous.performance_frame).0;
+            for (slot, input) in previous.tail_typing.iter().enumerate() {
+                if let Some(input) = input
+                    .as_ref()
+                    .filter(|input| input.owner() == target.owner())
+                {
+                    retained = retained
+                        .checked_add(input.active_voices())
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                    if let Some(tail) = &previous.tail_mutable_instruments[slot] {
+                        retained = retained
+                            .checked_add(
+                                tail.runtime
+                                    .proofs()
+                                    .filter(|proof| {
+                                        proof.quiet_deadline_frame > previous.performance_frame
+                                    })
+                                    .count(),
+                            )
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                    }
+                }
+            }
+            if outgoing_typing_slot.is_some()
+                && let Some(input) = &previous.typing
+                && input.owner() == target.owner()
+            {
+                retained = retained
+                    .checked_add(input.active_voices())
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                let index = previous
+                    .routes
+                    .iter()
+                    .position(|route| route.id == input.arm().target().track)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                if let Some(runtime) = &previous.mutable_instruments[index] {
+                    retained = retained
+                        .checked_add(
+                            runtime
+                                .proofs()
+                                .filter(|proof| {
+                                    proof.quiet_deadline_frame > previous.performance_frame
+                                })
+                                .count(),
+                        )
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                }
+            }
+            let (authored, _) = target.authored_reservation();
+            let total = authored
+                .checked_add(retained)
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if !target.can_reserve_authored(total) {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            target
+                .refresh_live_limit(total)
+                .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?;
+        }
+        for (slot, active) in active_tail_groups.iter().copied().enumerate() {
+            if !active {
+                continue;
+            }
+            for (owner, _) in previous.tail_typing_sends[slot].iter().flatten() {
+                if !self
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .any(|bus| bus.id == *owner)
+                {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+            }
+        }
+        if self.typing.is_some()
+            || previous.typing.is_some()
+            || previous.tail_typing.iter().any(Option::is_some)
+        {
+            let mut retained_bytes = 0usize;
+            let mut typed_context_bytes = self
+                .typing
+                .as_ref()
+                .map_or(0, |typing| typing.arm().shared_context_bytes());
+            let mut charge = |bytes: usize| -> Result<(), SessionPlaybackError> {
+                retained_bytes = retained_bytes
+                    .checked_add(bytes)
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                Ok(())
+            };
+            for (slot, active) in active_tail_groups
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, active)| *active)
+            {
+                let _ = active;
+                charge(
+                    previous.tail_groups[slot]
+                        .as_ref()
+                        .and_then(|chain| chain.accounted_storage_bytes())
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                )?;
+                if let Some(tail) = &previous.tail_mutable_instruments[slot] {
+                    charge(
+                        tail.runtime
+                            .accounted_storage_bytes()
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    )?;
+                }
+                if let Some(typing) = &previous.tail_typing[slot] {
+                    charge(
+                        typing
+                            .declared_storage_bytes()
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    )?;
+                    typed_context_bytes = typed_context_bytes
+                        .checked_add(typing.arm().shared_context_bytes())
+                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                }
+            }
+            for (index, slot) in old_track_tail_slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.is_some())
+            {
+                let _ = slot;
+                charge(
+                    previous.device_chains[index]
+                        .accounted_storage_bytes()
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                )?;
+                if old_track_mutable_tail_slots[index].is_some() {
+                    charge(
+                        previous.mutable_instruments[index]
+                            .as_ref()
+                            .and_then(|runtime| runtime.accounted_storage_bytes())
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    )?;
+                }
+            }
+            if outgoing_typing_slot.is_some()
+                && let Some(input) = &previous.typing
+            {
+                charge(
+                    input
+                        .declared_storage_bytes()
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                )?;
+                typed_context_bytes = typed_context_bytes
+                    .checked_add(input.arm().shared_context_bytes())
+                    .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+            }
+            let complete = self
+                .accounted_runtime_storage_bytes()
+                .and_then(|bytes| bytes.checked_add(retained_bytes))
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            if complete > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            let context_bytes = self
+                .context_lease_plan
+                .iter()
+                .try_fold(
+                    self.revision
+                        .arrangement()
+                        .shared_contexts()
+                        .payload_bytes(),
+                    |bytes, lease| bytes.checked_add(lease.bytes),
+                )
+                .and_then(|bytes| bytes.checked_add(typed_context_bytes))
+                .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+            if context_bytes > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION {
+                return Err(SessionPlaybackError::SharedAnalyticContext);
+            }
+        }
+        if let Some(track) = typing_track
+            && previous
+                .typing
+                .as_ref()
+                .is_some_and(|input| input.arm().is_mutable() && input.active_voices() != 0)
+        {
+            let old_index = previous
+                .routes
+                .iter()
+                .position(|route| route.id == track)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let new_index = self
+                .routes
+                .iter()
+                .position(|route| route.id == track)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if mutable_continuity_new_for_old[old_index] != new_index
+                && mutable_retarget_new_for_old[old_index] != new_index
+            {
+                return Err(SessionPlaybackError::MutableInstrumentActive);
+            }
+        }
 
         let inherited_floor = if source_changed {
             Some(old_beat)
@@ -2168,6 +2895,12 @@ impl SessionPlayback {
             new_runtime
                 .retarget_from(old_runtime, proof)
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
+        if let Some((index, floor)) = typing_id_floor {
+            self.mutable_instruments[index]
+                .as_mut()
+                .expect("preflight typing allocator owner")
+                .reserve_occurrence_id_floor(floor);
         }
         for (old_index, old_route) in previous.routes.iter().enumerate() {
             if let Some(new_index) = self
@@ -2278,6 +3011,13 @@ impl SessionPlayback {
                 {
                     std::mem::swap(candidate, previous_tail);
                 }
+                if previous.tail_typing[slot]
+                    .as_ref()
+                    .is_some_and(|typing| typing.active_voices() != 0)
+                {
+                    std::mem::swap(&mut self.tail_typing[slot], &mut previous.tail_typing[slot]);
+                }
+                self.tail_typing_sends[slot] = previous.tail_typing_sends[slot];
             }
         }
         for (old_index, slot) in old_track_tail_slots.iter().copied().enumerate() {
@@ -2306,7 +3046,13 @@ impl SessionPlayback {
                     self.tail_mixes.get_mut(slot),
                     previous.revision.arrangement().tracks().get(old_index),
                 ) {
-                    *tail_mix = old_track.mix_at(previous.arrangement_frame);
+                    *tail_mix = if outgoing_typing_slot == Some(slot) {
+                        old_track
+                            .mix_at(previous.arrangement_frame)
+                            .without_effects()
+                    } else {
+                        old_track.mix_at(previous.arrangement_frame)
+                    };
                 }
                 if let (Some(start), Some((suffix_start, _))) = (
                     self.tail_suffix_starts.get_mut(slot),
@@ -2358,6 +3104,31 @@ impl SessionPlayback {
         self.release_order_scratch = next_order;
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.performance_frame = previous.performance_frame;
+        self.typing_cut_through = self
+            .typing_cut_through
+            .max(previous.typing_cut_through_epoch());
+        if typing_transition.is_none()
+            && let Some(input) = &previous.typing
+        {
+            self.typing_cut_through = self.typing_cut_through.max(input.epoch());
+        }
+        if let Some(slot) = outgoing_typing_slot {
+            let mut input = previous
+                .typing
+                .take()
+                .expect("preflight retained typed owner");
+            input.cut(input.epoch());
+            input.cancel_unapplied_onsets(previous.performance_frame);
+            self.tail_typing[slot] = Some(input);
+        }
+        if let Some(transition) = typing_transition
+            && let (Some(target), Some(source)) = (&mut self.typing, &previous.typing)
+        {
+            target.inherit(source, transition);
+        }
+        if let Some(input) = &mut self.typing {
+            input.cut(self.typing_cut_through);
+        }
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;

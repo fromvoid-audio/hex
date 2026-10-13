@@ -30,6 +30,32 @@ const MAX_TRACKS: usize = MAX_SESSION_ROUTE_TRACKS;
 /// Fixed number of route entries accepted by `Status::session_routes`.
 pub const SESSION_ROUTE_CAPACITY: usize = MAX_TRACKS;
 
+/// Complete fixed channel containers, ring payloads/headers and status slots.
+/// Prepared graph ownership is charged separately by the engine; optional
+/// spectrum worker/media ownership keeps its existing separate accounting.
+pub fn input_bridge_storage_bytes() -> Option<usize> {
+    fn ring<T>(capacity: usize) -> Option<usize> {
+        let alignment = std::mem::align_of::<RingBuffer<T>>();
+        let arc_header = (2 * std::mem::size_of::<usize>()).next_multiple_of(alignment);
+        std::mem::size_of::<RingBuffer<T>>()
+            .checked_add(arc_header)?
+            .checked_add(capacity.checked_mul(std::mem::size_of::<T>())?)
+    }
+    let arc_words = 2 * std::mem::size_of::<usize>();
+    std::mem::size_of::<Control>()
+        .checked_add(std::mem::size_of::<Callback>())?
+        .checked_add(std::mem::size_of::<Status>())?
+        .checked_add(arc_words)?
+        .checked_add(MAX_TRACKS.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
+        .checked_add(ring::<Publication>(1)?)?
+        .checked_add(ring::<Publication>(RETIRED)?)?
+        .checked_add(ring::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(spectrum_target::channel_heap_storage_bytes()?)?
+        .checked_add(processor_audition::channel_heap_storage_bytes()?)?
+        // Five mandatory shared atomics: stop/cut/ticket/closing/publication.
+        .checked_add(5 * (arc_words + std::mem::size_of::<AtomicU64>()))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRouteOwner {
     Arrangement,
@@ -127,7 +153,12 @@ impl AtomicRouteSlot {
 #[derive(Clone, Copy)]
 struct QueuedCommand {
     ticket: u64,
-    action: PlaybackAction,
+    action: QueuedAction,
+}
+#[derive(Clone, Copy)]
+enum QueuedAction {
+    Playback(PlaybackAction),
+    Typing(hex_engine::typing_protocol::Action),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,6 +326,7 @@ pub struct Status {
     /// Highest admitted command consumed, including commands discarded by Stop.
     /// Release publication follows transport state; readers acquire before reading it.
     pub consumed_command: AtomicU64,
+    pub typing: crate::typing::TypingStatus,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
     rejected_action_ticket: AtomicU64,
     rejected_action_reason: AtomicU32,
@@ -340,6 +372,7 @@ impl Status {
             peak_right: AtomicU32::new(0),
             applied_revision: AtomicU64::new(0),
             consumed_command: AtomicU64::new(0),
+            typing: crate::typing::TypingStatus::default(),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
             rejected_action_sequence: AtomicU64::new(0),
@@ -628,6 +661,7 @@ pub struct Control {
     retired: Consumer<Publication>,
     commands: Producer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
+    typing_cut: Arc<AtomicU64>,
     admitted_ticket: Arc<AtomicU64>,
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
@@ -645,6 +679,7 @@ pub struct Callback {
     retired: Producer<Publication>,
     commands: Consumer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
+    typing_cut: Arc<AtomicU64>,
     admitted_ticket: Arc<AtomicU64>,
     closing: Arc<AtomicBool>,
     publication_pending: Arc<AtomicBool>,
@@ -694,6 +729,7 @@ pub fn channel_with_spectrum(
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
     let pending_stop_marker = Arc::new(AtomicU64::new(0));
+    let typing_cut = Arc::new(AtomicU64::new(0));
     let admitted_ticket = Arc::new(AtomicU64::new(0));
     let closing = Arc::new(AtomicBool::new(false));
     let publication_pending = Arc::new(AtomicBool::new(false));
@@ -706,6 +742,7 @@ pub fn channel_with_spectrum(
             retired,
             commands,
             pending_stop_marker: pending_stop_marker.clone(),
+            typing_cut: Arc::clone(&typing_cut),
             admitted_ticket: admitted_ticket.clone(),
             closing: closing.clone(),
             publication_pending: publication_pending.clone(),
@@ -722,6 +759,7 @@ pub fn channel_with_spectrum(
             retired: returning,
             commands: events,
             pending_stop_marker,
+            typing_cut,
             admitted_ticket,
             closing,
             publication_pending,
@@ -987,6 +1025,29 @@ impl Control {
     }
 
     pub fn action_with_ticket(&mut self, action: PlaybackAction) -> Result<u64, PlaybackAction> {
+        let ticket = self
+            .enqueue(QueuedAction::Playback(action))
+            .map_err(|_| action)?;
+        if action_invalidates_processor_audition(action) {
+            let _ = self.processor_audition.cancel_immediately();
+        }
+        Ok(ticket)
+    }
+    pub fn typing_with_ticket(
+        &mut self,
+        action: hex_engine::typing_protocol::Action,
+    ) -> Result<u64, hex_engine::typing_protocol::Action> {
+        match self.enqueue(QueuedAction::Typing(action)) {
+            Ok(ticket) => Ok(ticket),
+            Err(_) => {
+                if let hex_engine::typing_protocol::Action::Off { token, .. } = action {
+                    self.cut_typing_immediately(token.epoch);
+                }
+                Err(action)
+            }
+        }
+    }
+    fn enqueue(&mut self, action: QueuedAction) -> Result<u64, QueuedAction> {
         if self.closing.load(Acquire) || self.revision == 0 {
             return Err(action);
         }
@@ -1002,10 +1063,10 @@ impl Control {
             .map_err(|PushError::Full(queued)| queued.action)?;
         self.command_ticket = ticket;
         self.admitted_ticket.store(ticket, Release);
-        if action_invalidates_processor_audition(action) {
-            let _ = self.processor_audition.cancel_immediately();
-        }
         Ok(ticket)
+    }
+    pub fn cut_typing_immediately(&self, through_epoch: u64) {
+        self.typing_cut.fetch_max(through_epoch, Release);
     }
     pub fn stop(&self) {
         // Ticket MAX is refused for ordinary commands, so the supported marker
@@ -1042,6 +1103,7 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.observe_typing_cut();
         self.processor_audition.begin_block();
         self.apply_processor_audition_boundary();
         self.spectrum_target.begin_block();
@@ -1387,7 +1449,14 @@ impl Callback {
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
     }
 
+    fn observe_typing_cut(&mut self) {
+        let through = self.typing_cut.load(Acquire);
+        if let Some(active) = self.active.as_mut() {
+            active.playback.cut_typing_input(through);
+        }
+    }
     fn consume_commands_through(&mut self, cut: CommandCut) {
+        self.observe_typing_cut();
         if cut.stop_through.is_some() {
             if let Some(active) = self.active.as_mut() {
                 active.playback.apply(PlaybackCommand::Stop);
@@ -1413,19 +1482,52 @@ impl Callback {
             {
                 let mut invalidate_audition = false;
                 if let Some(active) = self.active.as_mut() {
-                    match active.playback.try_apply_action(queued.action) {
-                        Ok(()) => {
-                            invalidate_audition =
-                                action_invalidates_processor_audition(queued.action);
+                    match queued.action {
+                        QueuedAction::Playback(action) => {
+                            match active.playback.try_apply_action(action) {
+                                Ok(()) => {
+                                    invalidate_audition =
+                                        action_invalidates_processor_audition(action);
+                                }
+                                Err(error) => self.status.publish_rejected_action(
+                                    queued.ticket,
+                                    error.telemetry_rejection(),
+                                ),
+                            }
                         }
-                        Err(error) => self
-                            .status
-                            .publish_rejected_action(queued.ticket, error.telemetry_rejection()),
+                        QueuedAction::Typing(action) => {
+                            if let Err(reason) =
+                                active.playback.queue_typing_input(queued.ticket, action)
+                            {
+                                self.status.typing.publish_refusal(
+                                    queued.ticket,
+                                    action,
+                                    active.playback.performance_frame(),
+                                    reason,
+                                );
+                            }
+                        }
                     }
+                } else if let QueuedAction::Typing(action) = queued.action {
+                    self.status.typing.publish_refusal(
+                        queued.ticket,
+                        action,
+                        0,
+                        hex_engine::typing_protocol::Refusal::NotAdmitted,
+                    );
                 }
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
                 }
+            } else if let QueuedAction::Typing(action) = queued.action {
+                self.status.typing.publish_refusal(
+                    queued.ticket,
+                    action,
+                    self.active
+                        .as_ref()
+                        .map_or(0, |active| active.playback.performance_frame()),
+                    hex_engine::typing_protocol::Refusal::Stale,
+                );
             }
         }
         self.publish_transport();
@@ -1513,6 +1615,28 @@ impl Callback {
         Ok(())
     }
 
+    pub fn finish_typing_output(&mut self, accepted: bool) {
+        if !accepted {
+            self.stop_after_fault();
+        }
+        if let Some(active) = self.active.as_mut() {
+            if accepted {
+                while let Some(application) = active.playback.take_typing_application() {
+                    self.status.typing.publish_application(application);
+                }
+            }
+            self.status.typing.publish_admission(
+                active.playback.typing_admission(),
+                self.typing_cut
+                    .load(Acquire)
+                    .max(active.playback.typing_cut_through_epoch()),
+            );
+        } else {
+            self.status
+                .typing
+                .publish_admission(None, self.typing_cut.load(Acquire));
+        }
+    }
     fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.closing.load(Acquire) {
             output.fill([0.0; 2]);

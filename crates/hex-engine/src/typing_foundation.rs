@@ -1,13 +1,12 @@
-//! Private proof-stage musical typing protocol. Included by tests only.
-//! No queue, atomics, provider, audio runtime, GPUI or project consumer exists.
-//! A future bridge must deliver cancellation before its captured input prefix,
-//! preserve queue tickets, acknowledge actual application, and charge all storage.
+//! Musical typing identities and bounded keyboard/release protocol.
+//! Queue acceptance is distinct from actual native application. Bridges must
+//! deliver cancellation before their input prefix and charge all retained state.
 
-pub(crate) const KEYS: [&str; 12] = ["a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j"];
-pub(crate) const MAX_VOICES: usize = 64;
+pub const KEYS: [&str; 12] = ["a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j"];
+pub const MAX_VOICES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Owner {
+pub struct Owner {
     pub generation: u64,
     pub track: u64,
     pub device: u64,
@@ -18,12 +17,12 @@ impl Owner {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Token {
+pub struct Token {
     pub epoch: u64,
     pub serial: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Identity {
+pub enum Identity {
     Authored {
         track: u64,
         clip: u64,
@@ -36,7 +35,7 @@ pub(crate) enum Identity {
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     On {
         owner: Owner,
         token: Token,
@@ -63,7 +62,7 @@ impl Action {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CutReason {
+pub enum CutReason {
     Stop,
     Seek,
     Reset,
@@ -73,12 +72,12 @@ pub(crate) enum CutReason {
     ReleaseQueueFull,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Cut {
+pub struct Cut {
     pub through_epoch: u64,
     pub reason: CutReason,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PressState {
+pub enum PressState {
     Offered,
     Queued(u64),
     Applied,
@@ -89,7 +88,7 @@ struct Press {
     state: PressState,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Focus {
+pub struct Focus {
     pub active_window: bool,
     pub text_editing: bool,
     pub modal: bool,
@@ -101,13 +100,13 @@ impl Focus {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Transport {
+pub enum Transport {
     Playing,
     Paused,
     Stopped,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     Stale,
     Invalid,
     NotPlaying,
@@ -116,19 +115,19 @@ pub(crate) enum Refusal {
     IdentityExhausted,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ResultKind {
+pub enum ResultKind {
     OnApplied,
     OffPending,
     Refused(Refusal),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AppliedResult {
+pub struct AppliedResult {
     pub action: Action,
     pub kind: ResultKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Keyboard {
+pub struct Keyboard {
     owner: Owner,
     epoch: u64,
     serial: u64,
@@ -153,12 +152,18 @@ impl Keyboard {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
+    pub fn owner(&self) -> Owner {
+        self.owner
+    }
     #[cfg(test)]
     pub fn seed_serial_for_test(&mut self, serial: u64) {
         self.serial = serial;
     }
     pub fn press_state(&self, key: &str) -> Option<PressState> {
-        self.presses[KEYS.iter().position(|candidate| *candidate == key)?].map(|press| press.state)
+        self.presses[KEYS
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(key))?]
+        .map(|press| press.state)
     }
     pub fn key_down(
         &mut self,
@@ -168,7 +173,10 @@ impl Keyboard {
         transport: Transport,
         admitted: bool,
     ) -> Result<Option<Action>, Refusal> {
-        let Some(index) = KEYS.iter().position(|candidate| *candidate == key) else {
+        let Some(index) = KEYS
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(key))
+        else {
             return Ok(None);
         };
         if repeat || self.down[index] {
@@ -207,7 +215,9 @@ impl Keyboard {
     }
     /// Capture owned releases regardless of current text focus or selection.
     pub fn key_up(&mut self, key: &str) -> Option<Action> {
-        let index = KEYS.iter().position(|candidate| *candidate == key)?;
+        let index = KEYS
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(key))?;
         self.down[index] = false;
         let press = self.presses[index].take()?;
         Some(Action::Off {
@@ -317,19 +327,19 @@ struct Voice {
     gate: Gate,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Budget {
+pub struct Budget {
     pub voice_limit: u8,
     pub other_voices: u8,
     pub events_remaining: u16,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReleaseBatch {
+pub struct ReleaseBatch {
     pub identities: [Option<Identity>; MAX_VOICES],
     pub len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Ledger {
+pub struct Ledger {
     owner: Owner,
     epoch: u64,
     cancelled_through: u64,

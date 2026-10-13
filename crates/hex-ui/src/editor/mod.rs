@@ -46,6 +46,7 @@ mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
 mod musical_time;
+mod musical_typing;
 mod overview;
 mod play_intent;
 mod project_recovery;
@@ -406,6 +407,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 }
 
 pub(super) struct EditorView {
+    musical_typing: musical_typing::MusicalTyping,
     service: Service,
     audio: Option<PreparedOutput>,
     recovery_open: Option<hex_audio::RecoveryOpen>,
@@ -651,6 +653,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cut_musical_typing(hex_engine::typing_protocol::CutReason::WindowInactive);
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.processor_audition.cancel_immediately();
@@ -672,6 +675,7 @@ impl EditorView {
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
+            musical_typing: musical_typing::MusicalTyping::default(),
             service,
             audio,
             state: None,

@@ -1,102 +1,136 @@
-# private musical typing foundation
+# musical typing: finite native input stage
 
-Pulse26 / canonical draft PR190. This is an isolated test-only host-input
-protocol, not working musical typing, MIDI input or a prepared audio consumer.
-`hex-engine/src/typing_foundation.rs` has no production module declaration.
-Engine integration tests include its single source; the existing audio
-allocation-probe test infrastructure reuses those tests and that same source.
-No provider, engine renderer, command ring, UI/service actor, project codec,
-Operator state or shared widget has been wired or changed.
+Pulse #26 / canonical draft PR190. The original private protocol foundation is
+now consumed by the engine, the existing audio command channel, the session
+control worker and GPUI keyboard capture. This is the approved finite computer
+keyboard stage. The original recording and MIDI I/O issue remains incomplete.
+Native optimized macOS keyboard/CoreAudio, listening, device delivery and
+hardware deadline acceptance are separate pending requirements.
 
-## approved finite product contract
+## user contract
 
-Opt-in typing arms one explicit stable track/device. The twelve lowercase keys
-`a w s e d f t g y h u j` map to semitone pitches60–71, fixed velocity100.
-NoteOn is offered only for a playing transport, admitted target, active window
-and focus permitting musical input. Text editing, modals and modified keys
-prevent new onsets. Owned key-up remains independent of current selection and
-focus, allowing held notes while editing controls. Autorepeat and duplicate
-physical downs never create another occurrence. No implicit Play or project
-note editing, capture, recording, octave/velocity controls or MIDI support.
+The transport toolbar has an explicit `typing · off / waiting / ready` arm
+control. Select a track with an admitted native instrument, arm it and start
+Play explicitly. Readiness here reports actual audio admission, not queue
+submission or issue/PR review readiness. The lowercase canvas keys
+`a w s e d f t g y h u j` map to pitches 60–71 (c4–b4), fixed velocity 100.
+Sine, FM4 and Operator opt into explicit held/released note sampling; other
+providers default to unsupported. A bounded palette validates all twelve keys
+on the control worker and exposes the actual supported-key bitmap.
 
-This module's `Focus` is a pure decision adapter. Actual GPUI focus/capture
-hooks, text-widget classification and native key delivery are not installed.
-No physical keyboard-unplug notification is established.
+New onsets require a playing transport, active window, admitted original owner
+and canvas/MIDI focus. Text editing, modals, modifiers and a pending seek block
+new notes. Owned key-up is captured before child widgets, even after focus or
+selection changes. Autorepeat/duplicate downs cannot start another occurrence.
+Disarm/window deactivation/audio failure cut the typing epoch. Native keyboard
+unplug and hardware MIDI notifications are not provided by this stage.
 
-## identities, receipts and cancellation
+Arming/disarming never edits project state, adds an Undo step, creates authored
+clips or implicitly starts transport. Full presets, oscillator enable payloads,
+untouched numeric drafts, freely positioned hybrid-track instruments and shared
+lattice controls retain their existing contracts and original PR histories.
 
-Authored and live identities are distinct enum variants; the full-width live
-press token is `(epoch, serial)` plus its original owner. No high-bit reservation,
-fake ClipId/NoteId, authored clip or artificial gate deadline is used. A future
-native runtime bridge must assign IDs from its shared occurrence allocator and
-retain this tagged provenance; passing a press serial as a native occurrence
-ID is not authorized by this model.
+## ownership and application
 
-Checked serial exhaustion refuses a new press while retaining existing
-releases. Epoch exhaustion still returns the mandatory cancellation watermark
-and permanently prevents rearming beyond it. Queue tickets0/u64::MAX are
-invalid, matching the existing command channel's reserved values. A queue
-receipt only changes Offered to Queued; it cannot set Applied. The external
-audio-transaction result is separate. A capacity of32 does not imply that any
-particular offer was enqueued, consumed or applied.
+Canonical project generation zero is valid; transient owner encoding uses its
+checked `generation + 1` incarnation. Track/device IDs are the original IDs.
+Physical press tokens retain their original owner/epoch/serial. Authored source
+signatures retain real clip/note IDs, musical values and loop pass. Mutable
+native live and authored occurrences use the SAME checked host occurrence
+allocator and separate provenance ledgers; a press serial is not a native ID.
 
-On refusal removes the matching pending press, suppressing further downs until
-key-up. A failed release admission returns an external epoch cut that disarms
-all typing-owned presses; it must be published even when the ring is full.
-Rearming requires observation of the previous cut. Delayed acknowledgements,
-old-epoch onsets and old cuts cannot recreate or alter newer presses.
+`NoteGate::Held` is explicit. Release carries the original note age at actual
+NoteOff. No fake infinite finite gate, invented clip, authored note or synthetic
+clock horizon represents a physical hold. The existing authored sampler ABI
+remains 344 bytes and its finite-note law remains unchanged.
 
-The reference ledger consumes monotonically ordered queue tickets, including
-refused actions, and applies a trusted cancellation watermark before its
-captured queue prefix. Tests enumerate both old-onset/cut arrival orders.
-There are no atomics or ring in this proof: future Acquire/Release publication,
-callback entry cuts and transport races require real bridge tests. A caller
-cannot treat these deterministic interleavings as proof of concurrent delivery.
+The real 32-command audio ring returns queue tickets. Consumption is not
+application. Receipts are staged until the complete instrument/suffix render
+transaction commits, then published only after final channel/format validation
+and output copy. The bounded atomic snapshot reports original owner, actual
+performance frame, action and refusal. Mono overflow and nonfinite output use
+the existing fault Stop/cut path; failed output cannot publish an old successful
+On later. This adds no recording transaction or rollback claim.
 
-## release and resource ownership
+A separate atomic cancellation watermark survives a full release queue and is
+observed before publication and the captured command prefix. A paused transport
+freezes age and holds pending releases until BEFORE its first resumed sample.
+An unapplied On cancelled by Pause cannot resurrect on resume. Stop/reset and
+successful Seek cut the epoch; refused Seek retains prior ownership. New input
+stays blocked while a seek is pending. Rearm requires the previous cut receipt,
+including after replacing an audio channel. Counter exhaustion refuses safely.
 
-The ledger reserves up to64 live occurrences; actual admission combines them
-with externally supplied authored/other reservations under64 analytic or16
-Operator mutable voices. It validates an externally supplied remaining-event
-budget within0–256. These inputs are not a native admission certificate; the
-future bridge must derive and consume them against the actual combined batch,
-provider/Nyquist checks and all owned storage without weakening existing caps.
+## complete render and publication path
 
-Held, ReleasePending and Releasing are separate. Off remains bound to the
-original owner and creates a pending release even while paused. Pause produces
-no release batch; resumed rendering must dispatch and acknowledge pending
-releases before its first sample. Returning a batch does not change the ledger;
-only explicit release-application and retirement acknowledgements do. Released
-reservations remain occupied until retirement, including across rearming.
-No envelope time, PCM, chase or retirement deadline is invented here.
+Audio uses the real track prefix once; the instrument adds authored and typed
+sources at its canonical gap; the suffix runs once. Memoryless chains use their
+validated prefix/suffix matrices, while stateful chains use the actual native
+runtime. Track automation/mix, sends, Return feeds and Main then run once.
+Silent Arrangement/Session sources can still carry live input. Mutable authored
+route changes retain their existing active-gate refusal; typing-only runtime
+ownership does not block source navigation. Linear export
+refuses transient arming and does not invent recorded notes.
 
-Disarm, window inactivity, audio disconnect and queue-full recovery mark
-typing-owned gates for release. Stop/seek/reset cuts clear the transient ledger
-to model the existing global reset boundary. These operations cannot edit
-authored identities; production reset/retained-tail behavior still needs its
-ordinary host transaction. Computer keyboard peripheral-disconnect detection
-is not implemented merely because an AudioDisconnected reason exists.
+Compatible publication preserves typed phase/age/feedback/LFO and original
+physical authored gates. Pre-cut candidate chase is suppressed against retained
+source identity; changed future authored signatures enter only at their real
+eligible boundary. Analytic retained voices use the existing bounded release
+bank with full authored signatures; mutable original proofs retain their native
+IDs and absolute original gate/release deadlines. A preflight failure leaves
+all old owners intact. Compatible mutable handoff retains the established
+provider/topology proof, including unchanged effect configuration requirements.
+Instrument type or processing-class changes explicitly cut/disarm and require
+rearming; this stage does not invent an analytic-to-mutable voice import.
 
-All protocol types have fixed inline storage and no Drop. Tests measure total
-and signed-net allocations/bytes for construction, offers, receipts, release,
-pause/resume and retirement. This is not a callback allocation, full playback
-budget, performance, native listening or hardware deadline claim.
-Rust1.94 on this Linux64 build measures keyboard824B, ledger3632B,
-release batch3080B, action48B and result56B. Stack/owner copies and eventual
-bridge scratch must all be charged separately; these are not total host costs.
+Structural disarm retains the original instrument palette/runtime, suffix, mix
+and stable Return send IDs through release. An absent original Return refuses
+atomically rather than redirecting to another bus at the same index. Existing
+safe explicit Stop remains available before such a structural edit. This does
+not add removed-bus source-input hosting to the Return effect tail bank.
 
-## remaining integration and acceptance
+Before owner movement, admission checks combined authored/live voice capacity
+(64 analytic, 16 Operator mutable), the 256-event limit including releases,
+checked IDs, release/suffix/context resources, ACK capacity and source fences.
+Source/global density and retained-voice bounds are conservative; insufficient
+proof refuses instead of stealing voices or widening caps. Queued actions can
+still receive an explicit application refusal when capacity is reached.
 
-Await coordinator handoff before touching engine preview/service/UI owners.
-Required later work: real arm preparation and acknowledgement, complete palette
-and ledger accounting, native-provider admission, shared authored/live voice
-dispatch at the single freely positioned instrument, actual queues/priority
-cuts/cancellation, compatible history handoff and retired-owner release,
-GPUI focus/key capture, audio lifecycle and visible errors/recovery. Then run
-exact-source full localCI, real callback allocation and changed-path timing
-checks, optimized macOS/input/listening acceptance and explicit human review.
+## storage and verification boundaries
 
-Full26 audio input/monitoring/recording, controllers/MPE, external MIDI output
-and Session capture remain separate. Held-note2372 and LFO review2384 remain
-pending until an actual usable input pipeline and native candidate exist.
-HOLD remains: blocked/draft, no gate/check receipt or readiness registration.
+The control-prepared palette charges captured state, exact effect topology,
+contexts and ownership bookkeeping. The actual performance owner charges both
+voice ledgers, pending actions, native event scratch, receipts and admission
+stamp. Retained typing owners, original runtime ledgers and suffix chains are
+charged before publication. Shared configuration stays within the existing
+2 MiB context bound; complete playback runtime stays within 32 MiB. No cap or
+accounting exclusion is changed.
+
+The audio bridge charge includes Control/Callback containers, status atomics,
+all mandatory publication/retirement/command rings and auxiliary channel
+allocations, including Arc header alignment. A Linux allocation probe compares
+that charge with actual owned allocations; callback tests cover total and net
+allocation/deallocation across Sine, FM4, static Operator, LFO, feedback and
+combined LFO/feedback. The original reference Ledger remains a mathematical
+model; its tests do not replace actual channel/PCM/GPUI tests.
+
+Meaningful regressions cover independent Sine hold/release math, all twelve
+pitches, mixed authored/typed continuity and future edits, capacity/ID refusal,
+Pause releases, output rejection, queue-full recovery, loops, Session routing,
+hybrid placement/effects/automation/Return feeds, retained release ownership,
+export isolation, worker/history stamps and rendered toolbar/key capture with
+a real bounded headless audio channel. The latter is a test-only injection;
+production has no headless output fallback. A separate ignored optimized Linux
+timing probe measures the changed callback/receipt path, not native deadlines.
+
+## pending original acceptance
+
+Actual optimized macOS keyboard/CoreAudio delivery, held-note editing/listening,
+shutdown/device lifecycle and deadline acceptance remain pending. The original
+#26 audio input/monitoring/recording, recoverable capture, hardware MIDI input,
+zero-velocity MIDI NoteOff, expression/MPE, MIDI output and
+Session-to-Arrangement capture are not implemented by this finite stage.
+#2372/#2384 can now use a real source input path for their native review, but
+neither their native criteria nor broad #26 completion is claimed here.
+
+The coordination HOLD keeps Pulse blocked, PR190 draft, and gates/verification
+receipts/readiness unregistered. No merge, deployment, delivery or Done occurs.

@@ -45,6 +45,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.poll_musical_typing();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -716,6 +717,7 @@ impl EditorView {
         );
         self.state = Some(event.state);
         if event.project_replaced {
+            self.cut_musical_typing(hex_engine::typing_protocol::CutReason::Reset);
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
             self.midi_hit_cycle = None;
@@ -1700,6 +1702,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.cut_musical_typing(hex_engine::typing_protocol::CutReason::Stop);
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();

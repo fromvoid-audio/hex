@@ -287,9 +287,12 @@ impl MutableInstrumentTrackRuntime {
         !self.pair.committed_is_quiescent()
     }
 
-    #[cfg(test)]
     pub(crate) fn next_occurrence_id(&self) -> u64 {
         self.next_id
+    }
+    pub(crate) fn reserve_occurrence_id_floor(&mut self, floor: u64) {
+        self.next_id = self.next_id.max(floor);
+        self.next_id_scratch = self.next_id;
     }
 
     #[cfg(test)]
@@ -426,6 +429,9 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn proofs(&self) -> impl Iterator<Item = MutableOccurrence> + '_ {
         self.primary.iter().copied()
     }
+    pub(crate) fn speculative_proofs(&self) -> impl Iterator<Item = MutableOccurrence> + '_ {
+        self.scratch.iter().copied()
+    }
 
     /// Cut still-gated occurrences at a publication boundary when the
     /// candidate has no enabled instrument. The runtime receives the matching
@@ -479,6 +485,46 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_live(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            None,
+        )
+    }
+    pub(crate) fn allocate_live_id(&mut self) -> Result<u64, crate::Invalid> {
+        self.next_id_scratch = self
+            .next_id_scratch
+            .checked_add(1)
+            .ok_or(crate::Invalid("live occurrence identity exhausted"))?;
+        Ok(self.next_id_scratch)
+    }
+    pub(crate) fn preflight_live_publication_ids(&self) -> Result<(), crate::Invalid> {
+        // A publication may expose one complete bounded event query and its
+        // already queued typing prefix. Future queries check again before commit.
+        self.next_id
+            .checked_add((MAX_MUTABLE_EVENTS_PER_QUERY + 32) as u64)
+            .ok_or(crate::Invalid("publication occurrence identity exhausted"))?;
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)] // Same prepared segment plus its explicit transient source.
+    pub(crate) fn process_segment_with_live(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        live: Option<&crate::live_input::TypingPerformance>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         let performance_end = performance_start
@@ -527,20 +573,21 @@ impl MutableInstrumentTrackRuntime {
             }
             self.scratch
                 .retain(|proof| !proof.note_off_sent || proof.quiet_deadline_frame > onset_frame);
-            if self
-                .scratch
-                .iter()
-                .any(|active| active.signature.key == onset.key)
-                || onsets.iter().take(onset_index).any(|previous| {
-                    previous.key == onset.key
-                        && !has_mutable_suppression(
-                            suppressions,
-                            MutableOccurrenceSignature::new(previous),
-                            performance_start
-                                .saturating_add(previous.source_start.saturating_sub(source_start)),
-                        )
-                })
-            {
+            if self.scratch.iter().any(|active| {
+                if live.is_some() {
+                    active.signature == signature
+                } else {
+                    active.signature.key == onset.key
+                }
+            }) || onsets.iter().take(onset_index).any(|previous| {
+                previous.key == onset.key
+                    && !has_mutable_suppression(
+                        suppressions,
+                        MutableOccurrenceSignature::new(previous),
+                        performance_start
+                            .saturating_add(previous.source_start.saturating_sub(source_start)),
+                    )
+            }) {
                 return Err(MutableInstrumentRuntimeError::DuplicateOccurrence);
             }
             self.next_id_scratch = self
@@ -584,7 +631,12 @@ impl MutableInstrumentTrackRuntime {
                 // Gateoffs at the exclusive block end are emitted at offset
                 // zero of the next segment, preserving half-open semantics.
             }
-            if self.scratch.len() >= MAX_MUTABLE_OCCURRENCE_PROOFS {
+            if self
+                .scratch
+                .len()
+                .checked_add(live.map_or(0, |live| live.speculative_voices()))
+                .is_none_or(|count| count >= MAX_MUTABLE_OCCURRENCE_PROOFS)
+            {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }
             let quiet_deadline_frame = gate_end_frame
@@ -600,6 +652,10 @@ impl MutableInstrumentTrackRuntime {
             });
         }
 
+        if let Some(live) = live {
+            live.append_native_events(performance_start, events)
+                .map_err(|_| MutableInstrumentRuntimeError::OccurrenceCapacity)?;
+        }
         events.sort_unstable_by_key(|event| {
             let (offset, is_on, occurrence_id) = match *event {
                 NativeInstrumentEvent::NoteOff {

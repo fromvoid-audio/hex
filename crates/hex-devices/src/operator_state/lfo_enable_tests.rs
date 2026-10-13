@@ -60,6 +60,7 @@ fn runtime(factory: OperatorLfoFactory) -> Runtime {
         voices: [Voice::default(); VOICES],
         phase: Phase::default(),
         enable_ramp: None,
+        released: 0,
     }
 }
 

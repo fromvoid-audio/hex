@@ -164,6 +164,15 @@ impl GainLaneEdit {
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    ArmMusicalTyping {
+        target: hex_engine::live_input::TypingTarget,
+        epoch: u64,
+        bridge_bytes: usize,
+    },
+    DisarmMusicalTyping {
+        project_generation: u64,
+        epoch: u64,
+    },
     SaveDevicePreset {
         owner: preset::Owner,
         path: PathBuf,
@@ -681,6 +690,7 @@ fn run_worker(
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut project_generation = 0_u64;
     let mut device_gesture = GestureMachine::default();
+    let mut musical_typing: Option<(hex_engine::live_input::TypingTarget, u64, usize, bool)> = None;
     let initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
@@ -738,6 +748,7 @@ fn run_worker(
         let mut duplicate_complete = false;
         let mut restore_complete = None;
         let mut restore_prepared = None;
+        let mut prepared_typing_playback = None;
         let mut status = None;
         let mut error = None;
         let mut export_completion = None;
@@ -1544,6 +1555,57 @@ fn run_worker(
                         },
                     }
                 }
+                Request::ArmMusicalTyping {
+                    target,
+                    epoch,
+                    bridge_bytes,
+                } => {
+                    if target.project_generation != project_generation
+                        || target.project_revision != revision
+                    {
+                        error = Some(
+                            "typing target changed; select the instrument and arm again".into(),
+                        );
+                    } else if device_gesture.snapshot().is_some() {
+                        error =
+                            Some("finish parameter editing before arming musical typing".into());
+                    } else {
+                        let prepared = compiled
+                            .as_ref()
+                            .filter(|(stamp, _)| *stamp == revision)
+                            .map(|(_, artifact)| Arc::clone(artifact));
+                        match prepared {
+                            Some(prepared) => {
+                                let mut playback = native_playback(Arc::clone(&prepared));
+                                match hex_engine::live_input::PreparedTypingArm::prepare(session.project(), target)
+                                    .and_then(|arm| playback.prepare_typing_input_with_bridge(arm, epoch, bridge_bytes)) {
+                                    Ok(()) => { musical_typing = Some((target, epoch, bridge_bytes, true)); prepared_typing_playback = Some(playback);
+                                        status = Some("musical typing arm prepared; awaiting audio admission".into()); }
+                                    Err(reason) => error = Some(reason.0.into()),
+                                }
+                            }
+                            None => error = Some("typing needs a prepared native playback graph; retry after audio recovery".into()),
+                        }
+                    }
+                }
+                Request::DisarmMusicalTyping {
+                    project_generation: expected,
+                    epoch,
+                } => {
+                    if expected != project_generation
+                        || musical_typing.is_some_and(|(_, current, _, _)| current != epoch)
+                    {
+                        error = Some("typing disarm belongs to an older project or arm".into());
+                    } else {
+                        musical_typing = musical_typing
+                            .map(|(target, epoch, bytes, _)| (target, epoch, bytes, false));
+                        restore_prepared = compiled
+                            .as_ref()
+                            .filter(|(stamp, _)| *stamp == revision)
+                            .map(|(_, artifact)| Arc::clone(artifact));
+                        status = Some("musical typing disarmed".into());
+                    }
+                }
             }
         }
 
@@ -1551,6 +1613,7 @@ fn run_worker(
             range_clipboard = None;
             device_gesture.reset();
             project_generation = project_generation.saturating_add(1);
+            musical_typing = None;
         }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
@@ -1628,13 +1691,40 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if let Some(prepared) = canonical_prepared {
-            Some(native_playback(prepared))
+        let playback_source = if let Some(prepared) = canonical_prepared {
+            Some(prepared)
         } else if let Some(prepared) = preview_prepared {
-            Some(native_playback(prepared))
+            Some(prepared)
         } else {
-            restore_prepared.map(native_playback)
+            restore_prepared
         };
+        let playback = prepared_typing_playback.or_else(|| {
+            playback_source.map(|prepared| {
+                let mut playback = native_playback(prepared);
+                if let Some((mut target, epoch, bridge_bytes, armed)) = musical_typing {
+                    target.project_revision = revision;
+                    let project = device_preview
+                        .as_ref()
+                        .map_or(session.project(), |preview| preview.state.project.as_ref());
+                    match hex_engine::live_input::PreparedTypingArm::prepare(project, target)
+                        .and_then(|arm| {
+                            playback.prepare_typing_input_with_bridge(arm, epoch, bridge_bytes)
+                        }) {
+                        Ok(()) => {
+                            if !armed {
+                                playback.cut_typing_input(epoch);
+                            }
+                            musical_typing = Some((target, epoch, bridge_bytes, armed));
+                        }
+                        Err(reason) => {
+                            musical_typing = None;
+                            error = Some(format!("musical typing needs rearming: {}", reason.0));
+                        }
+                    }
+                }
+                playback
+            })
+        });
         if !send_event(
             &events,
             Event {
@@ -1901,6 +1991,89 @@ mod service_tests {
 
     struct TestDir(PathBuf);
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn musical_typing_preparation_is_history_free_stamped_and_disarmable() {
+        let service = Service::new(48_000, 16, 0).unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "typing".into(),
+            }))
+            .unwrap();
+        let added = next_event(&service);
+        let track = added.state.project.tracks()[0].id();
+        let device = added
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let target = hex_engine::live_input::TypingTarget {
+            project_generation: 0,
+            project_revision: added.state.revision,
+            track,
+            device,
+        };
+        service
+            .submit(Request::ArmMusicalTyping {
+                target,
+                epoch: 1,
+                bridge_bytes: 31_088,
+            })
+            .unwrap();
+        let armed = next_event(&service);
+        assert!(armed.error.is_none(), "{:?}", armed.error);
+        assert_eq!(armed.state.project, added.state.project);
+        assert_eq!(armed.state.revision, added.state.revision);
+        assert_eq!(armed.state.can_undo, added.state.can_undo);
+        let mut playback = armed.playback.unwrap();
+        assert!(!playback.playing(), "arming must never implicitly play");
+        let admission = playback.typing_admission().unwrap();
+        assert!(admission.armed);
+        assert_eq!(admission.owner, target.owner().unwrap());
+        assert_eq!(admission.allowed_keys, 0xfff);
+        service
+            .submit(Request::ArmMusicalTyping {
+                target: hex_engine::live_input::TypingTarget {
+                    project_generation: 1,
+                    ..target
+                },
+                epoch: 2,
+                bridge_bytes: 31_088,
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_deref().unwrap().contains("target changed"));
+        assert!(
+            refused.playback.is_none(),
+            "stale request must not replace existing audio ownership"
+        );
+        assert_eq!(refused.state.project, added.state.project);
+        service
+            .submit(Request::DisarmMusicalTyping {
+                project_generation: 0,
+                epoch: 1,
+            })
+            .unwrap();
+        let disarmed = next_event(&service);
+        assert!(disarmed.error.is_none());
+        assert_eq!(disarmed.state.revision, added.state.revision);
+        assert_eq!(disarmed.state.project, added.state.project);
+        let mut next = disarmed.playback.unwrap();
+        next.try_inherit_runtime_from(&mut playback).unwrap();
+        let admission = next.typing_admission().unwrap();
+        assert!(!admission.armed);
+        assert_eq!(admission.cut_through_epoch, 1);
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        assert!(
+            undone.state.project.track(track).is_none(),
+            "arm/disarm must not add undo steps"
+        );
+    }
 
     #[test]
     fn service_seek_worker_returns_exact_prepared_revision_and_destination() {

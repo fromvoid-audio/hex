@@ -19,7 +19,12 @@ impl SessionPlayback {
         }
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
-            SessionPlaybackCommand::Pause => self.playing = false,
+            SessionPlaybackCommand::Pause => {
+                self.playing = false;
+                if let Some(typing) = &mut self.typing {
+                    typing.cancel_unapplied_onsets(self.performance_frame);
+                }
+            }
             SessionPlaybackCommand::Stop => {
                 if self.stop_transport() {
                     self.advance_route_state_generation();
@@ -56,6 +61,12 @@ impl SessionPlayback {
         self.route_historical_floors.fill(None);
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
+        if let Some(typing) = &mut self.typing {
+            typing.reset();
+        }
+        for typing in self.tail_typing.iter_mut().flatten() {
+            typing.reset();
+        }
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
@@ -136,6 +147,11 @@ impl SessionPlayback {
                 changed |= launch_frame != frame;
             }
         }
+        // All seek refusal checks above precede the input cut. A refused seek
+        // preserves the original owner and held-note state.
+        if let Some(typing) = &mut self.typing {
+            typing.reset();
+        }
         self.performance_frame = frame;
         self.arrangement_frame = frame;
         self.arrangement_loop_pass = 0;
@@ -164,6 +180,9 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
+        }
+        for typing in self.tail_typing.iter_mut().flatten() {
+            typing.reset();
         }
         for route in &mut self.routes {
             route.pending = None;
@@ -358,6 +377,33 @@ impl SessionPlayback {
         self.release_scratch
             .sort_unstable_by_key(|entry| (entry.track_index, entry.tail_group, entry.order));
         let route_changed = self.routes != self.route_scratch;
+        if route_changed
+            && let Some(index) = self.typing.as_ref().and_then(|input| {
+                self.routes
+                    .iter()
+                    .position(|route| route.id == input.arm().target().track)
+            })
+            && self.routes[index] != self.route_scratch[index]
+        {
+            let reserved = self
+                .typing_route_reservation(index)
+                .ok_or(SessionPlaybackError::MutableInstrumentActive)?;
+            self.typing
+                .as_mut()
+                .ok_or(SessionPlaybackError::MutableInstrumentActive)?
+                .reserve_authored_voices(reserved)
+                .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?;
+        }
+        if route_changed
+            && let Some(index) = self.typing.as_ref().and_then(|input| {
+                self.routes
+                    .iter()
+                    .position(|route| route.id == input.arm().target().track)
+            })
+            && self.routes[index] != self.route_scratch[index]
+        {
+            self.remember_typing_route_authored(index, self.performance_frame, false)?;
+        }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
@@ -430,12 +476,17 @@ impl SessionPlayback {
             let next_owner =
                 self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
             if next_owner != owner {
-                if moment.target_frame > self.performance_frame && self.playing {
+                let typing_capacity = self.typing_route_reservation(index);
+                if moment.target_frame > self.performance_frame
+                    && self.playing
+                    && (typing_capacity.is_none() || !self.typing_route_is_author_free(index))
+                {
                     return Err(SessionPlaybackError::MutableInstrumentRouteBoundary);
                 }
                 if self.mutable_instruments[index]
                     .as_ref()
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
+                    && typing_capacity.is_none()
                 {
                     return Err(SessionPlaybackError::MutableInstrumentActive);
                 }
@@ -494,6 +545,10 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
                 let mut failure = None;
                 let mut next_order = self.release_order_scratch;
+                let typing_owner = self
+                    .typing
+                    .as_ref()
+                    .is_some_and(|typing| self.routes[index].id == typing.arm().target().track);
                 track
                     .for_each_active_midi_span(source_frame, |span, sampler| {
                         // The transition boundary belongs to the incoming
@@ -502,6 +557,33 @@ impl SessionPlayback {
                         // outgoing tail.
                         if span.start >= source_frame {
                             return;
+                        }
+                        if typing_owner {
+                            let proof =
+                                crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                                    crate::mutable_instrument::MutableOccurrenceKey::new(
+                                        self.routes[index].id,
+                                        span.clip,
+                                        span.note,
+                                        span.iteration,
+                                        self.arrangement_loop_pass,
+                                    ),
+                                    span.onset_beat,
+                                    span.gate_end_beat,
+                                    span.pitch,
+                                    span.channel,
+                                    span.velocity,
+                                );
+                            if self.suppression_scratch.iter().any(|entry| {
+                                entry.until_frame > performance_frame
+                                    && (entry.mutable_signature == Some(proof)
+                                        || entry.mutable_signature.is_none()
+                                            && entry.track == self.routes[index].id
+                                            && (entry.clip, entry.note, entry.iteration)
+                                                == (span.clip, span.note, span.iteration))
+                            }) {
+                                return;
+                            }
                         }
                         let voice = match MidiReleaseVoice::from_finite_span(
                             span.start,

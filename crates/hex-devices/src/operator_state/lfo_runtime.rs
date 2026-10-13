@@ -87,6 +87,7 @@ struct Runtime {
     voices: [Voice; VOICES],
     phase: Phase,
     enable_ramp: Option<EnableRamp>,
+    released: u16,
 }
 
 /// One owner-level ramp, shared by all current notes, including new onsets.
@@ -147,6 +148,7 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
             voices: [Voice::default(); VOICES],
             phase: Phase::default(),
             enable_ramp: None,
+            released: 0,
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -171,18 +173,20 @@ impl Runtime {
         self.voices = other.voices;
         self.phase = other.phase;
         self.enable_ramp = other.enable_ramp;
+        self.released = other.released;
     }
     fn current_levels(&self) -> [f64; 4] {
         let target = self.factory.configuration.effective_oscillator_levels();
         self.enable_ramp.map_or(target, |ramp| ramp.levels(target))
     }
     fn expire(&mut self) {
-        for voice in &mut self.voices {
+        for (index, voice) in self.voices.iter_mut().enumerate() {
             if voice.id != 0
-                && voice.gate != u64::MAX
+                && self.released & (1 << index) != 0
                 && voice.age >= voice.gate.saturating_add(self.factory.release)
             {
                 *voice = Voice::default();
+                self.released &= !(1 << index);
             }
         }
     }
@@ -223,7 +227,7 @@ impl Runtime {
                 *slot = Voice {
                     note,
                     id: occurrence_id,
-                    gate: u64::MAX,
+                    gate: 0,
                     lfo: if self.factory.lfo.retrigger() {
                         Phase::default()
                     } else {
@@ -233,16 +237,19 @@ impl Runtime {
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
-                let voice = self
+                let index = self
                     .voices
-                    .iter_mut()
-                    .find(|v| v.id == occurrence_id && v.id != 0 && v.gate == u64::MAX)
+                    .iter()
+                    .position(|v| v.id == occurrence_id && v.id != 0)
+                    .filter(|index| self.released & (1 << index) == 0)
                     .ok_or(Error::InvalidEventBatch)?;
+                let voice = &mut self.voices[index];
                 voice
                     .age
                     .checked_add(self.factory.release)
                     .ok_or(Error::InvalidEventBatch)?;
                 voice.gate = voice.age;
+                self.released |= 1 << index;
                 self.expire();
             }
         }
@@ -334,7 +341,7 @@ impl MutableInstrumentRuntime for Runtime {
             } else {
                 law.rate() / f64::from(self.factory.rate)
             };
-            for voice in &mut self.voices {
+            for (index, voice) in self.voices.iter_mut().enumerate() {
                 if voice.id == 0 {
                     continue;
                 }
@@ -344,28 +351,17 @@ impl MutableInstrumentRuntime for Runtime {
                     self.phase
                 };
                 let multiplier = (lfo.value(law.0[1]) * law.amount()).exp2();
-                let (sample, previous) = if let Some(levels) = levels {
-                    self.factory.configuration.sample_lfo_with_levels(
-                        self.factory.table,
-                        &voice.note,
-                        voice.age,
-                        voice.gate,
-                        &voice.phases,
-                        self.factory.feedback,
-                        voice.previous,
-                        Some(levels),
-                    )
-                } else {
-                    self.factory.configuration.sample_lfo(
-                        self.factory.table,
-                        &voice.note,
-                        voice.age,
-                        voice.gate,
-                        &voice.phases,
-                        self.factory.feedback,
-                        voice.previous,
-                    )
-                };
+                let gate = (self.released & (1 << index) != 0).then_some(voice.gate);
+                let (sample, previous) = self.factory.configuration.sample_lfo_with_levels(
+                    self.factory.table,
+                    &voice.note,
+                    voice.age,
+                    gate,
+                    &voice.phases,
+                    self.factory.feedback,
+                    voice.previous,
+                    levels,
+                );
                 frame[0] += sample;
                 frame[1] += sample;
                 voice.previous = previous;
@@ -395,6 +391,7 @@ impl MutableInstrumentRuntime for Runtime {
         self.voices = [Voice::default(); VOICES];
         self.phase = Phase::default();
         self.enable_ramp = None;
+        self.released = 0;
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)

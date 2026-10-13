@@ -264,6 +264,7 @@ impl PreparedOperatorConfiguration {
         note.steps
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)] // Explicit borrowed note, integrated phase and feedback recurrence.
     pub(crate) fn sample_lfo(
         &self,
@@ -275,7 +276,16 @@ impl PreparedOperatorConfiguration {
         feedback: [f64; OPERATORS],
         previous: [f64; OPERATORS],
     ) -> (f32, [f64; OPERATORS]) {
-        self.sample_lfo_with_levels(table, note, age, gate, phases, feedback, previous, None)
+        self.sample_lfo_with_levels(
+            table,
+            note,
+            age,
+            Some(gate),
+            phases,
+            feedback,
+            previous,
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)] // Explicit integrated phases, recurrence and shared scalar override.
@@ -284,7 +294,7 @@ impl PreparedOperatorConfiguration {
         table: &SineTable,
         note: &PreparedOperatorNote,
         age: u64,
-        gate: u64,
+        gate: Option<u64>,
         phases: &[u64; OPERATORS],
         feedback: [f64; OPERATORS],
         previous: [f64; OPERATORS],
@@ -294,7 +304,10 @@ impl PreparedOperatorConfiguration {
         if let Some(levels) = levels {
             configuration.levels = levels;
         }
-        let mut amplitudes = self.envelopes.levels(age, gate);
+        let mut amplitudes = match gate {
+            Some(gate) => self.envelopes.levels(age, gate),
+            None => self.envelopes.held_levels(age),
+        };
         if amplitudes == [0.0; OPERATORS] {
             return (0.0, [0.0; OPERATORS]);
         }
@@ -452,11 +465,14 @@ impl PreparedOperatorConfiguration {
         table: &SineTable,
         note: &PreparedOperatorNote,
         age_frames: u64,
-        gate_frames: u64,
+        gate: Option<u64>,
         feedback_turns: [f64; OPERATORS],
         previous_outputs: [f64; OPERATORS],
     ) -> (f32, [f64; OPERATORS]) {
-        let mut amplitudes = self.envelopes.levels(age_frames, gate_frames);
+        let mut amplitudes = match gate {
+            Some(frame) => self.envelopes.levels(age_frames, frame),
+            None => self.envelopes.held_levels(age_frames),
+        };
         if amplitudes.iter().all(|amplitude| *amplitude == 0.0) {
             return (0.0, [0.0; OPERATORS]);
         }
@@ -507,6 +523,23 @@ impl PreparedOperatorConfiguration {
             parameters,
             previous_outputs,
             self.envelopes.levels(age_frames, gate_frames),
+        )
+    }
+    pub(super) fn sample_held_with_feedback_parameters(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        parameters: OperatorFeedbackParameters,
+        previous_outputs: [f64; OPERATORS],
+    ) -> (f32, [f64; OPERATORS]) {
+        self.sample_at_feedback_amplitudes(
+            table,
+            note,
+            age_frames,
+            parameters,
+            previous_outputs,
+            self.envelopes.held_levels(age_frames),
         )
     }
     fn sample_at_feedback_amplitudes(

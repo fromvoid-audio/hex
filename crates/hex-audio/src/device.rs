@@ -162,11 +162,8 @@ fn build<T: SizedSample + FromSample<f32>>(
                 let frames = chunk.len() / channels;
                 let block_start_frame = status.position.load(Relaxed);
                 let rendered = callback.render(&mut block[..frames]);
-                let render_valid = rendered.is_ok()
-                    && block[..frames]
-                        .iter()
-                        .flatten()
-                        .all(|sample| sample.is_finite());
+                let render_valid =
+                    rendered.is_ok() && crate::typing::output_is_finite(&block[..frames], channels);
                 let _ = callback.finish_spectrum_block(start, render_valid);
                 if !render_valid {
                     block[..frames].fill([0.0; 2]);
@@ -187,6 +184,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                         *sample = T::from_sample(value);
                     }
                 }
+                callback.finish_typing_output(render_valid);
             }
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);

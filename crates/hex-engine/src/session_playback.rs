@@ -19,6 +19,7 @@ use std::{fmt, sync::Arc};
 
 mod mutable_checkpoint;
 mod transport_loop_admission;
+mod typing;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
@@ -311,6 +312,7 @@ pub struct SessionPlayback {
     return_scratch: Vec<[Frame; 256]>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+    typing: Option<Box<crate::live_input::TypingPerformance>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
@@ -318,6 +320,11 @@ pub struct SessionPlayback {
     // slots are charged by size_of::<Self>() in actual and paired preflight.
     tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
+    tail_typing: [Option<Box<crate::live_input::TypingPerformance>>; SESSION_TAIL_GROUP_CAPACITY],
+    typing_cut_through: u64,
+    tail_typing_sends: [[Option<(hex_project::ReturnId, f32)>;
+        hex_project::MAX_RETURN_SENDS_PER_TRACK];
+        SESSION_TAIL_GROUP_CAPACITY],
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
@@ -810,11 +817,16 @@ impl SessionPlayback {
             return_scratch,
             return_effect_tails,
             mutable_instruments,
+            typing: None,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
             tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
+            tail_typing: std::array::from_fn(|_| None),
+            typing_cut_through: 0,
+            tail_typing_sends: [[None; hex_project::MAX_RETURN_SENDS_PER_TRACK];
+                SESSION_TAIL_GROUP_CAPACITY],
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,

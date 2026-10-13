@@ -1,4 +1,4 @@
-//! Test-only protocol proof; no keyboard/audio ingress has been installed.
+//! Reference protocol model; the production bridge has separate interaction tests.
 #[path = "../src/typing_foundation.rs"]
 mod typing_foundation;
 use typing_foundation::*;
@@ -39,6 +39,7 @@ fn offer(keyboard: &mut Keyboard, key: &str) -> Action {
 #[test]
 fn mapping_focus_autorepeat_and_owned_key_up_during_text_edit() {
     let mut keyboard = Keyboard::new(OWNER, 1).unwrap();
+    assert_eq!(keyboard.owner(), OWNER);
     for (index, key) in KEYS.into_iter().enumerate() {
         let action = offer(&mut keyboard, key);
         assert!(

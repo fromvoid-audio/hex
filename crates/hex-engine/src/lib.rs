@@ -722,6 +722,45 @@ impl Track {
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
     }
+    pub(crate) fn typing_arrangement_sources_match(&self, other: &Self) -> bool {
+        if !self.instrument_config_matches(other) {
+            return false;
+        }
+        match (&self.instrument, &other.instrument) {
+            (None, None) => true,
+            (Some(old), Some(new)) => {
+                old.spans.len() == new.spans.len()
+                    && old.spans.iter().zip(new.spans.iter()).all(|(old, new)| {
+                        (
+                            old.start,
+                            old.gate_end,
+                            old.end,
+                            old.onset_beat,
+                            old.gate_end_beat,
+                            old.pitch,
+                            old.channel,
+                            old.velocity,
+                            old.clip,
+                            old.note,
+                            old.iteration,
+                        ) == (
+                            new.start,
+                            new.gate_end,
+                            new.end,
+                            new.onset_beat,
+                            new.gate_end_beat,
+                            new.pitch,
+                            new.channel,
+                            new.velocity,
+                            new.clip,
+                            new.note,
+                            new.iteration,
+                        )
+                    })
+            }
+            _ => false,
+        }
+    }
 
     pub(crate) fn with_mutable_instrument(mut self, mutable: bool, looping_source: bool) -> Self {
         if mutable {
@@ -1072,6 +1111,49 @@ impl Track {
         )
     }
 
+    pub(crate) fn render_raw_audio<P: MediaPages + ?Sized>(
+        &self,
+        start: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        let end = start
+            .checked_add(output.len() as u64)
+            .ok_or(Invalid("raw source range overflow"))?;
+        self.render_audio_range_captured_with_mix(
+            start,
+            end,
+            output,
+            pages,
+            None,
+            PreparedTrackMix::identity(),
+        );
+        Ok(())
+    }
+    pub(crate) fn render_raw_instrument(
+        &self,
+        start: u64,
+        performance: u64,
+        output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        loop_pass: u64,
+    ) -> Result<(), Invalid> {
+        let end = start
+            .checked_add(output.len() as u64)
+            .ok_or(Invalid("raw instrument range overflow"))?;
+        self.render_instrument_range_with_mix(
+            (start, end),
+            output,
+            None,
+            performance,
+            suppressions,
+            None,
+            continuations,
+            PreparedTrackMix::identity(),
+            Some(loop_pass),
+        )
+    }
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
@@ -1094,16 +1176,24 @@ impl Track {
         &self,
         start: u64,
         end: u64,
+        visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+    ) -> Result<(), Invalid> {
+        if self.has_mutable_instrument() {
+            self.for_each_authored_midi_span(start, end, visit)
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn for_each_authored_midi_span(
+        &self,
+        start: u64,
+        end: u64,
         mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
     ) -> Result<(), Invalid> {
         if start > end {
             return Err(Invalid("midi span frame range is invalid"));
         }
-        if let Some(instrument) = self
-            .instrument
-            .as_ref()
-            .filter(|instrument| instrument.mutable)
-        {
+        if let Some(instrument) = self.instrument.as_ref() {
             instrument.for_each_intersecting(start, end, None, &mut visit);
         }
         Ok(())
@@ -1136,15 +1226,35 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         pages: Option<&mut P>,
+        capture: Option<&mut [Frame]>,
+    ) {
+        self.render_audio_range_captured_with_mix(
+            start_frame,
+            end_frame,
+            output,
+            pages,
+            capture,
+            self.source_mix,
+        );
+    }
+
+    fn render_audio_range_captured_with_mix<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         if let Some(pages) = pages {
-            self.render_audio_range_with_pages_captured(
+            self.render_audio_range_with_pages_captured_with_mix(
                 start_frame,
                 end_frame,
                 output,
                 pages,
                 capture,
+                source_mix,
             );
             return;
         }
@@ -1156,6 +1266,7 @@ impl Track {
                     end_frame,
                     output,
                     capture.as_deref_mut(),
+                    source_mix,
                 );
             }
         }
@@ -1189,7 +1300,26 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
+        capture: Option<&mut [Frame]>,
+    ) {
+        self.render_audio_range_with_pages_captured_with_mix(
+            start_frame,
+            end_frame,
+            output,
+            pages,
+            capture,
+            self.source_mix,
+        );
+    }
+
+    fn render_audio_range_with_pages_captured_with_mix(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: &mut (impl MediaPages + ?Sized),
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         for clip in &self.clips {
             if !clip.is_streamed() {
@@ -1199,6 +1329,7 @@ impl Track {
                     end_frame,
                     output,
                     capture.as_deref_mut(),
+                    source_mix,
                 );
                 continue;
             }
@@ -1246,7 +1377,7 @@ impl Track {
                 let count = remaining.min(until_wrap);
                 let output_offset = (position - start_frame) as usize;
                 let rendered = render_streamed_page_span_captured(
-                    self.source_mix,
+                    source_mix,
                     source,
                     StreamedPageSpan {
                         source_frame,
@@ -1274,6 +1405,7 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
@@ -1294,7 +1426,7 @@ impl Track {
                 let gain = fade.gain_at(position - clip.start);
                 sample[0] *= gain;
                 sample[1] *= gain;
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     sample,
                     capture
@@ -1304,7 +1436,7 @@ impl Track {
             }
         } else if source_phase == 0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     clip.at(span_start + offset as u64, 0),
                     capture
@@ -1314,7 +1446,7 @@ impl Track {
             }
         } else {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     clip.at(span_start + offset as u64, source_phase),
                     capture
@@ -1351,8 +1483,34 @@ impl Track {
         midi_onset_floor_exclusive: Option<u64>,
         performance_frame: u64,
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        capture: Option<&mut [Frame]>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<(), Invalid> {
+        self.render_instrument_range_with_mix(
+            (start_frame, end_frame),
+            output,
+            midi_onset_floor_exclusive,
+            performance_frame,
+            suppressions,
+            capture,
+            continuations,
+            self.source_mix,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Existing source render plus explicit gap-stage mix.
+    fn render_instrument_range_with_mix(
+        &self,
+        (start_frame, end_frame): (u64, u64),
+        output: &mut [Frame],
+        midi_onset_floor_exclusive: Option<u64>,
+        performance_frame: u64,
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
         mut capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        source_mix: PreparedTrackMix,
+        signature_loop_pass: Option<u64>,
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
@@ -1372,19 +1530,19 @@ impl Track {
                     chunk_end,
                     midi_onset_floor_exclusive,
                     |span| {
-                        let carried =
-                            self.track_id.is_some_and(|track| {
-                                suppressions
-                                    .binary_search_by(|entry| {
-                                        (entry.track, entry.clip, entry.note, entry.iteration)
-                                            .cmp(&(track, span.clip, span.note, span.iteration))
-                                    })
-                                    .ok()
-                                    .and_then(|index| suppressions.get(index))
-                                    .is_some_and(|entry| {
-                                        entry.until_frame > chunk_performance_frame
-                                    })
-                            });
+                        let carried = self.track_id.is_some_and(|track| {
+                            let key = (track, span.clip, span.note, span.iteration);
+                            let first = suppressions.partition_point(|entry|
+                                (entry.track, entry.clip, entry.note, entry.iteration) < key);
+                            suppressions[first..].iter().take_while(|entry|
+                                (entry.track, entry.clip, entry.note, entry.iteration) == key)
+                                .any(|entry| entry.until_frame > chunk_performance_frame
+                                    && signature_loop_pass.is_none_or(|loop_pass|
+                                        entry.mutable_signature.is_none_or(|signature|
+                                            signature == mutable_instrument::MutableOccurrenceSignature::from_parts(
+                                                mutable_instrument::MutableOccurrenceKey::new(track, span.clip, span.note, span.iteration, loop_pass),
+                                                span.onset_beat, span.gate_end_beat, span.pitch, span.channel, span.velocity))))
+                        });
                         if carried {
                             return;
                         }
@@ -1410,7 +1568,7 @@ impl Track {
                                 span.gate_end - span.start,
                             ) {
                                 Ok(sample) => {
-                                    self.source_mix.add_captured(
+                                    source_mix.add_captured(
                                         &mut target[(frame_position - chunk_start) as usize],
                                         sample,
                                         capture.as_deref_mut().and_then(|frames| {
@@ -1452,6 +1610,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
     pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
+    pub(crate) max_active_voices: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -2519,6 +2678,7 @@ mod tests {
 }
 
 pub mod live;
+pub mod live_input;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -2529,6 +2689,8 @@ mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
+#[path = "typing_foundation.rs"]
+pub mod typing_protocol;
 
 pub mod compile;
 

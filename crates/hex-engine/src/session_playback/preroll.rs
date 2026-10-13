@@ -241,6 +241,9 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        if let Some(typing) = &self.typing {
+            checked_add(&mut total, typing.declared_storage_bytes()?)?;
+        }
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
@@ -280,6 +283,9 @@ impl SessionPlayback {
         )?;
         for tail in self.tail_mutable_instruments.iter().flatten() {
             checked_add(&mut total, tail.runtime.accounted_storage_bytes()?)?;
+        }
+        for typing in self.tail_typing.iter().flatten() {
+            checked_add(&mut total, typing.declared_storage_bytes()?)?;
         }
         add_capacity::<crate::PreparedTrackMix>(&mut total, self.tail_mixes.capacity())?;
         add_capacity::<usize>(&mut total, self.tail_suffix_starts.capacity())?;
