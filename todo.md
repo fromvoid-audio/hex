@@ -2075,6 +2075,29 @@ merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).
 
+## Live-set import provenance — ticket 32, 11 October 2026
+
+PR #150 retains the approved import-only boundary. Schema 18 persists exact
+bounded original-document provenance; schemas 1–17 migrate to absent evidence.
+Canonical snapshots/history retain immutable bytes and debug output hides source
+contents. Focused tests cover save/reopen, edit/undo/redo, strict envelopes,
+limits and schema-17 rejection/migration. No musical XML mappings implemented:
+real user-authored minimal `.als` fixtures and observed Live field/unit evidence
+remain required. See `docs/live-set-import.md`; Pulse #32 owns blocked acceptance.
+
+## finite Live-set adapter — ticket 32 fixture checkpoint
+
+The vetted native Live 12.4.6 fixture's supplied ZIP/ALS hashes were verified.
+`hex-live-set` implements bounded plain/gzip XML import into a separately compiled
+canonical Arrangement candidate; `hex-cli import-live-set` publishes create-new.
+Exact original input/unknown metadata persists through schema 18. Default import
+refuses nonneutral pan; explicit Hex-balance consent emits a compatibility
+warning. Devices are never substituted; device-free MIDI retains silence.
+Focused tests verify actual source values, every rendered test frame against
+original PCM under declared Hex mixing, strict unsupported cases, resource/path
+handling, save/reopen and failed-publication protection. See
+`docs/live-set-import.md` for the finite field/version contract. Native UI,
+Live render/listening parity and required full local-CI acceptance remain separate.
 
 ## 11 october 2026 — pulse2337: stable Operator time axis and stage caps
 

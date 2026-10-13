@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 100,
         assets: vec![AssetSnapshot {

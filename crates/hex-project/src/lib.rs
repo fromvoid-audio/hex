@@ -14,6 +14,8 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod provenance;
+pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
 mod midi;
@@ -415,6 +417,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
@@ -434,6 +437,7 @@ impl Project {
         Ok(Self {
             sample_rate,
             next_id: 1,
+            import_provenance: None,
             assets: BTreeMap::new(),
             tracks: Vec::new(),
             returns: Vec::new(),

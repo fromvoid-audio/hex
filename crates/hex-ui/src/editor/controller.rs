@@ -82,7 +82,7 @@ impl EditorView {
                         self.saving_project = false;
                     }
                     visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if matches!(request, Request::Open(_) | Request::OpenWith { .. }) {
+                    if request.is_project_open() {
                         self.opening_project = false;
                     }
                     clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
@@ -1153,13 +1153,14 @@ impl EditorView {
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
-        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
-            && !allows_non_open_request(
-                self.close_prompt_open,
-                self.opening_project,
-                duplicate_continuation,
-            )
-        {
+        if !matches!(
+            &request,
+            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
+        ) && !allows_non_open_request(
+            self.close_prompt_open,
+            self.opening_project,
+            duplicate_continuation,
+        ) {
             self.error = Some(if self.opening_project {
                 "opening project · editing is paused".into()
             } else {
@@ -1167,7 +1168,10 @@ impl EditorView {
             });
             return false;
         }
-        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. }) {
+        if !matches!(
+            &request,
+            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
+        ) {
             self.pending_open_path = None;
         }
         if matches!(
@@ -1182,6 +1186,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::ImportLiveSet { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::Edit(_)
@@ -1197,6 +1202,7 @@ impl EditorView {
         if matches!(
             &request,
             Request::Open(_)
+                | Request::ImportLiveSet { .. }
                 | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo

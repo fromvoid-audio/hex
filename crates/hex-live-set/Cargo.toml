@@ -1,0 +1,20 @@
+[package]
+name = "hex-live-set"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex-project = { path = "../hex-project" }
+hex-media = { path = "../hex-media" }
+hex-engine = { path = "../hex-engine" }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+roxmltree = "=0.20.0"
+quick-xml = "=0.41.0"
+
+[dev-dependencies]
+hex-storage = { path = "../hex-storage" }
+
+[lints]
+workspace = true

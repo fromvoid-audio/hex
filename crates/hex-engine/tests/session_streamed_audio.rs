@@ -22,6 +22,7 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: RATE,
         next_id: 10,
         assets: vec![

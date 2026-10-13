@@ -88,6 +88,7 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: SAMPLE_RATE,
         next_id,
         assets: Vec::new(),

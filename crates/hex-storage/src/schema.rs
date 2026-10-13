@@ -1,3 +1,4 @@
+pub(crate) mod provenance;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -1223,6 +1224,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1254,6 +1256,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1285,6 +1288,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1323,6 +1327,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1361,6 +1366,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1399,6 +1405,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1437,6 +1444,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1493,6 +1501,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1914,6 +1923,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc
@@ -1947,6 +1957,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 18 {
+            return provenance::DocumentV18::decode(bytes);
         }
         if header.version == 17 {
             return DocumentV17::decode(bytes);
@@ -2153,6 +2166,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
                     assets: doc
@@ -2279,6 +2293,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc

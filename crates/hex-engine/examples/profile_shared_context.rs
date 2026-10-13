@@ -279,6 +279,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
     }
 
     let project = Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: RATE,
         next_id,
         assets: Vec::new(),

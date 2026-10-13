@@ -145,6 +145,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
     assert_eq!(looping.project().clip(right).unwrap().source_phase(), 4);
 
     let full_project = Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![AssetSnapshot {
@@ -227,6 +228,7 @@ fn missing_clip_split_is_transactional() {
 #[test]
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_snapshot(Snapshot {
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: u64::MAX,
         assets: vec![AssetSnapshot {
