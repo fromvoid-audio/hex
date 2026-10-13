@@ -149,9 +149,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
-            return self
-                .redraw_gate
-                .should_redraw(visible_change, None, Instant::now());
+            return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
             matches!(
@@ -463,23 +461,13 @@ impl EditorView {
         } else {
             self.session_routes.clear();
         }
-        let frame = AudioFrame {
-            playing: audio.control.status.playing.load(Relaxed),
-            position: audio.control.status.position.load(Relaxed),
-            peak_left: audio.control.status.peak_left.load(Relaxed),
-            peak_right: audio.control.status.peak_right.load(Relaxed),
-            applied_revision: audio.control.status.applied_revision.load(Relaxed),
-            deadline_misses: audio.control.status.deadline_misses.load(Relaxed),
-            callback_us: audio.control.status.callback_max_ns.load(Relaxed) / 1_000,
-            render_fault: audio.control.status.render_fault.load(Relaxed),
-        };
+        let frame = AudioFrame::capture(&audio.control.status);
         let pending_after = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
-        self.redraw_gate
-            .should_redraw(visible_change, Some(frame), Instant::now())
+        self.observe_audio_frame(Some(frame), visible_change, Instant::now())
     }
 
     fn spectrum_target_is_visible_and_current(

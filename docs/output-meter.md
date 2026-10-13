@@ -1,11 +1,14 @@
 # Output sample-peak presentation
 
-`hex-ui::output_meter` is an isolated presentation component. It is not wired
-into the canonical editor status bar yet: that existing producer consumer still
-clamps amplitudes to 0..1. Root integration must be coordinated with musical
-keyboard routing work; controller and native telemetry changes are separate.
+`hex-ui::output_meter` is wired into the canonical editor status bar. The
+controller captures `AudioFrame` from the actual output `Status`; the renderer
+uses that cached observation instead of reloading and clamping peaks during
+paint. Shutdown is offline, device/render faults are fault, accepted stopped
+transport is stopped, and playing reports the last independent channel values.
+Output removal/recovery clears the cached meter along with audio accounting.
+No new callback telemetry or audio processing is introduced.
 
-The future adapter must pass raw `Status::peak_left` and `peak_right` values,
+The adapter passes raw `Status::peak_left` and `peak_right` values,
 without an earlier clamp. Those fields report maximum absolute stereo samples
 across the last CPAL callback before output-format conversion. They are separate
 relaxed atomics, not a coherent stereo snapshot, and carry no timestamp. Mono
@@ -33,8 +36,7 @@ The slot is fixed at 248×22 px, with two 6×16 px bottom-anchored gauges. Reado
 text uses the root's bundled Ioskeley font, lowercase `theme::text` and a derived
 foreground meeting the existing text contrast policy on the actual surface.
 Saved theme colors are unchanged. Numeric text and `!` convey states without
-relying on color. The component supplies descriptive textual state for future
-consumers; it does not register AppKit accessibility names or roles.
+relying on color. The editor supplies the descriptive textual state in a tooltip; it does not register AppKit accessibility names or roles.
 
 Tests exercise finite/floor/zero/negative/NaN/infinite/above-unity boundaries,
 independent channels, rounding seams and bounded text. Actual element styles are
@@ -43,7 +45,11 @@ checked under the default and an existing valid low-contrast theme. A rendered
 leaving 154 px for its flexible message, with fixed 248×22 meter geometry. It
 checks scale-aware pixel rounding, bottom anchoring, all availability states,
 instantaneous indication removal and resize without moving fixed neighbors.
-This fixture does not wire or validate the live editor's telemetry consumer.
+The actual editor-root regression also observes Status-boundary fixtures through
+the production capture/cache adapter and verifies minimum-window slot/neighbors,
+raw overload, silence, invalid input and unavailable/fault transitions. These
+fixtures are not actual CPAL/native delivery. Pure tests verify raw bit retention,
+independent loads, immutable cached observations and redraw/lifecycle behavior.
 
 GPUI's Linux TestPlatform uses NoopTextSystem and no-op native draw. These tests
 do not prove real Ioskeley glyph fit, native contrast perception, GPU presentation,
@@ -51,3 +57,8 @@ physical input or native meter readability. Optimized macOS acceptance must chec
 960×600 glyph fit and truncation, default/custom themes, asymmetric channels,
 silence/below-floor/unity/above-unity, stop/pause/recovery/fault and actual output
 format/channel behavior. OS accessibility remains work at the real AppKit bridge.
+
+Separate Main-bus and input-capture peak telemetry, callback timestamps/freshness,
+release decay/ballistics and held clip state are not supplied by this producer.
+They remain explicit requirements/dependencies of the broader meter request;
+this stage neither fabricates them nor completes dense UI/accessibility #29.

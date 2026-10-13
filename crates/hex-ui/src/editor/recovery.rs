@@ -131,6 +131,7 @@ impl EditorView {
     }
 
     fn clear_audio_accounting(&mut self) {
+        self.output_meter_frame = None;
         self.service.invalidate_arrangement_seek();
         self.prepared_seek = None;
         self.latched_seek_intent = None;

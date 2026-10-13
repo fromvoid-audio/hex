@@ -1,4 +1,4 @@
-//! Isolated pre-conversion sample-peak presentation, not yet wired to the editor.
+//! Pre-conversion output sample-peak presentation from the editor status snapshot.
 //!
 //! Inputs are the last reported independent channel values. This component has
 //! no timestamp, coherent-pair guarantee, peak hold, decay or clipping detector.
@@ -167,7 +167,7 @@ fn control(channel: &'static str, value: Peak) -> Div {
     bar
 }
 
-/// Fixed status-slot component. Editor telemetry/clamp wiring remains separate.
+/// Fixed status-slot component; no timestamp, decay or native AX contract.
 pub fn render(input: MeterInput) -> Stateful<Div> {
     let (left, right) = match input {
         MeterInput::Last { left, right } => (peak(left), peak(right)),

@@ -24,6 +24,8 @@ widgets = (
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
+    # Output meter labels are routed through theme::text in the component.
+    'crate::output_meter::render(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',

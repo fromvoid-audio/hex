@@ -15,8 +15,8 @@ mod header_style_tests;
 mod operator_enable_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
-mod parameter_rows_tests;
 mod operator_routing_readout_tests;
+mod parameter_rows_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
 

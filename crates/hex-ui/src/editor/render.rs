@@ -23,6 +23,7 @@ impl EditorView {
 
     fn status_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
+            .debug_selector(|| "editor-status-bar".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
@@ -160,38 +161,19 @@ impl EditorView {
                     String::new()
                 },
             ));
+        let meter_input = self.output_meter_frame.map_or(
+            crate::output_meter::MeterInput::Offline,
+            super::refresh::AudioFrame::meter_input,
+        );
+        bar = bar.child(
+            crate::output_meter::render(meter_input).tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: crate::output_meter::description(meter_input).into(),
+                })
+                .into()
+            }),
+        );
         if let Some(status) = self.audio_status() {
-            let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
-            let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
-            bar = bar.child(
-                div()
-                    .w(px(38.0))
-                    .h(px(7.0))
-                    .flex()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * left))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * right))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    ),
-            );
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
             let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
