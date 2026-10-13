@@ -1,3 +1,22 @@
+## Open latest session log from header — 13 october 2026
+
+A compact debug control sits at the far right beside the version in the editor,
+startup and demo headers. It opens the current session's log with the macOS
+default text editor (`open -t`), using the injected path and a background launcher.
+Repeated pending requests are ignored; missing logging and launch failures show
+a lowercase dialog. The existing header layout test now checks the button's
+right edge, spacing and title-row bounds. See [session diagnostics](docs/diagnostics.md).
+
+Linux source guards, formatting, `cargo check -p hex-ui --locked` and strict
+UI-feature Clippy pass. Focused header/title and diagnostic tests pass, and the
+locked desktop build succeeds. The macOS-only layout test skips its assertions
+on Linux; full exact-commit local CI remains the merge gate.
+Native acceptance: click the control, verify the current session log opens in a
+text editor, and check title/version/button spacing at the minimum window width.
+Pulse ticket creation is blocked by a connector schema mismatch: the live
+server requires request_id but the connector does not pass that field through.
+No ticket update, merge or macOS test bundle is claimed.
+
 ## persistent Arrangement selection — pulse2386 / pr170
 
 The captured time range survives mouse release and subsequent idle controller
