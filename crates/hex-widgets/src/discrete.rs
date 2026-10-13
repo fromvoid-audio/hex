@@ -119,6 +119,16 @@ impl Toggle {
         }
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let enabled = enabled && self.enabled;
+        if self.focus.tab_stop != enabled {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(enabled);
+            cx.notify();
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             self.enabled = enabled;
@@ -487,6 +497,16 @@ impl Selector {
             cx.notify();
         }
         Ok(())
+    }
+
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let enabled = enabled && self.enabled;
+        if self.focus.tab_stop != enabled {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(enabled);
+            cx.notify();
+        }
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {

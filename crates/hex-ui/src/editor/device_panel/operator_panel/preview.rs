@@ -341,7 +341,7 @@ fn row(
             .entry(device)
             .or_default()
             .routing_focus
-            .get_or_insert_with(|| cx.focus_handle())
+            .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
             .clone();
         row = row
             .track_focus(&focus)
@@ -525,6 +525,7 @@ pub(super) fn control(
         .get(&device)
         .map_or(spec.default, |state| state.value(field));
     control.entity.update(cx, |control, cx| {
+        control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
     let owner = super::context::Owner::capture(view, device);
@@ -579,7 +580,11 @@ fn toggle(
             Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactSquare),
             Err(error) => return control_error(error),
         };
-        let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
+        let entity = cx.new(|control_cx| {
+            let mut control = Toggle::from_config(control_cx, config);
+            control.set_tab_navigation(true, control_cx);
+            control
+        });
         let key = (device, switch);
         let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
             if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
@@ -664,7 +669,11 @@ fn selector(
             }),
             Err(error) => return control_error(error),
         };
-        let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
+        let entity = cx.new(|control_cx| {
+            let mut control = Selector::from_config(control_cx, config);
+            control.set_tab_navigation(true, control_cx);
+            control
+        });
         let key = (device, choice);
         let subscription = cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
             if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {

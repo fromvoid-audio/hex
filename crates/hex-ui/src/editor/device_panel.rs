@@ -138,6 +138,8 @@ pub(super) struct DevicePanelState {
     instrument_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) pending_values: HashMap<ParameterKey, ParameterValue>,
     operator_pages: HashMap<DeviceId, operator_panel::OperatorPanelState>,
+    operator_navigation_focus:
+        HashMap<(DeviceId, operator_panel::NavigationTarget), gpui::FocusHandle>,
     operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
@@ -354,6 +356,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
@@ -453,6 +456,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.views.clear();
         view.device_panel.pending_values.clear();
         view.device_panel.operator_pages.clear();
+        view.device_panel.operator_navigation_focus.clear();
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
@@ -704,6 +708,9 @@ fn render_track(
                 && identity.type_id.as_str().ok() == Some("hex.instrument.operator")
         })
     });
+    view.device_panel
+        .operator_navigation_focus
+        .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
     let alive_operator: HashSet<_> = identities
         .iter()
         .filter_map(|(device, identity)| {
@@ -2360,12 +2367,20 @@ fn parameter_control_with_presentation(
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                     let _ = control.set_external_value(f64::from(value), cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                 });
             }
             let (width, height) = match presentation {
@@ -2384,12 +2399,20 @@ fn parameter_control_with_presentation(
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                     control.set_checked(value, cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                 });
             }
             let (width, height) = if presentation == ControlPresentation::CompactButton {
@@ -2412,12 +2435,20 @@ fn parameter_control_with_presentation(
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                     let _ = control.set_selected(value as usize, cx);
                 });
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(
+                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        cx,
+                    );
                 });
             }
             let (width, height) = match presentation {

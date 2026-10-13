@@ -1,7 +1,7 @@
 use super::*;
 use gpui::Focusable;
 
-fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
+pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::RemoveInstrument { track }))
@@ -49,6 +49,29 @@ fn tab_bounds(
             )))
         })
         .unwrap()
+}
+
+fn tab_to_routing(
+    visual: &mut VisualTestContext,
+    editor: &gpui::Entity<EditorView>,
+    device: DeviceId,
+) {
+    for _ in 0..96 {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        if visual.update(|window, app| {
+            editor.read_with(app, |view, _| {
+                view.device_panel.operator_previews[&device]
+                    .routing_focus
+                    .as_ref()
+                    .unwrap()
+                    .is_focused(window)
+            })
+        }) {
+            return;
+        }
+    }
+    panic!("routing remains reachable in the complete tab order");
 }
 
 #[gpui::test]
@@ -263,8 +286,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
-    visual.simulate_keystrokes("tab");
-    visual.run_until_parked();
+    tab_to_routing(&mut visual, &editor, device);
     assert!(
         visual.update(|window, app| editor.read_with(app, |view, _| view
             .device_panel
@@ -286,7 +308,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     });
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
-    visual.simulate_keystrokes("tab");
+    tab_to_routing(&mut visual, &editor, device);
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {

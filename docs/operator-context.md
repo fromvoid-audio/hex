@@ -19,6 +19,27 @@ invalid-draft refusal, pointer drag/undo, focused keyboard adjustment, stationar
 typed editing and neighboring Utility state. This is source-level UI evidence;
 native visual acceptance remains pending.
 
+## Operator Tab navigation
+
+The Operator body forms one Tab group. Tab walks the currently rendered controls
+in layout order, and Shift-Tab reverses that order and wraps within the group.
+The shell visits d, c, b, a: each oscillator selector followed by its available
+numeric controls. The detail pane contributes its visible envelope, lfo or
+oscillator controls and page selectors; the preview contributes its available
+controls and routing/global target. Hidden or disabled controls are excluded.
+Changing detail pages changes that page's available targets, without changing
+sound parameters. Enter/Space activates a focused oscillator or page selector;
+routing retains its existing keyboard activation. Numeric controls keep their
+typing and adjustment bindings. Graph nodes cycle with Ctrl-Tab/Ctrl-Shift-Tab
+so plain Tab can leave the graph.
+
+Traversal finishes a valid typed draft through the canonical edit path and
+refuses to leave an invalid draft. Focus alone does not author state. Stable
+per-device focus handles retire on project or track-owner changes; stale section
+activation is rejected. Shared controls outside Operator retain their existing
+Tab behavior. Native focus visibility, exact optimized macOS build delivery and
+user confirmation remain separate acceptance requirements.
+
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`
