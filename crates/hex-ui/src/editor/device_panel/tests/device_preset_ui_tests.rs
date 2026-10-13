@@ -157,3 +157,87 @@ fn device_preset_return_owner_exposes_actions_and_cancel_keeps_sends(cx: &mut Te
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppContext) {
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let device = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    service
+        .submit(Request::ReplaceNativeDevice {
+            device,
+            class: NativeDeviceClass::Instrument,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.instrument.operator",
+            )),
+        })
+        .unwrap();
+    let replaced = receive_service_event(&service);
+    assert!(replaced.error.is_none());
+    let original = replaced.state.project.clone();
+    let directory =
+        std::env::temp_dir().join(format!("hex-operator-preset-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("operator.hex-device-preset.json");
+    let _ = std::fs::remove_file(&path);
+    let (handle, editor) = actor_editor_window(cx, service, replaced.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let save = save_button(&mut visual, device);
+    let load = visual
+        .debug_bounds(Box::leak(
+            format!("device-preset-load-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let frame = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(save.right() <= frame.right() && load.right() <= frame.right());
+    visual.simulate_click(save.center(), Modifiers::default());
+    visual.run_until_parked();
+    cx.simulate_new_path_selection(|_| Some(path.clone()));
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    assert!(path.exists());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SetDeviceParameter {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+            value: ParameterValue::Float(0.27),
+        }))
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let owner = hex_session::service::preset::Owner {
+            project_generation: view.project_generation,
+            revision: state.revision,
+            device,
+            class: NativeDeviceClass::Instrument,
+            type_id: state.project.device(device).unwrap().state().type_id(),
+        };
+        view.choose_device_preset(owner, path.clone(), false, cx);
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+}

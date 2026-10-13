@@ -100,7 +100,49 @@ fn fixture(class: NativeDeviceClass, type_name: &'static str) -> (Service, Event
     } else {
         added.state.project.track(track).unwrap().devices()[0].id()
     };
-    (service, added, device)
+    // Real neighbors and a freely positioned instrument make whole-project
+    // equality exercise chain ownership/order, not only an isolated device.
+    for _ in 0..2 {
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(DeviceTypeId::from_static("hex.utility")),
+                before: None,
+            })
+            .unwrap();
+        let neighbor = event(&service);
+        assert!(neighbor.error.is_none());
+    }
+    if class == NativeDeviceClass::Instrument {
+        service
+            .submit(Request::Edit(Command::MoveTrackDevice {
+                device,
+                track,
+                before: None,
+            }))
+            .unwrap();
+        let moved = event(&service);
+        assert!(moved.error.is_none());
+        let second = moved.state.project.track(track).unwrap().devices()[1].id();
+        service
+            .submit(Request::Edit(Command::MoveTrackDevice {
+                device,
+                track,
+                before: Some(second),
+            }))
+            .unwrap();
+    } else {
+        service
+            .submit(Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }))
+            .unwrap();
+    }
+    let positioned = event(&service);
+    assert!(positioned.error.is_none());
+    (service, positioned, device)
 }
 
 #[test]
