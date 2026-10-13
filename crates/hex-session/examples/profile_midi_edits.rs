@@ -29,6 +29,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("instrument {index:03}"),
             gain: 0.1,
@@ -53,6 +54,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         });
     }
     Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id,
         assets: Vec::new(),

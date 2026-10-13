@@ -35,6 +35,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     snapshot.tracks = (0..TRACKS)
         .map(|track| -> Result<TrackSnapshot, hex_project::Invalid> {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: 100 + track as u64,
                 name: format!("track {track}"),
                 gain: 0.5,

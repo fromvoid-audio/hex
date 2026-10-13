@@ -34,6 +34,12 @@ struct Fixture {
     clip: hex_project::ClipId,
 }
 fn fixture() -> Fixture {
+    fixture_with_feeds(false)
+}
+fn fixture_with_feeds(feeds: bool) -> Fixture {
+    fixture_with_options(feeds, false)
+}
+fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 4).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -82,6 +88,68 @@ fn fixture() -> Fixture {
     else {
         panic!("session")
     };
+    if feeds {
+        let mut returns = Vec::new();
+        for _ in 0..2 {
+            let Created::ReturnTrack(id) = editor
+                .execute(Command::AddReturnTrack {
+                    name: "feed".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            returns.push(id);
+            let state = hex_engine::patch_native_device_parameter(
+                &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                    .unwrap(),
+                hex_lattice_contract::ParameterId::new(11).unwrap(),
+                hex_lattice_contract::ParameterValue::Bool(true),
+            )
+            .unwrap();
+            editor
+                .execute(Command::InsertReturnDevice {
+                    return_track: id,
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: returns[1],
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetReturnFeed {
+                source: returns[1],
+                destination: returns[0],
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    if automation {
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 0.25,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ONE,
+                        gain: 1.5,
+                        outgoing: hex_project::GainInterpolation::Step,
+                    },
+                ],
+            })
+            .unwrap();
+    }
     let mut snapshot = editor.project().snapshot();
     let id = snapshot.next_id;
     snapshot.next_id += 1;
@@ -158,7 +226,13 @@ fn fixture() -> Fixture {
 
 #[test]
 fn mixed_arrangement_session_pcm_and_post_node_samples_match_resident_oracle() {
-    let mut f = fixture();
+    assert_mixed_pcm_and_observation(fixture());
+}
+#[test]
+fn authored_feeds_with_borrowed_pages_match_resident_pcm_nodes_and_owner_counts() {
+    assert_mixed_pcm_and_observation(fixture_with_feeds(true));
+}
+fn assert_mixed_pcm_and_observation(mut f: Fixture) {
     let mut resident = Playback::try_from_prepared_with_session(Arc::clone(&f.resident)).unwrap();
     let mut streamed = Playback::try_from_prepared_with_session(Arc::clone(&f.streamed)).unwrap();
     resident.apply(PlaybackCommand::Play);
@@ -379,4 +453,9 @@ fn new_observed_legacy_refusal_is_before_all_mutation_and_old_paths_remain_valid
             .is_err(),
         "provider-less stream refusal preserved"
     );
+}
+
+#[test]
+fn automated_gain_with_return_feeds_and_borrowed_pages_matches_resident_pcm_nodes_and_owners() {
+    assert_mixed_pcm_and_observation(fixture_with_options(true, true));
 }

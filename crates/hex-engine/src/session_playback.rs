@@ -19,6 +19,7 @@ use std::{fmt, sync::Arc};
 
 mod mutable_checkpoint;
 mod transport_loop_admission;
+mod typing;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
@@ -95,6 +96,7 @@ pub struct SessionPendingRouteStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackError {
+    Capture(capture::OutputCaptureError),
     RevisionTrackMismatch,
     RevisionSampleRateMismatch,
     Allocation,
@@ -129,6 +131,7 @@ impl SessionPlaybackError {
     /// in the audio callback. Detailed numeric timing formatting stays on control.
     pub(crate) fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::Capture(error) => error.message(),
             Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
             Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
             Self::Allocation => "could not reserve session playback runtime storage",
@@ -295,6 +298,8 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    capture_runtime: u64,
+    capture_epoch: u64,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -307,10 +312,19 @@ pub struct SessionPlayback {
     return_scratch: Vec<[Frame; 256]>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
+    typing: Option<Box<crate::live_input::TypingPerformance>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    // Immutable original ownership, including effect-only suffixes. Inline
+    // slots are charged by size_of::<Self>() in actual and paired preflight.
+    tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
+    tail_typing: [Option<Box<crate::live_input::TypingPerformance>>; SESSION_TAIL_GROUP_CAPACITY],
+    typing_cut_through: u64,
+    tail_typing_sends: [[Option<(hex_project::ReturnId, f32)>;
+        hex_project::MAX_RETURN_SENDS_PER_TRACK];
+        SESSION_TAIL_GROUP_CAPACITY],
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
@@ -320,6 +334,10 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
+    // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
+    // revision context. Actual capacities are charged in preroll accounting.
+    analytic_continuations: Vec<Option<hex_lattice::AnalyticContinuation>>,
+    analytic_continuation_scratch: Vec<Option<hex_lattice::AnalyticContinuation>>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
@@ -772,6 +790,9 @@ impl SessionPlayback {
             .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let analytic_continuations = reserve_analytic_continuations()?;
+        let analytic_continuation_scratch = reserve_analytic_continuations()?;
+
         let mut suppressions = Vec::new();
         suppressions
             .try_reserve_exact(release_capacity)
@@ -782,6 +803,8 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
         Ok(Self {
+            capture_runtime: capture::next_runtime()?,
+            capture_epoch: 0,
             revision,
             periodic_tempo,
             anchor: None,
@@ -794,10 +817,16 @@ impl SessionPlayback {
             return_scratch,
             return_effect_tails,
             mutable_instruments,
+            typing: None,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
+            tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
+            tail_typing: std::array::from_fn(|_| None),
+            typing_cut_through: 0,
+            tail_typing_sends: [[None; hex_project::MAX_RETURN_SENDS_PER_TRACK];
+                SESSION_TAIL_GROUP_CAPACITY],
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
@@ -807,6 +836,8 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
+            analytic_continuations,
+            analytic_continuation_scratch,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
@@ -1069,10 +1100,30 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod capture;
+/// These tables never grow, shrink, swap ownership or allocate in handoff or
+/// rendering. Refusal/destruction of their storage belongs to control.
+fn reserve_analytic_continuations()
+-> Result<Vec<Option<hex_lattice::AnalyticContinuation>>, SessionPlaybackError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_TRACKS)
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    if slots.capacity() != MAX_TRACKS {
+        return Err(SessionPlaybackError::Allocation);
+    }
+    slots.resize(MAX_TRACKS, None);
+    Ok(slots)
+}
+
 mod commands;
 mod handoff;
 mod preroll;
 mod render;
+pub use capture::{
+    MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
+    OutputCaptureId, OutputCapturePlan,
+};
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
@@ -1151,3 +1202,6 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod return_feed_tests;

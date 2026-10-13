@@ -57,6 +57,26 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
+    /// Explicit control-side capability; unsupported contexts must never be
+    /// armed by substituting a finite duration for a held gate.
+    fn supports_live_gate(&self) -> bool {
+        false
+    }
+    fn sample_live(
+        &self,
+        _note: &PreparedSharedAnalyticNote,
+        _age_frames: u64,
+        _gate: crate::NoteGate,
+    ) -> Result<StereoFrame, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    /// Optional provider-defined coefficient continuation. Default providers
+    /// retain their immutable sampler law across publication. Opted-in methods
+    /// must be bounded, read-only and allocation-free, including refusal paths.
+    fn analytic_continuation(&self) -> Option<&dyn crate::PreparedAnalyticContinuation> {
+        None
+    }
+
     /// Total bytes owned by this context, including allocations reachable only
     /// through it. The host checks this against its finite per-context limit.
     fn declared_context_bytes(&self) -> usize;
@@ -96,6 +116,19 @@ impl fmt::Debug for PreparedAnalyticNote {
 }
 
 impl PreparedAnalyticNote {
+    /// Provider opt-in using the same prepared payload. The authored sampler
+    /// remains unchanged and the live function must implement Held explicitly.
+    pub fn into_live_sampler(
+        self,
+        sample_fn: fn(
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            u64,
+            crate::NoteGate,
+            u64,
+        ) -> StereoFrame,
+    ) -> crate::PreparedLiveAnalyticNote {
+        crate::PreparedLiveAnalyticNote::new(self.payload, self.release_frames, sample_fn)
+    }
     /// Prepare a bounded analytic note sampler. Zero release is valid for
     /// instruments with an instantaneous note-off.
     pub const fn new(
@@ -125,6 +158,13 @@ impl PreparedAnalyticNote {
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
+    fn prepare_live_note(
+        &self,
+        _pitch: u8,
+        _velocity: u8,
+    ) -> Result<crate::PreparedLiveAnalyticNote, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
     /// Prepare the immutable sampler for one authored pitch/velocity pair.
     /// Implementations must be deterministic for a fixed prepared instrument
     /// configuration, sample rate, pitch and velocity. The engine may intern

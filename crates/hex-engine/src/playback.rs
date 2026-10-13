@@ -666,6 +666,63 @@ impl Playback {
         }
     }
 
+    /// Control-only palette/runtime allocation before publication.
+    pub fn prepare_typing_input(
+        &mut self,
+        arm: crate::live_input::PreparedTypingArm,
+        epoch: u64,
+    ) -> Result<(), Invalid> {
+        self.prepare_typing_input_with_bridge(arm, epoch, 0)
+    }
+    pub fn prepare_typing_input_with_bridge(
+        &mut self,
+        arm: crate::live_input::PreparedTypingArm,
+        epoch: u64,
+        bridge_bytes: usize,
+    ) -> Result<(), Invalid> {
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("typing requires mixed native playback"))?;
+        let input = runtime.prepare_typing_input_with_bridge(arm, epoch, bridge_bytes)?;
+        match runtime.install_typing_input(input) {
+            Ok(retired) => {
+                drop(retired);
+                Ok(())
+            }
+            Err(input) => {
+                drop(input);
+                Err(Invalid("typing source installation was refused"))
+            }
+        }
+    }
+    pub fn queue_typing_input(
+        &mut self,
+        ticket: u64,
+        action: crate::typing_protocol::Action,
+    ) -> Result<(), crate::typing_protocol::Refusal> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(crate::typing_protocol::Refusal::NotAdmitted)?
+            .queue_typing_input(ticket, action)
+    }
+    pub fn cut_typing_input(&mut self, through_epoch: u64) {
+        if let Some(runtime) = &mut self.session_runtime {
+            runtime.cut_typing_input(through_epoch);
+        }
+    }
+    pub fn typing_admission(&self) -> Option<crate::live_input::TypingAdmission> {
+        self.session_runtime.as_ref()?.typing_admission()
+    }
+    pub fn typing_cut_through_epoch(&self) -> u64 {
+        self.session_runtime
+            .as_ref()
+            .map_or(0, |runtime| runtime.typing_cut_through_epoch())
+    }
+    pub fn take_typing_application(&mut self) -> Option<crate::live_input::TypingApplication> {
+        self.session_runtime.as_mut()?.take_typing_application()
+    }
+
     /// Preserve legacy finite transport behavior. Native publication uses the
     /// fallible companion to carry Session routes and reject unsafe demotions.
     pub fn inherit_transport(&mut self, previous: &Self) {

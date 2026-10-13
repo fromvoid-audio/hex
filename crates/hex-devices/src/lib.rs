@@ -127,6 +127,15 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn prepare_live_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> Result<hex_lattice::PreparedLiveAnalyticNote, DeviceContractError> {
+        Ok(self
+            .prepare_note(pitch, velocity)?
+            .into_live_sampler(sample_sine_live))
+    }
     fn prepare_note(
         &self,
         pitch: u8,
@@ -144,6 +153,29 @@ impl PreparedNativeInstrument for PreparedSineInstrument {
             voice.release_frames,
             sample_sine_note,
         ))
+    }
+}
+
+fn sample_sine_live(
+    payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age: u64,
+    gate: hex_lattice::NoteGate,
+    release: u64,
+) -> StereoFrame {
+    match gate {
+        hex_lattice::NoteGate::Released { at_age_frames } => {
+            sample_sine_note(payload, age, at_age_frames, release)
+        }
+        hex_lattice::NoteGate::Held => {
+            let Some(table) = shared_sine_table_if_prepared() else {
+                return [0.0; 2];
+            };
+            let amplitude = (age as f32 / payload[2] as f32).min(1.0);
+            let sample = table.sample_phase(payload[0].wrapping_mul(age))
+                * amplitude
+                * f32::from_bits(payload[1] as u32);
+            [sample, sample]
+        }
     }
 }
 

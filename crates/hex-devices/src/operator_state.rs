@@ -21,10 +21,14 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 7;
+pub const OPERATOR_STATE_VERSION: u32 = 8;
+const ENABLE_STATE_VERSION: u32 = 8;
+const LFO_STATE_VERSION: u32 = 7;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
+mod enable;
+mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
@@ -42,7 +46,8 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + OPERATORS * 3
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
-    + lfo::COUNT;
+    + lfo::COUNT
+    + enable::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -50,7 +55,8 @@ const VELOCITY_PAYLOAD_BYTES: usize =
     TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
-const PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -58,6 +64,11 @@ pub mod parameter {
         carrier, modulation, oscillator_level, oscillator_phase, oscillator_ratio,
     };
     use hex_lattice_contract::ParameterId;
+
+    /// Stable independently persisted enable switch; operators are one-based.
+    pub const fn enabled(operator: u32) -> ParameterId {
+        super::enable::parameter(operator)
+    }
 
     /// Stable per-operator envelope field order in the opaque state.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,7 +347,13 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT - lfo::COUNT - enable::COUNT + offset] = lfo[offset];
+        offset += 1;
+    }
+    let enabled = enable::descriptors();
+    let mut offset = 0;
+    while offset < enable::COUNT {
+        result[PARAMETER_COUNT - enable::COUNT + offset] = enabled[offset];
         offset += 1;
     }
     result
@@ -353,6 +370,7 @@ pub struct OperatorSettings {
     amplitude_velocity: [f32; OPERATORS],
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
+    enabled: enable::EnableSettings,
 }
 
 impl OperatorSettings {
@@ -371,6 +389,7 @@ impl OperatorSettings {
             amplitude_velocity: [0.0; OPERATORS],
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
+            enabled: enable::EnableSettings::default(),
         }
     }
 
@@ -384,6 +403,7 @@ impl OperatorSettings {
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
+            LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -465,10 +485,15 @@ impl OperatorSettings {
                 feedback[index] = f32::from_le_bytes(bytes);
             }
         }
-        let lfo = if state.state_version() >= OPERATOR_STATE_VERSION {
-            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..])?
+        let lfo = if state.state_version() >= LFO_STATE_VERSION {
+            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES])?
         } else {
             lfo::LfoSettings::default()
+        };
+        let enabled = if state.state_version() >= ENABLE_STATE_VERSION {
+            enable::EnableSettings::decode(&state.payload()[LFO_PAYLOAD_BYTES..PAYLOAD_BYTES])?
+        } else {
+            enable::EnableSettings::default()
         };
         let result = Self {
             fields,
@@ -477,6 +502,7 @@ impl OperatorSettings {
             amplitude_velocity,
             feedback,
             lfo,
+            enabled,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -502,6 +528,7 @@ impl OperatorSettings {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
         self.lfo.append(&mut payload);
+        self.enabled.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -524,11 +551,17 @@ impl OperatorSettings {
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - OPERATORS - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::amplitude_velocity(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         for (index, amount) in self.feedback.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::feedback(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -538,7 +571,11 @@ impl OperatorSettings {
             let offset = operator * 3;
             Oscillator::new(
                 f64::from(self.fields[offset]),
-                f64::from(self.fields[offset + 1]),
+                if self.enabled.flags()[operator] {
+                    f64::from(self.fields[offset + 1])
+                } else {
+                    0.0
+                },
                 f64::from(self.fields[offset + 2]),
             )
             .map_err(|_| DeviceContractError::InvalidParameterValue)
@@ -692,6 +729,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.enabled.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.lfo.read(parameter) {
             return Ok(value);
         }
@@ -760,6 +800,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.enabled.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.lfo.patch(parameter, value) {
             return settings.to_state();
         }
@@ -825,6 +868,13 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
+        let authored_state = settings.to_state()?;
+        let effective_levels = *configuration
+            .feedback_parameters([0.0; OPERATORS])
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?
+            .oscillator_levels();
+        let continuation_format =
+            hex_lattice::AnalyticContinuationFormat::new(OPERATOR_TYPE_ID, 1)?;
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
@@ -842,6 +892,9 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         )?;
         Ok(Box::new(PreparedOperatorInstrument {
             configuration,
+            authored_state,
+            effective_levels,
+            continuation_format,
             sine_table,
             feedback_runtime,
             lfo_runtime,
@@ -851,6 +904,9 @@ impl NativeInstrumentDefinition for OperatorMetadata {
 
 struct PreparedOperatorInstrument {
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
     feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
     lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
@@ -881,6 +937,9 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         }
         Ok(Some(Box::new(PreparedOperatorContext {
             configuration: self.configuration.clone(),
+            authored_state: self.authored_state.clone(),
+            effective_levels: self.effective_levels,
+            continuation_format: self.continuation_format,
             sine_table: self.sine_table,
         })))
     }
@@ -902,12 +961,49 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
 
 struct PreparedOperatorContext {
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
 }
 
 impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn supports_live_gate(&self) -> bool {
+        true
+    }
+    fn sample_live(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: hex_lattice::NoteGate,
+    ) -> Result<StereoFrame, DeviceContractError> {
+        if note.release_frames() != self.configuration.release_frames() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let note = PreparedOperatorNote::from_shared_payload(note.payload())
+            .ok_or(DeviceContractError::MalformedState)?;
+        if !self.configuration.note_matches_configuration(&note) {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let sample = match gate {
+            hex_lattice::NoteGate::Held => {
+                self.configuration.sample_held(self.sine_table, &note, age)
+            }
+            hex_lattice::NoteGate::Released { at_age_frames } => {
+                self.configuration
+                    .sample(self.sine_table, &note, age, at_age_frames)
+            }
+        };
+        Ok([sample, sample])
+    }
+    fn analytic_continuation(&self) -> Option<&dyn hex_lattice::PreparedAnalyticContinuation> {
+        Some(self)
+    }
+
     fn declared_context_bytes(&self) -> usize {
-        size_of::<Self>()
+        // Charge the canonical payload even while the control factory shares
+        // its Arc. The allocation includes the two reference-count words.
+        size_of::<Self>() + self.authored_state.payload().len() + 2 * size_of::<usize>()
     }
 
     fn prepare_note(
@@ -966,6 +1062,10 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
     (index < OPERATORS).then_some(index)
 }
 
+#[cfg(test)]
+mod enable_continuation_tests;
+#[cfg(test)]
+mod enable_tests;
 #[cfg(test)]
 mod fixed_tests;
 #[cfg(test)]

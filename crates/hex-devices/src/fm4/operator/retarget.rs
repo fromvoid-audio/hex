@@ -418,15 +418,23 @@ impl PreparedOperatorFeedbackVoice {
     ) -> Result<f32, Invalid> {
         let frame =
             self.preflight_shared_retarget_frame(configuration, retarget, shared, elapsed_frames)?;
-        let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
-        let (sample, outputs) = configuration.sample_with_feedback_parameters(
-            table,
-            &self.note,
-            self.age_frames,
-            gate_frame,
-            frame.parameters,
-            self.previous_outputs,
-        );
+        let (sample, outputs) = match self.gate_frame {
+            Some(gate_frame) => configuration.sample_with_feedback_parameters(
+                table,
+                &self.note,
+                self.age_frames,
+                gate_frame,
+                frame.parameters,
+                self.previous_outputs,
+            ),
+            None => configuration.sample_held_with_feedback_parameters(
+                table,
+                &self.note,
+                self.age_frames,
+                frame.parameters,
+                self.previous_outputs,
+            ),
+        };
         self.previous_outputs = outputs;
         self.feedback_turns = frame.next_feedback_turns;
         self.age_frames = frame.next_age;
