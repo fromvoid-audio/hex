@@ -7,9 +7,11 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import shutil
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from contextlib import contextmanager
 
 SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).resolve().parents[1] / "hex-test-build.py")
 delivery = importlib.util.module_from_spec(SPEC)
@@ -169,6 +171,16 @@ class DeliveryTests(unittest.TestCase):
             return ""
         args = SimpleNamespace(ci_report=report, candidate=candidate,
                                included=included, checklist=checklist)
+        @contextmanager
+        def artifact_guard(*args, **kwargs):
+            try:
+                yield executable, {"build_argv":["cargo", "build", "--release"],
+                    "profile":"release", "source":runner.summary["start_tree"], "packages":[],
+                    "target_directory":str(target.parent.parent), "owner_path":"fixture-owner",
+                    "lock_path":"fixture-lock", "action":"reuse", "cleanup_status":"not_needed",
+                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)}}
+            finally:
+                runner.target_lock.release()
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
                 patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
@@ -176,7 +188,7 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery, "validate_ci", return_value={}), \
                 patch.object(runner, "_resolve_cargo_identity", return_value=True), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
-                patch.object(runner, "_prepare_target_cache", return_value=True), \
+                patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event))):
             receipt = delivery.build(args)
@@ -247,6 +259,123 @@ class NativeSignatureTests(unittest.TestCase):
             delivery.write_json(receipt, {"files": delivery.inventory(app)})
             with self.assertRaises(subprocess.CalledProcessError):
                 delivery.verify(app)
+
+
+class ReleaseCargoTests(unittest.TestCase):
+    def test_real_release_a_b_a_api_outputs_dependencies_and_scope_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "a"
+            external = base / "external"
+            for directory in (root / "api/src", root / "app/src", external / "src"):
+                directory.mkdir(parents=True)
+            (external / "Cargo.toml").write_text('[package]\nname="external-helper"\nversion="0.1.0"\nedition="2021"\n')
+            (external / "src/lib.rs").write_text('pub fn suffix() -> u32 { 9 }\n')
+            (root / "Cargo.toml").write_text('[workspace]\nmembers=["api", "app"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/artifacts/\n')
+            (root / "api/Cargo.toml").write_text('[package]\nname="fixture-api"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
+            manifest = ('[package]\nname="fixture-app"\nversion="0.1.0"\nedition="2021"\n'
+                        '[dependencies]\nfixture-api={path="../api"}\n'
+                        f'external-helper={{path={json.dumps(str(external))}}}\n')
+            (root / "app/Cargo.toml").write_text(manifest)
+            (root / "app/src/main.rs").write_text('fn main() { println!("{}", fixture_api::value() + external_helper::suffix()); }\n')
+            def command(argv, cwd=root, env=None):
+                result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout.strip()
+            command(["git", "init", "-q"])
+            command(["git", "config", "user.name", "release fixture"])
+            command(["git", "config", "user.email", "fixture@example.invalid"])
+            command(["cargo", "generate-lockfile", "--offline"])
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "A numeric API"])
+            other = base / "b"
+            command(["git", "worktree", "add", "-qb", "b", str(other)])
+            (other / "api/src/lib.rs").write_text('pub fn value() -> &\'static str { "B string API" }\n')
+            (other / "app/src/main.rs").write_text('fn main() { println!("{} {}", fixture_api::value(), external_helper::suffix()); }\n')
+            command(["git", "add", "."], other)
+            command(["git", "commit", "-qm", "B incompatible API"], other)
+            target = base / "target"
+            state = base / "ownership"
+            env = {**os.environ, "CARGO_TARGET_DIR":str(target), "CARGO_INCREMENTAL":"0"}
+            def runner(cwd, name, selected_env=env):
+                return delivery.ci.LocalCiRunner(cwd, run_id=name, env=selected_env,
+                    min_free_bytes=0, target_state_dir=state)
+            def build(cwd, name, expected, selected_env=env):
+                instance = runner(cwd, name, selected_env)
+                with delivery.optimized_artifact(instance, package="fixture-app") as (binary, ownership):
+                    self.assertEqual(command([str(binary)]), expected)
+                    self.assertEqual(delivery.sha(binary), ownership["artifact"]["sha256"])
+                    self.assertIsNotNone(instance.target_lock)
+                    with self.assertRaisesRegex(delivery.ci.TargetCacheError, "already in use"):
+                        with runner(cwd, name + "-contender").guarded_release():
+                            self.fail("second owner entered")
+                    # Artifact-only consumption does not activate/install any app.
+                    shutil.copy2(binary, base / (name + "-retained-binary"))
+                self.assertIsNone(instance.target_lock)
+                self.assertEqual(ownership["state"], "ready")
+                return ownership
+            first = build(root, "release-a", "16")
+            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
+            self.assertTrue(dependencies)
+            # Keep a real dev build and ensure release handoff cannot touch it.
+            command(["cargo", "build", "--offline", "--locked"], root, env)
+            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
+            self.assertTrue(dev)
+            wrapper_dir = base / "bin"
+            wrapper_dir.mkdir()
+            cargo = shutil.which("cargo")
+            self.assertIsNotNone(cargo)
+            wrapper = wrapper_dir / "cargo"
+            wrapper.write_text('#!/usr/bin/env python3\nimport os,glob,sys\n'
+                'if sys.argv[1:2] == ["build"] and "--release" in sys.argv:\n'
+                ' stale=glob.glob(os.path.join(os.environ["CARGO_TARGET_DIR"], "release/deps/libfixture_api-*.rlib"))\n'
+                ' if stale:\n  print("workspace release artifact survived handoff",file=sys.stderr)\n  sys.exit(23)\n'
+                f'os.execv({cargo!r},[{cargo!r},*sys.argv[1:]])\n')
+            wrapper.chmod(0o755)
+            guarded_env = {**env, "PATH":str(wrapper_dir) + os.pathsep + env["PATH"]}
+            # Negative control: ordinary dev handoff leaves these release artifacts.
+            dev_runner = runner(other, "dev-only", guarded_env)
+            dev_runner.adopt_target = True
+            dev_runner.output_dir.mkdir(parents=True)
+            self.assertTrue(dev_runner._capture_repository_state("start_tree"))
+            self.assertTrue(dev_runner._resolve_cargo_identity())
+            self.assertTrue(dev_runner._prepare_target_cache())
+            dev_runner.target_lock.release()
+            dev_runner.target_lock = None
+            control = subprocess.run(["cargo", "build", "--release", "--locked"], cwd=other,
+                                     env=guarded_env, capture_output=True, text=True)
+            self.assertEqual(control.returncode, 23, control.stderr)
+            command(["cargo", "build", "--offline", "--locked"], other, env)
+            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
+            second = build(other, "release-b", "B string API 9", guarded_env)
+            third = build(root, "release-a-again", "16", guarded_env)
+            self.assertEqual(second["cleanup_status"], "passed")
+            self.assertEqual(third["cleanup_status"], "passed")
+            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
+            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
+            self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
+            self.assertEqual(command([str(base / "release-b-retained-binary")]), "B string API 9")
+            build(root, "release-a-reuse", "16")
+            # Cargo cannot select the old removed/renamed member from this graph.
+            (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
+            (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
+            command(["cargo", "generate-lockfile", "--offline"], other)
+            command(["git", "add", "."], other)
+            command(["git", "commit", "-qm", "rename member"], other)
+            before = delivery.sha(target / "release/fixture-app")
+            for name in ("renamed", "removed"):
+                if name == "removed":
+                    (other / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["api"]\nresolver="2"\n')
+                    command(["git", "add", "."], other)
+                    command(["git", "commit", "-qm", "remove workspace member"], other)
+                with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed"):
+                    with delivery.optimized_artifact(runner(other, name), package="fixture-app"):
+                        self.fail("unsupported package handoff built")
+                self.assertEqual(delivery.sha(target / "release/fixture-app"), before)
+                self.assertEqual(json.loads(Path(first["owner_path"]).read_text())["state"], "ready")
+            print("real release A -> B -> A: incompatible APIs/outputs, dependency/dev hashes, retained binaries, reuse and removed/renamed refusal verified", flush=True)
 
 
 if __name__ == "__main__":
