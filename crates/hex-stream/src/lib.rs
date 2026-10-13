@@ -4,6 +4,7 @@
 #![allow(clippy::vec_box)]
 
 mod endpoint;
+mod footprint;
 mod page_endpoint;
 mod revision;
 mod runtime;
@@ -11,6 +12,10 @@ mod types;
 mod worker;
 
 pub use endpoint::EndpointStats;
+pub use footprint::{
+    AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint,
+    EndpointAllocationFootprint, StreamAllocationFootprint, TransportAllocationFootprint,
+};
 pub use page_endpoint::{PageEndpointMismatch, VerifiedPageEndpoint};
 pub use revision::{StreamRevisionMismatch, VerifiedStreamRevision};
 pub use runtime::{

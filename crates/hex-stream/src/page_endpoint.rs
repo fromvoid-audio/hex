@@ -40,6 +40,12 @@ impl VerifiedPageEndpoint {
         &self.catalog
     }
 
+    /// Borrow the pairing's capacity report without locks, allocation or clones.
+    /// Shared components are charged once per catalog; this is not admission.
+    pub fn allocation_footprint(&self) -> crate::StreamAllocationFootprint {
+        self.pages.complete_footprint(&self.catalog)
+    }
+
     /// Recover the original owners on control. Release this catalog lease and
     /// any other graph leases before retrying `StreamControl::shutdown(pages)`.
     /// The existing shutdown API retains mismatched/Busy pairs transactionally.

@@ -79,5 +79,8 @@ paths explicitly own and retain its endpoint/catalog.
 pairing. It checks actual owner and pair identity, exposes borrowed existing
 pages, and returns owners through `into_parts` for the existing transactional
 shutdown path. It does not establish installed-page readiness or native admission.
-Complete capacity reporting remains pending narrow media reporting APIs; current
-CatalogFootprint is not a complete heap or aggregate admission report.
+Its StreamAllocationFootprint reports actual endpoint-exclusive and shared
+transport/catalog reserved capacities with checked retained/construction totals.
+The legacy CatalogFootprint remains a payload/subcomponent view, not an additive
+heap total. Capacity reporting excludes opaque allocator/Arc/OS/thread machinery
+and caller graph storage; it does not establish aggregate admission policy.

@@ -1185,3 +1185,115 @@ fn verified_page_endpoint_preserves_identical_key_wrong_owners_and_borrowed_pcm(
     let report = second_control.shutdown(pages).unwrap();
     assert!(report.worker_joined && report.accounting_complete);
 }
+
+#[test]
+fn capacity_report_counts_reserved_storage_shared_kernels_and_pool_once() {
+    let (wav, _) = TestWav::stereo_pcm16(44_100, 4096);
+    let limits = reader_limits(4096);
+    let reader = VerifiedWavReader::open(wav.path(), limits).unwrap();
+    let converted_frames = hex_project::converted_frame_count(4096, 44_100, 48_000).unwrap();
+    let mut definitions = Vec::with_capacity(7);
+    let mut definition_paths = 0;
+    for generation in [81, 82] {
+        let metadata = StreamedSourceMetadata::new(
+            StreamSourceKey::new(generation, asset_id(4096, 48_000)),
+            44_100,
+            48_000,
+            4096,
+            converted_frames,
+            hex_project::SINC_CONVERSION_V1,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        let mut path = wav.path().to_path_buf();
+        path.reserve(1024);
+        definition_paths += path.capacity();
+        definitions.push(SourceDefinition::new(path, metadata, limits));
+    }
+    let definition_capacity = definitions.capacity();
+    let config = StreamConfig {
+        source_scratch_frames: 8192,
+        ..StreamConfig::with_pool_pages(4)
+    };
+    let mut runtime = StreamRuntime::new(config, definitions).unwrap();
+    assert!(runtime.allocation_footprint().is_none());
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let report = runtime.allocation_footprint().unwrap();
+    assert_eq!(
+        report.construction.definition_slots.capacity,
+        definition_capacity
+    );
+    assert_eq!(report.catalog.definition_path_bytes, definition_paths);
+    assert_eq!(
+        report.catalog.reader_path_bytes,
+        2 * reader.path_capacity_bytes()
+    );
+    assert_eq!(
+        report.catalog.manifest_bytes,
+        2 * reader.page_manifest_bytes()
+    );
+    assert_eq!(report.catalog.membership_slots.capacity, 2);
+    assert_eq!(report.catalog.source_slots.capacity, 2);
+    // Reader scratch is inline in Source; no separate additive scratch charge.
+    assert!(report.catalog.source_slots.element_bytes > hex_media::VERIFIED_WAV_PAGE_BYTES);
+    let kernel = hex_media::ResampleKernel::new(44_100, 48_000).unwrap();
+    assert_eq!(
+        report.catalog.kernel_weight_bytes,
+        kernel.table_payload_bytes()
+    );
+    assert_eq!(
+        report.catalog.kernel_object_bytes,
+        kernel.shared_object_bytes()
+    );
+    assert_eq!(
+        report.construction.kernel_table_peak_bound_bytes,
+        13 * 1024 * 1024
+    );
+    assert_eq!(report.transport.pcm_frames.bytes(), Some(4 * 4096 * 8));
+    assert_eq!(report.transport.page_objects.capacity, 4);
+    assert_eq!(report.transport.page_boxing_peak_extra.capacity, 4096);
+    assert_eq!(report.transport.request_slots.capacity, 8);
+    assert_eq!(report.transport.ready_slots.capacity, 4);
+    assert_eq!(report.transport.return_slots.capacity, 4);
+    assert_eq!(report.transport.failure_slots.capacity, 4);
+    assert_eq!(report.endpoint.max_cached_pages, 3);
+    assert_eq!(report.endpoint.pending.capacity, 16);
+    assert_eq!(report.endpoint.cache.capacity, 8);
+    assert_eq!(report.endpoint.held_returns.capacity, 5);
+    assert_eq!(report.catalog.source_scratch.capacity, 8192);
+    assert_eq!(
+        report.retained_bytes().unwrap(),
+        report.endpoint.bytes().unwrap()
+            + report.transport.bytes().unwrap()
+            + report.catalog.bytes().unwrap()
+    );
+    let (control, pages) = runtime.split().ok().unwrap();
+    let extra = control.catalog_lease().unwrap();
+    let mut endpoint =
+        hex_stream::VerifiedPageEndpoint::new(pages, control.catalog_lease().unwrap()).unwrap();
+    assert_eq!(endpoint.allocation_footprint(), report);
+    let key = StreamSourceKey::new(81, asset_id(4096, 48_000));
+    endpoint.pages().request_page(key, 0);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        endpoint.pages().pump_ready(4);
+        if endpoint.pages().page(key, 0).is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    // Moving a page through queues/cache and cloning a control lease changes
+    // ownership counts, not allocation-capacity charges.
+    assert_eq!(endpoint.allocation_footprint(), report);
+    let (pages, lease) = endpoint.into_parts();
+    drop(lease);
+    drop(extra);
+    assert!(control.shutdown(pages).unwrap().accounting_complete);
+    println!("two-source one-kernel capacity report: {report:?}");
+    println!(
+        "retained={} construction_bound={}",
+        report.retained_bytes().unwrap(),
+        report.construction_peak_bound_bytes().unwrap()
+    );
+}

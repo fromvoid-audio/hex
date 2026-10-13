@@ -325,6 +325,10 @@ fn typed_endpoint_pairing_and_borrowing_introduce_no_allocations_or_frees() {
         assert_eq!(endpoint.pages().pump_ready(3), 0);
         assert_eq!(endpoint.pages().stats(), Default::default());
         assert_eq!(endpoint.catalog().footprint().sources, 0);
+        let report = endpoint.allocation_footprint();
+        assert_eq!(report.catalog.source_slots.capacity, 0);
+        assert!(report.retained_bytes().is_some());
+        assert!(report.construction_peak_bound_bytes().is_some());
     });
     assert_no_allocation(info);
     let (pages, lease) = endpoint.into_parts();
