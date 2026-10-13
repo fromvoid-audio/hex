@@ -127,17 +127,25 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema21 for gain lanes or schema20 for feeds, preserving legacy bytes.
+/// Encode schema22 for touch metadata, schema21 for base lanes or schema20 for feeds.
+/// Projects without these additions retain their legacy encoding bytes.
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if project.has_gain_automation() {
+    if project.has_gain_touch_metadata() {
+        encode_schema22(project)
+    } else if project.has_gain_automation() {
         encode_document(&schema::gain_envelopes::DocumentV21::from_project(project)?)
     } else if project.authored_routing().is_empty() {
         encode_document(&schema::routing::DocumentV19::from_project(project)?)
     } else {
         encode_schema20(project)
     }
+}
+
+/// Explicit schema22 encoding; nonempty touch spans remain refused.
+pub fn encode_schema22(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&schema::gain_touch::DocumentV22::from_project(project)?)
 }
 
 /// Explicit schema20 encoding, including empty-feed projects.

@@ -129,7 +129,7 @@ fn strict_new_lane_fields_order_modes_roles_limits_and_backports_refuse() {
     invalid["tracks"][0]["gain_envelope"] =
         json!(vec![base["tracks"][0]["gain_envelope"][0].clone(); 1025]);
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    for version in [19, 20, 22] {
+    for version in [19, 20, 23] {
         invalid = base.clone();
         invalid["version"] = json!(version);
         assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
@@ -157,4 +157,51 @@ fn legacy20_and19_migrate_empty_lanes_and_keep_default_byte_selection() {
         19
     );
     assert_eq!(decode(&bytes).unwrap(), p);
+}
+#[test]
+fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaque_states() {
+    let previous = fixture();
+    let mut snapshot = previous.snapshot();
+    snapshot.tracks[0].gain_touch_epoch = 17;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let bytes = encode(&project).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
+        22
+    );
+    assert_eq!(decode(&bytes).unwrap(), project);
+    let mut editor = Editor::new(project.clone(), 8).unwrap();
+    let owner = project.tracks()[0].id();
+    editor
+        .execute(Command::ClearTrackGainEnvelope { track: owner })
+        .unwrap();
+    assert_eq!(
+        editor.project().tracks()[0].gain_lane().recording_epoch(),
+        17
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &project);
+    assert!(encode_schema20(&project).is_err());
+    let dir = std::env::temp_dir().join(format!(
+        "hex-touch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("touch.hex");
+    hex_storage::save_new(&path, &project).unwrap();
+    assert_eq!(hex_storage::load(&path).unwrap(), project);
+    std::fs::remove_dir_all(dir).unwrap();
+    for bytes in [
+        encode(&previous).unwrap(),
+        hex_storage::encode_schema22(&previous).unwrap(),
+    ] {
+        let p = decode(&bytes).unwrap();
+        assert_eq!(p, previous);
+        assert!(p.tracks()[0].gain_lane().spans().is_empty());
+        assert_eq!(p.tracks()[0].gain_lane().recording_epoch(), 0);
+    }
 }

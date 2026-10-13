@@ -6,7 +6,7 @@ acceptance remain incomplete. A compact Arrangement gain-lane editor now exposes
 these commands; native interaction acceptance remains pending. There is no
 device-parameter capability expansion or recording implementation in this stage.
 
-Each canonical Track owns one `gain_envelope`, carried by its ordinary
+Each canonical Track owns one `GainLane`; its base `gain_envelope` is carried by its ordinary
 TrackSnapshot and history. Existing TrackId owns the lane; existing Q32.32
 BeatTime keys its points. Replace, upsert, move, remove and clear are atomic
 control commands. Upsert replaces an equal beat; moving onto another point
@@ -154,3 +154,7 @@ Recording remains separate: applied-value/sample-frame/revision acknowledgments,
 bounded touch/release ownership and canonical splice/history are not implemented.
 There is deliberately no recording button. General ports, MIDI/sidechain routing,
 latency propagation and compensation remain later stages of the original ticket.
+
+Schema22 closed touch-span model/storage preparation is described in
+[gain-touch-spans.md](gain-touch-spans.md). Nonempty spans are refused at normal
+adoption/load and commands; this does not implement recording or application ACKs.

@@ -159,6 +159,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         }],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "full".into(),
             gain: 1.0,
@@ -244,6 +246,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
         }],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "audio".into(),
             gain: 1.0,

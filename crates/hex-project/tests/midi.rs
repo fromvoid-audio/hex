@@ -1369,6 +1369,8 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
     let first_note_id = other_track_id + 10;
     snapshot.tracks.push(hex_project::TrackSnapshot {
         gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: other_track_id,
         name: "other instrument".into(),
         gain: 1.0,

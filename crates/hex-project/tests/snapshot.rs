@@ -30,6 +30,8 @@ fn valid_snapshot() -> Snapshot {
         )],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 20,
             name: "Track Case".into(),
             gain: 0.75,
@@ -167,6 +169,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1_000 + index as u64,
             name: format!("track {index}"),
             gain: 1.0,

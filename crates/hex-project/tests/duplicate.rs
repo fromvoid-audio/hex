@@ -184,6 +184,8 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         }],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "full".into(),
             gain: 1.0,

@@ -86,6 +86,8 @@ pub struct AssetSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
     pub gain_envelope: Vec<crate::GainPoint>,
+    pub gain_touch_spans: Vec<crate::GainTouchSpan>,
+    pub gain_touch_epoch: u64,
     pub id: u64,
     pub name: String,
     pub gain: f32,
@@ -224,7 +226,9 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
-                    gain_envelope: track.gain_envelope.clone(),
+                    gain_envelope: track.gain_lane.base.clone(),
+                    gain_touch_spans: track.gain_lane.spans.clone(),
+                    gain_touch_epoch: track.gain_lane.recording_epoch,
                     id: track.id.0,
                     name: track.name.clone(),
                     gain: track.gain,
@@ -388,16 +392,11 @@ impl Project {
 
     /// Validate untrusted snapshot metadata before constructing a live model.
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
-        let mut gain_points = 0_usize;
-        for track in &snapshot.tracks {
-            crate::validate_gain_envelope(&track.gain_envelope)?;
-            gain_points = gain_points
-                .checked_add(track.gain_envelope.len())
-                .ok_or(Invalid("gain point count overflow"))?;
-            if gain_points > crate::MAX_GAIN_POINTS {
-                return Err(Invalid("project gain envelope point limit reached"));
-            }
-        }
+        snapshot.validate_gain_lanes()?;
+        let gain_touch_unsupported = snapshot
+            .tracks
+            .iter()
+            .any(|track| !track.gain_touch_spans.is_empty());
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let mut project = Project::new(snapshot.sample_rate)?;
         project.import_provenance = snapshot.import_provenance;
@@ -677,7 +676,11 @@ impl Project {
                 });
             }
             tracks.push(Track {
-                gain_envelope: track.gain_envelope,
+                gain_lane: crate::GainLane::new(
+                    track.gain_envelope,
+                    track.gain_touch_spans,
+                    track.gain_touch_epoch,
+                )?,
                 id: TrackId(track.id),
                 name: track.name,
                 gain: track.gain,
@@ -832,6 +835,9 @@ impl Project {
             candidate.return_feeds = return_feeds;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
         }
+        if gain_touch_unsupported {
+            return Err(Invalid(crate::GAIN_TOUCH_UNSUPPORTED));
+        }
         Ok(project)
     }
 }
@@ -845,4 +851,32 @@ fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), 
     }
     *max_id = (*max_id).max(id);
     Ok(())
+}
+
+impl Snapshot {
+    /// Structural proposal validation is separate from live Project admission.
+    pub fn validate_gain_lanes(&self) -> Result<(), Invalid> {
+        let mut units = 0_usize;
+        for track in &self.tracks {
+            let count = crate::validate_gain_lane_parts(
+                &track.gain_envelope,
+                &track.gain_touch_spans,
+                track.gain_touch_epoch,
+            )?;
+            for span in &track.gain_touch_spans {
+                if span.context.sample_rate != self.sample_rate {
+                    return Err(Invalid(
+                        "gain touch context sample rate differs from project",
+                    ));
+                }
+            }
+            units = units
+                .checked_add(count)
+                .ok_or(Invalid("gain lane count overflow"))?;
+            if units > crate::MAX_GAIN_POINTS {
+                return Err(Invalid("project gain lane limit reached"));
+            }
+        }
+        Ok(())
+    }
 }

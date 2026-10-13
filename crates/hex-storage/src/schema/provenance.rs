@@ -62,7 +62,7 @@ fn bounded_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::E
 }
 impl DocumentV18 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        if project.has_gain_automation() {
+        if project.has_gain_automation() || project.has_gain_touch_metadata() {
             return Err(StorageError::Invalid(
                 "older schema cannot save gain automation",
             ));

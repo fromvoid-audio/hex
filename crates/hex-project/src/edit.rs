@@ -9,6 +9,12 @@ use std::{collections::HashMap, path::PathBuf};
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Validate a pure splice proposal, then refuse adoption until both render consumers support it.
+    SpliceGainTouch {
+        track: TrackId,
+        expected_epoch: u64,
+        span: crate::GainTouchSpan,
+    },
     ReplaceTrackGainEnvelope {
         track: TrackId,
         points: Vec<crate::GainPoint>,
@@ -630,7 +636,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
-            gain_envelope: Vec::new(),
+            gain_lane: crate::GainLane::default(),
             id,
             name,
             gain: 1.0,
@@ -1034,6 +1040,33 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SpliceGainTouch {
+                track,
+                expected_epoch,
+                span,
+            } => {
+                let owner = self.track(track).ok_or(Invalid("track no longer exists"))?;
+                if span.context.sample_rate != self.sample_rate {
+                    return Err(Invalid("gain touch sample rate differs from project"));
+                }
+                let proposed = owner.gain_lane.with_touch(expected_epoch, span)?;
+                let other = self
+                    .tracks()
+                    .iter()
+                    .filter(|owner| owner.id() != track)
+                    .try_fold(0_usize, |count, owner| {
+                        count
+                            .checked_add(owner.gain_lane.units()?)
+                            .ok_or(Invalid("gain lane count overflow"))
+                    })?;
+                if other
+                    .checked_add(proposed.units()?)
+                    .is_none_or(|count| count > crate::MAX_GAIN_POINTS)
+                {
+                    return Err(Invalid("project gain lane limit reached"));
+                }
+                Err(Invalid(crate::GAIN_TOUCH_UNSUPPORTED))
+            }
             Command::ReplaceTrackGainEnvelope { track, points } => {
                 self.replace_gain_envelope(track, points)
             }
@@ -1520,8 +1553,15 @@ impl Project {
                 if !self
                     .track(track)
                     .ok_or(Invalid("track no longer exists"))?
-                    .gain_envelope()
+                    .gain_lane()
+                    .base()
                     .is_empty()
+                    || !self
+                        .track(track)
+                        .ok_or(Invalid("track no longer exists"))?
+                        .gain_lane
+                        .spans
+                        .is_empty()
                 {
                     return Err(Invalid("track gain is owned by automation"));
                 }

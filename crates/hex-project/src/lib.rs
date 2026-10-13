@@ -19,6 +19,11 @@ pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
 mod gain_envelope;
+mod gain_touch;
+pub use gain_touch::{
+    GAIN_TOUCH_UNSUPPORTED, GainLane, GainTouchContext, GainTouchSpan, GainTouchStep,
+    MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
+};
 mod midi;
 mod midi_batch;
 mod midi_playback;
@@ -324,7 +329,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
-    pub(crate) gain_envelope: Vec<GainPoint>,
+    pub(crate) gain_lane: GainLane,
     pub(crate) id: TrackId,
     pub(crate) name: String,
     pub(crate) gain: f32,
@@ -340,8 +345,11 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn gain_lane(&self) -> &GainLane {
+        &self.gain_lane
+    }
     pub fn gain_envelope(&self) -> &[GainPoint] {
-        &self.gain_envelope
+        self.gain_lane.base()
     }
     pub fn id(&self) -> TrackId {
         self.id

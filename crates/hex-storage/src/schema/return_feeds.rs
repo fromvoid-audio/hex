@@ -61,7 +61,7 @@ pub(super) fn bounded_feeds<'de, D: serde::Deserializer<'de>>(
 }
 impl DocumentV20 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        if project.has_gain_automation() {
+        if project.has_gain_automation() || project.has_gain_touch_metadata() {
             return Err(StorageError::Invalid(
                 "older schema cannot save gain automation",
             ));

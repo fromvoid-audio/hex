@@ -213,6 +213,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "full".into(),
             gain: 1.0,
