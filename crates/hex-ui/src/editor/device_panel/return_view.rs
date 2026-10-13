@@ -18,6 +18,10 @@ pub(super) fn render(
     };
     let devices = return_track.devices().to_vec();
     let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
+    view.device_panel.selected_device = view
+        .device_panel
+        .selected_device
+        .filter(|id| alive.contains(id));
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -268,6 +272,7 @@ fn render_return_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
+    let selected = view.device_panel.selected_device == Some(id);
     let device_view = view
         .device_panel
         .views
@@ -425,7 +430,7 @@ fn render_return_effect(
             ) {
                 compact_device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    control_style().with_device_selection(selected),
                     actions,
                     body,
                 )
@@ -433,7 +438,7 @@ fn render_return_effect(
             } else {
                 device_frame(
                     theme::text(device_view.name.clone()),
-                    control_style(),
+                    control_style().with_device_selection(selected),
                     actions,
                     body,
                 )
@@ -476,9 +481,21 @@ fn render_return_effect(
                     | "hex.gate"
                     | "hex.auto-pan")
             ) {
-                compact_device_frame(title, control_style(), actions, body).into_any_element()
+                compact_device_frame(
+                    title,
+                    control_style().with_device_selection(selected),
+                    actions,
+                    body,
+                )
+                .into_any_element()
             } else {
-                device_frame(title, control_style(), actions, body).into_any_element()
+                device_frame(
+                    title,
+                    control_style().with_device_selection(selected),
+                    actions,
+                    body,
+                )
+                .into_any_element()
             }
         }
     };
@@ -507,6 +524,7 @@ fn render_return_effect(
         .w(px(frame_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .capture_any_mouse_down(device_selection_listener(id, cx))
         .child(rendered)
 }
 

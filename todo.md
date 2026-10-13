@@ -1,3 +1,12 @@
+## persistent Arrangement selection — pulse2386 / pr170
+
+The captured time range survives mouse release and subsequent idle controller
+maintenance. Autoscroll no longer cancels a completed range when no gesture is
+active; stale active gestures and explicit Escape cancellation retain their
+existing behavior. Rendered audio/MIDI/empty-lane and main-scope regression fails
+before the fix; final focused/full source checks and native exact-candidate
+confirmation are recorded in Pulse2386/PR170. No native acceptance claim here.
+
 ## Operator fixed navigation and rail context — pulse2341 / PR156
 
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
@@ -2393,3 +2402,15 @@ resident import limits are preserved. See [page delivery](docs/page-delivery.md)
 This is the first stage only: endpoint retirement, installed-page readiness and
 all native advancing100-track/edit/seek/launch/fault/human acceptance remain open.
 PR177 remains draft/in progress; full Pulse24 criteria are not narrowed.
+## device selection fix — 13 october 2026
+
+Device cards now retain a transient selected DeviceId and share an accent
+border/title-bar state across instruments, track effects and Return effects.
+Capture-phase left mouse-down selects even when a nested control consumes input;
+owner changes, removal and project replacement retire selection. Focused rendered
+regressions were added. All 47 device-panel tests pass; disabling the new
+selection handler makes the click regression fail with no selected DeviceId.
+Architecture, GPUI patch, UI style and formatting guards pass. Full local CI
+is the remaining merge gate; native macOS click-through remains pending. Pulse issue intake is blocked: create_ticket
+requires request_id, which the exposed tool schema does not support. This entry
+records implementation evidence and does not replace Pulse planning authority.

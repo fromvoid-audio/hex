@@ -22,7 +22,7 @@ widgets = (
     'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
     'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
-    'routing_header_cell(',
+    'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',

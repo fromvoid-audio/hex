@@ -63,6 +63,21 @@ transfer laws, modifier behavior and numerical increments are unverified until
 reference experiments establish them. The visual target is the user-supplied
 Live device screenshot; rendering and assets are independent implementations.
 
+### numeric text shortcut ownership
+
+An active numeric text draft advertises `hex_text_editing` alongside its numeric
+control context. Editor printable shortcuts (space, `s`, Shift-`s`, and `l`) are
+excluded while that context is focused, so unit strings retain their characters
+without changing transport, Solo or loop state. Direct Solo actions also refuse
+that text-edit context. Numeric clipboard, selection, Enter/Escape and existing
+modified-command finalization paths remain unchanged. Focus on a numeric control
+outside text editing still permits the normal Solo shortcuts.
+
+Rendered editor-to-worker regressions cover lost characters, canonical Solo and
+history isolation, uppercase/space, clipboard/cancel, owner finalization, Enter
+and single Undo. Linux headless tests do not establish physical macOS keyboard,
+IME, bundled-font rendering or native visual acceptance.
+
 ### linear-amplitude gain presentation
 
 Parameter descriptors may declare `LinearAmplitudeDecibels` when their
@@ -502,3 +517,19 @@ Track and return panel titles derive a readable foreground with
 `theme::readable_text` on their actual surface, including warning titles. The
 saved background/text/accent roles and title strings remain unchanged; a valid
 non-text accent color is not assumed to satisfy the stricter text contrast policy.
+## device card selection — 13 october 2026
+
+Left mouse-down anywhere in an instrument, track effect or Return effect card
+selects that device. The shared frame uses the accent border/title bar with dark
+title text; parameter controls keep their existing colors. Selecting another
+card replaces the selection, which persists after release and redraw. Capture
+routing allows knobs, toggles and drag grips to retain their own input handling.
+Selection is transient editor state keyed by DeviceId; it sends no project edit
+and clears when the panel owner changes, the selected device disappears or the
+project generation changes. Right-click leaves the selection unchanged.
+
+Focused rendered GPUI regressions cover card clicks, selection persistence,
+removal, Return control gesture admission and owner/project retirement. Native
+macOS visual acceptance remains pending: click an instrument then an effect,
+click/adjust a Return effect knob, and verify only the clicked card is highlighted
+while its controls still work.
