@@ -8,8 +8,11 @@ use std::sync::Arc;
 
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
+mod device_preset_ui_tests;
 mod gate_ui_tests;
+mod operator_enable_ui_tests;
 mod operator_navigation_tests;
+mod operator_preview_navigation_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {
@@ -958,7 +961,8 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..12 {
+    for field in operator_panel::preview::Field::ALL {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -969,7 +973,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [2, 5] {
+    for field in [
+        operator_panel::preview::Field::PitchEnvelope,
+        operator_panel::preview::Field::Time,
+    ] {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -2391,6 +2399,24 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 );
             }
         }
+    }
+    // LFO uses canonical controls after PR154, with the same accepted row inset.
+    let lfo_row = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("canonical LFO row");
+    for parameter in [82, 85, 87] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("canonical LFO control");
+        assert!(control.origin.x >= lfo_row.origin.x + px(4.0));
+        assert!(
+            control.origin.x + control.size.width
+                <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
+        );
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
