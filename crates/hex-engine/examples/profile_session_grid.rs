@@ -47,6 +47,7 @@ fn fixture(
         let track = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track,
             name: format!("audio {index}"),
             gain: 1.0 / 512.0,

@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id,
             name: format!("track {index}"),
             gain: 1.0,

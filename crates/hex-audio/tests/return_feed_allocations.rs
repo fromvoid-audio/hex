@@ -32,6 +32,14 @@ fn assert_zero(count: allocation_counter::AllocationInfo) {
 }
 #[test]
 fn authored_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop() {
+    assert_callback(false);
+}
+#[test]
+fn gain_automation_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop()
+ {
+    assert_callback(true);
+}
+fn assert_callback(automation: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -86,6 +94,26 @@ fn authored_feed_render_observation_handoff_and_retirement_have_no_callback_allo
             gain: 0.5,
         })
         .unwrap();
+    if automation {
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 0.5,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ONE,
+                        gain: 1.0,
+                        outgoing: hex_project::GainInterpolation::Step,
+                    },
+                ],
+            })
+            .unwrap();
+    }
     let media = BTreeMap::from([(asset, Audio::new(48000, vec![[0.25, -0.5]; 2048]).unwrap())]);
     let table = Arc::new(SineTable::new());
     let revision = Arc::new(
@@ -124,6 +152,18 @@ fn authored_feed_render_observation_handoff_and_retirement_have_no_callback_allo
             gain: 0.25,
         })
         .unwrap();
+    if automation {
+        editor
+            .execute(Command::UpsertTrackGainPoint {
+                track,
+                point: hex_project::GainPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.25,
+                    outgoing: hex_project::GainInterpolation::Linear,
+                },
+            })
+            .unwrap();
+    }
     let next = Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
     control
         .publish(Playback::try_from_prepared_with_session(next).unwrap())

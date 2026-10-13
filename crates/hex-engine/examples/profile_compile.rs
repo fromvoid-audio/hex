@@ -59,6 +59,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id,
                 name: format!("track {track_index:03}"),
                 gain: 0.5 + (track_index % 5) as f32 * 0.1,

@@ -54,6 +54,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: SESSION_TRACK,
                 name: "session audio".into(),
                 gain: 1.0,
@@ -67,6 +68,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: BED_TRACK,
                 name: "resident bed".into(),
                 gain: 1.0,

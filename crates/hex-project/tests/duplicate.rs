@@ -183,6 +183,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: 2,
             name: "full".into(),
             gain: 1.0,

@@ -1,3 +1,4 @@
+pub(crate) mod gain_envelopes;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
@@ -1911,6 +1912,7 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
                     id: track.id,
                     name: track.name,
                     gain: track.gain,
@@ -1968,6 +1970,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 21 {
+            return gain_envelopes::DocumentV21::decode(bytes);
         }
         if header.version == 20 {
             return return_feeds::DocumentV20::decode(bytes);
@@ -2168,6 +2173,7 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            gain_envelope: Vec::new(),
                             id: t.id,
                             name: t.name,
                             gain: t.gain,
@@ -2296,6 +2302,7 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
                     id: t.id,
                     name: t.name,
                     gain: t.gain,
@@ -2572,6 +2579,7 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2593,6 +2601,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2614,6 +2623,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2659,6 +2669,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2704,6 +2715,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track.id,
                 name: track.name,
                 gain: track.gain,

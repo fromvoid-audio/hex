@@ -429,6 +429,7 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
     ) -> Result<Self, crate::Invalid> {
+        crate::gain_envelope::validate_project(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let shared_contexts = match shared_contexts {
             Some(contexts) => contexts,

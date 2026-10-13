@@ -212,6 +212,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: 1,
             name: "full".into(),
             gain: 1.0,

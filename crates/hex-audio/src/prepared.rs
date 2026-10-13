@@ -1757,6 +1757,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: TRACK_ID,
                 name: "analyzer fixture".into(),
                 gain: 1.0,
@@ -1879,6 +1880,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: TRACK_ID,
                 name: "saturator callback fixture".into(),
                 gain: 1.0,
@@ -1989,6 +1991,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: TRACK_ID,
                 name: "compressor callback fixture".into(),
                 gain: 1.0,
@@ -2111,6 +2114,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: TRACK_ID,
                 name: "gate callback fixture".into(),
                 gain: 1.0,
@@ -4075,6 +4079,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: 1,
                 name: "audio".into(),
                 gain: 1.0,
@@ -4522,6 +4527,7 @@ mod tests {
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                gain_envelope: Vec::new(),
                 id: track_id,
                 name: "keys".into(),
                 gain: 1.0,

@@ -127,11 +127,13 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema20 for authored feeds, preserving the legacy schema19 byte path.
+/// Encode schema21 for gain lanes or schema20 for feeds, preserving legacy bytes.
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if project.authored_routing().is_empty() {
+    if project.has_gain_automation() {
+        encode_document(&schema::gain_envelopes::DocumentV21::from_project(project)?)
+    } else if project.authored_routing().is_empty() {
         encode_document(&schema::routing::DocumentV19::from_project(project)?)
     } else {
         encode_schema20(project)

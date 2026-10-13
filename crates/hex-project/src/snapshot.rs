@@ -85,6 +85,7 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub gain_envelope: Vec<crate::GainPoint>,
     pub id: u64,
     pub name: String,
     pub gain: f32,
@@ -223,6 +224,7 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    gain_envelope: track.gain_envelope.clone(),
                     id: track.id.0,
                     name: track.name.clone(),
                     gain: track.gain,
@@ -386,6 +388,16 @@ impl Project {
 
     /// Validate untrusted snapshot metadata before constructing a live model.
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        let mut gain_points = 0_usize;
+        for track in &snapshot.tracks {
+            crate::validate_gain_envelope(&track.gain_envelope)?;
+            gain_points = gain_points
+                .checked_add(track.gain_envelope.len())
+                .ok_or(Invalid("gain point count overflow"))?;
+            if gain_points > crate::MAX_GAIN_POINTS {
+                return Err(Invalid("project gain envelope point limit reached"));
+            }
+        }
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let mut project = Project::new(snapshot.sample_rate)?;
         project.import_provenance = snapshot.import_provenance;
@@ -665,6 +677,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                gain_envelope: track.gain_envelope,
                 id: TrackId(track.id),
                 name: track.name,
                 gain: track.gain,

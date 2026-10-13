@@ -59,6 +59,7 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("operator {track_index:03}"),
             gain: 1.0,

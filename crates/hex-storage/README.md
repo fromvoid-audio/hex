@@ -156,3 +156,8 @@ only for nonempty feeds in the ordinary writer. Legacy projects keep the19 byte
 path; old writers refuse feed loss. Provenance, opaque payloads and migrations
 remain intact. See [routing](../../docs/routing.md) for the admitted finite stage
 and the remaining automation/latency/native acceptance.
+
+Schema21 strictly persists canonical track-gain envelopes with every schema20
+field. Readers of legacy schemas migrate empty lanes; ordinary19/20 writers remain selected
+for projects without automation, and older envelope entry points refuse lane loss.
+See [track gain automation](../../docs/track-gain-automation.md).

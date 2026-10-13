@@ -245,6 +245,7 @@ fn compile_project<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
     let shared_contexts = match shared_contexts {
@@ -427,7 +428,12 @@ fn compile_project<'a>(
             .with_track_id(track.id())
             .with_instrument_config(track.instrument())
             .with_mutable_instrument(mutable_instrument, mutable_looping_source)
-            .with_sends(sends),
+            .with_sends(sends)
+            .with_gain_envelope(
+                track.gain_envelope(),
+                snapshot.tempo_map(),
+                track.balance(),
+            )?,
         );
     }
     let mut return_buses = Vec::new();

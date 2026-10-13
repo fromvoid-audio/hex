@@ -71,6 +71,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("audio {index:03}"),
             gain: 0.0625 + (index % 4) as f32 * 0.015625,

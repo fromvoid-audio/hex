@@ -28,6 +28,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         let instrument_id = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track,
             name: format!("instrument {index:03}"),
             gain: 0.1,

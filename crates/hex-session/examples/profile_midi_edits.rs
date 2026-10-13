@@ -29,6 +29,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("instrument {index:03}"),
             gain: 0.1,

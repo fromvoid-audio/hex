@@ -303,7 +303,6 @@ impl SessionPlayback {
             let track = tracks
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let mix = track.mix();
             let stateful_effects = self
                 .device_chains
                 .get(index)
@@ -313,7 +312,10 @@ impl SessionPlayback {
                     .as_ref()
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
-            let buffered = stateful_effects || mutable_active || !track.sends().is_empty();
+            let buffered = stateful_effects
+                || mutable_active
+                || !track.sends().is_empty()
+                || track.has_gain_automation();
             let ordered = track.requires_ordered_processing();
             while self
                 .release_scratch
@@ -538,6 +540,15 @@ impl SessionPlayback {
                     }
                 }
                 for (frame_index, source) in render_output.iter().copied().enumerate() {
+                    let mix = if track.has_gain_automation() {
+                        track.mix_at(
+                            arrangement_frame
+                                .checked_add(frame_index as u64)
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                        )
+                    } else {
+                        track.mix()
+                    };
                     if track.sends().is_empty() {
                         mix.add_frame(&mut output[frame_index], source);
                     } else {
@@ -1173,6 +1184,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(arrangement_frame, output, page_provider)
+                    } else if track.has_gain_automation() {
+                        // This is the raw source stage; the buffered caller applies gain once.
+                        track.render_additive_with_midi_floor(arrangement_frame, output, None)
                     } else {
                         track.render_additive(arrangement_frame, output)
                     }

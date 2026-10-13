@@ -5,6 +5,13 @@ use std::collections::BTreeMap;
 
 #[test]
 fn late_chunk_failure_rolls_back_feed_histories_clocks_routes_and_output() {
+    assert_late_failure(false);
+}
+#[test]
+fn late_chunk_failure_with_gain_automation_rolls_back_feed_histories_clocks_routes_and_output() {
+    assert_late_failure(true);
+}
+fn assert_late_failure(automation: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -57,6 +64,25 @@ fn late_chunk_failure_rolls_back_feed_histories_clocks_routes_and_output() {
             gain: 0.5,
         })
         .unwrap();
+    if automation {
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 0.5,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ONE,
+                        gain: 1.0,
+                        outgoing: hex_project::GainInterpolation::Step,
+                    },
+                ],
+            })
+            .unwrap();
+    }
     let revision = Arc::new(
         PreparedRevision::prepare(
             editor.project(),

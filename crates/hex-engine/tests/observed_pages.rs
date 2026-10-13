@@ -37,6 +37,9 @@ fn fixture() -> Fixture {
     fixture_with_feeds(false)
 }
 fn fixture_with_feeds(feeds: bool) -> Fixture {
+    fixture_with_options(feeds, false)
+}
+fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 4).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -124,6 +127,26 @@ fn fixture_with_feeds(feeds: bool) -> Fixture {
                 source: returns[1],
                 destination: returns[0],
                 gain: 0.5,
+            })
+            .unwrap();
+    }
+    if automation {
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 0.25,
+                        outgoing: hex_project::GainInterpolation::Linear,
+                    },
+                    hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ONE,
+                        gain: 1.5,
+                        outgoing: hex_project::GainInterpolation::Step,
+                    },
+                ],
             })
             .unwrap();
     }
@@ -430,4 +453,9 @@ fn new_observed_legacy_refusal_is_before_all_mutation_and_old_paths_remain_valid
             .is_err(),
         "provider-less stream refusal preserved"
     );
+}
+
+#[test]
+fn automated_gain_with_return_feeds_and_borrowed_pages_matches_resident_pcm_nodes_and_owners() {
+    assert_mixed_pcm_and_observation(fixture_with_options(true, true));
 }

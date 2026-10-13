@@ -459,3 +459,9 @@ current Main sums stay pinned, master runs once, and captured old chains remain
 Main-only. The no-feed loops keep their original arithmetic order. See
 [routing](../../docs/routing.md); this adds no latency compensation or native
 deadline/listening evidence.
+
+Prepared track-gain lanes apply absolute sample-offset gain once after devices
+and before Main/sends in Arrangement, Session and export. No-automation paths
+remain; detached tails freeze the effective transition gain. Actual prepared knot
+capacity is reported separately from process memory and native deadline evidence.
+See [track gain automation](../../docs/track-gain-automation.md).

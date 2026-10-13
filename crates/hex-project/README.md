@@ -207,3 +207,7 @@ implicit Main paths, canonical sends and admitted Return feeds. Generic proposal
 remain closed; typed stereo Return feeds have bounded additive playback;
 see [routing](../../docs/routing.md). No MIDI/device/sidechain bus support is
 inferred from opaque state.
+
+Canonical track gain envelopes now support atomic bounded point editing/history
+with strict BeatTime order. Manual fader and affected time transforms refuse while
+a lane owns gain. See [track gain automation](../../docs/track-gain-automation.md).

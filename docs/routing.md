@@ -68,3 +68,8 @@ history/IDs/removal/undo, strict save/load, opaque/provenance preservation,
 rollback, borrowed observation, callback allocation and retirement. Linux does
 not establish native routing interaction, CoreAudio deadlines, optimized macOS
 packaging, listening, Live reference behavior or full-ticket acceptance.
+
+The next finite [track gain automation](track-gain-automation.md) stage now adds
+canonical point editing and sample-offset playback at the existing track fader.
+Recording, general parameter envelopes, further graph roles, latency and native
+acceptance remain open; its schema21 preserves the complete ReturnFeed state.

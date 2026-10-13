@@ -39,6 +39,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         next += 3;
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track,
             name: format!("track {index:03}"),
             gain: 0.3 + (index % 7) as f32 * 0.05,

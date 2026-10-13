@@ -526,7 +526,7 @@ impl SessionPlayback {
                                     track_index: index,
                                     track_id: route.id,
                                     order: 0,
-                                    mix: track.mix(),
+                                    mix: track.mix_at(source_frame),
                                     tail_group: None,
                                     continuation: None,
                                     voice,

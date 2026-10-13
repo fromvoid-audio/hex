@@ -34,13 +34,17 @@ impl Drop for TestDir {
 
 #[test]
 fn prepared_export_renders_effectful_return_before_master_once() {
-    assert_return_export(false);
+    assert_return_export(false, false);
 }
 #[test]
 fn prepared_export_includes_authored_additive_return_feed_before_master_once() {
-    assert_return_export(true);
+    assert_return_export(true, false);
 }
-fn assert_return_export(authored_feed: bool) {
+#[test]
+fn prepared_export_applies_gain_automation_with_return_feed_and_zero_base_once() {
+    assert_return_export(true, true);
+}
+fn assert_return_export(authored_feed: bool, automation: bool) {
     let samples = [[0.25, -0.5]];
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let asset = match editor
@@ -127,6 +131,19 @@ fn assert_return_export(authored_feed: bool) {
             })
             .unwrap();
     }
+    if automation {
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![hex_project::GainPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 1.0,
+                    outgoing: hex_project::GainInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
     let media = BTreeMap::from([(asset, Audio::new(RATE, samples.to_vec()).expect("audio"))]);
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
@@ -140,7 +157,9 @@ fn assert_return_export(authored_feed: bool) {
     let bytes = fs::read(path).expect("read export");
     let left = i16::from_le_bytes([bytes[44], bytes[45]]);
     let right = i16::from_le_bytes([bytes[46], bytes[47]]);
-    let expected = if authored_feed {
+    let expected = if automation {
+        [0.21875_f32, -0.0625_f32]
+    } else if authored_feed {
         [0.109375_f32, -0.03125_f32]
     } else {
         [0.09375_f32, -0.0625_f32]

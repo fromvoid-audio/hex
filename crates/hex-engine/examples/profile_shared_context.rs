@@ -250,6 +250,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
             id: track_id,
             name: format!("context profile {track_index:03}"),
             gain: 1.0,

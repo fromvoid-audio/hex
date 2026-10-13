@@ -8,28 +8,28 @@ use std::fmt;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentV20 {
-    format: String,
-    version: u32,
-    sample_rate: u32,
-    next_id: u64,
-    assets: Vec<AssetV2>,
-    tracks: Vec<TrackV17>,
-    return_tracks: Vec<ReturnTrackDtoV17>,
+    pub(super) format: String,
+    pub(super) version: u32,
+    pub(super) sample_rate: u32,
+    pub(super) next_id: u64,
+    pub(super) assets: Vec<AssetV2>,
+    pub(super) tracks: Vec<TrackV17>,
+    pub(super) return_tracks: Vec<ReturnTrackDtoV17>,
     #[serde(deserialize_with = "deserialize_required_loop_region")]
-    loop_region: Option<LoopRegionDto>,
-    master_gain: f32,
-    tempo_points: Vec<TempoPointDto>,
-    meter_points: Vec<MeterPointDto>,
-    session: SessionDtoV12,
+    pub(super) loop_region: Option<LoopRegionDto>,
+    pub(super) master_gain: f32,
+    pub(super) tempo_points: Vec<TempoPointDto>,
+    pub(super) meter_points: Vec<MeterPointDto>,
+    pub(super) session: SessionDtoV12,
     #[serde(deserialize_with = "provenance::required_provenance")]
-    import_provenance: Option<ProvenanceDto>,
+    pub(super) import_provenance: Option<ProvenanceDto>,
     #[serde(deserialize_with = "bounded_feeds")]
-    routing: Vec<FeedDto>,
+    pub(super) routing: Vec<FeedDto>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum FeedDto {
+pub(super) enum FeedDto {
     ReturnFeed {
         id: u64,
         source: u64,
@@ -37,7 +37,9 @@ enum FeedDto {
         gain: f32,
     },
 }
-fn bounded_feeds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<FeedDto>, D::Error> {
+pub(super) fn bounded_feeds<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<FeedDto>, D::Error> {
     struct Feeds;
     impl<'de> Visitor<'de> for Feeds {
         type Value = Vec<FeedDto>;
@@ -59,7 +61,15 @@ fn bounded_feeds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<FeedDto>,
 }
 impl DocumentV20 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        // This envelope, unlike older writers, owns all canonical feed records.
+        if project.has_gain_automation() {
+            return Err(StorageError::Invalid(
+                "older schema cannot save gain automation",
+            ));
+        }
+        Self::fields_for_new_envelope(project)
+    }
+    pub(super) fn fields_for_new_envelope(project: &Project) -> Result<Self, StorageError> {
+        // This envelope owns canonical feeds; schema21 also owns every gain lane.
         let base = DocumentV18::legacy_fields(project)?;
         Ok(Self {
             format: base.format,
@@ -87,7 +97,7 @@ impl DocumentV20 {
                 .collect(),
         })
     }
-    fn into_snapshot(self) -> Result<Snapshot, StorageError> {
+    pub(super) fn into_snapshot(self) -> Result<Snapshot, StorageError> {
         if self.format != "hex-project" || self.version != 20 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
