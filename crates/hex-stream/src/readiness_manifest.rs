@@ -124,7 +124,11 @@ impl WantedPageManifest {
     }
 }
 
-fn valid_manifest(catalog: &CatalogLease, stamp: ReadinessStamp, extents: &[PageExtent]) -> bool {
+pub(crate) fn valid_manifest(
+    catalog: &CatalogLease,
+    stamp: ReadinessStamp,
+    extents: &[PageExtent],
+) -> bool {
     if stamp.request_epoch == 0
         || stamp.project_rate == 0
         || stamp

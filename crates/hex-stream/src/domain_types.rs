@@ -33,6 +33,7 @@ pub enum DomainRefusal {
     InvalidIdentity,
     IdentityExhausted,
     InvalidCapacity,
+    DomainCapacity,
     Allocation,
     DuplicateIdentity,
     DuplicateCatalog,
@@ -82,7 +83,8 @@ pub enum MediaCleanupPhase {
 }
 
 /// Actual endpoint-independent escrow data capacities. Inline outcome/owner
-/// metadata is included in control slot size. Shared queue objects and observer
+/// metadata is included in control slot size; boxed readiness objects are
+/// charged once in domain_data_bytes. Shared queue objects and observer
 /// byte are charged once; allocator/Arc headers and caller placement excluded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DomainEscrowFootprint {

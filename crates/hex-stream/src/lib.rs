@@ -27,9 +27,9 @@ pub use construction::{
 pub use construction_report::WorkerConstructionObservation;
 pub use construction_transport::TransportSetupObservation;
 pub use domain_escrow::{
-    CallbackDomainBatch, MediaCleanupObserver, MediaDomainReaper, MediaReturnFailure,
-    RejectedMediaReturn, ReturnedMediaDomain, TerminalBatchFailure, TerminalBatchSender,
-    domain_escrow,
+    CallbackDomainBatch, DomainAdmission, DomainAdmissionFailure, MediaCleanupObserver,
+    MediaDomainReaper, MediaReturnFailure, RejectedMediaReturn, ReturnedMediaDomain,
+    TerminalBatchFailure, TerminalBatchSender, domain_escrow, reusable_domain_escrow,
 };
 pub use domain_types::{
     DomainCleanupProgress, DomainEscrowFootprint, DomainId, DomainIds, DomainPoll, DomainRefusal,
@@ -63,3 +63,6 @@ pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,
     StreamRuntimeError,
 };
+
+// Typed control inputs; audio does not depend directly on media or decode WAVs.
+pub use hex_media::{VerifiedWavReaderLimits, WavReaderLimits};

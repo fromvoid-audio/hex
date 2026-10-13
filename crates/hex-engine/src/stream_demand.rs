@@ -1,0 +1,134 @@
+//! Borrowed source traversal shared by streaming demand and Arrangement render.
+use crate::{Clip, Invalid, STREAM_PAGE_FRAMES, StreamedPageSpan, StreamedSourceMetadata, Track};
+
+/// Required half-open extent within one project-rate source page. No ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamPageExtent {
+    pub source: crate::StreamSourceKey,
+    pub page_index: u64,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The next render chunk's clocks and width; demand borrows never change them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamChunkWindow {
+    pub performance_frame: u64,
+    pub arrangement_frame: u64,
+    pub route_generation: u64,
+    pub frames: usize,
+}
+
+pub(crate) fn visit_page_range(
+    source: &StreamedSourceMetadata,
+    start: u64,
+    count: usize,
+    visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+) -> Result<(), Invalid> {
+    let end = start
+        .checked_add(count as u64)
+        .ok_or(Invalid("stream demand range overflow"))?;
+    if end > source.playback_frames() {
+        return Err(Invalid("stream demand exceeds source"));
+    }
+    let mut cursor = start;
+    while cursor < end {
+        let offset = (cursor % STREAM_PAGE_FRAMES as u64) as usize;
+        let count = (end - cursor).min((STREAM_PAGE_FRAMES - offset) as u64) as usize;
+        visit(StreamPageExtent {
+            source: source.key(),
+            page_index: cursor / STREAM_PAGE_FRAMES as u64,
+            start: offset,
+            end: offset + count,
+        })?;
+        cursor += count as u64;
+    }
+    Ok(())
+}
+
+impl Clip {
+    // Returning the actual consumed width preserves legacy rendering semantics.
+    pub(crate) fn visit_streamed_spans(
+        &self,
+        start: u64,
+        end: u64,
+        mut visit: impl FnMut(&StreamedSourceMetadata, StreamedPageSpan<'_>) -> usize,
+    ) {
+        let Some(metadata) = self.metadata.as_deref() else {
+            return;
+        };
+        let Some(source) = metadata.streamed.as_deref() else {
+            return;
+        };
+        let span_end = if self.looping {
+            end.min(self.end)
+        } else {
+            end.min(self.end)
+                .min(self.start.saturating_add(self.source_length as u64))
+        };
+        let mut position = start.max(self.start);
+        while position < span_end {
+            let relative = if self.looping {
+                (position - self.start) % self.source_length as u64
+            } else {
+                position - self.start
+            };
+            let until_phase_wrap = self.source_length as u64 - metadata.source_phase;
+            let phase = if relative >= until_phase_wrap {
+                relative - until_phase_wrap
+            } else {
+                relative + metadata.source_phase
+            };
+            let Some(source_frame) = (self.source_offset as u64).checked_add(phase) else {
+                break;
+            };
+            let until_wrap = if self.looping {
+                self.source_length as u64 - phase
+            } else {
+                u64::MAX
+            };
+            let count = (span_end - position)
+                .min(until_wrap)
+                .min((STREAM_PAGE_FRAMES as u64) - source_frame % STREAM_PAGE_FRAMES as u64)
+                as usize;
+            let consumed = visit(
+                source,
+                StreamedPageSpan {
+                    source_frame,
+                    timeline_frame: position,
+                    output_offset: (position - start) as usize,
+                    count,
+                    fade: metadata.fade.as_ref().map(|fade| (fade, self.start)),
+                },
+            );
+            if consumed == 0 || consumed > count {
+                break;
+            }
+            position = position.saturating_add(consumed as u64);
+        }
+    }
+}
+
+impl Track {
+    pub(crate) fn visit_stream_demand(
+        &self,
+        start: u64,
+        count: usize,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        let end = start
+            .checked_add(count as u64)
+            .ok_or(Invalid("stream demand clock overflow"))?;
+        let mut result = Ok(());
+        for clip in &self.clips {
+            if result.is_err() {
+                break;
+            }
+            clip.visit_streamed_spans(start, end, |source, span| {
+                result = visit_page_range(source, span.source_frame, span.count, visit);
+                if result.is_ok() { span.count } else { 0 }
+            });
+        }
+        result
+    }
+}

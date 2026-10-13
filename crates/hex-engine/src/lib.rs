@@ -25,7 +25,9 @@ pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS,
 };
 mod return_feed_plan;
+mod stream_demand;
 mod streamed;
+pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
 };
@@ -1333,68 +1335,16 @@ impl Track {
                 );
                 continue;
             }
-            let Some(metadata) = clip.metadata.as_deref() else {
-                continue;
-            };
-            let Some(source) = metadata.streamed.as_deref() else {
-                continue;
-            };
-            let span_end = if clip.looping {
-                end_frame.min(clip.end)
-            } else {
-                end_frame
-                    .min(clip.end)
-                    .min(clip.start.saturating_add(clip.source_length as u64))
-            };
-            let mut position = start_frame.max(clip.start);
-            while position < span_end {
-                let timeline_offset = position - clip.start;
-                let relative = if clip.looping {
-                    timeline_offset % clip.source_length as u64
-                } else {
-                    timeline_offset
-                };
-                let source_relative = if metadata.source_phase == 0 {
-                    relative
-                } else {
-                    let until_wrap = clip.source_length as u64 - metadata.source_phase;
-                    if relative >= until_wrap {
-                        relative - until_wrap
-                    } else {
-                        relative + metadata.source_phase
-                    }
-                };
-                let Some(source_frame) = (clip.source_offset as u64).checked_add(source_relative)
-                else {
-                    break;
-                };
-                let remaining = (span_end - position) as usize;
-                let until_wrap = if clip.looping {
-                    (clip.source_length as u64 - source_relative) as usize
-                } else {
-                    usize::MAX
-                };
-                let count = remaining.min(until_wrap);
-                let output_offset = (position - start_frame) as usize;
-                let rendered = render_streamed_page_span_captured(
+            clip.visit_streamed_spans(start_frame, end_frame, |source, span| {
+                render_streamed_page_span_captured(
                     source_mix,
                     source,
-                    StreamedPageSpan {
-                        source_frame,
-                        timeline_frame: position,
-                        output_offset,
-                        count,
-                        fade: metadata.fade.as_ref().map(|fade| (fade, clip.start)),
-                    },
+                    span,
                     output,
                     pages,
                     capture.as_deref_mut(),
-                );
-                if rendered == 0 {
-                    break;
-                }
-                position = position.saturating_add(rendered as u64);
-            }
+                )
+            });
         }
     }
 

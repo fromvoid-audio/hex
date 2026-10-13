@@ -1737,7 +1737,7 @@ fn next_pending_frame(routes: &[TrackRoute]) -> Option<u64> {
         .min()
 }
 
-fn normalize_loop_cursor(
+pub(super) fn normalize_loop_cursor(
     frame: u64,
     region: LoopRegion,
     loop_pass: u64,

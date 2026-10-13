@@ -19,6 +19,13 @@ use std::sync::{
     },
 };
 use std::time::Instant;
+#[path = "prepared_streaming.rs"]
+mod streaming;
+pub(crate) use streaming::{NativeStreamRoot, channel_with_streaming_and_spectrum};
+pub use streaming::{
+    StreamBridgeControl, StreamPublicationRequest, StreamPublicationSource, StreamPublishError,
+    StreamingContext, channel_with_streaming,
+};
 
 // Queue capacity and per-block consumption budget must stay equal: every
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
@@ -190,6 +197,7 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
 }
 
 struct Publication {
+    stream_source: Option<streaming::StreamBinding>,
     revision: u64,
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
@@ -339,6 +347,8 @@ pub struct Status {
     pub position: AtomicU64,
     pub performance_frame: AtomicU64,
     pub playing: AtomicBool,
+    /// Opt-in streamed chunk is waiting for exact installed pages; clocks hold.
+    pub buffering: AtomicBool,
     pub session_capability: AtomicU32,
     pub shutdown_complete: AtomicBool,
     route_sequence: AtomicU64,
@@ -382,6 +392,7 @@ impl Status {
             position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             playing: AtomicBool::new(false),
+            buffering: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             shutdown_complete: AtomicBool::new(false),
             route_sequence: AtomicU64::new(0),
@@ -657,8 +668,9 @@ impl std::fmt::Debug for PublishError {
 }
 
 pub struct Control {
+    streaming_tag: Option<Arc<()>>,
     publications: Producer<Publication>,
-    retired: Consumer<Publication>,
+    retired: Option<Consumer<Publication>>,
     commands: Producer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
     typing_cut: Arc<AtomicU64>,
@@ -675,6 +687,8 @@ pub struct Control {
 }
 
 pub struct Callback {
+    streaming: Option<Box<streaming::StreamingCallback>>,
+    native_stream_root: Option<streaming::NativeStreamRoot>,
     publications: Consumer<Publication>,
     retired: Producer<Publication>,
     commands: Consumer<QueuedCommand>,
@@ -738,8 +752,9 @@ pub fn channel_with_spectrum(
     let (processor_audition, callback_audition) = processor_audition::channel();
     Ok((
         Control {
+            streaming_tag: None,
             publications,
-            retired,
+            retired: Some(retired),
             commands,
             pending_stop_marker: pending_stop_marker.clone(),
             typing_cut: Arc::clone(&typing_cut),
@@ -755,6 +770,8 @@ pub fn channel_with_spectrum(
             latest_fresh_runtime_cancellation: None,
         },
         Callback {
+            streaming: None,
+            native_stream_root: None,
             publications: incoming,
             retired: returning,
             commands: events,
@@ -943,6 +960,7 @@ impl Control {
                 })
             });
         let publication = Publication {
+            stream_source: None,
             revision,
             control_context_generation,
             policy,
@@ -1077,9 +1095,17 @@ impl Control {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        // Opt-in source envelopes need their matching root for recoverable
+        // uninstalled endpoints and reported pool conservation. Retain them.
+        if self.streaming_tag.is_some() {
+            return 0;
+        }
         let mut count = 0;
         for _ in 0..RETIRED {
-            let Ok(publication) = self.retired.pop() else {
+            let Some(retired) = self.retired.as_mut() else {
+                break;
+            };
+            let Ok(publication) = retired.pop() else {
                 break;
             };
             drop(publication);
@@ -1103,6 +1129,9 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        if let Some(streaming) = self.streaming.as_mut() {
+            streaming.pump_returns();
+        }
         self.observe_typing_cut();
         self.processor_audition.begin_block();
         self.apply_processor_audition_boundary();
@@ -1228,6 +1257,61 @@ impl Callback {
             {
                 barrier.wait();
                 barrier.wait();
+            }
+            if next.stream_source.is_some()
+                && next
+                    .fresh_runtime_cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| {
+                        cancellation.decision.load(Acquire) == FRESH_PUBLICATION_CANCELLED
+                    })
+            {
+                next.fresh_runtime_cancellation
+                    .as_ref()
+                    .expect("cancelled source")
+                    .finish();
+                self.status.publish_rejected_revision(
+                    next.revision,
+                    PlaybackHandoffRejection::FreshRuntimeCancelled,
+                );
+                self.return_graph(next);
+                self.publication_pending.store(false, Release);
+                self.consume_commands();
+                return;
+            }
+            if stale_fence.is_none() && next.stream_source.is_some() {
+                let readiness = self
+                    .streaming
+                    .as_mut()
+                    .ok_or(Invalid("stream bridge missing"))
+                    .and_then(|streaming| {
+                        streaming.candidate_ready(
+                            &mut next,
+                            self.active.as_mut(),
+                            self.status.consumed_command.load(Acquire),
+                        )
+                    });
+                match readiness {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.deferred = Some(next);
+                        self.consume_commands();
+                        return;
+                    }
+                    Err(_) => {
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.status.publish_rejected_revision(
+                            next.revision,
+                            PlaybackHandoffRejection::StreamReadiness,
+                        );
+                        self.return_graph(next);
+                        self.publication_pending.store(false, Release);
+                        self.consume_commands();
+                        return;
+                    }
+                }
             }
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
@@ -1552,6 +1636,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.status.buffering.store(false, Relaxed);
         if let Some(active) = self.active.as_mut() {
             active.playback.apply(PlaybackCommand::Stop);
         }
@@ -1596,6 +1681,7 @@ impl Callback {
         }
         self.spectrum_stage.begin(target, epoch, output.len());
         if self.closing.load(Acquire) {
+            self.status.buffering.store(false, Relaxed);
             output.fill([0.0; 2]);
             return Ok(());
         }
@@ -1604,9 +1690,24 @@ impl Callback {
             let mut observe = |identity, offset, frames: &[Frame]| {
                 stage.observe(identity, offset, frames);
             };
-            active
-                .playback
-                .render_with_post_node_observer(output, Some(&mut observe))?;
+            if active.stream_source.is_some() {
+                let streaming = self
+                    .streaming
+                    .as_mut()
+                    .ok_or(Invalid("stream bridge absent"))?;
+                let buffering = streaming.render(
+                    active,
+                    output,
+                    Some(&mut observe),
+                    self.status.consumed_command.load(Acquire),
+                )?;
+                self.status.buffering.store(buffering, Relaxed);
+            } else {
+                active
+                    .playback
+                    .render_with_post_node_observer(output, Some(&mut observe))?;
+                self.status.buffering.store(false, Relaxed);
+            }
         } else {
             output.fill([0.0; 2]);
         }
@@ -1639,11 +1740,27 @@ impl Callback {
     }
     fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.closing.load(Acquire) {
+            self.status.buffering.store(false, Relaxed);
             output.fill([0.0; 2]);
             return Ok(());
         }
         if let Some(active) = self.active.as_mut() {
-            active.playback.render(output)?;
+            if active.stream_source.is_some() {
+                let streaming = self
+                    .streaming
+                    .as_mut()
+                    .ok_or(Invalid("stream bridge absent"))?;
+                let buffering = streaming.render(
+                    active,
+                    output,
+                    None,
+                    self.status.consumed_command.load(Acquire),
+                )?;
+                self.status.buffering.store(buffering, Relaxed);
+            } else {
+                active.playback.render(output)?;
+                self.status.buffering.store(false, Relaxed);
+            }
         } else {
             output.fill([0.0; 2]);
         }
@@ -3626,6 +3743,7 @@ mod tests {
         control
             .publications
             .push(Publication {
+                stream_source: None,
                 revision: 99,
                 control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
@@ -3962,6 +4080,7 @@ mod tests {
             callback
                 .retired
                 .push(Publication {
+                    stream_source: None,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
@@ -4272,6 +4391,7 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (playback, weak_revision, _, _) = session_audio_graph();
         callback.held_retirement = Some(Publication {
+            stream_source: None,
             revision: 1,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -4385,6 +4505,7 @@ mod tests {
                 callback
                     .retired
                     .push(Publication {
+                        stream_source: None,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -4458,6 +4579,7 @@ mod tests {
                 callback
                     .retired
                     .push(Publication {
+                        stream_source: None,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -4470,6 +4592,7 @@ mod tests {
         }
         let (held, held_weak) = graph();
         callback.held_retirement = Some(Publication {
+            stream_source: None,
             revision: 4,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -4616,6 +4739,7 @@ mod tests {
             control
                 .publications
                 .push(Publication {
+                    stream_source: None,
                     revision: 3,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,

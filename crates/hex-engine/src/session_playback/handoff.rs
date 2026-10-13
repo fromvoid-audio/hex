@@ -348,6 +348,14 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_with_demand(previous, None)
+    }
+
+    pub(super) fn inherit_state_with_demand(
+        &mut self,
+        previous: &mut Self,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
             || previous.analytic_continuations.len() != MAX_TRACKS
@@ -2822,6 +2830,27 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        if let Some(demand) = demand {
+            let generation = if visible_state_changed {
+                previous.route_state_generation.wrapping_add(1)
+            } else {
+                previous.route_state_generation
+            };
+            demand.window = Some(
+                self.visit_stream_chunk_at(
+                    &self.route_scratch,
+                    previous.performance_frame,
+                    previous.arrangement_frame,
+                    generation,
+                    previous.arrangement_loop_pass,
+                    previous.playing,
+                    demand.maximum_frames,
+                    &mut demand.visit,
+                )
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
+            );
+            return Ok(report);
+        }
         // All capacity/timing planning is complete. Runtime inheritance below
         // may partially mutate candidate state before returning an error, so it
         // permanently consumes this candidate's single admission opportunity.

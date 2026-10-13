@@ -15,6 +15,7 @@ use std::{
 
 pub struct PreparedOutput {
     _stream: lifecycle::StreamOwner,
+    stream_root: Option<prepared::NativeStreamRoot>,
     pub control: prepared::Control,
     pub sample_rate: u32,
     pub label: String,
@@ -31,6 +32,20 @@ impl PreparedOutput {
 
     pub(crate) fn open_with_lease(
         expected_sample_rate: Option<u32>,
+        lease: lifecycle::Lease,
+    ) -> Result<Self, String> {
+        Self::open_with_options(expected_sample_rate, None, lease)
+    }
+
+    /// Explicit opt-in; normal device constructors retain resident behavior.
+    pub fn open_streaming_default(extent_reservation: usize) -> Result<Self, String> {
+        let lease = lifecycle::Lease::acquire()?;
+        Self::open_with_options(None, Some(extent_reservation), lease)
+    }
+
+    pub(crate) fn open_with_options(
+        expected_sample_rate: Option<u32>,
+        streaming_extent: Option<usize>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
         let device = cpal::default_host()
@@ -74,11 +89,26 @@ impl PreparedOutput {
                 )),
             )
         };
-        let channel_result = match capture {
-            Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
-            None => prepared::channel(config.sample_rate),
+        let channel_result = if let Some(reservation) = streaming_extent {
+            let epoch = lifecycle::next_stream_device_epoch()?;
+            prepared::channel_with_streaming_and_spectrum(
+                config.sample_rate,
+                epoch,
+                reservation,
+                capture,
+            )
+            .map(|(mut control, mut callback, bridge)| {
+                let root = prepared::NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+                (control, callback, Some(root))
+            })
+        } else {
+            match capture {
+                Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
+                None => prepared::channel(config.sample_rate),
+            }
+            .map(|(control, callback)| (control, callback, None))
         };
-        let (control, callback) = match channel_result {
+        let (control, callback, stream_root) = match channel_result {
             Ok(channel) => channel,
             Err(error) => {
                 if let Some(reaper) = spectrum_reaper {
@@ -101,6 +131,9 @@ impl PreparedOutput {
             Ok(stream) => stream,
             Err(error) => {
                 drop(control);
+                if let Some(root) = stream_root.as_ref() {
+                    let _phase = root.tick(true);
+                }
                 if let Some(reaper) = spectrum_reaper {
                     let _ = reaper.shutdown_and_join();
                 }
@@ -108,15 +141,25 @@ impl PreparedOutput {
             }
         };
         if let Err(error) = stream.play() {
-            drop(lifecycle::StreamOwner::with_spectrum(
+            drop(lifecycle::StreamOwner::with_media(
                 stream,
                 lease,
                 spectrum_reaper,
+                stream_root,
             ));
             return Err(error.to_string());
         }
+        if let Some(root) = stream_root.as_ref() {
+            lifecycle::register_stream_root(root.clone());
+        }
         Ok(Self {
-            _stream: lifecycle::StreamOwner::with_spectrum(stream, lease, spectrum_reaper),
+            _stream: lifecycle::StreamOwner::with_media(
+                stream,
+                lease,
+                spectrum_reaper,
+                stream_root.clone(),
+            ),
+            stream_root,
             control,
             sample_rate: config.sample_rate,
             label: format!(
@@ -126,6 +169,52 @@ impl PreparedOutput {
             spectrum,
             spectrum_error,
         })
+    }
+    /// Control-side actual catalog lease for same-context graph preparation.
+    /// Caller releases abandoned leases; they truthfully block retirement.
+    pub fn stream_catalog_lease(
+        &self,
+        id: hex_stream::DomainId,
+    ) -> Option<hex_stream::CatalogLease> {
+        self.stream_root.as_ref()?.catalog_lease(id)
+    }
+    pub fn streaming_device_epoch(&self) -> Option<u64> {
+        self.stream_root.as_ref().map(|root| root.device_epoch())
+    }
+    /// Existing typing limits remain unchanged; caller charges actual exclusive
+    /// bridge data rather than the resident bridge's smaller reservation.
+    pub fn input_bridge_storage_bytes(&self) -> Option<usize> {
+        if let Some(root) = &self.stream_root {
+            root.input_bridge_storage_bytes()
+        } else {
+            prepared::input_bridge_storage_bytes()
+        }
+    }
+    pub fn stream_pool_reports(
+        &self,
+    ) -> Option<[Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; 2]> {
+        self.stream_root.as_ref()?.pool_reports()
+    }
+    pub fn streaming_cleanup_phase(&self) -> Option<hex_stream::MediaCleanupPhase> {
+        self.stream_root.as_ref().and_then(|root| root.phase())
+    }
+    pub fn take_stream_pool_report(
+        &self,
+    ) -> Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)> {
+        self.stream_root.as_ref()?.take_report()
+    }
+    pub fn publish_streamed(
+        &mut self,
+        request: prepared::StreamPublicationRequest,
+    ) -> Result<u64, prepared::StreamPublishError> {
+        let Some(root) = self.stream_root.as_ref() else {
+            return Err(prepared::StreamPublishError {
+                reason: "output has no streaming bridge",
+                retryable: false,
+                request: Box::new(request),
+            });
+        };
+        root.publish(&mut self.control, request)
     }
 }
 

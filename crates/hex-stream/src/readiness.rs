@@ -224,12 +224,33 @@ impl PageReadiness {
     /// epoch high-water mark, or an earlier unread receipt. Same exact pending
     /// submission coalesces; changed tokens/extents do not.
     pub fn submit(&mut self, role: ProtectionRole, manifest: &WantedPageManifest) -> IntentStatus {
-        if !self.catalog().same_catalog(manifest.catalog()) {
+        self.submit_borrowed(
+            role,
+            manifest.catalog(),
+            manifest.stamp(),
+            manifest.extents(),
+        )
+    }
+
+    /// Callback submission from engine-generated demand in preallocated storage.
+    /// Actual catalog/pair and every extent are checked before any mutation.
+    /// Neither the catalog nor extent borrow is retained or cloned.
+    pub fn submit_borrowed(
+        &mut self,
+        role: ProtectionRole,
+        catalog: &CatalogLease,
+        stamp: ReadinessStamp,
+        extents: &[PageExtent],
+    ) -> IntentStatus {
+        if !self.catalog().same_catalog(catalog) {
             return IntentStatus::Refused(ReadinessRefusal::WrongCatalog);
         }
+        if !crate::readiness_manifest::valid_manifest(catalog, stamp, extents) {
+            return IntentStatus::Refused(ReadinessRefusal::InvalidManifest);
+        }
         let slot = &self.roles[role.index()];
-        if let Some(stamp) = slot.pending {
-            return if stamp == manifest.stamp() && slot.wanted == manifest.extents() {
+        if let Some(pending_stamp) = slot.pending {
+            return if pending_stamp == stamp && slot.wanted == extents {
                 IntentStatus::Pending
             } else {
                 IntentStatus::Refused(ReadinessRefusal::IntentPending)
@@ -242,21 +263,21 @@ impl PageReadiness {
         if last_epoch == u64::MAX {
             return IntentStatus::Refused(ReadinessRefusal::EpochExhausted);
         }
-        if manifest.stamp().request_epoch <= last_epoch {
+        if stamp.request_epoch <= last_epoch {
             return IntentStatus::Refused(ReadinessRefusal::StaleEpoch);
         }
-        if manifest.extents().len() > self.max_extents || !self.union_fits(manifest.extents()) {
+        if extents.len() > self.max_extents || !self.union_fits(extents) {
             return IntentStatus::Refused(ReadinessRefusal::Capacity);
         }
         let slot = &mut self.roles[role.index()];
         slot.wanted.clear();
-        slot.wanted.extend_from_slice(manifest.extents());
-        slot.pending = Some(manifest.stamp());
+        slot.wanted.extend_from_slice(extents);
+        slot.pending = Some(stamp);
         slot.receipt_reserved = true;
         self.endpoint
             .pages()
             .readiness_endpoint()
-            .commit_readiness_epoch(manifest.stamp().request_epoch);
+            .commit_readiness_epoch(stamp.request_epoch);
         IntentStatus::Accepted
     }
 
@@ -354,21 +375,34 @@ impl PageReadiness {
         role: ProtectionRole,
         manifest: &WantedPageManifest,
     ) -> Option<InstalledProtectedReceipt<'_>> {
-        if !self.catalog().same_catalog(manifest.catalog()) {
+        self.acknowledge_borrowed(
+            role,
+            manifest.catalog(),
+            manifest.stamp(),
+            manifest.extents(),
+        )
+    }
+
+    /// Consume only the exact installed borrowed demand; no owner operations.
+    pub fn acknowledge_borrowed(
+        &mut self,
+        role: ProtectionRole,
+        catalog: &CatalogLease,
+        stamp: ReadinessStamp,
+        extents: &[PageExtent],
+    ) -> Option<InstalledProtectedReceipt<'_>> {
+        if !self.catalog().same_catalog(catalog) {
             return None;
         }
         let slot = &mut self.roles[role.index()];
-        if !slot.unread_receipt
-            || slot.installed != Some(manifest.stamp())
-            || slot.protected != manifest.extents()
-        {
+        if !slot.unread_receipt || slot.installed != Some(stamp) || slot.protected != extents {
             return None;
         }
         slot.unread_receipt = false;
         slot.receipt_reserved = false;
         Some(InstalledProtectedReceipt {
             catalog: self.endpoint.catalog(),
-            stamp: manifest.stamp(),
+            stamp,
             role,
         })
     }
@@ -378,6 +412,20 @@ impl PageReadiness {
         self.catalog().same_catalog(manifest.catalog())
             && slot.installed == Some(manifest.stamp())
             && slot.protected == manifest.extents()
+    }
+
+    /// Borrowed exact-demand status; does not consume or manufacture a receipt.
+    pub fn installed_borrowed(
+        &self,
+        role: ProtectionRole,
+        catalog: &CatalogLease,
+        stamp: ReadinessStamp,
+        extents: &[PageExtent],
+    ) -> bool {
+        let slot = &self.roles[role.index()];
+        self.catalog().same_catalog(catalog)
+            && slot.installed == Some(stamp)
+            && slot.protected == extents
     }
 
     /// Cancellation must name the exact role/request epoch. A stale cancel

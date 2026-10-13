@@ -474,3 +474,65 @@ lifecycle harness proves ordering/retention only; actual CPAL closure disposal,
 device-lease/reopen and durable quarantine wiring are not implemented. No audio,
 engine, service or native streaming publication behavior changes in this unit.
 The full native acceptance and readiness/evidence hold remain outstanding.
+
+## opt-in engine-demand and native bridge source
+
+The subsequent Pulse24 source connects actual engine next-chunk demand and pure
+handoff planning to `PageReadiness`. Arrangement render and demand share source
+span traversal. Session planning uses the actual applied/predicted routes,
+launch frames and loop boundaries before voice admission or DSP processing.
+The borrowed submit/receipt paths retain no catalog/observer/sample borrow.
+
+`hex_audio::request_streaming_open(expected_rate, extent_reservation)` is the
+explicit native constructor. Existing open/channel/publication paths retain
+resident behavior and streamed refusal. The new prepared publication request
+owns Playback, VerifiedStreamRevision, New(MediaDomainInput) or Reuse(DomainId),
+policy and StreamingContext. Graph pointer, complete catalog membership, actual
+endpoint pair, device epoch and reuse project context must match. Context editor
+and timeline identities are supplied by the controller; it must discard stale
+compile/construction results before publishing. They are not inferred approvals.
+
+The bridge reserves N = existing RETIRED = 2 simultaneous domains. This is an
+explicit retryable bridge refusal policy, not an aggregate memory budget or a
+project/track/file limit. Different actual catalogs occupy distinct slots. A third
+catalog returns its graph/domain owners until successful pool accounting and
+control report consumption free a slot. No active endpoint is evicted. Same-owner
+reuse validates the context and retains the one actual SPSC endpoint. Old catalog
+leases remain physical references; abandonment must release them on control.
+
+Control requests normal domain return only at the exact known escrow reference
+count. Every queued/active/retired streamed graph carries an extra catalog lease,
+so it prevents that request. Native retirement moves the sole graph return
+consumer to the control root. The existing lifecycle worker polls it; rendering
+never locks the root, joins a worker or allocates demand storage. The added page
+bridge introduces no callback owner clone; existing engine shared-context
+inheritance retains its prior cloning behavior, so this does not assert a
+whole-callback clone-free proof.
+A successful CPAL pause precedes closure destruction and its terminal batch
+transfer. Busy cleanup keeps the device lease; panic/incomplete accounting keeps
+the actual roots quarantined and does not permit reopening or invent counts.
+
+Missing exact chunk pages produce BUFFERING silence without that chunk's clock,
+route or DSP advancement. Earlier successful chunks retain their PCM/advance.
+Pending typing input is not an application ACK; only a successful rendered prefix
+and final host validation can produce applications. Priority Stop and queued
+cancellation do not wait for pages. Verified file mutation is an actual source
+fault. Streamed rendering uses the existing borrowed post-node observer so spectrum
+has no silently substituted path; a buffered observation remains incomplete.
+
+Bridge reporting distinguishes exclusive reserved channel/demand/container data
+from shared per-domain data. Boxed readiness objects are charged once. Products
+and sums are checked; graphs, allocator/Arc headers, OS/thread costs and total
+process/RSS remain outside this report. Existing worker/reader/cache and typing
+numeric limits are unchanged; typing callers use the output's actual exclusive
+bridge reservation rather than the resident bridge's smaller value.
+
+Portable tests use actual WAV verification/decode/install workers, ownership
+queues, buffering/typing/Stop/cancellation, wrong roots/context, slot pressure,
+file mutation and terminal conservation. Native lifecycle tests are harnesses,
+not proof of CoreAudio pause, listening or hardware deadlines. The application
+service/controller opt-in source producer remains an ordered integration handoff;
+these functions do not make the stock resident UI import path streamed. Original
+Pulse24 sustained optimized native100-track mixed-rate/edit/seek/launch/fault
+acceptance and guarded resident limits remain required. No issue completion,
+review approval, deployment or native acceptance is claimed by this source unit.

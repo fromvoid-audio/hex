@@ -1073,3 +1073,116 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
         );
     }
 }
+
+#[test]
+fn next_chunk_demand_is_pure_covers_due_session_pages_and_visitor_refusal() {
+    let project = project(4090, 4120);
+    let revision = prepared(&project, 71, [71; 32]);
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    let mut extents = Vec::new();
+    let paused = playback
+        .visit_next_stream_chunk(256, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(paused.frames, 0);
+    assert!(extents.is_empty());
+    launch_and_play(&mut playback);
+    let before = (
+        playback.performance_frame(),
+        playback.position(),
+        playback.session_route_state_generation(),
+    );
+    let demand = playback
+        .visit_next_stream_chunk(20, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(demand.frames, 20);
+    assert_eq!(
+        extents
+            .iter()
+            .map(|extent| (extent.page_index, extent.start, extent.end))
+            .collect::<Vec<_>>(),
+        vec![(0, 4090, 4096), (1, 0, 14)]
+    );
+    assert_eq!(
+        (
+            playback.performance_frame(),
+            playback.position(),
+            playback.session_route_state_generation()
+        ),
+        before
+    );
+    assert!(
+        playback
+            .visit_next_stream_chunk(20, &mut |_| Err(hex_engine::Invalid("fixture capacity")))
+            .is_err()
+    );
+    assert_eq!(
+        (
+            playback.performance_frame(),
+            playback.position(),
+            playback.session_route_state_generation()
+        ),
+        before
+    );
+    let mut pages = MemoryPages::with_source(metadata(&project, 71, [71; 32]).key());
+    playback
+        .render_with_pages(&mut [[0.0; 2]; 20], &mut pages)
+        .unwrap();
+    assert_eq!(playback.performance_frame(), 20);
+}
+
+#[test]
+fn handoff_demand_preflights_real_inherited_routes_without_consuming_candidate() {
+    let project = project(4090, 4120);
+    let revision = prepared(&project, 81, [81; 32]);
+    let mut old = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    launch_and_play(&mut old);
+    let key = metadata(&project, 81, [81; 32]).key();
+    old.render_with_pages(&mut [[0.0; 2]; 8], &mut MemoryPages::with_source(key))
+        .unwrap();
+    let mut next = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let before = (
+        old.position(),
+        old.performance_frame(),
+        old.session_route_state_generation(),
+        Arc::strong_count(&revision),
+    );
+    let mut preview = Vec::new();
+    let window = next
+        .preview_stream_handoff(&mut old, 12, &mut |extent| {
+            preview.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            old.position(),
+            old.performance_frame(),
+            old.session_route_state_generation(),
+            Arc::strong_count(&revision)
+        ),
+        before
+    );
+    assert_eq!(next.performance_frame(), 0);
+    assert!(
+        next.preview_stream_handoff(&mut old, 12, &mut |_| Err(hex_engine::Invalid(
+            "fixture refusal"
+        )))
+        .is_err()
+    );
+    next.try_inherit_runtime_from(&mut old).unwrap();
+    let mut actual = Vec::new();
+    let actual_window = next
+        .visit_next_stream_chunk(12, &mut |extent| {
+            actual.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window, actual_window);
+    assert_eq!(preview, actual);
+}

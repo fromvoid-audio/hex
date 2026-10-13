@@ -26,7 +26,12 @@ fn finish(
 ) {
     terminal.try_return_stopped_batch(batch).unwrap();
     while root.poll_one().unwrap() != DomainPoll::Empty {}
-    let ids: Vec<_> = root.slots.iter().map(|slot| slot.id).collect();
+    let ids: Vec<_> = root
+        .slots
+        .iter()
+        .filter(|slot| !slot.vacant)
+        .map(|slot| slot.id)
+        .collect();
     for id in ids {
         let DomainCleanupProgress::Finished(report) = root.try_reap_domain(id) else {
             panic!("cleanup")
@@ -175,6 +180,7 @@ fn wrong_escrow_terminal_refusal_and_duplicate_payloads_are_owning_errors() {
     batch
         .returns
         .push(ReturnedMediaDomain {
+            admission_seal: None,
             index: 0,
             id,
             endpoint,
@@ -186,7 +192,7 @@ fn wrong_escrow_terminal_refusal_and_duplicate_payloads_are_owning_errors() {
     let RejectedMediaReturn::Domain(returned) = error.into_returned() else {
         panic!("domain")
     };
-    other.slots[0].endpoint = Some(returned.into_parts().1);
+    other.slots[0].endpoint = Some(Box::new(returned.into_parts().1));
     finish(other, other_terminal, other_root);
     finish(batch, terminal, root);
 }
@@ -210,7 +216,10 @@ fn capacity_report_counts_actual_slots_and_each_catalog_once_not_per_lease() {
         report.terminal_return_slots.capacity,
         root.terminal.buffer().capacity()
     );
-    assert_eq!(report.domain_data_bytes, Some(original + lease_bytes));
+    assert_eq!(
+        report.domain_data_bytes,
+        Some(original + lease_bytes + std::mem::size_of::<PageReadiness>())
+    );
     assert!(report.construction_data_bound().unwrap() >= report.retained_data_bytes().unwrap());
     eprintln!(
         "domain escrow fixture capacity: {report:?}; retained={:?}; construction_bound={:?}",
@@ -462,4 +471,65 @@ fn headless_lifecycle_harness_keeps_lease_through_stop_failure_busy_and_cleanup(
             "lease-released"
         ]
     );
+}
+
+#[test]
+fn reusable_two_domain_reservation_refuses_third_until_successful_report_consumed() {
+    let (mut batch, mut terminal, mut root) = reusable_domain_escrow(2).unwrap();
+    let a = root.reserve_domain(input(11)).ok().unwrap();
+    let b = root.reserve_domain(input(12)).ok().unwrap();
+    assert_eq!(
+        batch.install_domain(a).ok(),
+        Some(DomainId::new(11).unwrap())
+    );
+    assert_eq!(
+        batch.install_domain(b).ok(),
+        Some(DomainId::new(12).unwrap())
+    );
+    let original = input(13);
+    let ptr = original.retained_leases.as_ptr();
+    let refused = root.reserve_domain(original).err().unwrap();
+    assert_eq!(refused.reason, DomainRefusal::DomainCapacity);
+    assert_eq!(refused.input.retained_leases.as_ptr(), ptr);
+    let id = DomainId::new(11).unwrap();
+    assert_eq!(batch.try_return_domain(id), DomainReturnStatus::Accepted);
+    assert_eq!(root.poll_one().unwrap(), DomainPoll::DomainReturned(id));
+    let DomainCleanupProgress::Finished(report) = root.try_reap_domain(id) else {
+        panic!("cleanup")
+    };
+    assert!(report.successful_report().is_some());
+    let refused = root.reserve_domain(refused.input).err().unwrap();
+    assert_eq!(refused.reason, DomainRefusal::DomainCapacity);
+    assert_eq!(root.take_reclaimed_report(id), Some(report));
+    let admission = root.reserve_domain(refused.input).ok().unwrap();
+    assert_eq!(
+        batch.install_domain(admission).ok(),
+        Some(DomainId::new(13).unwrap())
+    );
+    terminal.try_return_stopped_batch(batch).unwrap();
+    assert_eq!(root.poll_one().unwrap(), DomainPoll::TerminalReturned);
+    for number in [12, 13] {
+        let id = DomainId::new(number).unwrap();
+        assert!(matches!(
+            root.try_reap_domain(id),
+            DomainCleanupProgress::Finished(_)
+        ));
+        assert!(root.take_reclaimed_report(id).is_some());
+    }
+    assert_eq!(root.phase(), MediaCleanupPhase::Complete);
+}
+#[test]
+fn reusable_synchronous_rollback_preserves_physical_lease_vector_and_endpoint() {
+    let (batch, terminal, mut root) = reusable_domain_escrow(2).unwrap();
+    let input = input(9);
+    let ptr = input.retained_leases.as_ptr();
+    let capacity = input.retained_leases.capacity();
+    let footprint = input.endpoint.stream_footprint();
+    let admission = root.reserve_domain(input).ok().unwrap();
+    let input = root.rollback_domain(admission).ok().unwrap();
+    assert_eq!(input.retained_leases.as_ptr(), ptr);
+    assert_eq!(input.retained_leases.capacity(), capacity);
+    assert_eq!(input.endpoint.stream_footprint(), footprint);
+    reclaim(input);
+    finish(batch, terminal, root);
 }

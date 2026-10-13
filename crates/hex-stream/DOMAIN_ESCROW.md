@@ -109,3 +109,22 @@ and media cleanup. This unit does not change stream.pause, audio/service/engine
 fields, native publication or import limits. Engine-demand/handoff preview,
 BUFFERING consumption and optimized native advancing100 mixed-rate/edit/seek/
 launch/fault/listening/reference/deadline acceptance remain pending. HOLD intact.
+
+## reusable opt-in slots
+
+`reusable_domain_escrow(N)` preallocates N control/callback/normal-return slots
+and one terminal batch slot. It preserves the original fixed-input constructor.
+`can_reserve_domain` borrows validation before an owning control publication;
+`reserve_domain` retains the worker and leases and yields a non-clone admission.
+The graph's single publication envelope carries that admission. Synchronous
+rollback recovers the original pair/lease-vector storage. Queued acceptance needs
+normal retirement; it does not promise immediate recovery. Callback installation
+moves a control-boxed readiness object; its box/seal return to control without
+callback allocation/free/clone. Data reports charge that box once per domain.
+
+`DomainCapacity` is retryable occupancy; invalid capacity arithmetic and wrong
+identity are distinct refusals. A slot remains occupied through actual reported
+shutdown. Only successful accounting plus `take_reclaimed_report` consumption
+free it; Busy and incomplete outcomes retain their actual owners/observations.
+Control-only catalog loans create real references and must be released if their
+graph work is abandoned. Native bridge N=2 is a simultaneous-domain policy only.

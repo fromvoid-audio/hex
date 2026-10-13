@@ -10,15 +10,23 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
+#[path = "domain_admission.rs"]
+mod admission;
+pub use admission::{DomainAdmission, DomainAdmissionFailure, reusable_domain_escrow};
+
 struct BatchSlot {
+    vacant: bool,
     id: DomainId,
-    endpoint: Option<PageReadiness>,
+    endpoint: Option<Box<PageReadiness>>,
+    admission_seal: Option<Arc<()>>,
 }
 struct ControlSlot {
+    vacant: bool,
+    data_bytes: usize,
     id: DomainId,
     control: Option<StreamControl>,
     retained_leases: Vec<CatalogLease>,
-    endpoint: Option<PageReadiness>,
+    endpoint: Option<Box<PageReadiness>>,
     report: Option<ReportedShutdown>,
     // Defensive ownership retention after a post-commit invariant failure.
     terminal_error: Option<ShutdownError>,
@@ -26,49 +34,66 @@ struct ControlSlot {
 
 /// Private transport payload; recovery is control-only. No Clone.
 pub struct ReturnedMediaDomain {
+    admission_seal: Option<Arc<()>>,
     index: usize,
     id: DomainId,
-    endpoint: PageReadiness,
+    endpoint: Box<PageReadiness>,
 }
 impl ReturnedMediaDomain {
     pub fn into_parts(self) -> (DomainId, PageReadiness) {
-        (self.id, self.endpoint)
+        (self.id, *self.endpoint)
     }
 }
 
 /// Control allocates this Box/Vec once. Rendering/return methods borrow or move
 /// actual endpoint owners; final batch disposal belongs on control. No Clone.
 pub struct CallbackDomainBatch {
+    reusable: bool,
     slots: Vec<BatchSlot>,
     returns: Producer<ReturnedMediaDomain>,
     seal: Arc<()>,
 }
 impl CallbackDomainBatch {
+    /// Borrowed identity lookup in fixed slot storage, not graph ownership.
+    pub fn domain_slot(&self, id: DomainId) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| !slot.vacant && slot.id == id)
+    }
     pub fn readiness_mut(&mut self, id: DomainId) -> Option<&mut PageReadiness> {
         self.slots
             .iter_mut()
-            .find(|slot| slot.id == id)?
+            .find(|slot| !slot.vacant && slot.id == id)?
             .endpoint
-            .as_mut()
+            .as_deref_mut()
     }
     pub fn try_return_domain(&mut self, id: DomainId) -> DomainReturnStatus {
         if self.returns.is_abandoned() {
             return DomainReturnStatus::Refused(DomainRefusal::QueueClosed);
         }
-        let Some(index) = self.slots.iter().position(|slot| slot.id == id) else {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.id == id && (!slot.vacant || !self.reusable))
+        else {
             return DomainReturnStatus::Refused(DomainRefusal::UnknownDomain);
         };
         let Some(endpoint) = self.slots[index].endpoint.take() else {
             return DomainReturnStatus::Refused(DomainRefusal::AlreadyReturned);
         };
         match self.returns.push(ReturnedMediaDomain {
+            admission_seal: self.slots[index].admission_seal.take(),
             index,
             id,
             endpoint,
         }) {
-            Ok(()) => DomainReturnStatus::Accepted,
+            Ok(()) => {
+                self.slots[index].vacant = true;
+                DomainReturnStatus::Accepted
+            }
             Err(PushError::Full(returned)) => {
                 self.slots[index].endpoint = Some(returned.endpoint);
+                self.slots[index].admission_seal = returned.admission_seal;
                 DomainReturnStatus::Pending
             }
         }
@@ -180,6 +205,7 @@ pub struct MediaDomainReaper {
     seal: Arc<()>,
     phase: Arc<AtomicU8>,
     footprint: DomainEscrowFootprint,
+    reusable: bool,
 }
 impl MediaDomainReaper {
     pub fn observer(&self) -> MediaCleanupObserver {
@@ -196,18 +222,21 @@ impl MediaDomainReaper {
     pub fn retained_lease_count(&self, id: DomainId) -> Option<usize> {
         self.slots
             .iter()
-            .find(|slot| slot.id == id)
+            .find(|slot| !slot.vacant && slot.id == id)
             .map(|slot| slot.retained_leases.len())
     }
     pub fn returned_readiness(&mut self, id: DomainId) -> Option<&mut PageReadiness> {
         self.slots
             .iter_mut()
-            .find(|slot| slot.id == id)?
+            .find(|slot| !slot.vacant && slot.id == id)?
             .endpoint
-            .as_mut()
+            .as_deref_mut()
     }
     pub fn report(&self, id: DomainId) -> Option<ReportedShutdown> {
-        self.slots.iter().find(|slot| slot.id == id)?.report
+        self.slots
+            .iter()
+            .find(|slot| !slot.vacant && slot.id == id)?
+            .report
     }
     fn validate_return(
         &self,
@@ -216,7 +245,7 @@ impl MediaDomainReaper {
         endpoint: &PageReadiness,
     ) -> Result<(), DomainRefusal> {
         let slot = self.slots.get(index).ok_or(DomainRefusal::UnknownDomain)?;
-        if slot.id != id {
+        if slot.vacant || slot.id != id {
             return Err(DomainRefusal::UnknownDomain);
         }
         if slot.endpoint.is_some() || slot.report.is_some() || slot.terminal_error.is_some() {
@@ -256,7 +285,9 @@ impl MediaDomainReaper {
                 Some(DomainRefusal::WrongEscrow)
             } else {
                 batch.slots.iter().enumerate().find_map(|(index, slot)| {
-                    if slot.id != self.slots[index].id {
+                    if slot.endpoint.is_some()
+                        && (self.slots[index].vacant || slot.id != self.slots[index].id)
+                    {
                         return Some(DomainRefusal::UnknownDomain);
                     }
                     slot.endpoint
@@ -286,7 +317,11 @@ impl MediaDomainReaper {
     /// Counts only actual references physically owned in this domain. External
     /// graph/manifest references cause Busy; no inferred graph retirement.
     pub fn try_reap_domain(&mut self, id: DomainId) -> DomainCleanupProgress {
-        let Some(slot) = self.slots.iter_mut().find(|slot| slot.id == id) else {
+        let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| !slot.vacant && slot.id == id)
+        else {
             return DomainCleanupProgress::Refused(DomainRefusal::UnknownDomain);
         };
         if let Some(report) = slot.report {
@@ -352,8 +387,10 @@ impl MediaDomainReaper {
         let complete = self.terminal_batch.is_some()
             && self.returns.is_empty()
             && self.slots.iter().all(|slot| {
-                slot.report
-                    .is_some_and(|report| report.successful_report().is_some())
+                slot.vacant
+                    || slot
+                        .report
+                        .is_some_and(|report| report.successful_report().is_some())
             });
         self.phase.store(
             if failed {
@@ -394,11 +431,48 @@ fn setup(
     ),
     Box<DomainSetupFailure>,
 > {
+    let slots = inputs.len();
+    build(inputs, return_capacity, slots, false, &mut before_reserve)
+}
+
+fn build(
+    inputs: Vec<MediaDomainInput>,
+    return_capacity: usize,
+    slot_capacity: usize,
+    reusable: bool,
+    before_reserve: &mut impl FnMut() -> Result<(), ()>,
+) -> Result<
+    (
+        Box<CallbackDomainBatch>,
+        TerminalBatchSender,
+        MediaDomainReaper,
+    ),
+    Box<DomainSetupFailure>,
+> {
     let mut footprint = DomainEscrowFootprint {
         construction_input_slots: AllocationCapacity::of::<MediaDomainInput>(inputs.capacity()),
         ..Default::default()
     };
-    let validation = validate_inputs(&inputs, return_capacity);
+    let validation = if reusable {
+        if slot_capacity == 0
+            || return_capacity != slot_capacity
+            || slot_capacity
+                .checked_mul(std::mem::size_of::<ControlSlot>())
+                .is_none()
+            || slot_capacity
+                .checked_mul(std::mem::size_of::<BatchSlot>())
+                .is_none()
+            || slot_capacity
+                .checked_mul(std::mem::size_of::<ReturnedMediaDomain>())
+                .is_none()
+        {
+            Err(DomainRefusal::InvalidCapacity)
+        } else {
+            validate_inputs(&inputs, 1)
+        }
+    } else {
+        validate_inputs(&inputs, return_capacity)
+    };
     if let Err(reason) = validation {
         return Err(Box::new(DomainSetupFailure {
             inputs,
@@ -410,7 +484,8 @@ fn setup(
         let leases =
             AllocationCapacity::of::<CatalogLease>(input.retained_leases.capacity()).bytes()?;
         sum.checked_add(input.endpoint.retained_data_bytes()?)?
-            .checked_add(leases)
+            .checked_add(leases)?
+            .checked_add(std::mem::size_of::<PageReadiness>())
     });
     let Some(domain_data_bytes) = domain_data else {
         return Err(Box::new(DomainSetupFailure {
@@ -423,7 +498,7 @@ fn setup(
     let mut controls = Vec::new();
     let mut callbacks = Vec::new();
     let reserved =
-        before_reserve().and_then(|()| controls.try_reserve_exact(inputs.len()).map_err(|_| ()));
+        before_reserve().and_then(|()| controls.try_reserve_exact(slot_capacity).map_err(|_| ()));
     footprint.control_slots = AllocationCapacity::of::<ControlSlot>(controls.capacity());
     if reserved.is_err() {
         return Err(Box::new(DomainSetupFailure {
@@ -433,7 +508,7 @@ fn setup(
         }));
     }
     let reserved =
-        before_reserve().and_then(|()| callbacks.try_reserve_exact(inputs.len()).map_err(|_| ()));
+        before_reserve().and_then(|()| callbacks.try_reserve_exact(slot_capacity).map_err(|_| ()));
     footprint.callback_slots = AllocationCapacity::of::<BatchSlot>(callbacks.capacity());
     if reserved.is_err() {
         return Err(Box::new(DomainSetupFailure {
@@ -473,6 +548,18 @@ fn setup(
     // unchanged; no graph/source owners are cloned or page producers duplicated.
     for input in inputs {
         controls.push(ControlSlot {
+            vacant: false,
+            data_bytes: input
+                .endpoint
+                .retained_data_bytes()
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        AllocationCapacity::of::<CatalogLease>(input.retained_leases.capacity())
+                            .bytes()?,
+                    )
+                })
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PageReadiness>()))
+                .expect("checked domain bytes"),
             id: input.id,
             control: Some(input.control),
             retained_leases: input.retained_leases,
@@ -481,12 +568,33 @@ fn setup(
             terminal_error: None,
         });
         callbacks.push(BatchSlot {
+            vacant: false,
+            admission_seal: None,
             id: input.id,
-            endpoint: Some(input.endpoint),
+            endpoint: Some(Box::new(input.endpoint)),
+        });
+    }
+    while controls.len() < slot_capacity {
+        controls.push(ControlSlot {
+            vacant: true,
+            data_bytes: 0,
+            id: DomainId::new(1).expect("positive placeholder"),
+            control: None,
+            retained_leases: Vec::new(),
+            endpoint: None,
+            report: None,
+            terminal_error: None,
+        });
+        callbacks.push(BatchSlot {
+            vacant: true,
+            admission_seal: None,
+            id: DomainId::new(1).expect("positive placeholder"),
+            endpoint: None,
         });
     }
     Ok((
         Box::new(CallbackDomainBatch {
+            reusable,
             slots: callbacks,
             returns,
             seal: Arc::clone(&seal),
@@ -504,6 +612,7 @@ fn setup(
             seal,
             phase,
             footprint,
+            reusable,
         },
     ))
 }

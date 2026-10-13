@@ -148,3 +148,24 @@ backend telemetry. This observational FFT is separate from musical device DSP
 in `hex-devices`; construction and analysis belong on control/worker threads.
 It does not capture audio, own a rolling stream window, schedule a worker or
 render a UI. See [spectrum analysis](../../docs/spectrum-analysis.md).
+
+## Opt-in streaming bridge
+
+Production audio has a narrow, acyclic dependency on `hex-stream` for verified
+catalog/page ownership, installed readiness and control reclamation. Stream has
+no audio/CPAL/GPUI dependency. `request_streaming_open` creates the explicit bridge;
+ordinary opens remain resident. `PreparedOutput::publish_streamed` takes the
+complete owning request; synchronous errors retain it and expose retryability.
+Use the actual `streaming_device_epoch` and exclusive
+`input_bridge_storage_bytes` for preparation. Use `stream_catalog_lease` only on
+control for same-context successors; discard abandoned loans before retirement.
+Taking actual `take_stream_pool_report` outcomes frees reusable slots. Partial
+`stream_pool_reports` and cleanup phase remain observable without fabricating a
+successful join. Getter contention is unavailable data, not readiness.
+
+The existing lifecycle worker owns native graph reclamation/joins. Successful
+pause precedes callback closure disposal; media cleanup precedes device-lease
+release. Source faults/incomplete pools retain roots and prevent reopen. Read
+`docs/page-delivery.md` for BUFFERING semantics, N=2 refusal, exact-demand tokens,
+controller handoff and remaining full native acceptance. Source/harness checks
+cannot prove CoreAudio, listening, deadlines or sustained native100-track behavior.

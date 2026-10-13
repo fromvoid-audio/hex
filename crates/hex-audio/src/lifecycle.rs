@@ -17,6 +17,35 @@ use std::{
     time::Duration,
 };
 
+static STREAM_DEVICE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_STREAM_ROOT: Mutex<Option<crate::prepared::NativeStreamRoot>> = Mutex::new(None);
+
+pub(crate) fn next_stream_device_epoch() -> Result<u64, String> {
+    STREAM_DEVICE_EPOCH
+        .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1))
+        .map(|old| old + 1)
+        .map_err(|_| "stream device epoch exhausted".into())
+}
+pub(crate) fn register_stream_root(root: crate::prepared::NativeStreamRoot) {
+    let mut active = ACTIVE_STREAM_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        active.is_none(),
+        "exclusive device lease retains one media root"
+    );
+    *active = Some(root);
+}
+fn tick_stream_root() {
+    let root = ACTIVE_STREAM_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(root) = root {
+        let _phase = root.tick(false);
+    }
+}
+
 static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
 static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<PreparedOutput, Retirement>>, String>> =
@@ -46,7 +75,8 @@ impl Drop for Lease {
 }
 
 struct Retirement {
-    stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
+    media_root: Option<crate::prepared::NativeStreamRoot>,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
 }
@@ -64,9 +94,18 @@ impl StreamOwner {
         lease: Lease,
         spectrum_reaper: Option<SpectrumReaper>,
     ) -> Self {
+        Self::with_media(stream, lease, spectrum_reaper, None)
+    }
+    pub(crate) fn with_media(
+        stream: cpal::Stream,
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+        media_root: Option<crate::prepared::NativeStreamRoot>,
+    ) -> Self {
         Self {
             retirement: Some(Retirement {
-                stream,
+                stream: Some(stream),
+                media_root,
                 spectrum_reaper,
                 _lease: lease,
             }),
@@ -105,6 +144,7 @@ impl Drop for StreamOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryOpenError {
     InvalidRate,
+    InvalidStreamingReservation,
     Busy,
     QueueFull,
     WorkerClosed,
@@ -113,6 +153,9 @@ impl fmt::Display for RecoveryOpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::InvalidRate => "recovery sample rate must be 8000..192000 hz",
+            Self::InvalidStreamingReservation => {
+                "streaming reservation must fit the existing page cache"
+            }
             Self::Busy => "audio recovery open is already pending",
             Self::QueueFull => "audio lifecycle queue is full",
             Self::WorkerClosed => "audio lifecycle worker is unavailable",
@@ -148,6 +191,29 @@ pub fn request_recovery_open(expected_sample_rate: u32) -> Result<RecoveryOpen, 
 /// The returned output reports the device's actual negotiated rate.
 pub fn request_initial_open() -> Result<RecoveryOpen, RecoveryOpenError> {
     request_open(None)
+}
+
+/// Opt-in async native open; resident callers retain their current constructors.
+pub fn request_streaming_open(
+    expected_sample_rate: Option<u32>,
+    extent_reservation: usize,
+) -> Result<RecoveryOpen, RecoveryOpenError> {
+    if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
+        return Err(RecoveryOpenError::InvalidRate);
+    }
+    if extent_reservation == 0
+        || extent_reservation >= hex_stream::StreamConfig::initial().page_buffers
+    {
+        return Err(RecoveryOpenError::InvalidStreamingReservation);
+    }
+    let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
+    let waiter = enqueue_open_options(
+        sender,
+        state(),
+        expected_sample_rate,
+        Some(extent_reservation),
+    )?;
+    Ok(RecoveryOpen { waiter })
 }
 
 fn request_open(expected_sample_rate: Option<u32>) -> Result<RecoveryOpen, RecoveryOpenError> {
@@ -232,6 +298,14 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     if state.in_service.load(Acquire) {
         return Err(RecoveryOpenError::Busy);
     }
+    enqueue_open_options(sender, state, expected_sample_rate, None)
+}
+fn enqueue_open_options<T: Send + 'static, R: Send + 'static>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    state: &Arc<OpenState>,
+    expected_sample_rate: Option<u32>,
+    streaming_extent: Option<usize>,
+) -> Result<OpenWaiter<T>, RecoveryOpenError> {
     let id = state.next_id.fetch_add(1, AcqRel).max(1);
     state
         .reserved
@@ -253,6 +327,7 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     let request = OpenRequest {
         id,
         expected_sample_rate,
+        streaming_extent,
         completion,
         canceled: Arc::clone(&canceled),
         consumed: Arc::clone(&consumed),
@@ -289,6 +364,7 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
 struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
+    streaming_extent: Option<usize>,
     completion: SyncSender<Result<T, String>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
@@ -305,11 +381,27 @@ enum LifecycleMessage<T, R> {
     Open(OpenRequest<T>),
 }
 
+#[cfg(test)]
 fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, String>>,
+    retire: impl FnMut(R),
+) {
+    run_lifecycle_with_tick(
+        receiver,
+        is_occupied,
+        |rate, _extent| try_open(rate),
+        retire,
+        || {},
+    )
+}
+fn run_lifecycle_with_tick<T: Send + 'static, R: Send + 'static>(
+    receiver: Receiver<LifecycleMessage<T, R>>,
+    is_occupied: impl Fn() -> bool,
+    mut try_open: impl FnMut(Option<u32>, Option<usize>) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
+    mut tick: impl FnMut(),
 ) {
     enum Phase {
         Queued,
@@ -321,6 +413,7 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     }
     let mut active: Option<Active<T>> = None;
     loop {
+        tick();
         if let Some(current) = active.as_mut() {
             match current.phase {
                 Phase::Queued if current.request.canceled.load(Acquire) => {
@@ -330,7 +423,10 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
                     }
                 }
                 Phase::Queued => {
-                    if let Some(result) = try_open(current.request.expected_sample_rate) {
+                    if let Some(result) = try_open(
+                        current.request.expected_sample_rate,
+                        current.request.streaming_extent,
+                    ) {
                         if current.request.canceled.load(Acquire) {
                             drop(result);
                             current.phase = Phase::Delivered;
@@ -390,14 +486,19 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
                 .spawn(move || {
-                    run_lifecycle(
+                    run_lifecycle_with_tick(
                         receiver,
                         || OCCUPIED.load(Acquire),
-                        |expected_rate| {
+                        |expected_rate, extent| {
                             let lease = Lease::try_acquire()?;
-                            Some(PreparedOutput::open_with_lease(expected_rate, lease))
+                            Some(PreparedOutput::open_with_options(
+                                expected_rate,
+                                extent,
+                                lease,
+                            ))
                         },
                         retire_prepared_output,
+                        tick_stream_root,
                     );
                 })
                 .map_err(|error| format!("could not start audio lifecycle worker: {error}"))?;
@@ -408,19 +509,44 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
 }
 
 fn retire_prepared_output(retirement: Retirement) {
-    let retirement = retirement;
-    while retirement.stream.pause().is_err() {
+    let mut retirement = retirement;
+    while retirement
+        .stream
+        .as_ref()
+        .is_some_and(|stream| stream.pause().is_err())
+    {
         thread::sleep(Duration::from_millis(250));
     }
+    // Only successful pause allows closure disposal and its terminal transfer.
+    drop(retirement.stream.take());
+    if let Some(root) = retirement.media_root.as_ref() {
+        loop {
+            match root.tick(true) {
+                hex_stream::MediaCleanupPhase::Complete => break,
+                hex_stream::MediaCleanupPhase::FailedIncomplete => {
+                    // Retain actual roots and the exclusive device lease; no
+                    // unknown buffer count or failed join is called complete.
+                    let mut quarantine = QUARANTINE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *quarantine = Some(retirement);
+                    return;
+                }
+                hex_stream::MediaCleanupPhase::Pending => thread::sleep(Duration::from_millis(250)),
+            }
+        }
+        *ACTIVE_STREAM_ROOT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
     let Retirement {
-        stream,
+        stream: _,
+        media_root: _,
         spectrum_reaper,
         _lease,
     } = retirement;
-    // Dropping the paused stream first destroys its callback closure and the
-    // callback-owned SPSC producer on this lifecycle thread.
     if retire_after_callback_stops(
-        stream,
+        (),
         spectrum_reaper,
         _lease,
         drop,

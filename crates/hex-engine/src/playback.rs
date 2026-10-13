@@ -181,6 +181,7 @@ pub enum PlaybackHandoffRejection {
     ActiveArrangementStateCannotBeDropped = 5,
     RuntimeFenceChanged = 6,
     FreshRuntimeCancelled = 7,
+    StreamReadiness = 8,
 }
 
 impl PlaybackHandoffRejection {
@@ -214,6 +215,7 @@ impl PlaybackHandoffRejection {
             5 => Some(Self::ActiveArrangementStateCannotBeDropped),
             6 => Some(Self::RuntimeFenceChanged),
             7 => Some(Self::FreshRuntimeCancelled),
+            8 => Some(Self::StreamReadiness),
             _ => None,
         }
     }
@@ -239,6 +241,9 @@ impl PlaybackHandoffRejection {
                 "fresh playback was rejected because the active runtime changed"
             }
             Self::FreshRuntimeCancelled => "fresh playback was cancelled before it became active",
+            Self::StreamReadiness => {
+                "streamed graph readiness was refused; the prior runtime remains active"
+            }
         }
     }
 }
@@ -802,6 +807,35 @@ impl Playback {
     }
 
     /// Render either the selected mixed source or the legacy finite Arrangement.
+    /// Pure prepared-to-prepared streamed handoff coverage. Legacy predecessor
+    /// conversion is explicitly unsupported by this opt-in bridge.
+    pub fn preview_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        else {
+            return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
+        };
+        next.preview_stream_handoff(old, maximum_frames, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
+    /// Pure native streaming demand. The opt-in bridge requires the prepared
+    /// mixed runtime; legacy Arrangement-only paths remain unchanged.
+    pub fn visit_next_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("stream demand requires prepared session runtime"))?
+            .visit_next_stream_chunk(maximum_frames, visit)
+    }
+
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
     }
