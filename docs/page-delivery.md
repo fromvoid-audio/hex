@@ -450,3 +450,27 @@ publication/consumption and callback-stop escrow remain unimplemented. Existing
 native streaming refusal and resident limits are preserved. Full optimized
 native 100-track mixed-rate/edit/seek/launch/fault acceptance remains pending;
 PR177 remains draft and Pulse24 blocked under the unchanged hold.
+
+## headless domain escrow and reported cleanup
+
+The stream-owned domain escrow consumes actual control/readiness/retained-lease
+inputs only after borrowed identity validation and all fallible reservations.
+Its non-cloneable callback batch retains full-ring refused owners in their
+original slots; normal SPSC returns cannot steal a separately reserved terminal
+batch slot. Reaper validation rejects duplicate/wrong-owner payloads with owning
+recovery. Observer abandonment cannot abandon the independently held control root.
+
+Whole-domain cleanup checks known physical references before releasing any
+lease, role protection or metadata. External graph/manifest owners leave it Busy
+and unchanged for retry. Reported shutdown records actual known reclamation,
+unknown worker inventory as None after panic, and observed pool imbalance.
+Completion requires terminal return, a drained normal ring and actual successful
+join/conservation reports. Capacity accounting charges each actual catalog once,
+records original input/output construction overlap and excludes opaque/caller
+costs; it is a reservation ledger, not current process memory or admission policy.
+
+See [the headless escrow contract](../crates/hex-stream/DOMAIN_ESCROW.md). A mock
+lifecycle harness proves ordering/retention only; actual CPAL closure disposal,
+device-lease/reopen and durable quarantine wiring are not implemented. No audio,
+engine, service or native streaming publication behavior changes in this unit.
+The full native acceptance and readiness/evidence hold remain outstanding.

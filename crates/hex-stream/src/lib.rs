@@ -6,6 +6,8 @@
 mod construction;
 mod construction_report;
 mod construction_transport;
+mod domain_escrow;
+mod domain_types;
 mod endpoint;
 mod footprint;
 mod page_endpoint;
@@ -13,6 +15,7 @@ mod readiness;
 mod readiness_manifest;
 mod revision;
 mod runtime;
+mod shutdown_report;
 mod staging;
 mod types;
 mod worker;
@@ -23,6 +26,15 @@ pub use construction::{
 };
 pub use construction_report::WorkerConstructionObservation;
 pub use construction_transport::TransportSetupObservation;
+pub use domain_escrow::{
+    CallbackDomainBatch, MediaCleanupObserver, MediaDomainReaper, MediaReturnFailure,
+    RejectedMediaReturn, ReturnedMediaDomain, TerminalBatchFailure, TerminalBatchSender,
+    domain_escrow,
+};
+pub use domain_types::{
+    DomainCleanupProgress, DomainEscrowFootprint, DomainId, DomainIds, DomainPoll, DomainRefusal,
+    DomainReturnStatus, DomainSetupFailure, MediaCleanupPhase, MediaDomainInput,
+};
 pub use endpoint::EndpointStats;
 pub use footprint::{
     AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint,
@@ -42,6 +54,7 @@ pub use runtime::{
     CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
     StreamPairMismatch, StreamRuntime,
 };
+pub use shutdown_report::{ReportedShutdown, WorkerJoinObservation};
 pub use staging::{
     CompactCopyError, CompactCopyReport, CompactCopyReservations, CompactSourceInput,
     InputAllocationFootprint,

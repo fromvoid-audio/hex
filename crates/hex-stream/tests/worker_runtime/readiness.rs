@@ -4,7 +4,7 @@ use hex_stream::{
     ReadinessRefusal, ReadinessStamp, VerifiedPageEndpoint, WantedPageManifest,
 };
 
-fn pair(
+pub(super) fn pair(
     wav: &TestWav,
     frames: usize,
     pages: usize,
@@ -59,7 +59,7 @@ fn stamp(epoch: u64) -> ReadinessStamp {
     }
 }
 
-fn manifest(
+pub(super) fn manifest(
     control: &hex_stream::StreamControl,
     key: StreamSourceKey,
     epoch: u64,
@@ -80,7 +80,7 @@ fn manifest(
     .unwrap()
 }
 
-fn install(readiness: &mut PageReadiness, role: Role, wanted: &WantedPageManifest) {
+pub(super) fn install(readiness: &mut PageReadiness, role: Role, wanted: &WantedPageManifest) {
     assert_eq!(readiness.submit(role, wanted), IntentStatus::Accepted);
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {

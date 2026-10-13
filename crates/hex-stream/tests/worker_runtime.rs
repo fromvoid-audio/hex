@@ -18,6 +18,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[path = "worker_runtime/domain_escrow.rs"]
+mod domain_escrow_cases;
 #[path = "worker_runtime/readiness.rs"]
 mod readiness_cases;
 

@@ -95,6 +95,14 @@ capacity accounting and the unimplemented engine/native boundaries. This is not
 engine-demand or native publication readiness; existing publication refusal and
 resident limits remain in force.
 
+`domain_escrow` is a control-allocated headless endpoint-domain return/reaper
+unit. It validates actual control/readiness/retained-lease pairs before moving
+inputs, keeps normal SPSC returns separate from a once-only terminal batch slot,
+and preflights Busy before changing role protection or metadata. Reported shutdown
+retains actual partial observations instead of inventing worker counts after
+panic/imbalance. See [domain escrow](DOMAIN_ESCROW.md) for ownership, reservation
+accounting, failure recovery and the separate unimplemented CPAL/lifecycle wire.
+
 `CompactSourceInput` is an opt-in control owner for compact input copying only.
 Construction moves the original Vec without allocating; borrowed preflight
 checks existing configuration, source/scratch/logical-path limits and complete

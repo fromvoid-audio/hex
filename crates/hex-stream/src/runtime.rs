@@ -582,17 +582,35 @@ impl StreamControl {
 
     /// Stop and reclaim a matching callback page endpoint. Pair validation is
     /// performed before cached pages, queues or worker state are mutated.
-    pub fn shutdown(self, mut pages: StreamCallbackPages) -> Result<PagePoolReport, ShutdownError> {
-        if !Arc::ptr_eq(&self.pair_id, &pages.pair_id) {
+    pub fn shutdown(self, pages: StreamCallbackPages) -> Result<PagePoolReport, ShutdownError> {
+        let result = self.shutdown_reported(pages)?;
+        result.successful_report().ok_or(ShutdownError::Runtime(
+            result.failure.unwrap_or(StreamRuntimeError::PoolAccounting),
+        ))
+    }
+
+    /// Actual borrowed owner/pair identity; creates no lease or owner.
+    pub(crate) fn matches_catalog(&self, lease: &CatalogLease) -> bool {
+        Arc::ptr_eq(&self.owner, &lease.owner) && Arc::ptr_eq(&self.pair_id, &lease.pair_id)
+    }
+
+    pub(crate) fn owner_references(&self) -> usize {
+        Arc::strong_count(&self.owner)
+    }
+
+    /// Owning preflight errors remain transactional. Terminal results retain
+    /// observations even after panic/imbalance; unknown worker inventory is None.
+    /// Control-only: may stop, wait for IO cancellation and join without deadline.
+    pub fn shutdown_reported(
+        self,
+        mut pages: StreamCallbackPages,
+    ) -> Result<crate::ReportedShutdown, ShutdownError> {
+        if !Arc::ptr_eq(&self.pair_id, &pages.pair_id) || !Arc::ptr_eq(&self.owner, &pages._owner) {
             return Err(ShutdownError::PairMismatch(Box::new(StreamPairMismatch {
                 control: self,
                 pages,
             })));
         }
-        // Exactly two references belong to this pair: control and pages. No
-        // Weak references are exposed, and cloning a lease already requires
-        // an external strong reference, so any other strong reference makes
-        // shutdown Busy without a separate clone gate.
         let references = Arc::strong_count(&self.owner);
         if references > 2 {
             return Err(ShutdownError::Busy(Box::new(StreamBusy {
@@ -604,44 +622,47 @@ impl StreamControl {
         let cached_pages_returned = pages.endpoint.return_cached_pages();
         self.owner.stop.store(true, Ordering::Release);
         self.wake_worker();
-        let (worker_pages, worker_joined) = {
-            let mut worker_slot = lock_unpoisoned(&self.owner.worker);
-            if let Some(worker) = worker_slot.take() {
-                let pages = worker
-                    .join()
-                    .map_err(|_| ShutdownError::Runtime(StreamRuntimeError::WorkerJoinFailed))?;
-                (pages, true)
-            } else {
-                (Vec::new(), false)
+        let (worker_pages, join) = {
+            let mut slot = lock_unpoisoned(&self.owner.worker);
+            match slot.take() {
+                Some(worker) => match worker.join() {
+                    Ok(pages) => (Some(pages), crate::WorkerJoinObservation::Joined),
+                    Err(_) => (None, crate::WorkerJoinObservation::Panicked),
+                },
+                None => (None, crate::WorkerJoinObservation::MissingHandle),
             }
         };
+        // The joined/panicked worker has stopped. The ready/held inventories can
+        // still be observed/reclaimed, including after worker unwind. With no
+        // handle this is only known endpoint inventory, never proof of a join.
         let queued_pages_reclaimed = pages.endpoint.drain_ready_after_join();
         let held_return_pages_reclaimed = pages.endpoint.drop_held_returns_after_join();
-        let worker_pages_reclaimed = worker_pages.len();
+        let worker_pages_reclaimed = worker_pages.as_ref().map(Vec::len);
         drop(worker_pages);
-        let accounted = queued_pages_reclaimed
-            .saturating_add(held_return_pages_reclaimed)
-            .saturating_add(worker_pages_reclaimed);
-        let accounting_complete = accounted == self.owner.config.page_buffers;
-        let report = PagePoolReport {
+        let conservation = worker_pages_reclaimed.and_then(|worker| {
+            queued_pages_reclaimed
+                .checked_add(held_return_pages_reclaimed)?
+                .checked_add(worker)
+                .map(|count| count == self.owner.config.page_buffers)
+        });
+        let failure = match join {
+            crate::WorkerJoinObservation::Panicked => Some(StreamRuntimeError::WorkerJoinFailed),
+            _ if conservation != Some(true) => Some(StreamRuntimeError::PoolAccounting),
+            _ => None,
+        };
+        Ok(crate::ReportedShutdown {
             page_buffers: self.owner.config.page_buffers,
-            page_bytes: self
-                .owner
-                .config
-                .page_buffers
-                .saturating_mul(hex_engine::STREAM_PAGE_FRAMES)
-                .saturating_mul(std::mem::size_of::<hex_engine::Frame>()),
+            page_bytes: self.owner.config.page_buffers
+                * hex_engine::STREAM_PAGE_FRAMES
+                * std::mem::size_of::<hex_engine::Frame>(),
             cached_pages_returned,
             queued_pages_reclaimed,
             held_return_pages_reclaimed,
             worker_pages_reclaimed,
-            worker_joined,
-            accounting_complete,
-        };
-        if !accounting_complete {
-            return Err(ShutdownError::Runtime(StreamRuntimeError::PoolAccounting));
-        }
-        Ok(report)
+            join,
+            conservation,
+            failure,
+        })
     }
 }
 
