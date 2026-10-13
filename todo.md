@@ -1,3 +1,20 @@
+## Operator Tab review repairs — pulse2373 / PR178
+
+Oscillator squares remain visually at the right while preceding their controls
+in the focus tree. Selector focus activates its oscillator and uses a distinct
+thicker focus border. Section backgrounds follow descendant focus only, including
+lfo summary/detail and routing preset; previous groups deactivate even when their
+view context remains selected. Common lfo widgets mount once in the summary,
+with remaining controls in detail, avoiding duplicate GPUI focus ancestry/Tab IDs.
+Fine/filter/pitch/global invalid previews refuse both Tab directions before blur;
+valid preview drafts finish locally without authoring canonical sound. The routing
+icon retains its lowercase Enter/Space tooltip. Shared disabled-widget navigation
+intent/restoration remains preserved. Rendered regressions cover geometry/order,
+all lfo widgets, routing, group exit and preview drafts; restored-old-behavior
+negative controls reproduce both invalid-preview traversal and duplicate-lfo order.
+Full exact-source CI, optimized review build and pending native confirmation are
+recorded in PR178/Pulse2373 under the retained review-only hold.
+
 ## 13 October 2026 — header double-click fullscreen
 
 The shared loading/editor title bar now toggles native fullscreen on left

@@ -191,6 +191,7 @@ pub struct NumericControl {
     pub(crate) style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    tab_navigation: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -245,6 +246,7 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -299,11 +301,26 @@ impl NumericControl {
         Ok(())
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            cx.notify();
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled == enabled {
             return;
         }
         self.enabled = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+        }
         if !enabled {
             self.cancel(cx);
         }

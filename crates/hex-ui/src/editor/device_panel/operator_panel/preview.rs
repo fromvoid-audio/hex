@@ -266,11 +266,15 @@ fn row(
     fields: &[Field],
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
+    let section = super::Section::Preview(title);
+    let (section_focus, focused) = super::context::section_focus(view, cx, device, section);
     let mut row = div()
+        .on_children_prepainted(super::context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-{title}", device.value()))
+        .track_focus(&section_focus)
         .w_full()
         .h(px(ROW_HEIGHT))
         .px(px(4.0))
@@ -320,66 +324,40 @@ fn row(
     }
     row = row.child(dials);
     row = row
-        .bg(rgb(
-            if title == "global"
-                && view
-                    .device_panel
-                    .operator_pages
-                    .get(&device)
-                    .is_some_and(|state| state.page == super::OperatorPage::Routing)
-            {
-                super::RAIL_GUTTER
-            } else {
-                super::RAIL_BACKGROUND
-            },
-        ))
+        .bg(rgb(if focused {
+            super::RAIL_GUTTER
+        } else {
+            super::RAIL_BACKGROUND
+        }))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
-        let focus = view
-            .device_panel
-            .operator_previews
-            .entry(device)
-            .or_default()
-            .routing_focus
-            .get_or_insert_with(|| cx.focus_handle())
-            .clone();
-        row = row
-            .track_focus(&focus)
-            .key_context("hex_operator_routing")
-            .focus(|style| style.bg(rgb(super::RAIL_GUTTER)))
-            .tab_index(0)
-            .tooltip(|_, cx| {
-                cx.new(|_| super::super::super::transport::MiniTooltip {
-                    description:
-                        "routing and global context · tab from device, then enter or space".into(),
-                })
-                .into()
-            })
-            .capture_any_mouse_down(cx.listener(
-                move |view, event: &gpui::MouseDownEvent, _, cx| {
-                    if event.button == gpui::MouseButton::Left
-                        && let Some(owner) = owner
-                    {
-                        super::context::select_routing(view, cx, owner);
-                    }
-                },
-            ))
-            .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
-                if let Some(owner) = owner {
+        row = row.capture_any_mouse_down(cx.listener(
+            move |view, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == gpui::MouseButton::Left
+                    && let Some(owner) = owner
+                {
                     super::context::select_routing(view, cx, owner);
-                    cx.stop_propagation();
                 }
-            }));
+            },
+        ));
     }
     row
 }
 
 fn routing_link(
-    view: &EditorView,
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: hex_project::DeviceId,
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
+    let focus = view
+        .device_panel
+        .operator_previews
+        .entry(device)
+        .or_default()
+        .routing_focus
+        .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+        .clone();
     let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
     let mut icon = div()
         .w(px(12.0))
@@ -404,6 +382,17 @@ fn routing_link(
             format!("operator-preview-{}-route-link", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-{}-route-link", device.value()))
+        .track_focus(&focus)
+        .key_context("hex_operator_routing")
+        .tooltip(|_, cx| {
+            cx.new(|_| super::super::super::transport::MiniTooltip {
+                description: theme::text("routing and global context · enter or space"),
+            })
+            .into()
+        })
+        .border_1()
+        .border_color(rgb(super::RAIL_GUTTER))
+        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .w(px(18.0))
         .h(px(34.0))
         .flex()
@@ -414,7 +403,7 @@ fn routing_link(
             if owner.is_some_and(|owner| owner.is_current(view))
                 && super::finalize_controls(view, cx)
             {
-                view.focus.focus(window);
+                focus.focus(window);
                 view.device_panel
                     .operator_pages
                     .entry(device)
@@ -423,6 +412,36 @@ fn routing_link(
                 cx.notify();
             }
         }))
+        .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
+            if let Some(owner) = owner {
+                super::context::select_routing(view, cx, owner);
+                cx.stop_propagation();
+            }
+        }))
+}
+
+/// Refuse Tab traversal before blur can leave an invalid view-only numeric draft.
+pub(super) fn finalize_controls(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: hex_project::DeviceId,
+) -> bool {
+    let controls: Vec<_> = view
+        .device_panel
+        .operator_previews
+        .get(&device)
+        .into_iter()
+        .flat_map(|state| state.controls.values())
+        .map(|control| control.entity.clone())
+        .collect();
+    for entity in controls {
+        if let Err(error) = entity.update(cx, |control, cx| control.finish_edit(cx)) {
+            view.error = Some(format!("finish the operator preview value edit: {error}"));
+            cx.notify();
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn control(
@@ -525,6 +544,7 @@ pub(super) fn control(
         .get(&device)
         .map_or(spec.default, |state| state.value(field));
     control.entity.update(cx, |control, cx| {
+        control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
     let owner = super::context::Owner::capture(view, device);
@@ -579,7 +599,11 @@ fn toggle(
             Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactSquare),
             Err(error) => return control_error(error),
         };
-        let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
+        let entity = cx.new(|control_cx| {
+            let mut control = Toggle::from_config(control_cx, config);
+            control.set_tab_navigation(true, control_cx);
+            control
+        });
         let key = (device, switch);
         let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
             if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
@@ -664,7 +688,11 @@ fn selector(
             }),
             Err(error) => return control_error(error),
         };
-        let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
+        let entity = cx.new(|control_cx| {
+            let mut control = Selector::from_config(control_cx, config);
+            control.set_tab_navigation(true, control_cx);
+            control
+        });
         let key = (device, choice);
         let subscription = cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
             if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
