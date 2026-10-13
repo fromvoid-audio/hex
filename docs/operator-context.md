@@ -150,3 +150,24 @@ is covered by the independent full-output oracle and a registered callback
 allocation probe, which verifies zero total and net allocation/deallocation but
 does not establish timing. No physical callback deadline or Live numerical
 parity is claimed.
+
+## focus presentation follow-up — 13 october 2026
+
+Pulse2373 / PR178 follow-up: each oscillator row traverses coarse/frequency,
+fine, fixed, level, then its A/B/C/D badge. The badge keeps its absolute position
+at the right edge; child order provides both forward and reverse keyboard order.
+The center curve/detail display always uses its dark background, including pointer
+and keyboard focus. Shell and right-side sections retain their focus highlights.
+
+GPUI emits section focus events after painting. Immediate notification in this
+phase updates the stored flag without scheduling another frame. The section
+listener now defers the editor notification until the effect cycle completes,
+so highlights and context paint without waiting for mouse movement. Rendered
+regressions inspect completed scene backgrounds along LFO/filter/pitch/global
+traversal and oscillator rows, plus keyboard/pointer focus in the detail display.
+They preserve canonical values and existing invalid-draft/owner tests.
+
+Current main still has selection-only oscillator badges. Canonical on/off DSP,
+state migration and history remain owned by Pulse2335 / unmerged PR164; focus
+changes do not substitute a local enable flag for that implementation. Native
+optimized-build review and stable macOS delivery remain separate from Linux tests.

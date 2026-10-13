@@ -164,7 +164,7 @@ pub(super) fn render_body(
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
     };
-    let (detail_focus, detail_focused) = context::section_focus(view, cx, device, Section::Detail);
+    let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
     div()
         .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
@@ -198,11 +198,7 @@ pub(super) fn render_body(
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
                 .track_focus(&detail_focus)
-                .bg(rgb(if detail_focused {
-                    RAIL_GUTTER
-                } else {
-                    DISPLAY_BACKGROUND
-                }))
+                .bg(rgb(DISPLAY_BACKGROUND))
                 .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
                 .overflow_hidden()
                 .relative()
@@ -375,12 +371,6 @@ fn operator_row(
         } else {
             RAIL_BACKGROUND
         }))
-        .child(
-            operator_label(view, cx, device, parameters, operator, selected)
-                .absolute()
-                .right(px(4.0))
-                .top(px(14.0)),
-        )
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -405,7 +395,12 @@ fn operator_row(
             .child(section_title("fixed"))
             .child(fixed_control),
     );
-    row = row.child(level);
+    row = row.child(level).child(
+        operator_label(view, cx, device, parameters, operator, selected)
+            .absolute()
+            .right(px(4.0))
+            .top(px(14.0)),
+    );
     row
 }
 
