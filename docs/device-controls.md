@@ -244,7 +244,8 @@ The title area of every device frame is a drag source, including instruments,
 effects and return effects. The shared frame accepts caller-owned title content;
 device input and canonical commands stay in the editor/session. Header actions
 and parameter controls keep their own input. An open-hand cursor identifies the
-grab area; while dragging, a compact title ghost follows the closed-hand cursor.
+grab area; while dragging, the closed-hand cursor and insertion markers show the
+move without a floating preview.
 
 The left/right halves of each card choose a stable before-device anchor. The
 3 px gap after each card also accepts insertion drops without changing visual
@@ -264,7 +265,7 @@ inter-card gap, instrument placement among effects, unchanged order while hoveri
 one revision per move, Undo, self-drop and return Escape/outside cancellation.
 Native macOS interaction and listening remain open. User checklist: drag a device
 title left/right/between cards on a regular track and return; move the instrument
-among effects; check the marker and title ghost, Undo/Redo, Escape and outside
+among effects; check insertion markers with no floating preview, Undo/Redo, Escape and outside
 release; confirm knobs, bypass/remove buttons and horizontal scrolling still work.
 
 Starting a native-device drag from the browser reveals the device pane and

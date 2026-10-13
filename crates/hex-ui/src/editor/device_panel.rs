@@ -27,7 +27,9 @@ mod auto_pan_panel;
 mod compressor_panel;
 mod eq8_panel;
 mod gate_panel;
+mod navigation;
 mod numeric_display;
+pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
@@ -124,6 +126,7 @@ fn parameter_control_matches_identity(
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
+    pub(super) navigation: navigation::Navigation,
     generation: u64,
     selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
@@ -802,6 +805,7 @@ fn render_track(
         .p(px(DEVICE_CHAIN_PADDING))
         .overflow_x_scroll()
         .overflow_y_hidden();
+    chain = navigation::rail(view, chain);
     let chain_entity = cx.entity();
     let visible_chain_bounds = std::rc::Rc::new(std::cell::RefCell::new(None));
     let chain_visible_bounds = visible_chain_bounds.clone();
@@ -1255,7 +1259,6 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
-    let ghost_title = title.clone();
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1278,35 +1281,8 @@ fn device_drag_title(
                 view.begin_native_device_drag(payload);
                 cx.notify();
             });
-            cx.new(|_| NativeDeviceDragGhost {
-                title: ghost_title.clone(),
-            })
+            cx.new(|_| gpui::Empty)
         })
-}
-
-struct NativeDeviceDragGhost {
-    title: gpui::SharedString,
-}
-
-impl gpui::Render for NativeDeviceDragGhost {
-    fn render(
-        &mut self,
-        _: &mut gpui::Window,
-        _: &mut Context<'_, Self>,
-    ) -> impl gpui::IntoElement {
-        div()
-            .h(px(22.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .font_family(theme::FONT_FAMILY)
-            .text_size(px(9.0))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .child(theme::text(self.title.clone()))
-    }
 }
 
 // Capture selection before nested controls consume their pointer event. Selection

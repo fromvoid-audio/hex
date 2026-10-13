@@ -278,6 +278,23 @@ canonical parameters; pitch, gain and warp controls require their own playback
 implementation. See [clip-view.md](clip-view.md) for current controls, phase
 semantics, follow-ups and native acceptance.
 
+## device chain navigation — 13 October 2026
+
+Track and return device rails share one view-only GPUI horizontal scroll handle.
+Middle-button dragging moves the chain with the pointer; capture continues outside
+the rail and ends on release, Escape, panel closure, owner/project or workspace-mode
+changes. Existing rail wheel scrolling remains available. The bottom status bar
+includes a compact 154 × 16 px overview: proportional device silhouettes, selected
+device color and a focus frame drawn from the measured viewport and scroll extent.
+Drag the frame, click outside it to center that position, or scroll over the overview.
+The bottom-right chevron opens/closes the device detail pane and preserves a focused
+return. Closing uses existing parameter-draft finalization and refuses closure when
+that finalization cannot be admitted. Navigation never edits project/audio state.
+
+The supplied user screenshot is the layout reference; no installed Live behavior
+experiment was performed in this Linux workspace. GPUI test-platform checks and
+native macOS visual/middle-button acceptance are separate evidence.
+
 ## native project menu — 9 October 2026
 
 The canonical editor installs a lowercase native macOS `file` menu with
