@@ -1,7 +1,7 @@
 use super::*;
 use gpui::Focusable;
 
-fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
+pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::RemoveInstrument { track }))
