@@ -464,7 +464,20 @@ conservative upper bound; unavailable bounds retain complete composition. The
 full metadata inventory, including disabled parameters and unsupported-state
 errors, is cached independently of mounted cards. Controls are constructed on
 first mount, then retain their identity and subscriptions across later visibility
-changes. This does not window the parameters within an individual generic card.
+changes. Generic instrument, track-effect and return-effect bodies also window
+vertical parameter rows. Their explicit body viewport, fixed 136px cell width,
+26px float/22px discrete or unsupported heights, padding and row gaps preserve
+all descriptor order and full scroll extent. The visible range includes one
+maximum-height row of overscan. Mixed row heights and width changes reconcile
+geometry while anchoring a surviving parameter. Unknown focus/window context
+retains complete row composition.
+
+A generic row stays mounted for direct control focus, numeric drafts/capture,
+open choice popups, pending values and either parameter of an active paired
+gesture. Previously constructed controls retain identities/subscriptions while
+hidden; descriptor identity/removal and enabled-state reconciliation run against
+the complete metadata inventory before visibility selection. Specialized device
+panels, including Operator, retain their existing layouts.
 Resize and scroll-clamping observations request a fresh composition. Topology
 changes preserve the first surviving visible card's screen position.
 

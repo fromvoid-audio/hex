@@ -88,6 +88,7 @@ pub(super) fn must_mount(
         || panel.chain_window.focus.get(&device).is_some_and(|focus| focus.contains_focused(window, cx))
         || panel.controls.iter().any(|(key, control)| key.device == device && matches!(control,
             ParameterControl::Float { entity, .. } if entity.read_with(cx, |control, _| control.is_interacting() || control.is_editing())))
+        || panel.controls.keys().any(|key| key.device == device && super::parameter_rows::pinned(view, *key, window, cx))
         || panel.pending_values.keys().any(|key| key.device == device)
         || view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
             GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } if target == device))

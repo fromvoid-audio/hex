@@ -12,6 +12,7 @@ mod compressor_ui_tests;
 mod gate_ui_tests;
 mod header_style_tests;
 mod operator_navigation_tests;
+pub(super) mod parameter_rows_tests;
 mod saturator_ui_tests;
 
 fn receive_service_event(service: &Service) -> Event {
@@ -483,6 +484,23 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
         visual.debug_bounds(body).is_some(),
         "FM4 has a rendered card"
     );
+    assert!(
+        editor.read_with(cx, |view, _| view.device_panel.views[&instrument_id]
+            .2
+            .as_ref()
+            .unwrap()
+            .parameters
+            .iter()
+            .any(|p| p.descriptor.id.value() == 29)),
+        "full carrier metadata remains available before scrolling"
+    );
+    editor.update(cx, |view, cx| {
+        view.device_panel.parameter_rows[&instrument_id]
+            .scroll
+            .set_offset(point(px(0.0), px(-1_000_000.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
     let carrier =
         Box::leak(format!("device-{}-parameter-29-slider", instrument_id.value()).into_boxed_str());
     assert!(

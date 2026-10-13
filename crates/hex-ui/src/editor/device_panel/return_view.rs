@@ -79,6 +79,7 @@ pub(super) fn render(
     for device in &devices {
         cache_device_metadata(&mut view.device_panel, device, NativeDeviceClass::Effect);
     }
+    parameter_rows::reconcile(view, cx);
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()
@@ -233,7 +234,7 @@ pub(super) fn render(
         if chain_window::must_mount(view, device.id(), window, cx) {
             let focus = view.device_panel.chain_window.focus(device.id(), cx);
             chain = chain.child(
-                render_return_effect(view, cx, return_id, &devices, index, device)
+                render_return_effect(view, window, cx, return_id, &devices, index, device)
                     .track_focus(&focus),
             );
         } else {
@@ -259,6 +260,7 @@ pub(super) fn render(
 
 fn render_return_effect(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     return_id: hex_project::ReturnId,
     devices: &[hex_project::Device],
@@ -393,33 +395,17 @@ fn render_return_effect(
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
             } else {
-                let mut body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
-                        view,
-                        cx,
-                        id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    ));
-                }
-                body
+                parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                )
             };
             if matches!(
                 device_view.type_id.as_str(),

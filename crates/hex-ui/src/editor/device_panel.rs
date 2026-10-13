@@ -30,6 +30,7 @@ mod eq8_panel;
 mod gate_panel;
 mod numeric_display;
 mod operator_panel;
+mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod saturator_panel;
 mod send_controls;
@@ -125,6 +126,7 @@ fn parameter_control_matches_identity(
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
     chain_window: chain_window::ChainWindow,
+    parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     generation: u64,
     controls: HashMap<ParameterKey, ParameterControl>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -412,6 +414,7 @@ pub(super) fn view(
             let _ = audio.control.processor_audition.cancel_immediately();
         }
         view.device_panel.chain_window = Default::default();
+        view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
         view.device_panel.generation = view.project_generation;
     }
@@ -507,6 +510,7 @@ pub(super) fn view(
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.chain_window = Default::default();
+        view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
         view.device_panel.message = None;
     }
@@ -792,6 +796,8 @@ fn render_track(
         cache_device_metadata(&mut view.device_panel, device, class);
     }
 
+    parameter_rows::reconcile(view, cx);
+
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
             hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
@@ -906,9 +912,10 @@ fn render_track(
             continue;
         }
         let rendered = match class {
-            NativeDeviceClass::Instrument => render_instrument(view, cx, track_id, device),
+            NativeDeviceClass::Instrument => render_instrument(view, window, cx, track_id, device),
             NativeDeviceClass::Effect => {
-                let rendered = render_effect(view, cx, track_id, &devices, effect_index, device);
+                let rendered =
+                    render_effect(view, window, cx, track_id, &devices, effect_index, device);
                 effect_index = effect_index.saturating_add(1);
                 rendered
             }
@@ -1365,6 +1372,7 @@ impl gpui::Render for NativeDeviceDragGhost {
 
 fn render_effect(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
     effects: &[hex_project::Device],
@@ -1423,33 +1431,17 @@ fn render_effect(
                     sample_rate,
                 )
             } else {
-                let mut body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
-                        view,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    ));
-                }
-                body
+                parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                )
             };
             if matches!(
                 device_view.type_id.as_str(),
@@ -1861,6 +1853,7 @@ fn device_move_would_be_noop(
 
 fn render_instrument(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
     device: &hex_project::Device,
@@ -1898,35 +1891,18 @@ fn render_instrument(
                     body,
                 )
             } else {
-                let mut body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
-                if device_view.parameters.is_empty() {
-                    body = body.child(menu_message("no parameters"));
-                }
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
-                        view,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Instrument,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    ));
-                }
+                let body = parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Instrument,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                );
+
                 device_frame(
                     theme::text(device_view.name.clone()),
                     control_style(),
