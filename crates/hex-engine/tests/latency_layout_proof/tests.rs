@@ -470,3 +470,222 @@ fn impossible_metadata_capacity_refuses_before_reservation() {
         "byte overflow"
     );
 }
+
+#[test]
+fn independent_paths_cover_5184_dags_and_keyed_edge_permutations() {
+    let (fixture_graph, _) = declared_graph(&fixture());
+    let keys = [
+        fixture_graph.nodes[0].key,
+        fixture_graph.nodes[1].key,
+        fixture_graph.nodes[2].key,
+        NodeKey::Main,
+    ];
+    let pairs = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let mut count = 0;
+    for mask in 0..64 {
+        for encoded in 0..81 {
+            let mut number = encoded;
+            let nodes = keys
+                .iter()
+                .map(|&key| {
+                    let value = [0, 1, 16][number % 3];
+                    number /= 3;
+                    Node {
+                        key,
+                        fixed: Fixed::Known(value),
+                    }
+                })
+                .collect();
+            let edges = pairs
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(_, &(source, target))| Edge {
+                    source,
+                    target,
+                    key: EdgeKey::Internal(keys[source], keys[target]),
+                })
+                .collect();
+            let mut graph = Graph { nodes, edges };
+            let expected = super::oracle::paths(&graph).unwrap();
+            let plan = prepare(&graph, limits(&graph), &Context::default()).unwrap();
+            assert_eq!(
+                plan.nodes
+                    .iter()
+                    .map(|n| (n.key, n.arrival))
+                    .collect::<BTreeMap<_, _>>(),
+                expected.0
+            );
+            assert_eq!(
+                plan.edges
+                    .iter()
+                    .map(|e| (e.key, e.delay))
+                    .collect::<BTreeMap<_, _>>(),
+                expected.1
+            );
+            graph.edges.reverse();
+            assert_eq!(super::oracle::paths(&graph).unwrap(), expected);
+            let reordered = prepare(&graph, limits(&graph), &Context::default()).unwrap();
+            assert_eq!(reordered.order, plan.order);
+            assert_eq!(
+                reordered
+                    .edges
+                    .iter()
+                    .map(|e| (e.key, e.delay))
+                    .collect::<BTreeMap<_, _>>(),
+                expected.1
+            );
+            count += 1;
+        }
+    }
+    assert_eq!(count, 5184);
+}
+
+#[test]
+fn independent_reconvergence_negative_control_and_malformed_paths() {
+    let (g, _) = declared_graph(&fixture());
+    let keys = [g.nodes[0].key, g.nodes[1].key, NodeKey::Main];
+    let mut graph = Graph {
+        nodes: vec![
+            Node {
+                key: keys[0],
+                fixed: Fixed::Known(1),
+            },
+            Node {
+                key: keys[1],
+                fixed: Fixed::Known(16),
+            },
+            Node {
+                key: keys[2],
+                fixed: Fixed::Known(0),
+            },
+        ],
+        edges: vec![
+            Edge {
+                source: 0,
+                target: 2,
+                key: EdgeKey::Internal(keys[0], keys[2]),
+            },
+            Edge {
+                source: 1,
+                target: 2,
+                key: EdgeKey::Internal(keys[1], keys[2]),
+            },
+        ],
+    };
+    let oracle = super::oracle::paths(&graph).unwrap();
+    assert_eq!(oracle.0[&NodeKey::Main], 16);
+    // Frozen wrong summation control: a reconvergence is not serial processing.
+    let wrong_sum = oracle.0[&keys[0]] + oracle.0[&keys[1]];
+    assert_ne!(wrong_sum, oracle.0[&NodeKey::Main]);
+    assert_eq!(oracle.1[&graph.edges[0].key], 15);
+    assert_eq!(oracle.1[&graph.edges[1].key], 0);
+    graph.edges.push(graph.edges[0]);
+    assert!(super::oracle::paths(&graph).is_err());
+    graph.edges.pop();
+    graph.nodes[1].key = keys[0];
+    assert!(super::oracle::paths(&graph).is_err());
+    graph.nodes[1].key = keys[1];
+    graph.edges[0].target = usize::MAX;
+    assert!(super::oracle::paths(&graph).is_err());
+    graph.edges[0].target = 2;
+    graph.nodes[0].fixed = Fixed::Known(u64::MAX);
+    graph.nodes[2].fixed = Fixed::Known(1);
+    assert!(super::oracle::paths(&graph).is_err());
+}
+
+#[test]
+fn actual_container_and_independent_bank_capacities_budget_and_refusal() {
+    let p = fixture();
+    let (graph, mut declared) = declared_graph(&p);
+    declared.insert(graph.nodes[0].key, Fixed::Known(3));
+    let graph = Graph::from_project(&p, &declared, &[]).unwrap();
+    let mut l = limits(&graph);
+    l.ring_quantum = 8;
+    let context = Context {
+        active_bytes: 1024,
+        retained_bytes: 2048,
+        ..Context::default()
+    };
+    let plan = prepare(&graph, l, &context).unwrap();
+    let banks: Vec<_> = plan
+        .edges
+        .iter()
+        .filter(|e| e.ring_capacity > 0)
+        .map(|e| [e.ring_capacity, e.ring_capacity + 8])
+        .collect();
+    assert!(!banks.is_empty());
+    let snapshot = format!("{plan:?}{context:?}");
+    let (mut witness, charge) =
+        super::oracle::allocate(&plan, banks.len() + 3, &banks, &context, l).unwrap();
+    assert_eq!(
+        charge.container,
+        std::mem::size_of::<super::oracle::Witness>()
+    );
+    assert_eq!(
+        charge.descriptors,
+        witness.slots.capacity() * std::mem::size_of::<super::oracle::RingSlot>()
+    );
+    assert_eq!(
+        charge.samples,
+        witness
+            .slots
+            .iter()
+            .flat_map(|s| &s.banks)
+            .map(|b| b.capacity() * 8)
+            .sum()
+    );
+    assert_eq!(
+        charge.candidate,
+        plan.demand.layout_bytes + charge.container + charge.descriptors + charge.samples
+    );
+    assert_eq!(charge.coexist, charge.candidate + 3072);
+    let slot = &mut witness.slots[0];
+    assert!(plan.edges[slot.edge_index].delay > 0);
+    slot.state[0].cursor = 1;
+    slot.state[0].valid = 2;
+    slot.state[0].epoch = u64::MAX;
+    assert_eq!(
+        (
+            slot.state[1].cursor,
+            slot.state[1].valid,
+            slot.state[1].epoch
+        ),
+        (0, 0, 0)
+    );
+    println!(
+        "actual private ring descriptor size={} align={} container={} charge={charge:?}",
+        std::mem::size_of::<super::oracle::RingSlot>(),
+        std::mem::align_of::<super::oracle::RingSlot>(),
+        charge.container
+    );
+    l.coexist_bytes = charge.coexist;
+    assert!(super::oracle::allocate(&plan, banks.len() + 3, &banks, &context, l).is_ok());
+    l.coexist_bytes -= 1;
+    assert!(super::oracle::allocate(&plan, banks.len() + 3, &banks, &context, l).is_err());
+    l.coexist_bytes = usize::MAX;
+    assert!(super::oracle::allocate(&plan, usize::MAX, &banks, &context, l).is_err());
+    let mut overflowing = banks.clone();
+    overflowing[0][0] = usize::MAX;
+    assert!(super::oracle::allocate(&plan, banks.len(), &overflowing, &context, l).is_err());
+    let mut undersized = banks.clone();
+    undersized[0][0] = 0;
+    assert!(super::oracle::allocate(&plan, banks.len(), &undersized, &context, l).is_err());
+    let overflow_context = Context {
+        active_bytes: usize::MAX,
+        ..context.clone()
+    };
+    assert!(super::oracle::allocate(&plan, banks.len(), &banks, &overflow_context, l).is_err());
+    assert_eq!(snapshot, format!("{plan:?}{context:?}"));
+    let zero = prepare(
+        &Graph::from_project(&p, &zeros(&graph), &[]).unwrap(),
+        limits(&graph),
+        &Context::default(),
+    )
+    .unwrap();
+    let (empty, empty_charge) =
+        super::oracle::allocate(&zero, 0, &[], &Context::default(), l).unwrap();
+    assert!(empty.slots.is_empty());
+    assert_eq!(empty_charge.descriptors, 0);
+    assert_eq!(empty_charge.samples, 0);
+}
