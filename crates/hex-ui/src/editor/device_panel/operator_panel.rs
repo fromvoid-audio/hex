@@ -933,7 +933,7 @@ pub(super) fn display_style() -> hex_widgets::ControlStyle {
     style
 }
 
-fn section_title(label: &'static str) -> Div {
+fn section_title(label: impl AsRef<str>) -> Div {
     div()
         .text_size(px(8.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -949,10 +949,41 @@ fn lfo_detail(
 ) -> Stateful<Div> {
     let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
     for ids in [
-        &[82, 83, 84][..],
+        &[82, 83, 84, 88][..],
         &[85, 86, 87][..],
-        &[88, 89, 90, 91, 92][..],
+        &[89, 90, 91, 92][..],
     ] {
+        if ids[0] == 89 {
+            // The shared navigation rail occupies y=86..102 in the display.
+            // Keep pitch assignment below it without moving that shared rail.
+            content = content.child(div().h(px(36.0)).flex_shrink_0());
+            let selected = ["a", "b", "c", "d"]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, label)| {
+                    (value(view, device, parameters, id(89 + index as u32))
+                        == Some(ParameterValue::Bool(true)))
+                    .then_some(label)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            content =
+                content.child(section_title("pitch destinations").debug_selector(move || {
+                    format!("operator-lfo-destinations-{}", device.value())
+                }));
+            content = content.child(
+                section_title(if selected.is_empty() {
+                    "selected: none".to_owned()
+                } else {
+                    // Owned text is rendered with the same lowercase theme as labels.
+                    // Selection follows canonical/pending parameter values, not view state.
+                    format!("selected: {selected}")
+                })
+                .debug_selector(move || {
+                    format!("operator-lfo-selected-{}-{selected}", device.value())
+                }),
+            );
+        }
         let mut row = div().w_full().flex().items_center().gap(px(3.0));
         for parameter in ids {
             row = row.child(compact_control(
@@ -984,6 +1015,10 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
+    content = content.child(
+        section_title("100% = +/-12 st; pitch only")
+            .debug_selector(move || format!("operator-lfo-depth-{}", device.value())),
+    );
     content.id(ElementId::Name(
         format!("operator-lfo-detail-{}", device.value()).into(),
     ))

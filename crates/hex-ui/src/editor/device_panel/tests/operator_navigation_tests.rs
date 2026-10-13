@@ -33,6 +33,186 @@ fn selector(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
+#[gpui::test]
+fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _, track, device) = operator_fixture();
+    let path = std::env::temp_dir().join(format!("hex-lfo-mapping-{}.hex", std::process::id()));
+    let preset_path = path.with_extension("hex-device-preset.json");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&preset_path);
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    let saved = receive_service_event(&service);
+    assert!(saved.error.is_none());
+    let (handle, editor) = actor_editor_window(cx, service, saved.state.clone(), track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
+    let tab = tab_bounds(&mut visual, device, "lfo", "lfo");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-destinations-{}",
+                device.value()
+            )))
+            .is_some()
+    );
+    for parameter in 89..=92 {
+        let bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .unwrap();
+        let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+        let detail = visual
+            .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+            .unwrap();
+        assert!(
+            bounds.bottom() <= rail.top() || bounds.top() >= rail.bottom(),
+            "destination control overlaps shared navigation: {bounds:?} rail={rail:?}"
+        );
+        assert!(
+            bounds.bottom() <= detail.bottom() && bounds.right() <= detail.right(),
+            "destination control is clipped: {bounds:?} detail={detail:?}"
+        );
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(true)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        visual.run_until_parked();
+    }
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-selected-{}-",
+                device.value()
+            )))
+            .is_some(),
+        "all-off selected readout follows canonical destination values"
+    );
+    let detail = visual
+        .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+        .unwrap();
+    let depth = visual
+        .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+        .unwrap();
+    assert!(
+        depth.bottom() <= detail.bottom() && depth.right() <= detail.right(),
+        "pitch-depth explanation is clipped: {depth:?} detail={detail:?}"
+    );
+    enter_typed_value(
+        &mut visual,
+        device,
+        hex_lattice_contract::ParameterId::from_static(87),
+        "50",
+    );
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 87) == ParameterValue::Float(50.0)
+            })
+    });
+    let mapped = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+    });
+    let save = visual
+        .debug_bounds(selector(format!("device-preset-save-{}", device.value())))
+        .unwrap();
+    visual.simulate_click(save.center(), Modifiers::default());
+    visual.run_until_parked();
+    cx.simulate_new_path_selection(|_| Some(preset_path.clone()));
+    visual.run_until_parked();
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && !view.preset_dialog_open && preset_path.exists()
+    });
+    click_toggle(
+        &mut visual,
+        device,
+        hex_lattice_contract::ParameterId::from_static(89),
+    );
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let owner = hex_session::service::preset::Owner {
+            project_generation: view.project_generation,
+            revision: state.revision,
+            device,
+            class: NativeDeviceClass::Instrument,
+            type_id: state.project.device(device).unwrap().state().type_id(),
+        };
+        // GPUI's test platform lacks an open-file prompt; use its actual
+        // chosen-path handler and worker without claiming native dialog proof.
+        view.choose_device_preset(owner, preset_path.clone(), false, cx);
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            &mapped
+        );
+    });
+    editor.update(cx, |view, cx| view.save_project(cx));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view.saving_project
+            && view.state.as_ref().is_some_and(|state| !state.unsaved)
+    });
+    let reload = Service::new(48_000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened.state.project.device(device).unwrap().state(),
+        &mapped
+    );
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(preset_path).unwrap();
+}
+
 // The legacy fallback lets this exact regression execute on the unfixed source:
 // it detects the vertical jump, rather than merely failing a renamed selector.
 fn tab_bounds(
