@@ -165,7 +165,8 @@ reduces gain and exercises undo/redo before export. It demonstrates the control-
 model and compiler; the native editor now dispatches the same validated project commands.
 See [implementation issues](docs/issues.md) for constraints and next acceptance steps.
 
-Imported WAV support: mono/stereo PCM16/24/32 and float32, 8–192 kHz, finite
+Imported WAV support: mono/stereo PCM8/16/24/32, float32/64, extensible PCM/float,
+G.711 A-law/mu-law and Microsoft/IMA ADPCM, 8–192 kHz, finite
 samples only. Initial CLI ceilings are 64 MiB input and 8 million resident stereo
 frames; project rendering enforces that frame budget across referenced assets.
 Source-rate conversion uses a versioned windowed-sinc filter; same-rate PCM stays
