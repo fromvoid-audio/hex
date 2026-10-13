@@ -218,22 +218,22 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-// Text drafts own their keys before ancestor editor actions are considered.
-const EDITOR_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+// Text drafts own printable keys; modified commands retain their finalization paths.
+const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some(EDITOR_KEY_CONTEXT)),
+        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
-        KeyBinding::new("s", ToggleSolo, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("shift-s", AdditiveSolo, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("up", PreviousTrack, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("down", NextTrack, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("enter", LaunchSessionSelection, Some(EDITOR_KEY_CONTEXT)),
+        KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("shift-s", AdditiveSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("up", PreviousTrack, Some("hex_editor")),
+        KeyBinding::new("down", NextTrack, Some("hex_editor")),
+        KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
         escape_binding(),
-        KeyBinding::new("cmd-i", ImportAudio, Some(EDITOR_KEY_CONTEXT)),
+        KeyBinding::new("cmd-i", ImportAudio, Some("hex_editor")),
         KeyBinding::new("cmd-alt-b", ToggleBrowser, None),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
@@ -299,37 +299,37 @@ fn bind_editor_keys(cx: &mut App) {
             browser_input::BrowserCut,
             Some("hex_browser_search"),
         ),
-        KeyBinding::new("cmd-shift-t", AddMidiTrack, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-m", AddMidiClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-o", OpenProject, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-s", SaveProject, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-s", SaveAsProject, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-e", ExportProject, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-z", Undo, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-z", Redo, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("left", MoveLeft, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("right", MoveRight, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("shift-left", TrimLeft, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("shift-right", TrimRight, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("backspace", DeleteClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("delete", DeleteClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-c", CopyTimeSelection, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-x", CutTimeSelection, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-v", PasteTimeSelection, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-shift-v", InsertTimeSelection, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-d", DuplicateClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-alt-up", MoveSceneUp, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-alt-down", MoveSceneDown, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-e", SplitClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-l", SetLoopFromClip, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("l", ToggleLoop, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-=", ZoomIn, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-+", ZoomIn, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd--", ZoomOut, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("cmd-0", FitTimeline, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("alt-left", PanTimelineLeft, Some(EDITOR_KEY_CONTEXT)),
-        KeyBinding::new("alt-right", PanTimelineRight, Some(EDITOR_KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-t", AddMidiTrack, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-m", AddMidiClip, Some("hex_editor")),
+        KeyBinding::new("cmd-o", OpenProject, Some("hex_editor")),
+        KeyBinding::new("cmd-s", SaveProject, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
+        KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
+        KeyBinding::new("left", MoveLeft, Some("hex_editor")),
+        KeyBinding::new("right", MoveRight, Some("hex_editor")),
+        KeyBinding::new("shift-left", TrimLeft, Some("hex_editor")),
+        KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
+        KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
+        KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
+        KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-v", PasteTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-v", InsertTimeSelection, Some("hex_editor")),
+        KeyBinding::new("cmd-d", DuplicateClip, Some("hex_editor")),
+        KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
+        KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
+        KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
+        KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
+        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
+        KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
+        KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
+        KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor")),
+        KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor")),
+        KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_midi")),
         KeyBinding::new("b", ToggleMidiDrawMode, Some("hex_midi")),
@@ -340,7 +340,7 @@ fn bind_editor_keys(cx: &mut App) {
 }
 
 fn escape_binding() -> KeyBinding {
-    KeyBinding::new("escape", CancelDragOrStop, Some(EDITOR_KEY_CONTEXT))
+    KeyBinding::new("escape", CancelDragOrStop, Some("hex_editor"))
 }
 
 fn editor_window_options(cx: &App) -> WindowOptions {
@@ -1024,13 +1024,13 @@ mod shortcut_tests {
 
     #[test]
     fn timeline_shortcuts_parse() {
-        let _zoom_in = KeyBinding::new("cmd-=", ZoomIn, Some(EDITOR_KEY_CONTEXT));
-        let _zoom_out = KeyBinding::new("cmd--", ZoomOut, Some(EDITOR_KEY_CONTEXT));
-        let _fit = KeyBinding::new("cmd-0", FitTimeline, Some(EDITOR_KEY_CONTEXT));
-        let _pan_left = KeyBinding::new("alt-left", PanTimelineLeft, Some(EDITOR_KEY_CONTEXT));
-        let _pan_right = KeyBinding::new("alt-right", PanTimelineRight, Some(EDITOR_KEY_CONTEXT));
-        let _save = KeyBinding::new("cmd-s", SaveProject, Some(EDITOR_KEY_CONTEXT));
-        let _save_as = KeyBinding::new("cmd-shift-s", SaveAsProject, Some(EDITOR_KEY_CONTEXT));
+        let _zoom_in = KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor"));
+        let _zoom_out = KeyBinding::new("cmd--", ZoomOut, Some("hex_editor"));
+        let _fit = KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor"));
+        let _pan_left = KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor"));
+        let _pan_right = KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor"));
+        let _save = KeyBinding::new("cmd-s", SaveProject, Some("hex_editor"));
+        let _save_as = KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor"));
         let _escape = escape_binding();
         let _select_all_midi = KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_midi"));
         let _toggle_midi_draw = KeyBinding::new("b", ToggleMidiDrawMode, Some("hex_midi"));
