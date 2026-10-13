@@ -4,12 +4,14 @@
 #![allow(clippy::vec_box)]
 
 mod endpoint;
+mod page_endpoint;
 mod revision;
 mod runtime;
 mod types;
 mod worker;
 
 pub use endpoint::EndpointStats;
+pub use page_endpoint::{PageEndpointMismatch, VerifiedPageEndpoint};
 pub use revision::{StreamRevisionMismatch, VerifiedStreamRevision};
 pub use runtime::{
     CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,

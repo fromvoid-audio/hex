@@ -85,6 +85,10 @@ impl Clone for CatalogLease {
 }
 
 impl CatalogLease {
+    pub(crate) fn matches_pages(&self, pages: &StreamCallbackPages) -> bool {
+        Arc::ptr_eq(&self.owner, &pages._owner) && Arc::ptr_eq(&self.pair_id, &pages.pair_id)
+    }
+
     /// True only when the complete verified metadata value, including
     /// generation and fingerprint, is present in this catalog.
     pub fn covers_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
@@ -600,6 +604,48 @@ impl MediaPages for StreamRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_binding_checks_owner_and_pair_independently_without_mutation() {
+        let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (control, mut pages) = runtime.split().ok().unwrap();
+        let lease = control.catalog_lease().unwrap();
+        let original_pair = Arc::clone(&pages.pair_id);
+        pages.pair_id = Arc::new(());
+        let error = crate::VerifiedPageEndpoint::new(pages, lease)
+            .err()
+            .unwrap();
+        let (mut pages, lease) = error.into_parts();
+        assert!(!lease.matches_pages(&pages));
+        assert!(!control.owner.stop.load(Ordering::Acquire));
+        assert_eq!(pages.stats(), Default::default());
+        pages.pair_id = original_pair;
+        let mut other = StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).unwrap();
+        other.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (other_control, other_pages) = other.split().ok().unwrap();
+        let original_owner = Arc::clone(&pages._owner);
+        pages._owner = Arc::clone(&other_control.owner);
+        let error = crate::VerifiedPageEndpoint::new(pages, lease)
+            .err()
+            .unwrap();
+        let (mut pages, lease) = error.into_parts();
+        assert!(Arc::ptr_eq(&pages.pair_id, &control.pair_id));
+        assert!(!lease.matches_pages(&pages));
+        pages._owner = original_owner;
+        let references = Arc::strong_count(&control.owner);
+        let endpoint = crate::VerifiedPageEndpoint::new(pages, lease).unwrap();
+        assert_eq!(Arc::strong_count(&control.owner), references);
+        let (pages, lease) = endpoint.into_parts();
+        let error = control.shutdown(pages).unwrap_err();
+        let (control, pages) = error.into_parts().unwrap();
+        assert!(!control.owner.stop.load(Ordering::Acquire));
+        drop(lease);
+        let report = control.shutdown(pages).unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+        let report = other_control.shutdown(other_pages).unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+    }
 
     #[test]
     fn final_graph_catalog_binding_joins_worker_on_its_control_reclamation_thread() {

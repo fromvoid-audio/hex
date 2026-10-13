@@ -1097,3 +1097,91 @@ fn streamed_binding_enumeration_covers_mixed_planes_without_cloning_metadata() {
         facts
     );
 }
+
+#[test]
+fn verified_page_endpoint_preserves_identical_key_wrong_owners_and_borrowed_pcm() {
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 4096);
+    let key = StreamSourceKey::new(91, asset_id(4096, 48_000));
+    let reader = VerifiedWavReader::open(wav.path(), reader_limits(4096)).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let mut pairs = Vec::new();
+    for _ in 0..2 {
+        let mut runtime = StreamRuntime::new(
+            StreamConfig::with_pool_pages(3),
+            vec![SourceDefinition::new(
+                wav.path().to_path_buf(),
+                metadata.clone(),
+                reader_limits(4096),
+            )],
+        )
+        .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        pairs.push(runtime.split().ok().unwrap());
+    }
+    let (first_control, first_pages) = pairs.remove(0);
+    let (second_control, second_pages) = pairs.remove(0);
+    let first_lease = first_control.catalog_lease().unwrap();
+    let second_lease = second_control.catalog_lease().unwrap();
+    let error = hex_stream::VerifiedPageEndpoint::new(first_pages, second_lease)
+        .err()
+        .unwrap();
+    let (first_pages, second_lease) = error.into_parts();
+    assert_eq!(first_pages.stats(), Default::default());
+    assert!(first_lease.covers_source(&metadata));
+    assert!(second_lease.covers_source(&metadata));
+    assert!(!first_lease.same_catalog(&second_lease));
+    let extra_lease = first_lease.clone(); // control-only extra owner
+    let mut endpoint = hex_stream::VerifiedPageEndpoint::new(first_pages, first_lease).unwrap();
+    endpoint.pages().request_page(key, 0);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        endpoint.pages().pump_ready(3);
+        if let Some(page) = endpoint.pages().page(key, 0) {
+            assert_eq!(page.frames, expected.as_slice());
+            break;
+        }
+        assert!(Instant::now() < deadline, "real worker page ready");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let stats = endpoint.pages().stats();
+    let (pages, lease) = endpoint.into_parts();
+    let error = first_control.shutdown(pages).unwrap_err();
+    let (first_control, pages) = error.into_parts().unwrap();
+    assert_eq!(pages.stats(), stats);
+    assert!(first_control.catalog_ready());
+    drop(lease);
+    let error = first_control.shutdown(pages).unwrap_err();
+    let (first_control, mut pages) = error.into_parts().unwrap();
+    assert_eq!(pages.page(key, 0).unwrap().frames, expected.as_slice());
+    drop(extra_lease);
+    thread::Builder::new()
+        .name("hex-stream-endpoint-reclaim-test".into())
+        .spawn(move || {
+            let report = first_control.shutdown(pages).unwrap();
+            assert!(report.worker_joined && report.accounting_complete);
+            assert_eq!(report.page_buffers, 3);
+            assert_eq!(
+                report.worker_pages_reclaimed
+                    + report.queued_pages_reclaimed
+                    + report.held_return_pages_reclaimed,
+                3
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    let endpoint = hex_stream::VerifiedPageEndpoint::new(second_pages, second_lease).unwrap();
+    let (pages, lease) = endpoint.into_parts();
+    drop(lease);
+    let report = second_control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}

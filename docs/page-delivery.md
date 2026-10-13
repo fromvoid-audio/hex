@@ -326,3 +326,36 @@ coexisting-catalog budgets, sustained advancing 100-track mixed-rate native
 playback and edit/seek/launch/fault/user acceptance remain unimplemented/unverified.
 PR177 stays draft/in progress. Its complete eight-criterion verification gate,
 including manual human_review and both native criteria, must remain intact.
+
+## Typed catalog/page pairing checkpoint — pulse24 / draft177
+
+`VerifiedPageEndpoint` consumes the existing `StreamCallbackPages` and verified
+`CatalogLease` on control. Validation checks both actual private catalog owner
+and pair identities before endpoint/worker mutation; identical metadata/source
+keys do not establish identity. The wrapper has no Clone implementation. Its
+borrowed page accessor reuses the existing engine-neutral MediaPages endpoint;
+it neither installs protected pages nor authorizes native publication.
+
+Mismatch retains both inputs; its owning error boxes the large page endpoint
+on control, following the existing shutdown error convention. Successful pairing
+and borrowed endpoint operations allocate/free nothing and create no Arc owners.
+Construction/error recovery and final disposal are control-only operations.
+`into_parts` returns pages and lease intact. Release that lease and graph leases
+on control before calling the unchanged `StreamControl::shutdown(pages)`.
+Remaining leases cause transactional Busy refusal with the original control/pages
+pair; no new shutdown method silently releases owners before a refusal.
+
+Tests independently alter owner and pair identity, reject distinct catalogs with
+identical keys, recover owners, render actual borrowed worker PCM, preserve cached
+pages through repeated Busy refusals, and reclaim/join with exact buffer accounting
+on a named control thread. The allocation probe covers successful construction
+and borrowed use, not the existing whole native callback/shared-context handoff.
+
+Complete allocation-capacity reporting remains a separate pending portion of
+this source unit. Current CatalogFootprint exposes manifest/table payload and
+selected scratch counts; it is not a complete allocation total. VerifiedWavReader
+privately retains a second PathBuf whose capacity is not publicly available;
+ResampleKernel hides its shared KernelData object allocation. Narrow read-only
+media reporting APIs need coordination before stream can finish an honest report.
+No provisional 192 MiB aggregate admission or eight-graph policy is implemented.
+Native streaming refusal, resident/component limits and full acceptance remain.

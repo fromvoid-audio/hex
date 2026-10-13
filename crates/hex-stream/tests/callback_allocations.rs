@@ -306,3 +306,29 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
     let report = control.shutdown(pages).expect("measured runtime shutdown");
     assert!(report.accounting_complete);
 }
+
+#[test]
+fn typed_endpoint_pairing_and_borrowing_introduce_no_allocations_or_frees() {
+    let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), Vec::new()).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (control, pages) = runtime.split().ok().unwrap();
+    let lease = control.catalog_lease().unwrap();
+    let mut inputs = Some((pages, lease));
+    let mut endpoint = None;
+    let info = measure(|| {
+        let (pages, lease) = inputs.take().unwrap();
+        endpoint = Some(hex_stream::VerifiedPageEndpoint::new(pages, lease).unwrap());
+    });
+    assert_no_allocation(info);
+    let mut endpoint = endpoint.unwrap();
+    let info = measure(|| {
+        assert_eq!(endpoint.pages().pump_ready(3), 0);
+        assert_eq!(endpoint.pages().stats(), Default::default());
+        assert_eq!(endpoint.catalog().footprint().sources, 0);
+    });
+    assert_no_allocation(info);
+    let (pages, lease) = endpoint.into_parts();
+    drop(lease);
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+}

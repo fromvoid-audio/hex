@@ -74,3 +74,10 @@ Project editing, persistence, UI, CPAL, device callbacks, WAV parsing or hashing
 It does not replace the resident media bank or make streamed playback available
 to the native application until the `hex-audio` and project/session publication
 paths explicitly own and retain its endpoint/catalog.
+
+`VerifiedPageEndpoint` is a control-constructed, non-cloneable catalog/page
+pairing. It checks actual owner and pair identity, exposes borrowed existing
+pages, and returns owners through `into_parts` for the existing transactional
+shutdown path. It does not establish installed-page readiness or native admission.
+Complete capacity reporting remains pending narrow media reporting APIs; current
+CatalogFootprint is not a complete heap or aggregate admission report.
