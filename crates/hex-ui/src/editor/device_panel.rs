@@ -1259,7 +1259,6 @@ fn device_drag_title(
         return_destination: std::rc::Rc::new(std::cell::Cell::new(None)),
     };
     let entity = cx.entity();
-    let ghost_title = title.clone();
     div()
         .id(("device-drag-title", id.value()))
         .debug_selector(move || format!("device-drag-title-{}", id.value()))
@@ -1282,35 +1281,8 @@ fn device_drag_title(
                 view.begin_native_device_drag(payload);
                 cx.notify();
             });
-            cx.new(|_| NativeDeviceDragGhost {
-                title: ghost_title.clone(),
-            })
+            cx.new(|_| gpui::Empty)
         })
-}
-
-struct NativeDeviceDragGhost {
-    title: gpui::SharedString,
-}
-
-impl gpui::Render for NativeDeviceDragGhost {
-    fn render(
-        &mut self,
-        _: &mut gpui::Window,
-        _: &mut Context<'_, Self>,
-    ) -> impl gpui::IntoElement {
-        div()
-            .h(px(22.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .font_family(theme::FONT_FAMILY)
-            .text_size(px(9.0))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .child(theme::text(self.title.clone()))
-    }
 }
 
 // Capture selection before nested controls consume their pointer event. Selection

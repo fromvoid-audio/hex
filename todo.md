@@ -21,8 +21,8 @@ the server-required `request_id`; no ticket was created.
 
 ## device title reordering — 13 october 2026
 
-Regular and return device titles now start metadata-only drags with a compact
-title ghost. Stable insertion markers resolve left/right card halves, inter-card
+Regular and return device titles start metadata-only drags without a floating
+preview, as requested in the follow-up. Stable insertion markers resolve left/right card halves, inter-card
 gaps and the chain tail. Return effects use canonical `MoveReturnDevice`; regular
 effects and the freely positioned instrument reuse the existing actor drop path.
 Hover does not edit, valid moves produce one revision/Undo entry, and self-drop,
