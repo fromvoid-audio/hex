@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-clap-scan': set(),
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract'},
@@ -36,8 +37,10 @@ DEV_ALLOWED = {
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
-              # Raw source-page fingerprints belong to control-side media, never DSP.
-              'sha2': {'hex-media'},
+              # Source-page and controlled scanner identities stay off DSP.
+              'sha2': {'hex-media', 'hex-clap-scan'},
+              # Standalone controlled scanner only; never primary/audio ownership.
+              'signal-hook': {'hex-clap-scan'},
               # Advisory journal locks stay on the storage/control boundary.
               'fs2': {'hex-storage'}}
 metadata = json.loads(subprocess.check_output(
@@ -57,6 +60,8 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream'} or dep['kind'] != 'dev'):
             errors.append(f'{name}: allocation-counter is allowed only for audio/stream dev probes')
+        if target == 'rustix' and 'process' in dep.get('features', []) and name != 'hex-clap-scan':
+            errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())
