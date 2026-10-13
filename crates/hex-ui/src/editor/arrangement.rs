@@ -4,8 +4,8 @@ use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
-    Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
-    Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
+    Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
 };
 
 impl EditorView {
@@ -523,6 +523,9 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                view.drop_external_audio_paths(paths.paths(), window, cx);
+            }))
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
                     return;

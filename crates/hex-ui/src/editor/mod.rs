@@ -24,6 +24,9 @@ mod edit_cursor;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod edit_cursor_ui_test;
 mod export;
+mod external_audio_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod external_audio_drop_ui_test;
 mod fades;
 mod header;
 mod loop_rail;
