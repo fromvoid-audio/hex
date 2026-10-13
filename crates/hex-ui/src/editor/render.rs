@@ -21,6 +21,77 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
+    pub(super) fn nudge_grid_context(
+        &self,
+        platform: bool,
+    ) -> Option<(
+        super::musical_time::SnapGrid,
+        super::viewport::Viewport,
+        f32,
+    )> {
+        let grid = self.snap_grid.with_platform_modifier(platform);
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        if grid == super::musical_time::SnapGrid::Off {
+            return Some((grid, viewport, 1.0));
+        }
+        let bounds = self
+            .arrangement_bounds
+            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let width = bounds.width - super::tracks::TRACK_HEADER_WIDTH;
+        (width.is_finite() && width > 0.0).then_some((grid, viewport, width))
+    }
+
+    pub(super) fn nudge_audio_clip(
+        &mut self,
+        clip: hex_project::ClipId,
+        right: bool,
+        platform: bool,
+    ) {
+        if self.edit_pending() {
+            return;
+        }
+        let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
+            return;
+        };
+        if grid == super::musical_time::SnapGrid::Off {
+            let step = self.step_frames() as i64;
+            self.enqueue(SessionRequest::Edit(Command::NudgeClip {
+                clip,
+                frames: if right { step } else { -step },
+            }));
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(item) = state.project.clip(clip) else {
+            return;
+        };
+        let Some(start) = grid.adjacent_frame(&state.project, item.start(), viewport, width, right)
+        else {
+            return;
+        };
+        if start.checked_add(item.duration()).is_none() {
+            self.error = Some("clip nudge exceeds the timeline range".into());
+            return;
+        }
+        let Some(track) = state
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.clips().iter().any(|item| item.id() == clip))
+            .map(|track| track.id())
+        else {
+            return;
+        };
+        self.enqueue(SessionRequest::Edit(Command::MoveClip {
+            clip,
+            track,
+            start,
+        }));
+    }
+
     fn status_bar(&self) -> gpui::Div {
         let mut bar = div()
             .h(px(22.0))
@@ -543,12 +614,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, false);
+                            view.nudge_midi_clip(clip, false, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: -(view.step_frames() as i64),
-                            }));
+                            view.nudge_audio_clip(clip, false, window.modifiers().platform);
                         }
                     }
                 }
@@ -572,12 +640,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, true);
+                            view.nudge_midi_clip(clip, true, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: view.step_frames() as i64,
-                            }));
+                            view.nudge_audio_clip(clip, true, window.modifiers().platform);
                         }
                     }
                 }

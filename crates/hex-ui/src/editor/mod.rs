@@ -61,6 +61,8 @@ mod session_navigation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_navigation_ui_test;
 mod session_route_view;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod snap_nudge_ui_test;
 mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
