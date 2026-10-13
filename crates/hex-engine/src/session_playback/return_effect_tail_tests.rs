@@ -166,6 +166,7 @@ fn processor_instances_with_scale(
     let scale_state = Arc::new(NativeDeviceState::new(SCALE_TYPE, 1, vec![state_value]).unwrap());
     vec![
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 20,
             device_type: HOLD_TYPE,
@@ -176,6 +177,7 @@ fn processor_instances_with_scale(
             definition: Some(Arc::new(HoldDefinition)),
         },
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 21,
             device_type: SCALE_TYPE,
@@ -196,6 +198,7 @@ fn tail_instances(
 ) -> Vec<PreparedProcessorInstance> {
     (0..count)
         .map(|index| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 100 + index as u64,
             device_type: TAIL_TYPE,
@@ -414,10 +417,8 @@ fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
     let new_project = prepared_return_project(false, 0.5);
     let return_id = old_project.return_tracks()[0].id();
     let mut previous = playback(&old_project);
-    let old_matrix = previous.revision.arrangement().return_buses()[0]
-        .matrix
-        .unwrap();
-    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    let old_matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
     warm(&mut previous);
     assert!(!previous.return_chains[0].committed_range_is_quiescent(0..2));
 

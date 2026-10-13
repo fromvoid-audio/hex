@@ -26,6 +26,7 @@ use std::{
 mod auto_pan_panel;
 mod compressor_panel;
 mod eq8_panel;
+mod gain_meters;
 mod gate_panel;
 mod navigation;
 mod numeric_display;
@@ -130,6 +131,7 @@ pub(super) struct DevicePanelState {
     generation: u64,
     selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
+    meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
         DeviceId,
@@ -182,6 +184,18 @@ impl DevicePanelState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn has_only_host_control_for(&self, device: DeviceId) -> bool {
+        self.controls.contains_key(&ParameterKey {
+            device,
+            parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
+        }) && self
+            .controls
+            .keys()
+            .filter(|key| key.device == device)
+            .all(|key| key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id)
     }
 
     pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
@@ -653,6 +667,9 @@ fn render_track(
         hex_engine::ProcessorChainOwner::Track(track_id.value()),
         &identities,
     );
+    view.device_panel
+        .meter_states
+        .retain(|id, _| identities.contains_key(id));
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -971,7 +988,7 @@ fn retire_transfer_previews(
 }
 
 fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
-    match (class, type_id.as_str().ok()) {
+    let frame_width = match (class, type_id.as_str().ok()) {
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
             operator_panel::OPERATOR_FRAME_WIDTH
         }
@@ -982,7 +999,8 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
-    }
+    };
+    frame_width + gain_meters::WIDTH
 }
 
 fn pointer_within_visible_device_drop_bounds(
@@ -1482,14 +1500,22 @@ fn render_effect(
         Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
+    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width))
+        .w(px(frame_width + gain_meters::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
         .flex_shrink_0()
         .capture_any_mouse_down(device_selection_listener(device_id, cx))
         .child(rendered)
+        .child(gain_meters::render(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Effect,
+        ))
 }
 
 impl EditorView {
@@ -1981,14 +2007,22 @@ fn render_instrument(
     } else {
         DEVICE_FRAME_WIDTH
     };
+    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width))
+        .w(px(frame_width + gain_meters::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
         .flex_shrink_0()
         .capture_any_mouse_down(device_selection_listener(device_id, cx))
         .child(rendered)
+        .child(gain_meters::render(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Instrument,
+        ))
 }
 
 fn instrument_actions(
@@ -2300,6 +2334,7 @@ enum ControlPresentation {
     MiniDial,
     MicroDial,
     InlineValue,
+    DeviceMeters,
     CompactButton,
     CompactSelector,
     CompactWideSelector,
@@ -2446,7 +2481,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     let _ = control.set_external_value(f64::from(value), cx);
@@ -2456,7 +2492,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });
@@ -2468,6 +2505,7 @@ fn parameter_control_with_presentation(
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
+                ControlPresentation::DeviceMeters => (gain_meters::WIDTH, DEVICE_FRAME_HEIGHT),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -2478,7 +2516,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     control.set_checked(value, cx);
@@ -2488,7 +2527,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });
@@ -2514,7 +2554,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                     let _ = control.set_selected(value as usize, cx);
@@ -2524,7 +2565,8 @@ fn parameter_control_with_presentation(
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
-                        identity.type_id.as_str() == Ok("hex.instrument.operator"),
+                        identity.type_id.as_str() == Ok("hex.instrument.operator")
+                            && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id,
                         cx,
                     );
                 });
@@ -2600,6 +2642,7 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial
                 | ControlPresentation::MiniDial
                 | ControlPresentation::MicroDial => NumericControlKind::Knob,
+                ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
                 _ => NumericControlKind::HorizontalSlider,
             };
             let appearance = match presentation {
@@ -2607,6 +2650,7 @@ fn create_parameter_control(
                 ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
                 ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
+                ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
                 _ => NumericControlAppearance::Standard,
             };
             let config = NumericControlConfig::new(

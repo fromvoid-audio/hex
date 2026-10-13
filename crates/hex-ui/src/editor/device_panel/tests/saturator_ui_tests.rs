@@ -59,7 +59,10 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
     let graph = visual
         .debug_bounds(selector("saturator-transfer"))
         .expect("transfer plot");
-    assert_eq!(card.size.width, px(saturator_panel::FRAME_WIDTH));
+    assert_eq!(
+        card.size.width,
+        px(saturator_panel::FRAME_WIDTH + gain_meters::WIDTH)
+    );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
     for parameter in 1..=4 {
