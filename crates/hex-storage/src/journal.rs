@@ -1,8 +1,10 @@
 //! One complete checkpoint per slot; no backup history or implicit recovery.
-use crate::{FileToken, MAX_DOCUMENT_BYTES, StorageError, encode, replacement};
+use crate::{FileToken, JournalChange, MAX_DOCUMENT_BYTES, StorageError, encode, replacement};
+mod slot_lock;
 use hex_project::Project;
+use slot_lock::{SlotLock, lock_slot};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
@@ -71,54 +73,94 @@ impl Journal {
         before_publish: impl FnOnce() -> io::Result<()>,
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<(), StorageError> {
+        self.checkpoint_with_release(
+            project,
+            supersede,
+            before_publish,
+            sync_directory,
+            SlotLock::unlock,
+        )
+    }
+
+    fn checkpoint_with_release(
+        &mut self,
+        project: &Project,
+        supersede: bool,
+        before_publish: impl FnOnce() -> io::Result<()>,
+        sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+        release: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<(), StorageError> {
         let mut lock = lock_slot(&self.path)?;
-        if supersede {
-            let bytes = read(&self.path)?;
-            if let Some(bytes) = &bytes {
-                let _ = decode(&self.path, bytes)?;
+        let mut change = JournalChange::Unchanged;
+        let result = (|| {
+            if supersede {
+                let bytes = read(&self.path)?;
+                if let Some(bytes) = &bytes {
+                    let _ = decode(&self.path, bytes)?;
+                }
+                self.bytes = bytes;
             }
-            self.bytes = bytes;
-        }
-        self.check()?;
-        let mut bytes = replacement::encode_envelope(&basename(&self.path)?, &encode(project)?)?;
-        bytes[..8].copy_from_slice(MAGIC);
-        let generation = next_generation(&mut lock, self.bytes.as_deref())?;
-        bytes.extend_from_slice(&generation.to_le_bytes());
-        let mut temp = replacement::prepare_temp(parent(&self.path), &bytes, None)?;
-        self.check()?;
-        before_publish()?;
-        if self.bytes.is_some() {
-            fs::rename(&temp.path, &self.path)?;
-            temp.disarm();
-        } else {
-            fs::hard_link(&temp.path, &self.path)?;
-            self.bytes = Some(bytes.clone());
-            fs::remove_file(&temp.path).map_err(|source| StorageError::PublishedButNotDurable {
-                path: self.path.clone(),
-                operation: "remove the journal staging file",
-                source,
-            })?;
-            temp.disarm();
-        }
-        self.bytes = Some(bytes);
-        sync_directory(parent(&self.path)).map_err(|source| StorageError::PublishedButNotDurable {
-            path: self.path.clone(),
-            operation: "synchronize the journal directory",
-            source,
-        })
+            self.check()?;
+            let mut bytes =
+                replacement::encode_envelope(&basename(&self.path)?, &encode(project)?)?;
+            bytes[..8].copy_from_slice(MAGIC);
+            let generation = next_generation(lock.file_mut(), self.bytes.as_deref())?;
+            bytes.extend_from_slice(&generation.to_le_bytes());
+            let mut temp = replacement::prepare_temp(parent(&self.path), &bytes, None)?;
+            self.check()?;
+            before_publish()?;
+            if self.bytes.is_some() {
+                fs::rename(&temp.path, &self.path)?;
+                change = JournalChange::CheckpointPublished;
+                temp.disarm();
+            } else {
+                fs::hard_link(&temp.path, &self.path)?;
+                self.bytes = Some(bytes.clone());
+                change = JournalChange::CheckpointPublished;
+                fs::remove_file(&temp.path).map_err(|source| {
+                    StorageError::PublishedButNotDurable {
+                        path: self.path.clone(),
+                        operation: "remove the journal staging file",
+                        source,
+                    }
+                })?;
+                temp.disarm();
+            }
+            self.bytes = Some(bytes);
+            sync_directory(parent(&self.path)).map_err(|source| {
+                StorageError::PublishedButNotDurable {
+                    path: self.path.clone(),
+                    operation: "synchronize the journal directory",
+                    source,
+                }
+            })
+        })();
+        lock.finish_with(&self.path, change, result, release)
     }
 
     /// Clear only this exact checkpoint after a durable save; never remove a
     /// competing writer's checkpoint. There is no history sidecar to clean up.
     pub fn clear(&mut self) -> Result<(), StorageError> {
-        let _lock = lock_slot(&self.path)?;
-        self.check()?;
-        if self.bytes.is_some() {
-            fs::remove_file(&self.path)?;
-            self.bytes = None;
-            replacement::sync_parent(parent(&self.path))?;
-        }
-        Ok(())
+        self.clear_with_release(SlotLock::unlock)
+    }
+
+    fn clear_with_release(
+        &mut self,
+        release: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<(), StorageError> {
+        let lock = lock_slot(&self.path)?;
+        let mut change = JournalChange::Unchanged;
+        let result = (|| {
+            self.check()?;
+            if self.bytes.is_some() {
+                fs::remove_file(&self.path)?;
+                self.bytes = None;
+                change = JournalChange::CheckpointCleared;
+                replacement::sync_parent(parent(&self.path))?;
+            }
+            Ok(())
+        })();
+        lock.finish_with(&self.path, change, result, release)
     }
 
     fn check(&self) -> Result<(), StorageError> {
@@ -129,45 +171,6 @@ impl Journal {
         }
         Ok(())
     }
-}
-
-// Stable lock inode retains only magic and an eight-byte generation, never project history. The OS
-// releases the exclusive advisory lock on crash. Never unlink a live lock inode.
-fn lock_slot(path: &Path) -> Result<File, StorageError> {
-    let lock = parent(path).join(format!("{}.lock", basename(path)?));
-    match fs::symlink_metadata(&lock) {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || !matches!(metadata.len(), 0 | 16) =>
-        {
-            return Err(StorageError::Invalid(
-                "journal lock must be a regular non-symbolic file",
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-        Ok(_) => {}
-    }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(lock)?;
-    fs2::FileExt::try_lock_exclusive(&file)?;
-    if file.metadata()?.len() == 16 {
-        let mut magic = [0; 8];
-        file.read_exact(&mut magic)?;
-        if &magic != LOCK_MAGIC {
-            return Err(StorageError::Invalid(
-                "unrecognized journal generation lock",
-            ));
-        }
-    }
-    Ok(file)
 }
 
 // Generation survives clearing the slot so a byte-identical checkpoint from a
@@ -272,6 +275,226 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_lock_success_and_validation_error_release_inherited_descriptions() {
+        let dir = Temp::new();
+        let path = dir.0.join("untitled.hex-journal");
+        let project = Project::new(48_000).expect("project");
+        Journal::open(path.clone())
+            .expect("open")
+            .checkpoint(&project)
+            .expect("checkpoint");
+        let checkpoint = fs::read(&path).expect("checkpoint bytes");
+        let lock_path = dir.0.join("untitled.hex-journal.lock");
+        let valid_lock = fs::read(&lock_path).expect("generation");
+        let mut inherited = None;
+        let owner = slot_lock::acquire_with(
+            &path,
+            |file| {
+                inherited = Some(file.try_clone()?);
+                Ok(())
+            },
+            SlotLock::unlock,
+        )
+        .expect("acquired owner");
+        assert!(
+            matches!(lock_slot(&path), Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        owner
+            .finish_with(&path, JournalChange::Unchanged, Ok(()), SlotLock::unlock)
+            .expect("checked release");
+        lock_slot(&path)
+            .expect("reacquire while duplicate lives")
+            .finish_with(&path, JournalChange::Unchanged, Ok(()), SlotLock::unlock)
+            .expect("release second owner");
+        assert!(inherited.is_some());
+        assert_eq!(fs::read(&path).expect("unchanged checkpoint"), checkpoint);
+        assert_eq!(
+            fs::read(&lock_path).expect("unchanged generation"),
+            valid_lock
+        );
+        drop(inherited.take());
+
+        fs::write(&lock_path, b"external sixteen").expect("foreign magic");
+        let result = slot_lock::acquire_with(
+            &path,
+            |file| {
+                inherited = Some(file.try_clone()?);
+                Ok(())
+            },
+            SlotLock::unlock,
+        );
+        assert!(matches!(
+            result,
+            Err(StorageError::Invalid(
+                "unrecognized journal generation lock"
+            ))
+        ));
+        assert_eq!(
+            fs::read(&lock_path).expect("foreign preserved"),
+            b"external sixteen"
+        );
+        assert!(inherited.is_some());
+        fs::write(&lock_path, &valid_lock).expect("restore own fixture");
+        lock_slot(&path)
+            .expect("validation error released despite duplicate")
+            .finish_with(&path, JournalChange::Unchanged, Ok(()), SlotLock::unlock)
+            .expect("release");
+        assert_eq!(fs::read(&path).expect("checkpoint preserved"), checkpoint);
+        drop(inherited);
+    }
+
+    fn injected_release_failure(_: &File) -> io::Result<()> {
+        Err(io::Error::other("injected unlock failure"))
+    }
+
+    fn assert_release_error(
+        error: StorageError,
+        path: &Path,
+        change: JournalChange,
+        original: bool,
+    ) {
+        let display = error.to_string();
+        assert!(display.contains("journal lock release failed"));
+        assert!(std::error::Error::source(&error).is_some());
+        match error {
+            StorageError::JournalLockRelease {
+                path: actual,
+                change: actual_change,
+                operation_error,
+                source,
+            } => {
+                assert_eq!(actual, path);
+                assert_eq!(actual_change, change);
+                assert_eq!(operation_error.is_some(), original);
+                assert_eq!(source.to_string(), "injected unlock failure");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn unlock_failure_reports_actual_state_and_preserves_original_errors() {
+        let dir = Temp::new();
+        let path = dir.0.join("untitled.hex-journal");
+        let first = Project::new(48_000).expect("first");
+        let second = Project::new(44_100).expect("second");
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal.checkpoint(&first).expect("initial");
+        let before = fs::read(&path).expect("checkpoint");
+        let error = journal
+            .checkpoint_with_release(
+                &second,
+                false,
+                || Err(io::Error::other("original prepublication failure")),
+                replacement::sync_parent,
+                injected_release_failure,
+            )
+            .expect_err("release error");
+        if let StorageError::JournalLockRelease {
+            operation_error: Some(original),
+            ..
+        } = &error
+        {
+            assert_eq!(
+                original.to_string(),
+                "project file error: original prepublication failure"
+            );
+        } else {
+            panic!("original error missing");
+        }
+        assert_release_error(error, &path, JournalChange::Unchanged, true);
+        assert_eq!(fs::read(&path).expect("old checkpoint preserved"), before);
+
+        let error = journal
+            .checkpoint_with_release(
+                &second,
+                false,
+                || Ok(()),
+                replacement::sync_parent,
+                injected_release_failure,
+            )
+            .expect_err("published release error");
+        assert_release_error(error, &path, JournalChange::CheckpointPublished, false);
+        assert_eq!(load_journal(&path).expect("published state"), second);
+        assert_eq!(journal.bytes, Some(fs::read(&path).expect("adopted bytes")));
+
+        let error = journal
+            .checkpoint_with_release(
+                &first,
+                false,
+                || Ok(()),
+                |_| Err(io::Error::other("original directory sync failure")),
+                injected_release_failure,
+            )
+            .expect_err("both errors");
+        if let StorageError::JournalLockRelease {
+            operation_error: Some(original),
+            ..
+        } = &error
+        {
+            assert!(matches!(
+                original.as_ref(),
+                StorageError::PublishedButNotDurable { .. }
+            ));
+        } else {
+            panic!("original sync error missing");
+        }
+        assert_release_error(error, &path, JournalChange::CheckpointPublished, true);
+        assert_eq!(
+            load_journal(&path).expect("published despite cleanup"),
+            first
+        );
+
+        let error = journal
+            .clear_with_release(injected_release_failure)
+            .expect_err("cleared release error");
+        assert_release_error(error, &path, JournalChange::CheckpointCleared, false);
+        assert!(journal.bytes.is_none());
+        assert!(!path.exists());
+        assert!(dir.0.join("untitled.hex-journal.lock").exists());
+        let mut fresh = Journal::open(path.clone()).expect("new owner");
+        fresh
+            .checkpoint_latest(&first)
+            .expect("recreated same content");
+        let recreated = fs::read(&path).expect("new generation");
+        assert!(matches!(
+            journal.clear(),
+            Err(StorageError::Conflict { .. })
+        ));
+        assert_eq!(
+            fs::read(&path).expect("retry preserved new owner"),
+            recreated
+        );
+
+        let lock_path = dir.0.join("untitled.hex-journal.lock");
+        fs::write(&lock_path, b"external sixteen").expect("foreign lock");
+        let result = slot_lock::acquire_with(&path, |_| Ok(()), injected_release_failure);
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("invalid magic accepted"),
+        };
+        if let StorageError::JournalLockRelease {
+            operation_error: Some(original),
+            ..
+        } = &error
+        {
+            assert!(matches!(
+                original.as_ref(),
+                StorageError::Invalid("unrecognized journal generation lock")
+            ));
+        } else {
+            panic!("validation error missing");
+        }
+        assert_release_error(error, &path, JournalChange::Unchanged, true);
+        assert_eq!(
+            fs::read(&lock_path).expect("foreign remains"),
+            b"external sixteen"
+        );
+        assert_eq!(fs::read(&path).expect("checkpoint remains"), recreated);
     }
 
     #[test]
