@@ -90,6 +90,15 @@ caret/selection and inset background without a continuous accent outline;
 invalid input keeps its existing red error outline. The one-pixel transparent
 root border preserves the prior layout inset.
 
+Numeric, toggle, selector and response-graph controls can opt into rendered-order
+Tab traversal with `set_tab_navigation`. Participation defaults off and excludes
+disabled controls (or noneditable graphs), including when availability changes
+after opting in. Owners finalize pending drafts and choose traversal boundaries.
+Editable graphs using this mode leave Tab/Shift-Tab
+to their owner and use Ctrl-Tab/Ctrl-Shift-Tab to cycle nodes; their existing arrow
+editing remains unchanged. Focused participating graphs use the shared corner
+marks without altering graph geometry.
+
 All knob densities use one normalized rail renderer with explicit `DialLayout`
 semantics. `ReadoutGap` opens at lower right; `BottomGap` opens at the bottom;
 `Pan` uses a bottom opening, a center-up neutral needle and a reset triangle.
