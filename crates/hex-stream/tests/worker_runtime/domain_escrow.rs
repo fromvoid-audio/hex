@@ -87,7 +87,9 @@ fn separate_actual_catalogs_with_identical_source_keys_are_not_shared_or_underch
             .same_catalog(second_endpoint.catalog())
     );
     let expected = first_endpoint.retained_data_bytes().unwrap()
-        + second_endpoint.retained_data_bytes().unwrap();
+        + second_endpoint.retained_data_bytes().unwrap()
+        // Each actual endpoint has its own control-allocated readiness box.
+        + 2 * std::mem::size_of::<hex_stream::PageReadiness>();
     let inputs = vec![
         MediaDomainInput {
             id: DomainId::new(1).unwrap(),
