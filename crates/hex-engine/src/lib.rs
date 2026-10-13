@@ -700,7 +700,7 @@ impl Track {
         self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
         self.instrument_output_gain =
             instrument.map_or(1.0, |device| device.state().output_gain_linear());
-        if instrument.is_some() {
+        if self.instrument_output_gain != 1.0 {
             self.source_mix = PreparedTrackMix {
                 channel_gain: [1.0; 2],
                 effects: None,
@@ -804,7 +804,7 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        self.instrument_id.is_some()
+        (self.instrument_id.is_some() && self.instrument_output_gain != 1.0)
             || self.mutable_instrument
             || self.has_device_chain()
             || (self.has_ordered_instrument()
@@ -883,26 +883,6 @@ impl Track {
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.clips.iter().any(Clip::is_streamed) {
             return Err(Invalid("streamed clips require a media page provider"));
-        }
-        if self.instrument_id.is_some() && self.device_chain.is_empty() {
-            let length =
-                u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
-            start_frame
-                .checked_add(length)
-                .ok_or(Invalid("render range overflow"))?;
-            let mut offset = 0;
-            for destination in output.chunks_mut(256) {
-                let mut scratch = [[0.0; 2]; 256];
-                let frames = &mut scratch[..destination.len()];
-                let start = start_frame + offset;
-                self.render_unmuted_range(start, start + frames.len() as u64, frames, None);
-                self.apply_instrument_output_gain(frames);
-                for (destination, source) in destination.iter_mut().zip(frames.iter()) {
-                    self.mix.add_frame(destination, *source);
-                }
-                offset += frames.len() as u64;
-            }
-            return Ok(());
         }
         self.render_additive_with_midi_floor(start_frame, output, None)
     }

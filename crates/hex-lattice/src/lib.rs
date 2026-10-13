@@ -639,7 +639,7 @@ impl NativeRuntimeChain {
                 }
                 let configuration_matches = match (&candidate.configuration, &old.configuration) {
                     (Some(candidate), Some(old)) => {
-                        std::sync::Arc::ptr_eq(candidate, old) || candidate == old
+                        std::sync::Arc::ptr_eq(candidate, old) || candidate.processing_eq(old)
                     }
                     _ => false,
                 };

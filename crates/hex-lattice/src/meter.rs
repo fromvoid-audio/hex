@@ -14,6 +14,24 @@ impl DeviceMeter {
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.output, frames);
     }
+    /// Recover a device tap from an analytic source's already mixed lanes.
+    /// Unity lanes are exact; fader normalization carries f32 rounding only.
+    /// Muted/zero-gain lanes contribute no measured signal.
+    pub fn observe_mixed(&self, frames: &[[f32; 2]], gains: [f32; 2], input: bool) {
+        let mut peak = 0.0_f32;
+        for frame in frames {
+            for channel in 0..2 {
+                if gains[channel] > 0.0 {
+                    let value = (frame[channel] / gains[channel]).abs();
+                    if value.is_finite() {
+                        peak = peak.max(value);
+                    }
+                }
+            }
+        }
+        let target = if input { &self.input } else { &self.output };
+        target.fetch_max(peak.to_bits(), Relaxed);
+    }
     fn observe(peak: &AtomicU32, frames: &[[f32; 2]]) {
         let value = frames.iter().flatten().fold(0.0_f32, |peak, sample| {
             if sample.is_finite() {

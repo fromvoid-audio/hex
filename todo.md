@@ -2433,3 +2433,14 @@ Architecture, GPUI patch, UI style and formatting guards pass. Full local CI
 is the remaining merge gate; native macOS click-through remains pending. Pulse issue intake is blocked: create_ticket
 requires request_id, which the exposed tool schema does not support. This entry
 records implementation evidence and does not replace Pulse planning authority.
+
+13 October 2026 — manual native device gain staging: source implements paired
+input/output sample-peak strips at every device host's right edge, manual output
+trim via shared numeric gestures, held peak hover values and schema-18 persisted
+host gain. Focused tests cover serial boundaries, transients, bypass, legacy
+unity migration, invalid gain refusal, undo and native instrument PCM/voice
+identity. Automatic matching/toggle/focus-loss/lock remains deferred. Native
+Mac visual/drag/hover/slow-attack/listening/save-reopen acceptance remains user-owned.
+Pulse issue intake is currently blocked: the live create_ticket endpoint requires
+request_id but the installed connector does not transmit that field. No ticket
+creation is claimed; the focused PR and this dated evidence retain source scope.
