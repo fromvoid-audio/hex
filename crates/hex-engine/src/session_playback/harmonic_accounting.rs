@@ -235,3 +235,6 @@ fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
     assert!(legacy_proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
+
+// Disconnected private planner and concrete proposed layouts, compiled only in tests.
+mod admission_proof;
