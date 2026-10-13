@@ -80,9 +80,13 @@ impl EditorView {
     }
 
     fn begin_open(&mut self, path: std::path::PathBuf) {
+        self.begin_open_request(Request::Open(path));
+    }
+
+    pub(super) fn begin_open_request(&mut self, request: Request) {
         self.pending_open_path = None;
         self.cancel_duplicate_chain();
-        if self.enqueue(Request::Open(path)) {
+        if self.enqueue(request) {
             self.opening_project = true;
             self.pending_audio_commands.clear();
             self.pending_seek_ticket = None;

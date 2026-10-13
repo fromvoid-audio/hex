@@ -4,6 +4,99 @@ use hex_project::{Command, Created};
 use hex_session::Session;
 
 #[test]
+fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
+    let mut session = Session::new(48_000, 64, 0).unwrap();
+    let (Created::Track(track), graph) = session
+        .command_prepared_revision(Command::AddMidiTrack { name: "lfo".into() }, None)
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let original = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let (_, mut graph) = session
+        .command_prepared_revision(
+            Command::ReplaceDeviceState {
+                device,
+                state: original.clone(),
+            },
+            Some(&graph),
+        )
+        .unwrap();
+    for (id, value) in [
+        (82, ParameterValue::Bool(true)),
+        (83, ParameterValue::Choice(4)),
+        (84, ParameterValue::Bool(true)),
+        (85, ParameterValue::Float(0.01)),
+        (86, ParameterValue::Choice(0)),
+        (87, ParameterValue::Float(100.0)),
+        (88, ParameterValue::Bool(false)),
+        (89, ParameterValue::Bool(false)),
+    ] {
+        let before = session.project().device(device).unwrap().state().clone();
+        graph = session
+            .commit_device_parameter(device, ParameterId::from_static(id), value, Some(&graph))
+            .unwrap();
+        let changed = session.project().device(device).unwrap().state().clone();
+        assert_ne!(before, changed);
+        let undone = session
+            .undo_prepared_revision(Some(&graph))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &before);
+        graph = session
+            .redo_prepared_revision(Some(&undone))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &changed);
+    }
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    let loaded = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(loaded, *session.project());
+    let (Created::Clip(clip), next) = session
+        .command_prepared_revision(
+            Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(4).unwrap(),
+            },
+            Some(&graph),
+        )
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    graph = next;
+    let before = session.project().clone();
+    assert!(
+        session
+            .command_prepared_revision(
+                Command::AddMidiNote {
+                    clip,
+                    start: hex_project::BeatTime::ZERO,
+                    duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+                    pitch: 127,
+                    channel: 0,
+                    velocity: 127
+                },
+                Some(&graph)
+            )
+            .is_err()
+    );
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
 fn fixed_tuning_history_and_invalid_effective_frequency_are_atomic() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), _) = session
@@ -194,7 +287,7 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.payload().len(), 320);
+    assert_eq!(selected.payload().len(), 364);
     assert_eq!(&selected.payload()[288..], &original.payload()[288..]);
     let undone = session
         .undo_prepared_revision(Some(&changed))

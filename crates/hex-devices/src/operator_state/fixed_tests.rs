@@ -108,7 +108,7 @@ fn version_four_migration_preserves_exact_prefix_and_defaults_feedback_neutral()
     .expect("version four state");
     let migrated = OPERATOR_METADATA.migrate_state(&v4).expect("migration");
     assert_eq!(v4.payload().len(), 304);
-    assert_eq!(migrated.payload().len(), 320);
+    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
     assert_eq!(&migrated.payload()[..304], v4.payload());
     assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
     for operator in 1..=4 {

@@ -16,6 +16,10 @@ pub struct ControlStyle {
     pub text: u32,
     pub muted: u32,
     pub accent: u32,
+    /// Neutral selected-control corner color, supplied by the application.
+    pub focus_marker: u32,
+    /// Full unfilled knob rail color, independent of the parameter value fill.
+    pub dial_rail: u32,
     pub hover: u32,
     pub font_size: f32,
 }
