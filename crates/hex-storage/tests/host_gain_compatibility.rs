@@ -283,3 +283,47 @@ fn combined22_track_and_gain_point_budget_refuses_before_canonical_adoption() {
     ]);
     assert!(decode(&serde_json::to_vec(&bad).unwrap()).is_err());
 }
+#[test]
+fn explicit20_refuses_nonunity_without_automation_and_keeps_unity_feeds() {
+    for gain in [0, -9500] {
+        let mut snapshot = fixture(gain).snapshot();
+        snapshot.tracks[0].gain_envelope.clear();
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+        let mut buses = Vec::new();
+        for _ in 0..2 {
+            let Created::ReturnTrack(bus) = editor
+                .execute(Command::AddReturnTrack {
+                    name: "return".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return")
+            };
+            buses.push(bus);
+        }
+        editor
+            .execute(Command::SetReturnFeed {
+                source: buses[0],
+                destination: buses[1],
+                gain: 0.5,
+            })
+            .unwrap();
+        let project = editor.project();
+        assert!(!project.has_gain_automation());
+        let encoded = encode(project).unwrap();
+        assert_eq!(decode(&encoded).unwrap(), *project);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&encoded).unwrap()["version"],
+            if gain == 0 { 20 } else { 22 }
+        );
+        let older = encode_schema20(project);
+        if gain == 0 {
+            assert_eq!(older.unwrap(), encoded);
+        } else {
+            assert_eq!(
+                older.unwrap_err().to_string(),
+                "older schema cannot save host gain"
+            );
+        }
+    }
+}
