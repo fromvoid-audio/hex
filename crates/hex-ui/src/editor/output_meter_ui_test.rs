@@ -33,7 +33,7 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
     let status = Status::default();
     status.playing.store(true, Relaxed);
     for (left, right, text, height, above) in [
-        (0.0, 0.000_001, "last l -inf r <-60 dbfs", 0.0, false),
+        (0.0, 0.000_001_f32, "last l -inf r <-60 dbfs", 0.0, false),
         (0.1, 1.0, "last l -20.0 r 0.0 dbfs", 16.0 * 2.0 / 3.0, false),
         (2.0, 0.5, "last l +6.0! r -6.0 dbfs", 16.0, true),
         (0.0, 0.0, "last l -inf r -inf dbfs", 0.0, false),

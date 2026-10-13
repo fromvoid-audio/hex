@@ -69,6 +69,7 @@ fn exercise(
             project: Arc::new(model.project().clone()),
             waveforms: Default::default(),
             midi_preview: old.midi_preview.clone(),
+            gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
             can_undo: false,
             can_redo: false,
