@@ -1014,7 +1014,6 @@ pub(super) fn lfo_summary(
         .bg(rgb(RAIL_BACKGROUND))
         .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
-        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(2.0));
