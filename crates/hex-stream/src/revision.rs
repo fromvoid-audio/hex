@@ -140,6 +140,9 @@ impl VerifiedOwnedStreamRevision {
     pub fn matches_playback(&self, playback: &hex_engine::playback::Playback) -> bool {
         playback.same_prepared_owner(&self.revision)
     }
+    pub fn matches_claims(&self, claims: &hex_engine::storage_report::PlaybackClaims) -> bool {
+        claims.same_prepared_owner(&self.revision)
+    }
     pub fn same_catalog(&self, other: &Self) -> bool {
         self.catalog.same_catalog(&other.catalog)
     }

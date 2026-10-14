@@ -10988,7 +10988,12 @@ fn owned_runtime_report_covers_tail_slots_ledgers_and_unique_chain_locations() {
     let locations: Vec<_> = sink
         .items
         .iter()
-        .filter(|item| item.location.component == "chain.dsp_twins")
+        .filter(|item| {
+            matches!(
+                item.location.component,
+                "chain.dsp_twins" | "chain.empty_entries"
+            )
+        })
         .map(|item| item.location.indices)
         .collect();
     assert!(!locations.is_empty());

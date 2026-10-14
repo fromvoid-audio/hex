@@ -236,6 +236,15 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         chain: &hex_lattice::NativeRuntimeChain,
         indices: [usize; 2],
     ) -> Result<(), StorageReportError> {
+        if let Some(storage) = chain.empty_control_storage() {
+            return self.data(
+                StorageOwner::Exclusive,
+                "chain.empty_entries",
+                indices,
+                storage.capacity,
+                storage.element_bytes,
+            );
+        }
         let bytes = chain
             .declared_runtime_bytes()
             .checked_mul(2)

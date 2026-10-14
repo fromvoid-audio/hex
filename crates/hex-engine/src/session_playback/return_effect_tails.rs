@@ -491,10 +491,10 @@ mod storage_tests {
             });
         }
         let capacity = bank.slots.capacity();
-        let mut sink = Sink::new(5);
+        let mut sink = Sink::new(3);
         let mut report = Report::new(&mut sink);
         bank.visit_owned_storage(&mut report).unwrap();
-        assert!(report.finish().require_complete().is_err());
+        assert!(report.finish().require_complete().is_ok()); // This isolated bank contains empty chains only.
         let stride = std::mem::size_of::<Option<ReturnEffectTail>>();
         assert_eq!(
             sink.measured("session.return_tail_slots", [0; 2]),
@@ -503,12 +503,12 @@ mod storage_tests {
         let locations: Vec<_> = sink
             .items
             .iter()
-            .filter(|item| item.location.component == "chain.dsp_twins")
+            .filter(|item| item.location.component == "chain.empty_entries")
             .map(|item| item.location.indices)
             .collect();
         assert_eq!(locations, [[3, 0], [3, 2]]);
-        assert_eq!(sink.items.len(), 5); // Bank header and inline scratch already parent-owned.
-        for limit in 0..5 {
+        assert_eq!(sink.items.len(), 3); // Bank header and inline scratch already parent-owned.
+        for limit in 0..3 {
             let mut sink = Sink::new(limit);
             assert_eq!(
                 bank.visit_owned_storage(&mut Report::new(&mut sink)),

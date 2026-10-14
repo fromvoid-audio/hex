@@ -127,6 +127,14 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn control_storage_declaration(&self) -> hex_lattice::PreparedStorageDeclaration {
+        // Exhaustive owned field: sample_rate. SHARED_SINE_TABLE is static
+        // inline program storage (no heap backing), not a provider-owned Arc.
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
+    }
+
     fn prepare_live_note(
         &self,
         pitch: u8,
@@ -384,5 +392,33 @@ mod tests {
                 assert_eq!(note.sample(age, gate), [expected, expected]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_storage_tests {
+    use super::*;
+    #[test]
+    fn sine_entire_exclusive_provider_and_static_table_have_no_nested_heap() {
+        let provider = PreparedSineInstrument {
+            sample_rate: 48_000,
+        };
+        assert_eq!(
+            provider.control_storage_declaration(),
+            hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                bytes: std::mem::size_of::<PreparedSineInstrument>()
+            }
+        );
+        assert_eq!(
+            std::mem::size_of::<PreparedSineInstrument>(),
+            std::mem::size_of::<u32>()
+        );
+        let table = shared_sine_table();
+        assert_eq!(
+            std::mem::size_of::<SineTable>(),
+            (TABLE_SIZE + 1) * std::mem::size_of::<f32>()
+        );
+        assert!(std::ptr::eq(table, shared_sine_table()));
+        assert!(provider.prepare_note(60, 100).is_ok());
     }
 }

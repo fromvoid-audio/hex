@@ -318,3 +318,52 @@ wrappers remain supported. The native typed bridge remains gated: root/caller
 reservations, borrowed staging integration, old/new/tail receipt union, opted-in
 resident/empty-catalog domain lifecycle and preroll are still unfinished. No
 cap/default/publication policy changes or native100-track claims are made.
+
+## caller-reserved anchored claims (control only)
+
+`ClaimReservation` supplies bounded item/anchor counts and existing caller
+prepared/construction byte reservations; it is not a new project, track or
+process limit. `PlaybackClaims::try_prepare_on_control` borrows the runtime
+exclusively while its original Box remains retained. It fallibly reserves
+persistent items/anchors and temporary visitor scratch, records actual returned
+capacities (including reclaimed partial reserves), and checks arithmetic and
+reservation overlap. Container reservations may allocate before their returned
+capacities can be checked; this is not a physical allocator peak cap.
+
+Complete admission refuses every Unknown independently of sink behavior. No
+retirement Unknown is waived. API refusal returns the identical original Box
+and reports observed scratch/container capacities and the separate control
+error carrier. Process-fatal allocation OOM/abort is excluded. The inline claim
+header is identified and included once; caller parent declarations must exclude
+that overlap. Other caller retained/construction declarations must be disjoint.
+
+Persistent shared claims hold actual typed strong owners, not borrowed addresses
+or content keys. Allocation plus charge location plus equal charge deduplicates
+within a root and across a control-only old/new union; exclusive charges belong
+to each retained Playback Box. Constructor declarations do not infer external
+alias or Weak retirement. Unsupported anchor families refuse. All capture,
+traversal, cloning and reclamation in this unit occur on control.
+
+`PublicationClaims` is only an owning control pair with the actual typed graph/
+catalog verifier. Mismatch returns both owners. It cannot publish, render, mark
+pages installed, or produce an ACK. No default production path uses it. Native
+old/new/tail retirement producers and bounded lifecycle union slots remain to
+be wired: there is deliberately no automatic claim-release operation. ACK or
+predecessor Box return cannot retire charges. Conservative retention keeps the
+entire predecessor set through the last inherited effect/mutable/typing tail
+and retained/retiring context; Busy/panic/missing/incomplete receipts must keep
+that set in existing custody. The anchor test demonstrates retained allocation
+and unchanged whole charges across actual alias returns; it is not proof of the
+unimplemented native transition producer.
+
+The narrow lattice `PreparedStorageDeclaration` defaults to Unknown. Audited
+`ExclusiveOnly` covers the provider pointee and all exclusively owned nested
+heap, never shared/Weak/opaque owners or runtime twins. Built-in sine owns only
+sample_rate; its shared lookup table is a static inline OnceLock/fixed array,
+not a hidden heap allocation. Its prepared-provider report remains separate
+from graph/runtime completeness. FM4/operator/external/mutable/shared-context
+providers remain Unknown. Empty runtime chains report actual entry capacity
+and private element size only when entries are actually empty; nonempty
+zero-DSP chains still refuse opaque owner completeness. Existing numeric bank,
+context, runtime, stream and N2 domain policies are unchanged. Root publication,
+retirement receipt wiring, preroll and full native acceptance remain incomplete.

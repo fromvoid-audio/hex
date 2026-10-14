@@ -50,7 +50,8 @@ mod live_note;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
     NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
+    SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_runtime::{
     InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentClock,
@@ -276,7 +277,30 @@ pub struct NativeRuntimeChain {
     declared_runtime_bytes: usize,
 }
 
+/// Actual empty-chain backing capacity. The inline chain header belongs to its
+/// containing owner; no entry/provider/configuration/meter owner exists here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmptyChainStorage {
+    pub capacity: usize,
+    pub element_bytes: usize,
+    pub bytes: usize,
+}
+
 impl NativeRuntimeChain {
+    /// Control-only. A zero DSP declaration alone never proves emptiness.
+    /// An overflow or any actual entry refuses this narrow report.
+    pub fn empty_control_storage(&self) -> Option<EmptyChainStorage> {
+        if !self.entries.is_empty() {
+            return None;
+        }
+        let capacity = self.entries.capacity();
+        let element_bytes = std::mem::size_of::<RuntimeEntry>();
+        Some(EmptyChainStorage {
+            capacity,
+            element_bytes,
+            bytes: capacity.checked_mul(element_bytes)?,
+        })
+    }
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),
@@ -2265,5 +2289,36 @@ mod tests {
         active_reference.commit_block();
 
         assert_eq!(resumed_bypassed, resumed_reference);
+    }
+}
+
+#[cfg(test)]
+mod empty_control_storage_tests {
+    use super::*;
+    #[test]
+    fn empty_capacity_report_and_nonempty_zero_dsp_negative_control() {
+        let mut chain = NativeRuntimeChain::empty();
+        chain.entries.reserve_exact(9);
+        let storage = chain.empty_control_storage().unwrap();
+        assert_eq!(storage.capacity, chain.entries.capacity());
+        assert_eq!(storage.element_bytes, std::mem::size_of::<RuntimeEntry>());
+        assert_eq!(
+            storage.bytes,
+            chain.entries.capacity() * std::mem::size_of::<RuntimeEntry>()
+        );
+        let chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: std::sync::Arc::new(DeviceMeter::default()),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 2,
+            device_type: DeviceTypeId::from_static("fixture.stateless"),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: None,
+        }])
+        .unwrap();
+        assert_eq!(chain.declared_runtime_bytes(), 0);
+        assert!(chain.empty_control_storage().is_none());
     }
 }

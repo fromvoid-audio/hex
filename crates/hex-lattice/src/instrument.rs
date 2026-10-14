@@ -154,10 +154,41 @@ impl PreparedAnalyticNote {
     }
 }
 
+/// Control-side declaration of the entire exclusively owned provider pointee
+/// and nested heap payload. This is not allocator/RSS measurement or a DSP
+/// runtime declaration. Shared, Weak, or opaque children require Unknown.
+/// Static program storage is outside graph ownership and must be documented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedStorageDeclaration {
+    Unknown,
+    ExclusiveOnly { bytes: usize },
+}
+
 /// Immutable sample-rate-specific instrument configuration prepared on the
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
+    /// Default refusal: a small trait-object pointee does not prove that its
+    /// internal allocations or shared/Weak children have been accounted for.
+    /// Call only on control; never during rendering or callback handoff.
+    /// A provider owning shared/nested state defaults to Unknown:
+    /// ```
+    /// use hex_lattice::{PreparedNativeInstrument, PreparedAnalyticNote, PreparedStorageDeclaration};
+    /// struct Shared(std::sync::Arc<Vec<u8>>);
+    /// impl PreparedNativeInstrument for Shared {
+    ///     fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
+    ///         let _ = self.0.len();
+    ///         Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)
+    ///     }
+    /// }
+    /// let provider = Shared(std::sync::Arc::new(vec![1; 1024]));
+    /// assert_eq!(provider.control_storage_declaration(), PreparedStorageDeclaration::Unknown);
+    /// // ExclusiveOnly must never be inferred from size_of_val(&provider).
+    /// ```
+    fn control_storage_declaration(&self) -> PreparedStorageDeclaration {
+        PreparedStorageDeclaration::Unknown
+    }
+
     fn prepare_live_note(
         &self,
         _pitch: u8,

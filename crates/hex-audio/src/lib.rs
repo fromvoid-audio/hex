@@ -1,5 +1,6 @@
 mod device;
 mod native_callback_owner;
+pub mod publication_claims;
 mod render_fault;
 pub mod stream_preparation;
 pub use device::PreparedOutput;

@@ -2,7 +2,9 @@
 //! Container capacities and provider declarations are separate. Unknown owner
 //! costs prevent complete admission; no Arc-header guess is supplied here.
 use std::{any::Any, fmt, sync::Arc};
+mod claims;
 mod graph;
+pub use claims::{ClaimCapacityReport, ClaimError, ClaimRefusal, ClaimReservation, PlaybackClaims};
 #[cfg(test)]
 pub(crate) mod owned_tests;
 #[cfg(test)]
@@ -217,4 +219,29 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
     pub(crate) fn finish(self) -> PlaybackStorageSummary {
         self.summary
     }
+}
+
+/// Report an exclusively owned prepared-provider payload on control. The caller
+/// charges the containing Box handle once; declarations include the pointee.
+/// This never proves runtime-twin, shared, Weak or retirement completeness.
+pub fn visit_prepared_instrument_storage_on_control<'a>(
+    provider: &'a dyn hex_lattice::PreparedNativeInstrument,
+    sink: &mut impl PlaybackStorageVisitor<'a>,
+) -> Result<PlaybackStorageSummary, StorageReportError> {
+    let mut report = Report::new(sink);
+    let charge = match provider.control_storage_declaration() {
+        hex_lattice::PreparedStorageDeclaration::Unknown => {
+            StorageCharge::Unknown(UnknownStorageReason::OpaqueProvider)
+        }
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly { bytes } => {
+            StorageCharge::ProviderDeclared { bytes }
+        }
+    };
+    report.item(
+        StorageOwner::Exclusive,
+        "prepared_instrument.exclusive_payload",
+        [0; 2],
+        charge,
+    )?;
+    Ok(report.finish())
 }

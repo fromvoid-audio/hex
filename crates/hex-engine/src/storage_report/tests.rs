@@ -235,12 +235,46 @@ fn unknown_summary_cannot_be_hidden_by_a_sink_and_visits_clone_no_root() {
     drop(extra);
 }
 #[test]
-fn opaque_chain_defaults_unknown_even_when_declared_payload_is_zero() {
+fn empty_chain_reports_actual_owned_backing_without_opaque_entries() {
     let mut sink = Sink::new(256);
     let mut report = Report::new(&mut sink);
     report
         .chain(&hex_lattice::NativeRuntimeChain::empty(), [0; 2])
         .unwrap();
+    assert!(report.finish().require_complete().is_ok());
+    assert!(
+        sink.items()
+            .any(|i| i.location.component == "chain.empty_entries"
+                && matches!(
+                    i.charge,
+                    StorageCharge::MeasuredData {
+                        capacity: 0,
+                        bytes: 0,
+                        ..
+                    }
+                ))
+    );
+}
+
+#[test]
+fn nonempty_zero_dsp_chain_still_refuses_opaque_owner_completeness() {
+    let chain =
+        hex_lattice::NativeRuntimeChain::new(vec![hex_lattice::PreparedProcessorInstance {
+            meter: Arc::new(hex_lattice::DeviceMeter::default()),
+            owner: hex_lattice::ProcessorChainOwner::Track(1),
+            device_id: 2,
+            device_type: hex_lattice_contract::DeviceTypeId::from_static("fixture.stateless"),
+            matrix: hex_lattice::StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: None,
+        }])
+        .unwrap();
+    assert_eq!(chain.declared_runtime_bytes(), 0);
+    let mut sink = Sink::new(4);
+    let mut report = Report::new(&mut sink);
+    report.chain(&chain, [0; 2]).unwrap();
     assert!(report.finish().require_complete().is_err());
     assert!(
         sink.items()
