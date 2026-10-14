@@ -1752,6 +1752,23 @@ impl Callback {
             self.status.consumed_command.store(ticket, Release);
         }
     }
+    /// Native unwind quarantine: fixed telemetry only. Do not touch a possibly
+    /// partially staged/retired graph, publish ACKs, or invoke provider Stop.
+    pub(crate) fn latch_native_unwind(&mut self) {
+        self.closing.store(true, Release);
+        self.status.device_fault.store(true, Release);
+        if !self.status.render_fault.load(Acquire) {
+            self.status.render_fault_record.publish(
+                "audio callback panicked; native owner quarantined",
+                self.status.applied_revision.load(Relaxed),
+                self.status.position.load(Relaxed),
+            );
+            self.status.render_fault.store(true, Release);
+        }
+        self.status.playing.store(false, Relaxed);
+        self.status.buffering.store(false, Relaxed);
+    }
+
     /// Latch the first actual render cause before Stop changes the cursor.
     /// None denotes nonfinite output after successful rendering.
     /// Native adapters call this on the callback; no formatting, I/O or ownership drops.

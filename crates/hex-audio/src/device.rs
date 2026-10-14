@@ -2,10 +2,14 @@
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };
-use crate::{lifecycle, prepared};
+use crate::{
+    lifecycle,
+    native_callback_owner::{self, Guard, NativeCallbackOwner},
+    prepared,
+};
 use cpal::{
     FromSample, Sample, SizedSample,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, HostTrait},
 };
 use hex_engine::Frame;
 use std::{
@@ -118,47 +122,32 @@ impl PreparedOutput {
             }
         };
         let status = control.status.clone();
+        let (guard, terminal) =
+            native_callback_owner::reserve(Box::new(NativeCallbackOwner::new(callback)));
+        let mut stream_owner = lifecycle::StreamOwner::prepared_custody(
+            lease,
+            spectrum_reaper,
+            stream_root.clone(),
+            terminal,
+        );
+        stream_owner.expose_prepared_backend();
         let stream = if sample_format == cpal::SampleFormat::F32 {
-            build::<f32>(&device, &config, callback, status).map_err(|error| error.to_string())
+            build::<f32>(&device, &config, guard, status)
         } else if sample_format == cpal::SampleFormat::I16 {
-            build::<i16>(&device, &config, callback, status).map_err(|error| error.to_string())
-        } else if sample_format == cpal::SampleFormat::U16 {
-            build::<u16>(&device, &config, callback, status).map_err(|error| error.to_string())
+            build::<i16>(&device, &config, guard, status)
         } else {
-            Err(format!("unsupported output format: {sample_format:?}"))
-        };
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(error) => {
-                drop(control);
-                if let Some(root) = stream_root.as_ref() {
-                    let _phase = root.tick(true);
-                }
-                if let Some(reaper) = spectrum_reaper {
-                    let _ = reaper.shutdown_and_join();
-                }
-                return Err(error);
-            }
-        };
-        if let Err(error) = stream.play() {
-            drop(lifecycle::StreamOwner::with_media(
-                stream,
-                lease,
-                spectrum_reaper,
-                stream_root,
-            ));
-            return Err(error.to_string());
+            build::<u16>(&device, &config, guard, status)
         }
+        .map_err(|error| error.to_string())?;
+        stream_owner.install_prepared_stream(stream);
+        stream_owner
+            .play_prepared_stream()
+            .map_err(|error| error.to_string())?;
         if let Some(root) = stream_root.as_ref() {
             lifecycle::register_stream_root(root.clone());
         }
         Ok(Self {
-            _stream: lifecycle::StreamOwner::with_media(
-                stream,
-                lease,
-                spectrum_reaper,
-                stream_root.clone(),
-            ),
+            _stream: stream_owner,
             stream_root,
             control,
             sample_rate: config.sample_rate,
@@ -184,11 +173,12 @@ impl PreparedOutput {
     /// Existing typing limits remain unchanged; caller charges actual exclusive
     /// bridge data rather than the resident bridge's smaller reservation.
     pub fn input_bridge_storage_bytes(&self) -> Option<usize> {
-        if let Some(root) = &self.stream_root {
-            root.input_bridge_storage_bytes()
+        let channel = if let Some(root) = &self.stream_root {
+            root.input_bridge_storage_bytes()?
         } else {
-            prepared::input_bridge_storage_bytes()
-        }
+            prepared::input_bridge_storage_bytes()?
+        };
+        channel.checked_add(native_callback_owner::additional_storage_bytes()?)
     }
     pub fn stream_pool_reports(
         &self,
@@ -232,7 +222,7 @@ fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), Stri
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut callback: prepared::Callback,
+    mut guard: Guard<NativeCallbackOwner>,
     status: Arc<prepared::Status>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
@@ -245,7 +235,14 @@ where
         config,
         move |data: &mut [T], _| {
             let start = Instant::now();
-            callback.begin_block();
+            if guard
+                .owner_mut()
+                .run(|callback| callback.begin_block())
+                .is_err()
+            {
+                data.fill(T::from_sample(0.0));
+                return;
+            }
             let mut block: [Frame; 256] = [[0.0; 2]; 256];
             let mut peaks = [0.0_f32; 2];
             let complete = data.len() / channels * channels;
@@ -253,13 +250,11 @@ where
             for chunk in data[..complete].chunks_mut(channels * block.len()) {
                 let frames = chunk.len() / channels;
                 let block_start_frame = status.position.load(Relaxed);
-                let rendered = callback.render(&mut block[..frames]);
-                finish_host_chunk(
-                    &mut callback,
+                render_guarded_chunk(
+                    &mut guard,
                     chunk,
                     &mut block[..frames],
                     channels,
-                    &rendered,
                     block_start_frame,
                     start,
                 );
@@ -283,6 +278,50 @@ where
         },
         None,
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHUNK_PANIC_AFTER_ACK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+fn render_guarded_chunk<T: SizedSample + FromSample<f32>>(
+    guard: &mut Guard<NativeCallbackOwner>,
+    output: &mut [T],
+    source: &mut [Frame],
+    channels: usize,
+    block_start_frame: u64,
+    start: Instant,
+) where
+    f32: FromSample<T>,
+{
+    let mut committed = false;
+    let attempt = guard.owner_mut().run(|callback| {
+        let rendered = callback.render(source);
+        #[cfg(test)]
+        if CHUNK_PANIC_AFTER_ACK.get() == Some(false) {
+            panic!("injected before host ACK");
+        }
+        finish_host_chunk(
+            callback,
+            output,
+            source,
+            channels,
+            &rendered,
+            block_start_frame,
+            start,
+        );
+        committed = true;
+        #[cfg(test)]
+        if CHUNK_PANIC_AFTER_ACK.get() == Some(true) {
+            panic!("injected after host ACK");
+        }
+    });
+    // Preserve an already committed chunk/receipt. No runtime clock rollback
+    // is promised for partial rendering before a pre-ACK unwind.
+    if attempt.is_err() && !committed {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
+    }
 }
 
 fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
@@ -376,7 +415,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::{CHUNK_PANIC_AFTER_ACK, render_guarded_chunk};
     use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};
+    use crate::native_callback_owner::{self, NativeCallbackOwner};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
     use hex_engine::{
@@ -384,6 +425,7 @@ mod tests {
         live_input::{PreparedTypingArm, TypingTarget},
         typing_protocol::{Action, Token},
     };
+    use std::sync::atomic::Ordering::Relaxed;
     use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
     #[test]
@@ -765,5 +807,70 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
+    }
+    #[test]
+    fn native_panic_before_or_after_ack_preserves_real_receipts_and_silences_later_chunks() {
+        for after_ack in [false, true] {
+            let (mut control, callback, target) = typing_callback();
+            let ticket = control
+                .typing_with_ticket(Action::On {
+                    owner: target.owner().unwrap(),
+                    token: Token {
+                        epoch: 1,
+                        serial: 1,
+                    },
+                    key: 0,
+                    pitch: 60,
+                    velocity: 100,
+                })
+                .unwrap();
+            let (mut guard, mut terminal) =
+                native_callback_owner::reserve(Box::new(NativeCallbackOwner::new(callback)));
+            assert!(
+                guard
+                    .owner_mut()
+                    .run(|callback| callback.begin_block())
+                    .is_ok()
+            );
+            let mut source = [[0.0; 2]; 256];
+            let mut output = [9.0_f32; 256];
+            CHUNK_PANIC_AFTER_ACK.set(Some(after_ack));
+            render_guarded_chunk(&mut guard, &mut output, &mut source, 1, 0, Instant::now());
+            CHUNK_PANIC_AFTER_ACK.set(None);
+            let acknowledged = control.status.typing.snapshot().unwrap().applications[0];
+            if after_ack {
+                assert_eq!(acknowledged.unwrap().ticket, ticket);
+                assert_eq!(acknowledged.unwrap().result, Ok(()));
+                assert!(output.iter().any(|sample| *sample != 0.0));
+            } else {
+                assert!(acknowledged.is_none());
+                assert_eq!(output, [0.0; 256]);
+            }
+            let retained = output;
+            let mut later = [9.0_f32; 256];
+            let before_clock = control.status.performance_frame.load(Relaxed);
+            let measured = allocation_counter::measure(|| {
+                render_guarded_chunk(&mut guard, &mut later, &mut source, 1, 256, Instant::now())
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.count_current,
+                    measured.bytes_total,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(later, [0.0; 256]);
+            assert_eq!(output, retained);
+            assert_eq!(control.status.performance_frame.load(Relaxed), before_clock);
+            assert_eq!(
+                control.status.typing.snapshot().unwrap().applications[0],
+                acknowledged
+            );
+            drop(control);
+            std::thread::spawn(move || drop(guard)).join().unwrap();
+            drop(terminal.try_take().unwrap());
+        }
     }
 }

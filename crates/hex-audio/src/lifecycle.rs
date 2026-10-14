@@ -1,6 +1,7 @@
 //! Bounded output lifecycle worker for stream retirement and recovery opens.
 //! Stream pause/disposal and replacement device creation never run on realtime.
 use crate::device::PreparedOutput;
+use crate::native_callback_owner::{NativeCallbackOwner, Terminal};
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -14,7 +15,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static STREAM_DEVICE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -37,6 +38,23 @@ pub(crate) fn register_stream_root(root: crate::prepared::NativeStreamRoot) {
     *active = Some(root);
 }
 fn tick_stream_root() {
+    // Retry only existing bounded retirement custody, outside its mutex.
+    let retirement = {
+        let mut pending = QUARANTINE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.as_ref().is_some_and(|value| {
+            !value.failed_incomplete && value.retry_at.is_none_or(|at| Instant::now() >= at)
+        }) {
+            pending.take()
+        } else {
+            None
+        }
+    };
+    if let Some(retirement) = retirement {
+        retire_prepared_output(retirement);
+    }
+
     let root = ACTIVE_STREAM_ROOT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -79,6 +97,11 @@ struct Retirement {
     media_root: Option<crate::prepared::NativeStreamRoot>,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
+    terminal: Option<Terminal<NativeCallbackOwner>>,
+    backend_exposed: bool,
+    stop_proved: bool,
+    failed_incomplete: bool,
+    retry_at: Option<Instant>,
 }
 
 pub(crate) struct StreamOwner {
@@ -108,8 +131,56 @@ impl StreamOwner {
                 media_root,
                 spectrum_reaper,
                 _lease: lease,
+                terminal: None,
+                backend_exposed: true,
+                stop_proved: false,
+                failed_incomplete: false,
+                retry_at: None,
             }),
         }
+    }
+    /// Install terminal receiver and lease custody before exposing the guard to CPAL.
+    pub(crate) fn prepared_custody(
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+        media_root: Option<crate::prepared::NativeStreamRoot>,
+        terminal: Terminal<NativeCallbackOwner>,
+    ) -> Self {
+        Self {
+            retirement: Some(Retirement {
+                stream: None,
+                media_root,
+                spectrum_reaper,
+                _lease: lease,
+                terminal: Some(terminal),
+                backend_exposed: false,
+                stop_proved: false,
+                failed_incomplete: false,
+                retry_at: None,
+            }),
+        }
+    }
+    pub(crate) fn expose_prepared_backend(&mut self) {
+        self.retirement
+            .as_mut()
+            .expect("unretired construction custody")
+            .backend_exposed = true;
+    }
+    pub(crate) fn install_prepared_stream(&mut self, stream: cpal::Stream) {
+        let retirement = self
+            .retirement
+            .as_mut()
+            .expect("unretired construction custody");
+        retirement.stream = Some(stream);
+    }
+    pub(crate) fn play_prepared_stream(&self) -> Result<(), cpal::PlayStreamError> {
+        self.retirement
+            .as_ref()
+            .expect("unretired construction custody")
+            .stream
+            .as_ref()
+            .expect("installed prepared stream")
+            .play()
     }
 }
 impl Drop for StreamOwner {
@@ -510,6 +581,40 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
 
 fn retire_prepared_output(retirement: Retirement) {
     let mut retirement = retirement;
+    if retirement.terminal.is_some() {
+        match native_quiescence(
+            &mut retirement.stream,
+            retirement.backend_exposed,
+            &mut retirement.stop_proved,
+            |stream| stream.pause().is_ok(),
+        ) {
+            NativeQuiescence::Pending => {
+                retain_pending(retirement);
+                return;
+            }
+            NativeQuiescence::Unknown => {
+                retirement.failed_incomplete = true;
+                retain_pending(retirement);
+                return;
+            }
+            NativeQuiescence::Proved => {}
+        }
+        let terminal = retirement
+            .terminal
+            .as_mut()
+            .expect("retained terminal custody");
+        if !terminal.received() {
+            retain_pending(retirement);
+            return;
+        }
+        let Some(owner) = terminal.try_take() else {
+            retain_pending(retirement);
+            return;
+        };
+        // No root mutex is held: Callback::drop itself returns media into it.
+        drop(owner);
+        retirement.terminal = None;
+    }
     while retirement
         .stream
         .as_ref()
@@ -526,10 +631,8 @@ fn retire_prepared_output(retirement: Retirement) {
                 hex_stream::MediaCleanupPhase::FailedIncomplete => {
                     // Retain actual roots and the exclusive device lease; no
                     // unknown buffer count or failed join is called complete.
-                    let mut quarantine = QUARANTINE
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    *quarantine = Some(retirement);
+                    retirement.failed_incomplete = true;
+                    retain_pending(retirement);
                     return;
                 }
                 hex_stream::MediaCleanupPhase::Pending => thread::sleep(Duration::from_millis(250)),
@@ -539,11 +642,24 @@ fn retire_prepared_output(retirement: Retirement) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
+    if retirement.stop_proved {
+        if let Some(reaper) = retirement.spectrum_reaper.take()
+            && reaper.shutdown_and_join().is_err()
+        {
+            retirement.failed_incomplete = true;
+            retain_pending(retirement);
+            return;
+        }
+        // Only observed stop/terminal/media/spectrum completion releases lease.
+        drop(retirement);
+        return;
+    }
     let Retirement {
         stream: _,
         media_root: _,
         spectrum_reaper,
         _lease,
+        ..
     } = retirement;
     if retire_after_callback_stops(
         (),
@@ -557,6 +673,45 @@ fn retire_prepared_output(retirement: Retirement) {
     {
         eprintln!("hex audio spectrum worker failed during output retirement");
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NativeQuiescence {
+    Pending,
+    Unknown,
+    Proved,
+}
+fn native_quiescence<S>(
+    stream: &mut Option<S>,
+    exposed: bool,
+    proved: &mut bool,
+    pause: impl FnOnce(&S) -> bool,
+) -> NativeQuiescence {
+    if !*proved {
+        if let Some(stream) = stream.as_ref() {
+            if !pause(stream) {
+                return NativeQuiescence::Pending;
+            }
+            *proved = true;
+        } else if !exposed {
+            *proved = true; // No backend ever received the guard.
+        } else {
+            // CoreAudio can start inside construction then return no handle.
+            return NativeQuiescence::Unknown;
+        }
+    }
+    drop(stream.take());
+    NativeQuiescence::Proved
+}
+
+fn retain_pending(mut retirement: Retirement) {
+    retirement.retry_at = Some(Instant::now() + Duration::from_millis(250));
+    let mut pending = QUARANTINE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The one exclusive Lease covers live/construction/retirement phases.
+    // No caller can create a second Retirement while this custody is retained.
+    *pending = Some(retirement);
 }
 
 fn retire_after_callback_stops<S, R, L, E>(
@@ -587,6 +742,7 @@ fn retire_when_stopped<T>(value: T, mut pause: impl FnMut(&T) -> bool, mut retry
 
 #[cfg(test)]
 mod tests {
+    pub(super) static LEASE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use super::*;
     use std::sync::atomic::Ordering::{Acquire, Release};
     use std::time::Instant;
@@ -672,6 +828,7 @@ mod tests {
 
     #[test]
     fn exclusive_lease_prevents_accumulating_live_or_retained_streams() {
+        let _serialized = LEASE_TEST.lock().unwrap();
         let first = Lease::acquire().unwrap();
         assert!(Lease::acquire().is_err());
         drop(first);
@@ -838,5 +995,78 @@ mod tests {
         assert!(matches!(result, Some(Ok(()))));
         assert_eq!(attempts.load(Acquire), 3);
         assert!(opened_rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod terminal_custody_tests {
+    use super::*;
+    use crate::native_callback_owner::{NativeCallbackOwner, reserve};
+    use std::sync::atomic::AtomicUsize;
+    #[test]
+    fn constructor_play_pause_and_unknown_stop_paths_preserve_actual_owners() {
+        struct Handle(Arc<AtomicUsize>);
+        impl Drop for Handle {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Acquire);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut stream = Some(Handle(Arc::clone(&drops)));
+        let mut proved = false;
+        // Play failure still retains a real handle; failed pause never drops it.
+        assert_eq!(
+            native_quiescence(&mut stream, true, &mut proved, |_| false),
+            NativeQuiescence::Pending
+        );
+        assert!(stream.is_some());
+        assert_eq!(drops.load(Acquire), 0);
+        assert_eq!(
+            native_quiescence(&mut stream, true, &mut proved, |_| true),
+            NativeQuiescence::Proved
+        );
+        assert!(stream.is_none());
+        assert_eq!(drops.load(Acquire), 1);
+        let mut unexposed: Option<Handle> = None;
+        let mut proved = false;
+        assert_eq!(
+            native_quiescence(&mut unexposed, false, &mut proved, |_| true),
+            NativeQuiescence::Proved
+        );
+        let mut unknown: Option<Handle> = None;
+        let mut proved = false;
+        assert_eq!(
+            native_quiescence(&mut unknown, true, &mut proved, |_| true),
+            NativeQuiescence::Unknown
+        );
+        assert!(!proved);
+    }
+    #[test]
+    fn ordinary_handle_drop_retains_existing_custody_until_delayed_guard_release() {
+        let _serialized = super::tests::LEASE_TEST.lock().unwrap();
+        let lease = Lease::acquire().unwrap();
+        let (control, callback) = crate::prepared::channel(48_000).unwrap();
+        let (guard, terminal) = reserve(Box::new(NativeCallbackOwner::new(callback)));
+        // Unexposed headless construction has no native stream to stop. This
+        // tests actual service/quarantine/lease custody, not native pause.
+        let owner = StreamOwner::prepared_custody(lease, None, None, terminal);
+        drop(control);
+        drop(owner);
+        assert!(Lease::acquire().is_err());
+        let (release, wait) = mpsc::sync_channel(1);
+        let backend = thread::spawn(move || {
+            wait.recv().unwrap();
+            drop(guard);
+        });
+        thread::sleep(Duration::from_millis(20));
+        assert!(OCCUPIED.load(Acquire));
+        release.send(()).unwrap();
+        backend.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while OCCUPIED.load(Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(!OCCUPIED.load(Acquire));
+        assert!(QUARANTINE.lock().unwrap().is_none());
     }
 }
