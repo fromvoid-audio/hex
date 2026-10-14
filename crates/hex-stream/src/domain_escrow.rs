@@ -27,7 +27,7 @@ pub use custody::{
     CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
     CatalogCoverageStorageReport, CatalogCustodyAwaiter, CatalogCustodyCapacity,
     CatalogCustodyError, CatalogCustodyReceipt, CatalogCustodyRefusal, CatalogCustodyReservation,
-    VerifiedCatalogCustodyRefusal, VerifiedCoverageRefusal,
+    CurrentCatalogCoverage, VerifiedCatalogCustodyRefusal, VerifiedCoverageRefusal,
 };
 
 struct ControlSlot {
