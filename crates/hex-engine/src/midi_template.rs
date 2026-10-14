@@ -6,6 +6,7 @@
 use crate::{MidiTiming, midi_compile::MidiEventKind};
 mod density;
 mod spans;
+mod storage;
 use density::{DensityEnvelope, DensityEvent, admit_density};
 use hex_project::{
     BeatTime, ClipId, MidiClip, MidiNote, MidiSource, MidiSourcePlayback, NoteId, TrackId,

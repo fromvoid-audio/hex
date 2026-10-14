@@ -1,4 +1,5 @@
 //! Immutable control-side inventory of every canonical Session cell.
+mod storage;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
     Audio, MidiTemplateError, MidiTiming, PreparedMidiInstrumentTemplate,

@@ -123,3 +123,30 @@ is DECLARED only: this counter never observes Layout::align. Every receipt still
 reports `requested_alignment_verified=false`. Separate independently reviewed
 alignment observation and actual Mac target checks remain pending. All production
 Arc costs remain Unknown; no whole admission/root wiring is enabled.
+
+## completed session midi source-template family
+
+Ongoing Session source templates now report their four owned buffers: intro and
+repeat SourceEdge Vecs, and intro and repeat SourceSpan Vecs. Exhaustive matching
+covers the template, scalar DensityEnvelope and both scalar leaf records. The
+source-template Arc pointee already charges its headers and inline proof fields;
+only actual backing capacities are added, including overreserved empty repeat
+buffers. Each component has a unique location under the ACTUAL template Arc,
+so reused templates can be deduplicated independently of inventory/graph roots;
+equal-content templates with different owners remain separate charges.
+
+The existing public Playback visitor reaches these buffers through a private
+Session-inventory traversal. Other inventory fields (including names/strings,
+timing/templates/provider dependencies not covered here) still remain Unknown.
+Source Arc owner overhead independently remains Unknown. TempoMap's private
+point/prefix capacities live in hex-project and require a separately reviewed
+read-only boundary; this unit does not change that API or pretend point lengths
+are capacities. Instrument templates/note banks/provider storage and retirement
+receipts remain incomplete. No provider/Arc/whole-Playback completeness claim,
+callback traversal, public trait redesign, cap/root/preroll change is made.
+
+On any visitor error, callers MUST discard the partial sink: no returned complete
+summary exists and partially accumulated items are not an admission receipt.
+Tests cover all four partial-refusal points, overflow, actual overreserved
+capacities, no repeated headers/density charge, per-container actual-owner dedup
+versus independent equal sources, and the real Playback/Session consumer seam.

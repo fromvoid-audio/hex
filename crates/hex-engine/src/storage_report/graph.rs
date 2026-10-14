@@ -136,6 +136,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         )?;
         self.project(revision.arrangement())?;
         self.opaque_arc(revision.session(), "session_inventory")?;
+        revision.session().visit_source_templates(self)?;
         self.opaque_arc(revision.midi_preview(), "midi_preview")?;
         Ok(())
     }
