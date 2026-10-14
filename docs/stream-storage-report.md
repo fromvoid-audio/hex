@@ -88,3 +88,38 @@ There are no independent shared owners or provider declarations inside this
 family. This completes only its owned data traversal, not its containing Arc
 or Playback. Arc overhead and other families still remain Unknown. No admission,
 publication, clock, routing, DSP or limit behavior changes.
+
+## private pinned arc declaration validation
+
+`hex-audio/tests/support/declared_arc_layout.rs` is PRIVATE test support, not a
+product API or admission producer. Its explicit passed compiler/target proof
+checks the runner-selected rustc verbose observation against audited Rust commit
+`4a4ef493e3a1488c6e321570238084b38948f6db` and the running native test target
+(`x86_64-unknown-linux-gnu` or `aarch64-apple-darwin`). This is not a build-time
+product compiler gate; the workspace rust-version minimum does not pin it.
+Source assumption: the official pinned `library/alloc/src/sync.rs` ArcInner
+layout audited by worker2 has two AtomicUsize counters before the payload:
+<https://github.com/rust-lang/rust/blob/4a4ef493e3a1488c6e321570238084b38948f6db/library/alloc/src/sync.rs>.
+
+The checked declaration is `Layout::array::<AtomicUsize>(2)?.extend(payload)?.0`
+then `pad_to_align`. Sized payloads use `Layout::new`, slices checked logical
+length and element layout, and strings UTF8 byte length. It is an assumption-bound
+requested layout, not a stable private std ABI or RSS/allocator metadata measure.
+No header constant is guessed. Overalignment/ZST padding is retained.
+Arc<Vec/String> pointee headers and their separate backing capacities are not
+collapsed. Known allocating constructor paths capture layout/source/target while
+strong owners exist and preserve that scalar receipt through Weak-only lifetime;
+no dead DST is accessed. Weak::new carries no allocation declaration. Arbitrary
+existing/raw/custom-allocator/ambiguous default-empty owners remain Unknown;
+zero length does not prove allocating provenance. Constructors are test support,
+not a production fallible original-owner recovery or publication API.
+
+`arc_requested_layout` runs under the EXISTING allocation-probe feature and
+pinned allocation-counter0.8.1, without dependency/registry changes or new unsafe
+code. It verifies requested SIZE/counts and actual reclamation, including empty
+allocating paths versus untracked shared defaults, clones, weak-only ownership,
+overreserved source Vecs, replacement and separate Vec/String storage. Alignment
+is DECLARED only: this counter never observes Layout::align. Every receipt still
+reports `requested_alignment_verified=false`. Separate independently reviewed
+alignment observation and actual Mac target checks remain pending. All production
+Arc costs remain Unknown; no whole admission/root wiring is enabled.
