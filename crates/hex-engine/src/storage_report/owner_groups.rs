@@ -426,6 +426,49 @@ fn acquire(
     ))
 }
 impl OwnerTrackedPlayback {
+    fn demand_pair_valid(&self) -> bool {
+        self.book.runtime == self.owner.identity()
+            && self.owner.playback.claim_runtime_identity() == Some(self.book.runtime.0)
+    }
+
+    /// Borrow the existing bounded planner without transferring owners or
+    /// associations. Both exact runtime/book pairs are checked before planning.
+    /// The visitor must use preallocated storage; discard its partial output on
+    /// refusal. A successful preview is not installation or transfer authority,
+    /// and the actual predecessor must be revalidated by the later commit.
+    pub fn preview_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::playback::PlaybackHandoffError> {
+        if !self.demand_pair_valid() || !previous.demand_pair_valid() {
+            return Err(crate::playback::PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        self.owner.playback.preview_stream_handoff(
+            &mut previous.owner.playback,
+            maximum_frames,
+            visit,
+        )
+    }
+
+    /// Immutable exact-chunk demand with the same speculative visitor contract
+    /// as preview. Retired owners deliberately expose neither demand nor render.
+    pub fn visit_next_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
+        if !self.demand_pair_valid() {
+            return Err(crate::Invalid("tracked demand runtime/book mismatch"));
+        }
+        self.owner
+            .playback
+            .visit_next_stream_chunk(maximum_frames, visit)
+    }
+
     #[cfg(all(test, feature = "instrument-test-support"))]
     pub(crate) fn with_owner_groups_runtime_for_test<T>(
         &mut self,

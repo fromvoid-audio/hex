@@ -299,3 +299,182 @@ fn real_destructor_success_and_panic_retain_the_book_without_repeat_destruction_
         assert!(archive.report().incomplete_source);
     }
 }
+
+fn demand_root() -> crate::OwnedPreparedRevision {
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    for name in ["one", "two"] {
+        editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: name.into(),
+                path: "metadata-only.wav".into(),
+                sample_rate: 48_000,
+                frames: 4096,
+            })
+            .unwrap();
+    }
+    let sources = editor
+        .project()
+        .assets()
+        .map(|asset| {
+            let metadata = crate::StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(19, asset.id()),
+                48_000,
+                48_000,
+                asset.source_frames(),
+                asset.playback_frames(),
+                asset.conversion_version(),
+                [19; 32],
+            )
+            .unwrap();
+            (
+                asset.id(),
+                crate::compile::PreparedAudioSource::Streamed(Arc::new(metadata)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    crate::PreparedRevision::prepare_with_prepared_audio_sources(
+        editor.project(),
+        &sources,
+        19,
+        Arc::new(crate::SineTable::new()),
+        None,
+    )
+    .unwrap()
+    .into_owned_shared()
+}
+fn tracked(root: crate::OwnedPreparedRevision) -> OwnerTrackedPlayback {
+    let (owner, anchors) = pair(root);
+    owner
+        .try_acquire_owner_groups_on_control(&anchors, reservation())
+        .unwrap()
+        .0
+}
+fn book_snapshot(
+    book: &OwnerGroupBook,
+) -> Vec<(OwnerLocation, u64, Option<Origin>, Option<ClaimIdentity>)> {
+    book.members
+        .iter()
+        .map(|m| {
+            (
+                m.location,
+                m.incarnation,
+                m.group.as_ref().map(|g| g.0),
+                m.planned_by,
+            )
+        })
+        .collect()
+}
+#[test]
+fn sealed_demand_checks_both_exact_books_before_visiting_and_preserves_owners() {
+    let root = demand_root();
+    let mut candidate = tracked(root.clone_on_control());
+    let mut old = tracked(root);
+    old.apply(crate::playback::PlaybackCommand::Play);
+    let one = candidate.identity();
+    let two = old.identity();
+    let candidate_book = book_snapshot(&candidate.book);
+    let old_book = book_snapshot(&old.book);
+    for mismatch_previous in [false, true] {
+        if mismatch_previous {
+            old.book.runtime = one;
+        } else {
+            candidate.book.runtime = two;
+        }
+        let mut visits = 0;
+        assert!(
+            candidate
+                .preview_stream_handoff(&mut old, 256, &mut |_| {
+                    visits += 1;
+                    Ok(())
+                })
+                .is_err()
+        );
+        if !mismatch_previous {
+            assert!(
+                candidate
+                    .visit_next_stream_chunk(256, &mut |_| {
+                        visits += 1;
+                        Ok(())
+                    })
+                    .is_err()
+            );
+        }
+        assert_eq!(visits, 0);
+        assert_eq!(candidate.identity(), one);
+        assert_eq!(old.identity(), two);
+        candidate.book.runtime = one;
+        old.book.runtime = two;
+        assert_eq!(book_snapshot(&candidate.book), candidate_book);
+        assert_eq!(book_snapshot(&old.book), old_book);
+    }
+}
+#[test]
+fn sealed_preview_matches_exact_legacy_planner_and_refusal_discards_speculative_pages() {
+    let root = demand_root();
+    let mut next = tracked(root.clone_on_control());
+    let mut old = tracked(root.clone_on_control());
+    let (mut legacy_next, _) = pair(root.clone_on_control());
+    let (mut legacy_old, _) = pair(root);
+    old.apply(crate::playback::PlaybackCommand::PlayFrom(100));
+    legacy_old
+        .playback
+        .apply(crate::playback::PlaybackCommand::PlayFrom(100));
+    let old_book = book_snapshot(&old.book);
+    let next_book = book_snapshot(&next.book);
+    let mut pages = Vec::with_capacity(8);
+    let mut expected = Vec::with_capacity(8);
+    let window = next
+        .preview_stream_handoff(&mut old, usize::MAX, &mut |extent| {
+            pages.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    let reference = legacy_next
+        .playback
+        .preview_stream_handoff(&mut legacy_old.playback, usize::MAX, &mut |extent| {
+            expected.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window, reference);
+    assert_eq!(pages, expected);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(window.frames, 256);
+    pages.clear();
+    assert!(
+        next.preview_stream_handoff(&mut old, 256, &mut |extent| {
+            pages.push(extent);
+            Err(crate::Invalid("actual visitor capacity refusal"))
+        })
+        .is_err()
+    );
+    assert_eq!(pages.len(), 1); // actual speculative partial output, never installed
+    pages.clear();
+    assert_eq!(book_snapshot(&old.book), old_book);
+    assert_eq!(book_snapshot(&next.book), next_book);
+    assert_eq!(old.owner.playback.position(), 100);
+    assert_eq!(next.owner.playback.position(), 0);
+    let retried = next
+        .preview_stream_handoff(&mut old, 256, &mut |extent| {
+            pages.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(retried, reference);
+    assert_eq!(pages, expected);
+    let mut direct = Vec::with_capacity(8);
+    assert_eq!(
+        old.visit_next_stream_chunk(256, &mut |e| {
+            direct.push(e);
+            Ok(())
+        })
+        .unwrap(),
+        legacy_old
+            .playback
+            .visit_next_stream_chunk(256, &mut |_| Ok(()))
+            .unwrap()
+    );
+    assert_eq!(direct, expected);
+    assert!(next.is_incomplete_fixture() && old.is_incomplete_fixture());
+}
