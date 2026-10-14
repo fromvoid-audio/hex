@@ -1598,3 +1598,79 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
     assert_eq!(right.notes()[0].duration(), beat(1));
     assert_ne!(right.notes()[0].id(), resized.notes()[1].id());
 }
+
+#[test]
+fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
+    let mut editor = Editor::new(project(), 8).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let state = NativeDeviceState::new(DeviceTypeId::from_static("test.device"), 1, vec![1, 2])
+        .unwrap()
+        .with_output_gain_db(-9.5)
+        .unwrap();
+    let Created::Device(id) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device");
+    };
+    let bytes = encode(editor.project()).unwrap();
+    let restored = decode(&bytes).unwrap();
+    assert_eq!(
+        restored.device(id).unwrap().state().output_gain_millidb(),
+        -9500
+    );
+    let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    legacy["version"] = 17.into();
+    legacy.as_object_mut().unwrap().remove("import_provenance");
+    legacy.as_object_mut().unwrap().remove("routing");
+    for track in legacy["tracks"].as_array_mut().unwrap() {
+        track.as_object_mut().unwrap().remove("gain_envelope");
+    }
+    for track in legacy["tracks"].as_array_mut().unwrap() {
+        for device in track["devices"].as_array_mut().unwrap() {
+            device
+                .as_object_mut()
+                .unwrap()
+                .remove("output_gain_millidb");
+        }
+        if !track["instrument"].is_null() {
+            track["instrument"]
+                .as_object_mut()
+                .unwrap()
+                .remove("output_gain_millidb");
+        }
+    }
+    for bus in legacy["return_tracks"].as_array_mut().unwrap() {
+        for device in bus["devices"].as_array_mut().unwrap() {
+            device
+                .as_object_mut()
+                .unwrap()
+                .remove("output_gain_millidb");
+        }
+    }
+    assert_eq!(
+        decode(&serde_json::to_vec(&legacy).unwrap())
+            .unwrap()
+            .device(id)
+            .unwrap()
+            .state()
+            .output_gain_millidb(),
+        0
+    );
+    legacy["version"] = 18.into();
+    legacy["tracks"][0]["devices"][0]["output_gain_millidb"] = 24_001.into();
+    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
+    assert!(
+        restored
+            .device(id)
+            .unwrap()
+            .state()
+            .clone()
+            .with_output_gain_db(f32::NAN)
+            .is_err()
+    );
+}

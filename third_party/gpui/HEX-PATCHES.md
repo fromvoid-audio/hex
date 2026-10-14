@@ -15,7 +15,8 @@ AppKit access stays inside GPUI's existing native boundary.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
-or grow this patch beyond the documented input, cursor, titlebar, test-support and explicit grid-literal decisions.
+or grow this patch beyond the documented input, cursor, titlebar, test-support,
+explicit grid-literal and bounded accessibility decisions.
 See docs/native-input.md and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -54,3 +55,19 @@ arrow fallback elsewhere. Window-scoped frame override persists outside hover
 bounds and restores through deactivation/removal/destruction, without NSCursor
 hide-count changes. Test-only platform cursor readout verifies restoration after
 rendered gesture termination; native appearance/delivery acceptance is separate.
+
+13 October painted-background test support: `VisualTestContext::rendered_background`
+reads the last completed scene quad matching an element's debug bounds. It neither
+draws another frame nor injects pointer input, so tests can distinguish actual
+paint from focus state that has not reached the screen. Test-support only; no
+production rendering or native graphics behavior changes.
+
+14 October accessibility extension (ticket29/PR188): safe bounded semantic
+snapshots/actions and cached prepaint integration. The first native AppKit
+candidate is quarantined for an off-UI final-owner hazard; no native AX backend
+is enabled at this checkpoint. The reviewed file list and added accessibility.rs are explicitly hashed;
+all original baseline hashes, license and prior input/cursor deltas remain.
+See docs/native-accessibility.md in the Hex repository for owner/revision,
+revocation, asynchronous dispatch, offscreen refusal and native acceptance limits.
+The unified diff uses zero context; apply only against the verified archive with
+`git apply --unidiff-zero`. Hash verification remains mandatory.

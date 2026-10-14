@@ -916,6 +916,90 @@ fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn completed_time_selection_survives_idle_ticks_and_remains_rendered(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    for (project, source, target, _) in [audio_project(), midi_project()] {
+        for project_scope in [false, true] {
+            let (handle, editor) = editor_window(cx, project.clone(), Arc::default());
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let lane = visual
+                .debug_bounds(if project_scope {
+                    "main-track-lane"
+                } else {
+                    Box::leak(format!("arrangement-lane-{}", target.value()).into_boxed_str())
+                })
+                .expect("selection lane");
+            let source_lane = visual
+                .debug_bounds(Box::leak(
+                    format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+                ))
+                .expect("audio or midi lane");
+            let start = point(
+                lane.origin.x + lane.size.width * 0.02,
+                lane.origin.y + lane.size.height * 0.75,
+            );
+            let end = point(
+                lane.origin.x + lane.size.width * 0.3,
+                if project_scope {
+                    start.y
+                } else {
+                    source_lane.origin.y + source_lane.size.height * 0.75
+                },
+            );
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let selection = editor.read_with(cx, |view, _| {
+                assert!(view.time_selection_gesture.is_none());
+                assert_eq!(view.time_selection_project_scope, project_scope);
+                view.time_selection.expect("completed range")
+            });
+            let viewport = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
+            // The real controller pumps both ticks even after pointer capture ends.
+            editor.update(cx, |view, cx| {
+                for delay in [20, 100, 1_000] {
+                    let now = Instant::now() + Duration::from_millis(delay);
+                    assert!(!view.tick_time_gesture_autoscroll(now));
+                    view.tick_edit_cursor(now);
+                    assert_eq!(view.time_selection, Some(selection));
+                    assert_eq!(view.time_selection_project_scope, project_scope);
+                    assert_eq!(view.visible_viewport(384_000), viewport);
+                }
+                assert!(
+                    view.last_enqueued_edit.is_none(),
+                    "selection does not edit history"
+                );
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for track in [source, target] {
+                assert!(
+                    visual
+                        .debug_bounds(Box::leak(
+                            format!("edit-time-selection-{}", track.value()).into_boxed_str(),
+                        ))
+                        .is_some(),
+                    "completed range stays painted over occupied and empty lanes"
+                );
+            }
+            if project_scope {
+                assert!(visual.debug_bounds("main-project-time-selection").is_some());
+            }
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.normalized_time_selection().is_none(),
+                    "escape still clears the range"
+                );
+            });
+        }
+    }
+}
+
+#[gpui::test]
 fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
     let (project, _, target, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -1212,6 +1296,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         status: None,
         error: Some("test rejection".to_owned()),
         request_complete: true,
+        audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,

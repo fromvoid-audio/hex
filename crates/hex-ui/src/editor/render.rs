@@ -21,8 +21,9 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
-    fn status_bar(&self) -> gpui::Div {
+    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
+            .debug_selector(|| "editor-status-bar".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
@@ -74,6 +75,20 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        if self.audio_batch.is_some() {
+            bar = bar.child(
+                div()
+                    .id("cancel-audio-import")
+                    .debug_selector(|| "cancel-audio-import".into())
+                    .px_1()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text("cancel import"))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.cancel_audio_batch(cx);
+                    })),
+            );
+        }
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
         let revision_label = self.audio_admission.label();
         let pending_commands = self
@@ -89,7 +104,7 @@ impl EditorView {
                 .id("editor-revision-status")
                 .debug_selector(|| "editor-revision-status".into())
                 .w(px(176.0))
-                .flex_shrink_0()
+                .min_w(px(64.0))
                 .truncate()
                 .text_right()
                 .tooltip({
@@ -146,38 +161,19 @@ impl EditorView {
                     String::new()
                 },
             ));
+        let meter_input = self.output_meter_frame.map_or(
+            crate::output_meter::MeterInput::Offline,
+            super::refresh::AudioFrame::meter_input,
+        );
+        bar = bar.child(
+            crate::output_meter::render(meter_input).tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: crate::output_meter::description(meter_input).into(),
+                })
+                .into()
+            }),
+        );
         if let Some(status) = self.audio_status() {
-            let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
-            let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
-            bar = bar.child(
-                div()
-                    .w(px(38.0))
-                    .h(px(7.0))
-                    .flex()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * left))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * right))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    ),
-            );
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
             let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
@@ -198,7 +194,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .tooltip({
@@ -223,14 +219,14 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("offline")),
             );
         }
-        bar
+        bar.child(super::device_panel::bottom_bar(self, cx))
     }
 }
 
@@ -246,7 +242,7 @@ fn status_slot(
         .debug_selector(move || id.into())
         .w(px(width))
         .h_full()
-        .flex_shrink_0()
+        .min_w(px(32.0))
         .truncate()
         .text_right();
     if !label.is_empty() {
@@ -275,7 +271,7 @@ impl Render for EditorView {
             }
         }
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
-        let clip_view = self.clip_detail_view(cx);
+        let clip_view = self.clip_detail_view(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()
@@ -320,6 +316,9 @@ impl Render for EditorView {
             } else {
                 self.browser_key_context(window, cx)
             })
+            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_trim_drag.clone()
@@ -458,10 +457,15 @@ impl Render for EditorView {
                 view.active_clip_drag = None;
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
+                view.device_panel.navigation.cancel();
                 view.stop();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_audio_batch(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
@@ -473,7 +477,8 @@ impl Render for EditorView {
                 };
                 let drag_stopped = cx.stop_active_drag(window);
                 let device_drag_stopped = view.cancel_active_native_device_drag();
-                let pan_canceled = view.cancel_arrangement_pan();
+                let pan_canceled =
+                    view.cancel_arrangement_pan() | view.device_panel.navigation.cancel();
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
@@ -824,13 +829,27 @@ impl Render for EditorView {
                 view.pan_timeline(true);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &ToggleSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &ToggleSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, true);
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &AdditiveSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &AdditiveSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, false);
                 }
@@ -908,7 +927,7 @@ impl Render for EditorView {
             .child(self.title_bar(cx))
             .child(self.transport(cx))
             .child(workspace)
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())

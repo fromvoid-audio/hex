@@ -86,73 +86,76 @@ fn linear(revision: Arc<PreparedRevision>) -> SessionPlayback {
 
 #[test]
 fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
-    use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
-    let digital = |drive| {
-        let state = SATURATOR_DEFINITION
-            .patch_parameter(
-                &SATURATOR_DEFINITION.default_state().unwrap(),
-                parameter::DRIVE,
-                ParameterValue::Float(drive),
+    for metered in [false, true] {
+        use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
+        let digital = |drive| {
+            let state = SATURATOR_DEFINITION
+                .patch_parameter(
+                    &SATURATOR_DEFINITION.default_state().unwrap(),
+                    parameter::DRIVE,
+                    ParameterValue::Float(drive),
+                )
+                .unwrap();
+            SATURATOR_DEFINITION
+                .patch_parameter(&state, parameter::CURVE, ParameterValue::Choice(1))
+                .unwrap()
+        };
+        let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        snapshot.tracks[0].devices.push(DeviceSnapshot {
+            id: 22,
+            bypassed: false,
+            state: digital(24.0),
+        });
+        snapshot.return_tracks[0].devices.insert(
+            0,
+            DeviceSnapshot {
+                id: 23,
+                bypassed: false,
+                state: digital(9.0),
+            },
+        );
+        let prepared = prepare_audio(&Project::from_snapshot(snapshot).unwrap());
+        let mut runtime = linear(Arc::clone(&prepared));
+        runtime.set_device_metering(metered);
+        let plan = runtime
+            .output_capture_plan(
+                &[
+                    OutputCaptureId::Track(runtime.routes[0].id),
+                    OutputCaptureId::Return(prepared.arrangement().return_buses()[0].id),
+                ],
+                512,
             )
             .unwrap();
-        SATURATOR_DEFINITION
-            .patch_parameter(&state, parameter::CURVE, ParameterValue::Choice(1))
-            .unwrap()
-    };
-    let mut snapshot = audio_fixture_project(true, false, false).snapshot();
-    snapshot.tracks[0].devices.push(DeviceSnapshot {
-        id: 22,
-        bypassed: false,
-        state: digital(24.0),
-    });
-    snapshot.return_tracks[0].devices.insert(
-        0,
-        DeviceSnapshot {
-            id: 23,
-            bypassed: false,
-            state: digital(9.0),
-        },
-    );
-    let prepared = prepare_audio(&Project::from_snapshot(snapshot).unwrap());
-    let mut runtime = linear(Arc::clone(&prepared));
-    let plan = runtime
-        .output_capture_plan(
-            &[
-                OutputCaptureId::Track(runtime.routes[0].id),
-                OutputCaptureId::Return(prepared.arrangement().return_buses()[0].id),
-            ],
-            512,
-        )
-        .unwrap();
-    let mut main = [[0.0; 2]; 512];
-    let mut track = main;
-    let mut returned = main;
-    let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut returned];
-    let mut capture = OutputCapture::new(&plan, &mut buffers);
-    runtime
-        .render_with_capture(&mut main, &mut capture)
-        .unwrap();
-    let mut reference = linear(prepared);
-    let mut expected = main;
-    reference.render(&mut expected).unwrap();
-    assert_eq!(main, expected);
-    for index in 0..512 {
-        let a = if index < 3 { [0.0; 2] } else { [0.25, -0.5] };
-        let b = if index < 3 {
-            [0.0; 2]
-        } else {
-            [0.4 * 0.75, -0.2 * 0.375]
-        };
-        let input = [a[0] * 0.5 + b[0], a[1] * 0.5 + b[1]];
-        let drive = 10.0_f64.powf(9.0 / 20.0);
-        let clipped = input.map(|sample| (f64::from(sample) * drive).clamp(-1.0, 1.0) as f32);
-        let mono = (clipped[0] + clipped[1]) * 0.5 * 0.25;
-        assert_eq!(capture.output(0).unwrap()[index], a);
-        assert!((capture.output(1).unwrap()[index][0] - mono).abs() < 1e-7);
-        assert_eq!(
-            capture.output(1).unwrap()[index][0],
-            capture.output(1).unwrap()[index][1]
-        );
+        let mut main = [[0.0; 2]; 512];
+        let mut track = main;
+        let mut returned = main;
+        let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut returned];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        let mut reference = linear(prepared);
+        let mut expected = main;
+        reference.render(&mut expected).unwrap();
+        assert_eq!(main, expected);
+        for index in 0..512 {
+            let a = if index < 3 { [0.0; 2] } else { [0.25, -0.5] };
+            let b = if index < 3 {
+                [0.0; 2]
+            } else {
+                [0.4 * 0.75, -0.2 * 0.375]
+            };
+            let input = [a[0] * 0.5 + b[0], a[1] * 0.5 + b[1]];
+            let drive = 10.0_f64.powf(9.0 / 20.0);
+            let clipped = input.map(|sample| (f64::from(sample) * drive).clamp(-1.0, 1.0) as f32);
+            let mono = (clipped[0] + clipped[1]) * 0.5 * 0.25;
+            assert_eq!(capture.output(0).unwrap()[index], a);
+            assert!((capture.output(1).unwrap()[index][0] - mono).abs() < 1e-7);
+            assert_eq!(
+                capture.output(1).unwrap()[index][0],
+                capture.output(1).unwrap()[index][1]
+            );
+        }
     }
 }
 
@@ -349,40 +352,43 @@ fn mutable_held_and_released_history_capture_matches_independent_feedback_recurr
 
 #[test]
 fn late_chunk_refusal_invalidates_capture_and_retry_preserves_clock_and_history() {
-    let (revision, track) = mutable_checkpoint_fixture(1 << 26);
-    let mut runtime = linear(Arc::clone(&revision));
-    runtime.render(&mut [[0.0; 2]; 1]).unwrap();
-    // Inject a finite range-overflow fault only on chunk two; the held
-    // instrument has committed history and advances speculatively in chunk one.
-    runtime.arrangement_frame = u64::MAX - 300;
-    let routes = runtime.routes.clone();
-    let plan = runtime
-        .output_capture_plan(&[OutputCaptureId::Track(track)], 512)
-        .unwrap();
-    let mut main = [[9.0; 2]; 512];
-    let mut output = main;
-    let mut buffers = [&mut output[..]];
-    let mut capture = OutputCapture::new(&plan, &mut buffers);
-    assert_eq!(
-        runtime.render_with_capture(&mut main, &mut capture),
-        Err(SessionPlaybackError::Arrangement("render range overflow"))
-    );
-    assert_eq!(main, [[0.0; 2]; 512]);
-    assert_eq!(capture.valid_frames(), 0);
-    assert_eq!(runtime.performance_frame, 1);
-    assert_eq!(runtime.arrangement_frame, u64::MAX - 300);
-    assert_eq!(runtime.routes, routes);
-    assert!(runtime.releases.is_empty());
-    runtime.arrangement_frame = 1;
-    runtime
-        .render_with_capture(&mut main, &mut capture)
-        .unwrap();
-    let mut reference = linear(revision);
-    reference.render(&mut [[0.0; 2]; 1]).unwrap();
-    let mut expected = main;
-    reference.render(&mut expected).unwrap();
-    assert_eq!(main, expected);
-    assert_eq!(capture.output(0).unwrap(), expected);
+    for metered in [false, true] {
+        let (revision, track) = mutable_checkpoint_fixture(1 << 26);
+        let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(metered);
+        runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+        // Inject a finite range-overflow fault only on chunk two; the held
+        // instrument has committed history and advances speculatively in chunk one.
+        runtime.arrangement_frame = u64::MAX - 300;
+        let routes = runtime.routes.clone();
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Track(track)], 512)
+            .unwrap();
+        let mut main = [[9.0; 2]; 512];
+        let mut output = main;
+        let mut buffers = [&mut output[..]];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        assert_eq!(
+            runtime.render_with_capture(&mut main, &mut capture),
+            Err(SessionPlaybackError::Arrangement("render range overflow"))
+        );
+        assert_eq!(main, [[0.0; 2]; 512]);
+        assert_eq!(capture.valid_frames(), 0);
+        assert_eq!(runtime.performance_frame, 1);
+        assert_eq!(runtime.arrangement_frame, u64::MAX - 300);
+        assert_eq!(runtime.routes, routes);
+        assert!(runtime.releases.is_empty());
+        runtime.arrangement_frame = 1;
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        let mut reference = linear(revision);
+        reference.render(&mut [[0.0; 2]; 1]).unwrap();
+        let mut expected = main;
+        reference.render(&mut expected).unwrap();
+        assert_eq!(main, expected);
+        assert_eq!(capture.output(0).unwrap(), expected);
+    }
 }
 
 #[test]
@@ -455,16 +461,8 @@ fn interactive_capture_rechecks_arrangement_cut_after_launch_and_revision_loop_c
     );
 }
 
-#[test]
-fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
+fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::Audio>) {
     let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
-    let definition = ContinuityInstrumentDefinition {
-        id: device_type,
-        levels: [0.25, 0.5],
-        release_frames: 4,
-    };
-    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
-    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let base = with_test_instrument(&project(1.0, 0, 1 << 26), device_type, 0);
     let mut snapshot = base.snapshot();
     snapshot.session = SessionSnapshot::default();
@@ -503,117 +501,324 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         project.assets().next().unwrap().id(),
         crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap(),
     )]);
-    let revision = Arc::new(
-        PreparedRevision::prepare_with_instrument_registry(
-            &project,
-            &media,
-            Arc::new(hex_devices::SineTable::new()),
-            None,
-            &registry,
-        )
-        .unwrap(),
-    );
-    let mut runtime = linear(Arc::clone(&revision));
-    let plan = runtime
-        .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
-        .unwrap();
-    let mut main = [[0.0; 2]; 512];
-    let mut captured = main;
-    let mut buffers: [&mut [Frame]; 1] = [&mut captured];
-    let mut capture = OutputCapture::new(&plan, &mut buffers);
-    runtime
-        .render_with_capture(&mut main, &mut capture)
-        .unwrap();
-    let mut reference = linear(Arc::clone(&revision));
-    let mut expected = main;
-    reference.render(&mut expected).unwrap();
-    assert_eq!(main, expected);
-    for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
-        let level = if index < 379 { 0.25 } else { 0.0 };
-        let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
-        let expected = [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25];
-        assert_eq!(*frame, expected);
-        assert_eq!(main[index], expected.map(|sample| sample * 0.25));
+    (project, media)
+}
+
+#[test]
+fn analytic_hybrid_metered_capture_is_partition_independent() {
+    for metered in [false, true] {
+        let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+        let definition = ContinuityInstrumentDefinition {
+            id: device_type,
+            levels: [0.25, 0.5],
+            release_frames: 4,
+        };
+        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+        let (project, media) = analytic_hybrid_fixture();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut expected = [[0.0; 2]; 512];
+        linear(Arc::clone(&revision)).render(&mut expected).unwrap();
+        // Same physical oracle across callback-sized partitions; the uncaptured
+        // reference above intentionally leaves metering off.
+        let mut partitioned = linear(Arc::clone(&revision));
+        partitioned.set_device_metering(metered);
+        let partition_plan = partitioned
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
+            .unwrap();
+        let expected_capture: Vec<_> = (0..512)
+            .map(|index| {
+                let level = if index < 379 { 0.25 } else { 0.0 };
+                let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
+                [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25]
+            })
+            .collect();
+        let mut offset = 0;
+        for count in [1, 2, 17, 127, 256, 109] {
+            let mut block = vec![[9.0; 2]; count];
+            let mut selected = block.clone();
+            let mut views = [&mut selected[..]];
+            let mut partition_capture = OutputCapture::new(&partition_plan, &mut views);
+            partitioned
+                .render_with_capture(&mut block, &mut partition_capture)
+                .unwrap();
+            assert_eq!(block, expected[offset..offset + count]);
+            assert_eq!(
+                partition_capture.output(0).unwrap(),
+                &expected_capture[offset..offset + count]
+            );
+            offset += count;
+        }
     }
-    let mut gain_source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    gain_source.apply(SessionPlaybackCommand::Play).unwrap();
-    gain_source.render(&mut [[0.0; 2]; 128]).unwrap();
-    let mut retarget_snapshot = project.snapshot();
-    retarget_snapshot.tracks[0].gain = 0.25;
-    retarget_snapshot.tracks[0].balance = 0.5;
-    let retarget_project = Project::from_snapshot(retarget_snapshot).unwrap();
-    let retarget_revision = Arc::new(
-        PreparedRevision::prepare_with_instrument_registry(
-            &retarget_project,
-            &media,
-            Arc::new(hex_devices::SineTable::new()),
-            Some(revision.session()),
-            &registry,
-        )
-        .unwrap(),
-    );
-    let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
-    retarget.try_inherit_state_from(&mut gain_source).unwrap();
-    assert!(retarget.releases.is_empty());
-    assert!(retarget.tail_groups.iter().all(Option::is_none));
-    let retarget_plan = retarget
-        .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 16)
-        .unwrap();
-    let mut retarget_main = [[9.0; 2]; 16];
-    let mut retarget_track = retarget_main;
-    let mut retarget_buffers: [&mut [Frame]; 1] = [&mut retarget_track];
-    let mut retarget_capture = OutputCapture::new(&retarget_plan, &mut retarget_buffers);
-    retarget
-        .render_with_capture(&mut retarget_main, &mut retarget_capture)
-        .unwrap();
-    for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
-        let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
-        assert_eq!(*frame, expected);
-        assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+}
+
+#[test]
+fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order() {
+    for metered in [false, true] {
+        let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+        let definition = ContinuityInstrumentDefinition {
+            id: device_type,
+            levels: [0.25, 0.5],
+            release_frames: 4,
+        };
+        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+        let (project, media) = analytic_hybrid_fixture();
+        // Real hybrid prefix -> instrument -> nonlinear suffix -> track mix ->
+        // send -> return -> master. Neither metering nor capture may move a stage.
+        let utility = &hex_devices::utility::UTILITY_DEFINITION;
+        let prefix = utility
+            .patch_parameter(
+                &utility.default_state().unwrap(),
+                hex_devices::utility::parameter::GAIN,
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        let saturator = &hex_devices::saturator::SATURATOR_DEFINITION;
+        let suffix = saturator
+            .patch_parameter(
+                &saturator.default_state().unwrap(),
+                hex_devices::saturator::parameter::DRIVE,
+                ParameterValue::Float(6.0),
+            )
+            .unwrap();
+        let suffix = saturator
+            .patch_parameter(
+                &suffix,
+                hex_devices::saturator::parameter::CURVE,
+                ParameterValue::Choice(1),
+            )
+            .unwrap();
+        let mut routed = project.snapshot();
+        routed.next_id = 110;
+        routed.tracks[0].devices = vec![
+            DeviceSnapshot {
+                id: 100,
+                bypassed: false,
+                state: prefix,
+            },
+            DeviceSnapshot {
+                id: 101,
+                bypassed: false,
+                state: suffix,
+            },
+        ];
+        routed.tracks[0].instrument_position = Some(1);
+        routed.tracks[0].sends = vec![SendLevelSnapshot {
+            return_track: 102,
+            gain: 0.5,
+        }];
+        routed.return_tracks = vec![ReturnTrackSnapshot {
+            id: 102,
+            name: "oracle".into(),
+            gain: 0.25,
+            muted: false,
+            devices: vec![DeviceSnapshot {
+                id: 103,
+                bypassed: false,
+                state: utility.default_state().unwrap(),
+            }],
+        }];
+        let routed = Project::from_snapshot(routed).unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &routed,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut routed_runtime = linear(Arc::clone(&prepared));
+        routed_runtime.set_device_metering(metered);
+        let routed_plan = routed_runtime
+            .output_capture_plan(
+                &[
+                    OutputCaptureId::Track(routed.tracks()[0].id()),
+                    OutputCaptureId::Return(routed.return_tracks()[0].id()),
+                ],
+                512,
+            )
+            .unwrap();
+        let mut routed_main = [[0.0; 2]; 512];
+        let mut track_output = routed_main;
+        let mut return_output = routed_main;
+        let mut outputs: [&mut [Frame]; 2] = [&mut track_output, &mut return_output];
+        let mut routed_capture = OutputCapture::new(&routed_plan, &mut outputs);
+        routed_runtime
+            .render_with_capture(&mut routed_main, &mut routed_capture)
+            .unwrap();
+        let mut unobserved = linear(prepared);
+        let mut unobserved_pcm = routed_main;
+        unobserved.render(&mut unobserved_pcm).unwrap();
+        assert_eq!(routed_main, unobserved_pcm);
+        let gain = 2.0_f32;
+        for (index, main_frame) in routed_main.iter().enumerate() {
+            let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
+            let level = if index < 379 { 0.25 } else { 0.0 };
+            let processed = audio.map(|sample| {
+                ((f64::from(sample * gain + level)) * 10.0_f64.powf(6.0 / 20.0)).clamp(-1.0, 1.0)
+                    as f32
+            });
+            let track = [processed[0] * 0.5, processed[1] * 0.25];
+            let returned = track.map(|sample| sample * 0.5 * 0.25);
+            for channel in 0..2 {
+                assert!(
+                    (routed_capture.output(0).unwrap()[index][channel] - track[channel]).abs()
+                        < 1e-7
+                );
+                assert!(
+                    (routed_capture.output(1).unwrap()[index][channel] - returned[channel]).abs()
+                        < 1e-7
+                );
+                assert!(
+                    (main_frame[channel] - (track[channel] + returned[channel]) * 0.25).abs()
+                        < 1e-7
+                );
+            }
+        }
     }
-    // Actual public inheritance of a removed analytic owner, not a synthetic
-    // capture-only release. The old held gate is released at the cut.
-    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    old.render(&mut [[0.0; 2]; 128]).unwrap();
-    let id = project.tracks()[0].id();
-    let mut removed = project.snapshot();
-    removed.tracks.clear();
-    let removed = Project::from_snapshot(removed).unwrap();
-    let removed_revision = Arc::new(
-        PreparedRevision::prepare_with_instrument_registry(
-            &removed,
-            &media,
-            Arc::new(hex_devices::SineTable::new()),
-            None,
-            &registry,
-        )
-        .unwrap(),
-    );
-    let mut inherited = SessionPlayback::new(removed_revision).unwrap();
-    inherited.try_inherit_state_from(&mut old).unwrap();
-    let retired = inherited
-        .output_capture_plan(&[OutputCaptureId::Track(id)], 8)
-        .unwrap();
-    let mut main = [[9.0; 2]; 8];
-    let mut tail = main;
-    let mut buffers: [&mut [Frame]; 1] = [&mut tail];
-    let mut capture = OutputCapture::new(&retired, &mut buffers);
-    inherited
-        .render_with_capture(&mut main, &mut capture)
-        .unwrap();
-    for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
-        assert_eq!(*frame, if index < 4 { [0.125, 0.0625] } else { [0.0; 2] });
-        assert_eq!(main[index], frame.map(|sample| sample * 0.25));
+}
+
+#[test]
+fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
+    for metered in [false, true] {
+        let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+        let definition = ContinuityInstrumentDefinition {
+            id: device_type,
+            levels: [0.25, 0.5],
+            release_frames: 4,
+        };
+        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+        let (project, media) = analytic_hybrid_fixture();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(metered);
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
+            .unwrap();
+        let mut main = [[0.0; 2]; 512];
+        let mut captured = main;
+        let mut buffers: [&mut [Frame]; 1] = [&mut captured];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        let mut reference = linear(Arc::clone(&revision));
+        let mut expected = main;
+        reference.render(&mut expected).unwrap();
+        assert_eq!(main, expected);
+        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
+            let level = if index < 379 { 0.25 } else { 0.0 };
+            let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
+            let expected = [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25];
+            assert_eq!(*frame, expected);
+            assert_eq!(main[index], expected.map(|sample| sample * 0.25));
+        }
+        let mut gain_source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        gain_source.set_device_metering(metered);
+        gain_source.apply(SessionPlaybackCommand::Play).unwrap();
+        gain_source.render(&mut [[0.0; 2]; 128]).unwrap();
+        let mut retarget_snapshot = project.snapshot();
+        retarget_snapshot.tracks[0].gain = 0.25;
+        retarget_snapshot.tracks[0].balance = 0.5;
+        let retarget_project = Project::from_snapshot(retarget_snapshot).unwrap();
+        let retarget_revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &retarget_project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                Some(revision.session()),
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
+        retarget.set_device_metering(metered);
+        retarget.try_inherit_state_from(&mut gain_source).unwrap();
+        assert!(retarget.releases.is_empty());
+        assert!(retarget.tail_groups.iter().all(Option::is_none));
+        let retarget_plan = retarget
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 16)
+            .unwrap();
+        let mut retarget_main = [[9.0; 2]; 16];
+        let mut retarget_track = retarget_main;
+        let mut retarget_buffers: [&mut [Frame]; 1] = [&mut retarget_track];
+        let mut retarget_capture = OutputCapture::new(&retarget_plan, &mut retarget_buffers);
+        retarget
+            .render_with_capture(&mut retarget_main, &mut retarget_capture)
+            .unwrap();
+        for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
+            let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
+            assert_eq!(*frame, expected);
+            assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+        }
+        // Actual public inheritance of a removed analytic owner, not a synthetic
+        // capture-only release. The old held gate is released at the cut.
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        old.set_device_metering(metered);
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 128]).unwrap();
+        let id = project.tracks()[0].id();
+        let mut removed = project.snapshot();
+        removed.tracks.clear();
+        let removed = Project::from_snapshot(removed).unwrap();
+        let removed_revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &removed,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut inherited = SessionPlayback::new(removed_revision).unwrap();
+        inherited.set_device_metering(metered);
+        inherited.try_inherit_state_from(&mut old).unwrap();
+        let retired = inherited
+            .output_capture_plan(&[OutputCaptureId::Track(id)], 8)
+            .unwrap();
+        let mut main = [[9.0; 2]; 8];
+        let mut tail = main;
+        let mut buffers: [&mut [Frame]; 1] = [&mut tail];
+        let mut capture = OutputCapture::new(&retired, &mut buffers);
+        inherited
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
+            assert_eq!(*frame, if index < 4 { [0.125, 0.0625] } else { [0.0; 2] });
+            assert_eq!(main[index], frame.map(|sample| sample * 0.25));
+        }
+        assert_eq!(
+            inherited.render_with_capture(&mut main, &mut capture),
+            Err(SessionPlaybackError::Capture(
+                OutputCaptureError::MissingOwner
+            ))
+        );
+        assert_eq!(capture.valid_frames(), 0);
+        assert_eq!(inherited.performance_frame(), 136);
     }
-    assert_eq!(
-        inherited.render_with_capture(&mut main, &mut capture),
-        Err(SessionPlaybackError::Capture(
-            OutputCaptureError::MissingOwner
-        ))
-    );
-    assert_eq!(capture.valid_frames(), 0);
-    assert_eq!(inherited.performance_frame(), 136);
 }
 
 #[test]
@@ -676,5 +881,209 @@ fn capture_bounds_and_handoff_generation_exhaustion_refuse_before_runtime_mutati
             ),
             before
         );
+    }
+}
+#[test]
+fn metered_analytic_automation_capture_applies_time_varying_gain_once() {
+    use hex_project::{BeatTime, GainInterpolation, GainPoint};
+    let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+    snapshot.tracks.truncate(1);
+    snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        id: 30,
+        bypassed: false,
+        state: crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap(),
+    });
+    snapshot.tracks[0].instrument_position = Some(0);
+    snapshot.next_id = 31;
+    snapshot.tracks[0].gain_envelope = vec![
+        GainPoint {
+            beat: BeatTime::ZERO,
+            gain: 0.25,
+            outgoing: GainInterpolation::Linear,
+        },
+        GainPoint {
+            beat: BeatTime::ONE,
+            gain: 1.25,
+            outgoing: GainInterpolation::Step,
+        },
+    ];
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let revision = prepare_audio(&project);
+    let mut baseline = None;
+    for metered in [false, true] {
+        let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(metered);
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
+            .unwrap();
+        let mut main = [[0.0; 2]; 512];
+        let mut selected = main;
+        let mut buffers: [&mut [Frame]; 1] = [&mut selected];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
+            let gain = 0.25 + index as f32 / 24000.0;
+            let raw = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
+            let expected = [raw[0] * gain * 0.5, raw[1] * gain];
+            for channel in 0..2 {
+                assert!(
+                    (frame[channel] - expected[channel]).abs() < 1e-7,
+                    "captured gain at {index}"
+                );
+                assert!(
+                    (main[index][channel] - expected[channel] * 0.5).abs() < 1e-7,
+                    "main gain at {index}"
+                );
+            }
+        }
+        if let Some(previous) = baseline {
+            assert_eq!(main, previous);
+        } else {
+            baseline = Some(main);
+        }
+    }
+}
+#[test]
+fn typing_host_trim_and_automation_preserve_meter_and_capture_pcm() {
+    use crate::live_input::{PreparedTypingArm, TypingTarget};
+    use crate::typing_protocol::{Action, Token};
+    use hex_project::{BeatTime, Command, Created, Editor, GainInterpolation, GainPoint};
+    let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "typing".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let state = crate::patch_native_device_parameter_for_class(
+        crate::NativeDeviceClass::Instrument,
+        &state,
+        hex_lattice_contract::ParameterId::from_static(82),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: state.clone(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReplaceTrackGainEnvelope {
+            track,
+            points: vec![
+                GainPoint {
+                    beat: BeatTime::ZERO,
+                    gain: 0.25,
+                    outgoing: GainInterpolation::Linear,
+                },
+                GainPoint {
+                    beat: BeatTime::ONE,
+                    gain: 0.75,
+                    outgoing: GainInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    let target = TypingTarget {
+        project_generation: 0,
+        project_revision: 1,
+        track,
+        device,
+    };
+    let mut unity = None;
+    for gain_db in [0.0, -6.0] {
+        let mut model = Editor::new(editor.project().clone(), 8).unwrap();
+        model
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: state.clone().with_output_gain_db(gain_db).unwrap(),
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                model.project(),
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut unmetered = None;
+        for metered in [false, true] {
+            let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let input = runtime
+                .prepare_typing_input(
+                    PreparedTypingArm::prepare(model.project(), target).unwrap(),
+                    1,
+                )
+                .unwrap();
+            assert!(runtime.install_typing_input(input).is_ok());
+            runtime.set_device_metering(metered);
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime
+                .queue_typing_input(
+                    1,
+                    Action::On {
+                        owner: target.owner().unwrap(),
+                        token: Token {
+                            epoch: 1,
+                            serial: 1,
+                        },
+                        key: 9,
+                        pitch: 69,
+                        velocity: 100,
+                    },
+                )
+                .unwrap();
+            let plan = runtime
+                .output_capture_plan(&[OutputCaptureId::Track(track)], 64)
+                .unwrap();
+            let mut main = [[0.0; 2]; 64];
+            let mut selected = main;
+            let mut buffers: [&mut [Frame]; 1] = [&mut selected];
+            let mut capture = OutputCapture::new(&plan, &mut buffers);
+            runtime
+                .render_with_capture(&mut main, &mut capture)
+                .unwrap();
+            assert!(main.iter().flatten().any(|x| x.abs() > 1e-6));
+            assert_eq!(capture.output(0).unwrap(), &main);
+            if let Some(previous) = unmetered {
+                assert_eq!(main, previous);
+            } else {
+                unmetered = Some(main);
+            }
+            if gain_db == 0.0 {
+                unity = Some(main);
+            } else {
+                for (actual, expected) in main
+                    .iter()
+                    .flatten()
+                    .zip(unity.as_ref().unwrap().iter().flatten())
+                {
+                    assert!((*actual - *expected * 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+                }
+            }
+        }
     }
 }

@@ -103,6 +103,40 @@ impl SessionPlayback {
         self.render_internal(output, Some(pages), observer, None)
     }
 
+    /// Observe stereo Main after the existing full render/master/commit path.
+    /// Device observations may be speculative during rendering; Main is called
+    /// once only after success. Neither is an accepted native callback window.
+    /// The caller owns final output validation and must not publish early.
+    pub fn render_with_post_node_and_main_observers(
+        &mut self,
+        output: &mut [Frame],
+        post_node: Option<&mut crate::PostNodeObserver<'_>>,
+        main: Option<&mut crate::MainOutputObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_post_node_observer(output, post_node)?;
+        if let Some(main) = main {
+            main(output);
+        }
+        Ok(())
+    }
+
+    /// Borrowed-page counterpart. No second pass, persistent observer state or
+    /// callback-window/identity/rollback guarantee is introduced. Real-time
+    /// observers must not allocate, block, panic or retain their sample borrow.
+    pub fn render_with_pages_post_node_and_main_observers<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        post_node: Option<&mut crate::PostNodeObserver<'_>>,
+        main: Option<&mut crate::MainOutputObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_pages_and_post_node_observer(output, pages, post_node)?;
+        if let Some(main) = main {
+            main(output);
+        }
+        Ok(())
+    }
+
     fn render_internal<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -423,12 +457,19 @@ impl SessionPlayback {
                     .as_ref()
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
+            let metered_instrument = self.device_metering && track.instrument_id.is_some();
             let buffered = live_active
                 || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
-                || track.has_gain_automation();
+                || track.has_gain_automation()
+                || metered_instrument;
             let ordered = live_active || track.requires_ordered_processing();
+            let already_mixed = metered_instrument
+                && !ordered
+                && !stateful_effects
+                && track.sends().is_empty()
+                && !track.has_gain_automation();
             while self
                 .release_scratch
                 .get(release_cursor)
@@ -526,6 +567,9 @@ impl SessionPlayback {
                             )?;
                         }
                     }
+                    if self.device_metering {
+                        track.instrument_meter.observe_input(render_output);
+                    }
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
@@ -578,6 +622,10 @@ impl SessionPlayback {
                                 SessionPlaybackError::MutableInstrumentDiagnostic(error.0)
                             })?;
                     }
+                    track.apply_instrument_output_gain(render_output);
+                    if self.device_metering {
+                        track.instrument_meter.observe_output(render_output);
+                    }
                     if stateful_effects {
                         let chain = self
                             .device_chains
@@ -619,6 +667,19 @@ impl SessionPlayback {
                 } else {
                     for release in &self.release_scratch[first_release..release_cursor] {
                         if release.tail_group.is_none() {
+                            if already_mixed {
+                                render_release_captured(
+                                    release,
+                                    table,
+                                    self.revision.arrangement().shared_contexts(),
+                                    &self.retained_contexts,
+                                    &self.analytic_continuations,
+                                    performance_frame,
+                                    render_output,
+                                    None,
+                                )?;
+                                continue;
+                            }
                             render_release_raw(
                                 release,
                                 table,
@@ -630,6 +691,35 @@ impl SessionPlayback {
                             )?;
                         }
                     }
+                    if metered_instrument {
+                        let mut input = [[0.0; 2]; 256];
+                        let input = &mut input[..output.len()];
+                        render_route_source_chunk(
+                            RouteSourceContext {
+                                revision: &self.revision,
+                                route: self.route_scratch[index],
+                                historical_floor: self.historical_floor_for(index),
+                                suppressions: &self.suppression_scratch,
+                                continuations: &self.analytic_continuations,
+                                index,
+                                raw: track.has_gain_automation(),
+                                loop_pass: arrangement_loop_pass,
+                                timing: &timing,
+                                table,
+                            },
+                            &mut self.spans,
+                            performance_frame,
+                            arrangement_frame,
+                            input,
+                            pages.as_deref_mut(),
+                            SourceStage::Audio,
+                        )?;
+                        track.instrument_meter.observe_mixed(
+                            input,
+                            track.source_mix().channel_gain(),
+                            true,
+                        );
+                    }
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
@@ -638,7 +728,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: false,
+                            raw: track.has_gain_automation(),
                             loop_pass: arrangement_loop_pass,
                             timing: &timing,
                             table,
@@ -650,6 +740,13 @@ impl SessionPlayback {
                         pages.as_deref_mut(),
                         SourceStage::Whole,
                     )?;
+                    if metered_instrument {
+                        track.instrument_meter.observe_mixed(
+                            render_output,
+                            track.source_mix().channel_gain(),
+                            false,
+                        );
+                    }
                     let chain = self
                         .device_chains
                         .get_mut(index)
@@ -687,7 +784,11 @@ impl SessionPlayback {
                     } else {
                         mix
                     };
-                    if track.sends().is_empty() {
+                    if already_mixed {
+                        // Preserve the analytic per-voice fader summation order.
+                        output[frame_index][0] += source[0];
+                        output[frame_index][1] += source[1];
+                    } else if track.sends().is_empty() {
                         mix.add_frame(&mut output[frame_index], source);
                     } else {
                         let contribution = mix.apply_frame(source);
@@ -704,8 +805,24 @@ impl SessionPlayback {
                     }
                 }
                 if let Some(capture) = capture.as_mut() {
-                    for frame in render_output.iter_mut() {
-                        *frame = mix.apply_frame(*frame);
+                    if !already_mixed {
+                        for (frame_index, frame) in render_output.iter_mut().enumerate() {
+                            let mix = if track.has_gain_automation() {
+                                track.mix_at(
+                                    arrangement_frame
+                                        .checked_add(frame_index as u64)
+                                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                                )
+                            } else {
+                                mix
+                            };
+                            let mix = if live_active {
+                                mix.without_effects()
+                            } else {
+                                mix
+                            };
+                            *frame = mix.apply_frame(*frame);
+                        }
                     }
                     capture.add(capture_id, frame_offset, render_output)?;
                 }
@@ -768,7 +885,7 @@ impl SessionPlayback {
                         suppressions: &self.suppression_scratch,
                         continuations: &self.analytic_continuations,
                         index,
-                        raw: false,
+                        raw: track.has_gain_automation(),
                         loop_pass: arrangement_loop_pass,
                         timing: &timing,
                         table,

@@ -25,6 +25,9 @@ mod edit_cursor;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod edit_cursor_ui_test;
 mod export;
+mod external_audio_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod external_audio_drop_ui_test;
 mod fades;
 mod gain_lane;
 mod header;
@@ -47,6 +50,8 @@ mod midi_thumbnail;
 mod mixer;
 mod musical_time;
 mod musical_typing;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod output_meter_ui_test;
 mod overview;
 mod play_intent;
 mod project_recovery;
@@ -223,14 +228,17 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+// Text drafts own printable keys; modified commands retain their finalization paths.
+const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some("hex_editor")),
+        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
-        KeyBinding::new("s", ToggleSolo, Some("hex_editor")),
-        KeyBinding::new("shift-s", AdditiveSolo, Some("hex_editor")),
+        KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("shift-s", AdditiveSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("up", PreviousTrack, Some("hex_editor")),
         KeyBinding::new("down", NextTrack, Some("hex_editor")),
         KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
@@ -326,7 +334,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some("hex_editor")),
+        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
@@ -443,6 +451,8 @@ pub(super) struct EditorView {
     device_gesture_barriers: VecDeque<Request>,
     device_panel: device_panel::DevicePanelState,
     worker_requests_pending: usize,
+    audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
+    audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
     pending_seek_ticket: Option<u64>,
@@ -481,6 +491,7 @@ pub(super) struct EditorView {
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
+    output_meter_frame: Option<refresh::AudioFrame>,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -712,6 +723,8 @@ impl EditorView {
             device_gesture_barriers: VecDeque::new(),
             device_panel: device_panel::DevicePanelState::default(),
             worker_requests_pending: 0,
+            audio_batch: None,
+            audio_batch_progress: None,
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),
             pending_seek_ticket: None,
@@ -750,6 +763,7 @@ impl EditorView {
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
+            output_meter_frame: None,
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,

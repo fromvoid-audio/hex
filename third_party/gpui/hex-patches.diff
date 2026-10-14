@@ -1,48 +1,96 @@
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,12 @@
- }
-
- impl TestAppContext {
+@@ -122,0 +123,6 @@
 +    /// Cursor last delivered to the test platform, independent of hit testing.
 +    /// This is not evidence of physical native cursor appearance.
 +    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
 +        self.test_platform.cursor_style()
 +    }
 +
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -675,6 +681,12 @@
- }
-
- impl VisualTestContext {
+@@ -677,0 +684,23 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
 +        self.update(|window, _| window.rendered_frame.cursor_style(window))
 +    }
 +
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
++    /// Background of the last painted quad exactly matching a debug element's bounds.
++    /// Reads the completed scene without drawing or injecting pointer events.
++    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled)
++                .map(|quad| quad.background)
++        })
++    }
++
+--- a/src/elements/div.rs
++++ b/src/elements/div.rs
+@@ -1227,0 +1228 @@
++        accessibility: None,
+@@ -1236,0 +1238,4 @@
++    accessibility: Option<(
++        crate::AccessibilityDescriptor,
++        crate::accessibility::AccessibilityCallback,
++    )>,
+@@ -1240,0 +1246,11 @@
++    /// Expose this actual laid-out control through the native semantic boundary.
++    /// IDs must identify the owner lifetime, not an index or reusable label.
++    pub fn accessibility(
++        mut self,
++        descriptor: crate::AccessibilityDescriptor,
++        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
++    ) -> Self {
++        self.accessibility = Some((descriptor, std::rc::Rc::new(action)));
++        self
++    }
++
+@@ -1412,0 +1429,12 @@
++                if let Some((descriptor, callback)) = &self.accessibility {
++                    let bounds = bounds.intersect(&window.content_mask().bounds);
++                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
++                        window.next_frame.accessibility.insert(
++                            crate::AccessibilityNode {
++                                descriptor: descriptor.clone(),
++                                bounds,
++                            },
++                            callback.clone(),
++                        );
++                    }
++                }
+@@ -2906,0 +2935,12 @@
++impl Stateful<Div> {
++    /// Attach native semantics to this stateful control without changing its layout.
++    pub fn accessibility(
++        mut self,
++        descriptor: crate::AccessibilityDescriptor,
++        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
++    ) -> Self {
++        self.element = self.element.accessibility(descriptor, action);
++        self
++    }
++}
++
+--- a/src/gpui.rs
++++ b/src/gpui.rs
+@@ -9,0 +10,2 @@
++mod accessibility;
++pub use accessibility::*;
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
-@@ -361,6 +361,10 @@
- /// A mouse wheel event from the platform
- #[derive(Clone, Debug, Default)]
- pub struct ScrollWheelEvent {
+@@ -363,0 +364,4 @@
 +    /// True when the platform inverted device scroll direction for user preferences.
 +    /// Raw `delta` remains suitable for ordinary content scrolling.
 +    pub direction_inverted_from_device: bool,
 +
-     /// The position of the mouse on the window.
-     pub position: Point<Pixels>,
-
-@@ -372,6 +376,20 @@
-
-     /// The phase of the touch event.
-     pub touch_phase: TouchPhase,
+@@ -374,0 +379,14 @@
 +}
 +
 +impl ScrollWheelEvent {
@@ -57,165 +105,52 @@
 +            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
 +        }
 +    }
- }
-
- impl Sealed for ScrollWheelEvent {}
---- a/src/platform.rs
-+++ b/src/platform.rs
-@@ -1226,6 +1226,7 @@
-                 title: Default::default(),
-                 appears_transparent: Default::default(),
-                 traffic_light_position: Default::default(),
-+                hide_native_window_controls: Default::default(),
-             }),
-             focus: true,
-             show: true,
-@@ -1255,6 +1256,10 @@
-
-     /// The position of the macOS traffic light buttons
-     pub traffic_light_position: Option<Point<Pixels>>,
-+
-+    /// Hide the standard macOS close, minimize, and zoom buttons.
-+    /// This does not change the native titlebar or window movement/resizing flags.
-+    pub hide_native_window_controls: bool,
- }
-
- /// The kind of window to create
-@@ -1409,6 +1414,10 @@
-     /// The default cursor
-     Arrow,
-
-+    /// A persistent invisible cursor for a window-scoped pointer adjustment.
-+    /// macOS uses a transparent image, without changing NSCursor hide counts.
-+    Hidden,
-+
-     /// A text input cursor
-     /// corresponds to the CSS cursor value `text`
-     IBeam,
-@@ -1436,6 +1445,12 @@
-     /// A resize right cursor
-     /// corresponds to the CSS cursor value `e-resize`
-     ResizeRight,
-+
-+    /// A bracket cursor for trimming an item from its left edge.
-+    ResizeLeftBracket,
-+
-+    /// A bracket cursor for trimming an item from its right edge.
-+    ResizeRightBracket,
-
-     /// A resize cursor to the left and right
-     /// corresponds to the CSS cursor value `ew-resize`
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
-@@ -702,7 +702,7 @@
-         // Based on cursor names from chromium:
-         // https://github.com/chromium/chromium/blob/d3069cf9c973dc3627fa75f64085c6a86c8f41bf/ui/base/cursor/cursor_factory.cc#L113
-         match self {
+@@ -705 +705 @@
 -            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
 +            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
-             CursorStyle::IBeam => &["text", "xterm"],
-             CursorStyle::Crosshair => &["crosshair", "cross"],
-             CursorStyle::ClosedHand => &["closedhand", "grabbing", "hand2"],
-@@ -710,6 +710,8 @@
-             CursorStyle::PointingHand => &["pointer", "hand", "hand2"],
-             CursorStyle::ResizeLeft => &["w-resize", "left_side"],
-             CursorStyle::ResizeRight => &["e-resize", "right_side"],
+@@ -712,0 +713,2 @@
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
-             CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
-             CursorStyle::ResizeUp => &["n-resize", "top_side"],
-             CursorStyle::ResizeDown => &["s-resize", "bottom_side"],
---- a/src/platform/linux/wayland.rs
-+++ b/src/platform/linux/wayland.rs
-@@ -14,7 +14,7 @@
- impl CursorStyle {
-     pub(super) fn to_shape(self) -> Shape {
-         match self {
--            CursorStyle::Arrow => Shape::Default,
-+            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
-             CursorStyle::IBeam => Shape::Text,
-             CursorStyle::Crosshair => Shape::Crosshair,
-             CursorStyle::ClosedHand => Shape::Grabbing,
-@@ -22,6 +22,8 @@
-             CursorStyle::PointingHand => Shape::Pointer,
-             CursorStyle::ResizeLeft => Shape::WResize,
-             CursorStyle::ResizeRight => Shape::EResize,
-+            CursorStyle::ResizeLeftBracket => Shape::WResize,
-+            CursorStyle::ResizeRightBracket => Shape::EResize,
-             CursorStyle::ResizeLeftRight => Shape::EwResize,
-             CursorStyle::ResizeUp => Shape::NResize,
-             CursorStyle::ResizeDown => Shape::SResize,
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
-@@ -1788,6 +1788,7 @@
-                     if let Some(continuous) = continuous {
-                         if let Some(window) = state.mouse_focused_window.clone() {
-                             let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+@@ -1790,0 +1791 @@
 +                                direction_inverted_from_device: false,
-                                 position: state.mouse_location.unwrap(),
-                                 delta: ScrollDelta::Pixels(continuous),
-                                 modifiers: state.modifiers,
-@@ -1800,6 +1801,7 @@
-                         && let Some(window) = state.mouse_focused_window.clone()
-                     {
-                         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+@@ -1802,0 +1804 @@
 +                            direction_inverted_from_device: false,
-                             position: state.mouse_location.unwrap(),
-                             delta: ScrollDelta::Lines(discrete),
-                             modifiers: state.modifiers,
+--- a/src/platform/linux/wayland.rs
++++ b/src/platform/linux/wayland.rs
+@@ -17 +17 @@
+-            CursorStyle::Arrow => Shape::Default,
++            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
+@@ -24,0 +25,2 @@
++            CursorStyle::ResizeLeftBracket => Shape::WResize,
++            CursorStyle::ResizeRightBracket => Shape::EResize,
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
-@@ -2215,6 +2215,7 @@
-         scroll_delta
-     };
-     crate::ScrollWheelEvent {
+@@ -2217,0 +2218 @@
 +        direction_inverted_from_device: false,
-         position,
-         delta: ScrollDelta::Lines(delta),
-         modifiers,
 --- a/src/platform/mac/events.rs
 +++ b/src/platform/mac/events.rs
-@@ -233,7 +233,10 @@
-                         ScrollDelta::Lines(raw_data)
-                     };
-
+@@ -235,0 +236,2 @@
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
-                     Self::ScrollWheel(ScrollWheelEvent {
+@@ -236,0 +239 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
-                         position: point(
-                             px(native_event.locationInWindow().x as f32),
-                             window_height - px(native_event.locationInWindow().y as f32),
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
-@@ -19,12 +19,12 @@
-         NSApplication, NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
-         NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponse, NSOpenPanel, NSPasteboard,
-         NSPasteboardTypePNG, NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString,
+@@ -22 +22 @@
 -        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
 +        NSPasteboardTypeTIFF, NSImage, NSSavePanel, NSWindow,
-     },
-     base::{BOOL, NO, YES, id, nil, selector},
-     foundation::{
+@@ -26,2 +26,2 @@
 -        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
 -        NSUInteger, NSURL,
 +        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
 +        NSSize, NSString, NSUInteger, NSURL,
-     },
- };
- use core_foundation::{
-@@ -43,6 +43,7 @@
-     declare::ClassDecl,
-     msg_send,
-     runtime::{Class, Object, Sel},
+@@ -45,0 +46 @@
 +    rc::StrongPtr,
-     sel, sel_impl,
- };
- use parking_lot::Mutex;
-@@ -68,6 +69,95 @@
- const MAC_PLATFORM_IVAR: &str = "platform";
- static mut APP_CLASS: *const Class = ptr::null();
- static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
+@@ -70,0 +72,89 @@
 +
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
 +fn make_hidden_cursor() -> Option<StrongPtr> {
@@ -305,45 +240,21 @@
 +        Some(StrongPtr::new(cursor))
 +    }
 +}
-
- #[ctor]
- unsafe fn build_classes() {
-@@ -177,6 +267,9 @@
-     dock_menu: Option<id>,
-     menus: Option<Vec<OwnedMenu>>,
-     keyboard_mapper: Rc<MacKeyboardMapper>,
+@@ -179,0 +270,3 @@
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
- }
-
- impl Default for MacPlatform {
-@@ -197,6 +290,11 @@
-
-         let keyboard_layout = MacKeyboardLayout::new();
-         let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
+@@ -199,0 +293,5 @@
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
-
-         Self(Mutex::new(MacPlatformState {
-             headless,
-@@ -219,6 +317,9 @@
-             on_keyboard_layout_change: None,
-             menus: None,
-             keyboard_mapper,
+@@ -221,0 +320,3 @@
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-         }))
-     }
-
-@@ -970,8 +1071,23 @@
-                 return;
-             }
-
+@@ -973,2 +1074,17 @@
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
@@ -363,33 +274,15 @@
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-                 CursorStyle::IBeam => msg_send![class!(NSCursor), IBeamCursor],
-                 CursorStyle::Crosshair => msg_send![class!(NSCursor), crosshairCursor],
-                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],
-@@ -981,6 +1097,8 @@
-                 CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
-                 CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
-                 CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],
+@@ -983,0 +1100,2 @@
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-                 CursorStyle::ResizeColumn => msg_send![class!(NSCursor), resizeLeftRightCursor],
-                 CursorStyle::ResizeRow => msg_send![class!(NSCursor), resizeUpDownCursor],
-                 CursorStyle::ResizeUp => msg_send![class!(NSCursor), resizeUpCursor],
-@@ -1005,7 +1123,7 @@
-                 CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
-                 CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
-                 CursorStyle::None => unreachable!(),
+@@ -1008 +1126 @@
 -            };
 +            });
-
-             let old_cursor: id = msg_send![class!(NSCursor), currentCursor];
-             if new_cursor != old_cursor {
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
-@@ -159,6 +159,14 @@
-                 );
-                 decl.add_method(
-                     sel!(mouseDragged:),
+@@ -161,0 +162,8 @@
 +                    handle_view_event as extern "C" fn(&Object, Sel, id),
 +                );
 +                decl.add_method(
@@ -398,21 +291,9 @@
 +                );
 +                decl.add_method(
 +                    sel!(otherMouseDragged:),
-                     handle_view_event as extern "C" fn(&Object, Sel, id),
-                 );
-                 decl.add_method(
-@@ -405,6 +413,7 @@
-     last_key_equivalent: Option<KeyDownEvent>,
-     synthetic_drag_counter: usize,
-     traffic_light_position: Option<Point<Pixels>>,
+@@ -407,0 +416 @@
 +    hide_native_window_controls: bool,
-     transparent_titlebar: bool,
-     previous_modifiers_changed_event: Option<PlatformInput>,
-     keystroke_for_do_command: Option<Keystroke>,
-@@ -423,6 +432,25 @@
-
- impl MacWindowState {
-     fn move_traffic_light(&self) {
+@@ -425,0 +435,19 @@
 +        if self.hide_native_window_controls {
 +            unsafe {
 +                for button_kind in [
@@ -432,75 +313,80 @@
 +            return;
 +        }
 +
-         if let Some(traffic_light_position) = self.traffic_light_position {
-             if self.is_fullscreen() {
-                 // Moving traffic lights while fullscreen doesn't work,
-@@ -710,6 +738,9 @@
-                 traffic_light_position: titlebar
-                     .as_ref()
-                     .and_then(|titlebar| titlebar.traffic_light_position),
+@@ -712,0 +741,3 @@
 +                hide_native_window_controls: titlebar
 +                    .as_ref()
 +                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
-                 transparent_titlebar: titlebar
-                     .as_ref()
-                     .is_none_or(|titlebar| titlebar.appears_transparent),
+--- a/src/platform/test/platform.rs
++++ b/src/platform/test/platform.rs
+@@ -93,0 +94,4 @@
++    pub(crate) fn cursor_style(&self) -> CursorStyle {
++        *self.active_cursor.lock()
++    }
++
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
-@@ -553,6 +553,7 @@
-         };
-         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+@@ -555,0 +556 @@
 +            direction_inverted_from_device: false,
-             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
-             delta: ScrollDelta::Lines(match modifiers.shift {
-                 true => Point {
-@@ -599,6 +600,7 @@
-         };
-         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-         let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
+@@ -601,0 +603 @@
 +            direction_inverted_from_device: false,
-             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
-             delta: ScrollDelta::Lines(Point {
-                 x: wheel_distance,
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
-@@ -124,6 +124,8 @@
-         CursorStyle::PointingHand | CursorStyle::DragLink => (&HAND, IDC_HAND),
-         CursorStyle::ResizeLeft
-         | CursorStyle::ResizeRight
+@@ -126,0 +127,2 @@
 +        | CursorStyle::ResizeLeftBracket
 +        | CursorStyle::ResizeRightBracket
-         | CursorStyle::ResizeLeftRight
-         | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
-         CursorStyle::ResizeUp
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -491,0 +492,6 @@
++    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
++    fn on_accessibility_action(
++        &self,
++        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++    ) {
++    }
+@@ -1228,0 +1235 @@
++                hide_native_window_controls: Default::default(),
+@@ -1257,0 +1265,4 @@
++
++    /// Hide the standard macOS close, minimize, and zoom buttons.
++    /// This does not change the native titlebar or window movement/resizing flags.
++    pub hide_native_window_controls: bool,
+@@ -1411,0 +1423,4 @@
++    /// A persistent invisible cursor for a window-scoped pointer adjustment.
++    /// macOS uses a transparent image, without changing NSCursor hide counts.
++    Hidden,
++
+@@ -1438,0 +1454,6 @@
++
++    /// A bracket cursor for trimming an item from its left edge.
++    ResizeLeftBracket,
++
++    /// A bracket cursor for trimming an item from its right edge.
++    ResizeRightBracket,
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
-@@ -309,7 +309,7 @@
-             unit: &Option<u16>,
-         ) -> Vec<taffy::GridTemplateComponent<T>> {
-             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
+@@ -312 +312 @@
 -            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
 +            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
-                 .unwrap_or_default()
-         }
-
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -211,0 +212 @@
++                        && !window.rendered_frame.accessibility.invalid
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -752,6 +752,9 @@
-         self.tab_stops.clear();
-         self.focus = None;
-
+@@ -667,0 +668 @@
++    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
+@@ -691,0 +693 @@
++    accessibility_index: usize,
+@@ -713,0 +716 @@
++            accessibility: Default::default(),
+@@ -740,0 +744 @@
++        self.accessibility = Default::default();
+@@ -753,0 +758,3 @@
++
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-+
-         #[cfg(any(feature = "inspector", debug_assertions))]
-         {
-             self.next_inspector_instance_ids.clear();
-@@ -815,11 +818,21 @@
-     }
- }
-
+@@ -817,0 +825,9 @@
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -510,37 +396,26 @@
 +    }
 +}
 +
- /// Holds the state for a specific window.
- pub struct Window {
-     pub(crate) handle: AnyWindowHandle,
-     pub(crate) invalidator: WindowInvalidator,
-     pub(crate) removed: bool,
+@@ -822,0 +839 @@
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-     pub(crate) platform_window: Box<dyn PlatformWindow>,
-     display_id: Option<DisplayId>,
-     sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -1095,6 +1108,9 @@
-                 handle
-                     .update(&mut cx, |_, window, cx| {
-                         window.active.set(active);
+@@ -1097,0 +1115,3 @@
 +                        if !active {
 +                            window.hidden_cursor_restore.take();
 +                        }
-                         window.modifiers = window.platform_window.modifiers();
-                         window.capslock = window.platform_window.capslock();
-                         window
-@@ -1208,6 +1224,7 @@
-             handle,
-             invalidator,
-             removed: false,
+@@ -1123,0 +1144,10 @@
++        platform_window.on_accessibility_action({
++            let mut cx = cx.to_async();
++            Box::new(move |request: crate::AccessibilityRequest| {
++                handle
++                    .update(&mut cx, |_, window, cx| {
++                        window.perform_accessibility_request(&request, cx)
++                    })
++                    .unwrap_or(false)
++            })
++        });
+@@ -1210,0 +1241 @@
 +            hidden_cursor_restore: None,
-             platform_window,
-             display_id,
-             sprite_atlas,
-@@ -1371,8 +1388,16 @@
-         }
-     }
-
+@@ -1373,0 +1405,7 @@
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -548,16 +423,81 @@
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-     /// Close this window.
-     pub fn remove_window(&mut self) {
+@@ -1375,0 +1414 @@
 +        self.hidden_cursor_restore.take();
-         self.removed = true;
-     }
-
-@@ -3524,14 +3549,27 @@
-         subscription
-     }
-
+@@ -1910,0 +1950,55 @@
++    /// Current bounded, actually mounted semantic nodes in rendered order.
++    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
++        self.rendered_frame
++            .accessibility
++            .nodes
++            .iter()
++            .filter(|_| !self.rendered_frame.accessibility.invalid)
++            .map(|(node, _)| node)
++    }
++
++    /// Revalidate a native request's exact acknowledged revision before UI dispatch.
++    pub fn perform_accessibility_request(
++        &mut self,
++        request: &crate::AccessibilityRequest,
++        cx: &mut App,
++    ) -> bool {
++        let callback = self
++            .rendered_frame
++            .accessibility
++            .nodes
++            .iter()
++            .find(|(node, _)| {
++                node.descriptor.id == request.id && node.descriptor.revision == request.revision
++            })
++            .filter(|(node, _)| {
++                !self.rendered_frame.accessibility.invalid
++                    && node.descriptor.permits(&request.action)
++            })
++            .map(|(_, callback)| callback.clone());
++        callback.is_some_and(|callback| callback(request, self, cx))
++    }
++
++    /// Dispatch a UI action using the current published revision, still checking the live owner.
++    pub fn perform_accessibility_action(
++        &mut self,
++        id: crate::AccessibilityId,
++        action: &crate::AccessibilityAction,
++        cx: &mut App,
++    ) -> bool {
++        let revision = self
++            .accessibility_nodes()
++            .find(|node| node.descriptor.id == id)
++            .map(|node| node.descriptor.revision);
++        revision.is_some_and(|revision| {
++            self.perform_accessibility_request(
++                &crate::AccessibilityRequest {
++                    id,
++                    revision,
++                    action: action.clone(),
++                },
++                cx,
++            )
++        })
++    }
++
+@@ -1943,0 +2038,4 @@
++        self.platform_window.publish_accessibility(
++            self.accessibility_nodes().cloned().collect(),
++            self.rendered_frame.accessibility.invalid,
++        );
+@@ -2222,0 +2321 @@
++            accessibility_index: self.next_frame.accessibility.nodes.len(),
+@@ -2232,0 +2332,8 @@
++        for (node, callback) in &self.rendered_frame.accessibility.nodes
++            [range.start.accessibility_index..range.end.accessibility_index]
++        {
++            self.next_frame
++                .accessibility
++                .insert(node.clone(), callback.clone());
++        }
++        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
+@@ -3527,7 +3634,11 @@
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -576,29 +516,260 @@
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-             cx.platform.set_cursor_style(style);
+@@ -3534,0 +3646,10 @@
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
-+                cx.platform.set_cursor_style(if style == CursorStyle::Hidden {
-+                    CursorStyle::Arrow
-+                } else {
-+                    style
-+                });
++                cx.platform
++                    .set_cursor_style(if style == CursorStyle::Hidden {
++                        CursorStyle::Arrow
++                    } else {
++                        style
++                    });
 +            }
-         }
-     }
-
---- a/src/platform/test/platform.rs
-+++ b/src/platform/test/platform.rs
-@@ -91,6 +91,10 @@
- }
-
- impl TestPlatform {
-+    pub(crate) fn cursor_style(&self) -> CursorStyle {
-+        *self.active_cursor.lock()
+--- /dev/null
++++ b/src/accessibility.rs
+@@ -0,0 +1,243 @@
++//! Bounded semantic control snapshots. Native backends never retain application pointers.
++use crate::{App, Bounds, Pixels, SharedString, Window};
++use std::{
++    rc::Rc,
++    sync::{Arc, Weak},
++};
++
++/// A control-owned lifetime lease. Native elements hold only a weak lease.
++#[derive(Clone, Debug, Default)]
++pub struct AccessibilityLifetime(Arc<()>);
++impl AccessibilityLifetime {
++    /// Associate a descriptor with this actual control owner.
++    pub fn weak(&self) -> Weak<()> {
++        Arc::downgrade(&self.0)
++    }
++}
++
++/// Maximum semantic controls published by one window.
++pub const MAX_ACCESSIBILITY_NODES: usize = 4096;
++/// Maximum UTF-8 bytes in a semantic label or displayed value.
++pub const MAX_ACCESSIBILITY_TEXT_BYTES: usize = 4096;
++/// Aggregate owned UTF-8 bytes in one semantic snapshot (two MiB).
++pub const MAX_ACCESSIBILITY_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
++
++/// An owner-lifetime identity, scoped to its window. Never reuse it for a new owner.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct AccessibilityId(pub u64);
++
++/// User-facing semantics of a control, independent of its painted shape.
++#[derive(Clone, Debug, PartialEq)]
++pub enum AccessibilityValue {
++    /// A finite adjustable canonical value and its actual formatted readout.
++    Number {
++        /// Canonical current value.
++        value: f64,
++        /// Inclusive minimum.
++        min: f64,
++        /// Inclusive maximum.
++        max: f64,
++        /// Existing control formatter output, including units.
++        text: SharedString,
++    },
++    /// A boolean control.
++    Toggle(bool),
++    /// A bounded ordered choice control.
++    Choice {
++        /// Current option.
++        selected: usize,
++        /// Original visible option order.
++        options: Vec<SharedString>,
++    },
++}
++
++/// An action requested by assistive technology. The control revalidates it at execution.
++#[derive(Clone, Debug, PartialEq)]
++pub enum AccessibilityAction {
++    /// Move keyboard focus without editing the parameter.
++    Focus,
++    /// Activate a boolean or open a choice control.
++    Press,
++    /// Apply the control's existing positive keyboard step.
++    Increment,
++    /// Apply the control's existing negative keyboard step.
++    Decrement,
++    /// Set a finite canonical numeric value using the ordinary edit transaction.
++    SetNumber(f64),
++    /// Select an existing option through the ordinary choice event.
++    Choose(usize),
++}
++
++/// A semantic descriptor. Geometry is supplied only by actual layout, separately.
++#[derive(Clone, Debug)]
++pub struct AccessibilityDescriptor {
++    /// Stable owner identity (a generational GPUI entity ID is suitable).
++    pub id: AccessibilityId,
++    /// Acknowledged owner revision; queued requests must match it exactly.
++    pub revision: u64,
++    /// Weak actual-owner lifetime; native caches must retire expired owners.
++    pub lifetime: Weak<()>,
++    /// Human-readable parameter name, never a machine identifier.
++    pub name: SharedString,
++    /// Actual control value and domain.
++    pub value: AccessibilityValue,
++    /// Whether edits are currently permitted.
++    pub enabled: bool,
++    /// Whether the actual control currently owns keyboard focus.
++    pub focused: bool,
++    /// Explicit draft/pending status, never folded into the acknowledged value.
++    pub status: Option<SharedString>,
++}
++
++/// A fully laid-out semantic node. Offscreen controls must not invent this frame.
++#[derive(Clone, Debug)]
++pub struct AccessibilityNode {
++    /// Current control semantics.
++    pub descriptor: AccessibilityDescriptor,
++    /// Actual viewport-clipped window content bounds.
++    pub bounds: Bounds<Pixels>,
++}
++
++impl AccessibilityDescriptor {
++    /// Reject invalid external semantics before publication or action dispatch.
++    pub fn is_valid(&self) -> bool {
++        let text_ok = |text: &SharedString| {
++            !text.is_empty() && text.len() <= MAX_ACCESSIBILITY_TEXT_BYTES && !text.contains('\0')
++        };
++        self.id.0 != 0
++            && self.lifetime.strong_count() > 0
++            && text_ok(&self.name)
++            && self.status.as_ref().is_none_or(text_ok)
++            && match &self.value {
++                AccessibilityValue::Number {
++                    value,
++                    min,
++                    max,
++                    text,
++                } => {
++                    value.is_finite()
++                        && min.is_finite()
++                        && max.is_finite()
++                        && min < max
++                        && (*min..=*max).contains(value)
++                        && text_ok(text)
++                }
++                AccessibilityValue::Toggle(_) => true,
++                AccessibilityValue::Choice { selected, options } => {
++                    !options.is_empty()
++                        && options.len() <= 128
++                        && *selected < options.len()
++                        && options.iter().all(text_ok)
++                }
++            }
 +    }
 +
-     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
-         #[cfg(target_os = "windows")]
-         let bitmap_factory = unsafe {
++    fn text_bytes(&self) -> usize {
++        self.name.len()
++            + self.status.as_ref().map_or(0, |text| text.len())
++            + match &self.value {
++                AccessibilityValue::Number { text, .. } => text.len(),
++                AccessibilityValue::Toggle(_) => 0,
++                AccessibilityValue::Choice { options, .. } => {
++                    options.iter().map(|text| text.len()).sum()
++                }
++            }
++    }
++
++    /// Check action shape against this exact current descriptor, not a stale native copy.
++    pub fn permits(&self, action: &AccessibilityAction) -> bool {
++        if !self.is_valid() || !self.enabled {
++            return false;
++        }
++        match (action, &self.value) {
++            (AccessibilityAction::Focus, _) => true,
++            (
++                AccessibilityAction::Press,
++                AccessibilityValue::Toggle(_) | AccessibilityValue::Choice { .. },
++            ) => true,
++            (
++                AccessibilityAction::Increment | AccessibilityAction::Decrement,
++                AccessibilityValue::Number { .. },
++            ) => true,
++            (AccessibilityAction::SetNumber(v), AccessibilityValue::Number { min, max, .. }) => {
++                v.is_finite() && (*min..=*max).contains(v)
++            }
++            (AccessibilityAction::Choose(index), AccessibilityValue::Choice { options, .. }) => {
++                *index < options.len()
++            }
++            _ => false,
++        }
++    }
++}
++
++pub(crate) type AccessibilityCallback =
++    Rc<dyn Fn(&AccessibilityRequest, &mut Window, &mut App) -> bool>;
++
++#[derive(Default)]
++pub(crate) struct AccessibilityFrame {
++    pub nodes: Vec<(AccessibilityNode, AccessibilityCallback)>,
++    pub invalid: bool,
++    text_bytes: usize,
++}
++
++impl AccessibilityFrame {
++    pub fn insert(&mut self, node: AccessibilityNode, callback: AccessibilityCallback) {
++        let bounds = node.bounds;
++        let valid_bounds = [
++            bounds.origin.x.0,
++            bounds.origin.y.0,
++            bounds.size.width.0,
++            bounds.size.height.0,
++        ]
++        .iter()
++        .all(|v| v.is_finite())
++            && bounds.size.width.0 > 0.0
++            && bounds.size.height.0 > 0.0;
++        if self.invalid {
++            return;
++        }
++        if !node.descriptor.is_valid()
++            || node.descriptor.text_bytes()
++                > MAX_ACCESSIBILITY_SNAPSHOT_BYTES.saturating_sub(self.text_bytes)
++            || !valid_bounds
++            || self.nodes.len() >= MAX_ACCESSIBILITY_NODES
++            || self
++                .nodes
++                .iter()
++                .any(|(n, _)| n.descriptor.id == node.descriptor.id)
++        {
++            // Refuse the whole invalid snapshot; never expose a misleading partial tree.
++            self.invalid = true;
++            return;
++        }
++        self.text_bytes += node.descriptor.text_bytes();
++        self.nodes.push((node, callback));
++    }
++}
++
++/// Owner-supplied acknowledged value and current admission guard.
++/// The guard runs only on the GPUI UI thread; native snapshots never receive it.
++#[derive(Clone)]
++pub struct AccessibilityBinding {
++    /// Exact acknowledged project/control revision.
++    pub revision: u64,
++    /// Actual human-readable parameter name supplied by its owner.
++    pub name: SharedString,
++    /// Acknowledged value, independent of local/pending painted drafts.
++    pub value: AccessibilityValue,
++    /// Current pending canonical transaction.
++    pub pending: bool,
++    /// Revalidate stable ownership, revision and current pending/gesture barriers.
++    pub guard: Rc<dyn Fn(&App) -> bool>,
++}
++
++/// A bounded native request; acceptance means dispatch, not canonical commit.
++#[derive(Clone, Debug)]
++pub struct AccessibilityRequest {
++    /// Captured owner identity.
++    pub id: AccessibilityId,
++    /// Captured acknowledged revision.
++    pub revision: u64,
++    /// Typed payload, revalidated against current semantics.
++    pub action: AccessibilityAction,
++}

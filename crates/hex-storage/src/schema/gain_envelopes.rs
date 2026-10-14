@@ -49,7 +49,7 @@ struct TrackV21 {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GainPointDto {
+pub(super) struct GainPointDto {
     beat_raw: u64,
     gain: f32,
     outgoing: InterpolationDto,
@@ -89,7 +89,7 @@ fn bounded_tracks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<TrackV21
     }
     d.deserialize_seq(Tracks)
 }
-fn bounded_gain_points<'de, D: serde::Deserializer<'de>>(
+pub(super) fn bounded_gain_points<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Vec<GainPointDto>, D::Error> {
     struct Points;

@@ -58,6 +58,16 @@ impl PostNodeIdentity {
     }
 }
 
+pub use hex_lattice::DeviceMeter;
+pub use native_device_view::DEVICE_OUTPUT_GAIN;
+
+/// Borrowed stereo Main after master gain from a successful engine render.
+/// This is candidate telemetry, not accepted hardware output. Callers must
+/// validate their final output/window before publication. Do not allocate,
+/// block, panic or retain the sample borrow in a real-time observer.
+/// Paused/empty successful renders may supply silence/an empty slice.
+pub type MainOutputObserver<'observer> = dyn for<'frames> FnMut(&'frames [Frame]) + 'observer;
+
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
@@ -193,6 +203,16 @@ pub fn patch_native_device_parameter_for_class(
     parameter: hex_lattice_contract::ParameterId,
     value: hex_lattice_contract::ParameterValue,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    if parameter == native_device_view::DEVICE_OUTPUT_GAIN.id {
+        native_device_view_for_class(class, state)?;
+        let hex_lattice_contract::ParameterValue::Float(gain) = value else {
+            return Err(Invalid("output gain must be a finite db value"));
+        };
+        return state
+            .clone()
+            .with_output_gain_db(gain)
+            .map_err(map_device_contract_error);
+    }
     let result = match class {
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
@@ -521,6 +541,8 @@ pub struct Track {
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_bypassed: bool,
+    instrument_output_gain: f32,
+    instrument_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
     mutable_instrument: bool,
     mutable_looping_source: bool,
 }
@@ -658,6 +680,8 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_output_gain: 1.0,
+            instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
         })
@@ -676,9 +700,7 @@ impl Track {
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
         device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
     ) -> Result<Self, Invalid> {
-        let stateful = device_chain
-            .iter()
-            .any(|device| device.definition.is_some());
+        let stateful = !device_chain.is_empty();
         let ordered = instrument_position != 0;
         let segmented =
             stateful || (ordered && (ordered_prefix.is_some() || ordered_suffix.is_some()));
@@ -704,6 +726,8 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_output_gain: 1.0,
+            instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
         })
@@ -716,12 +740,25 @@ impl Track {
         self.instrument_id = instrument.map(hex_project::Device::id);
         self.instrument_state = instrument.map(|device| device.state().clone());
         self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
+        self.instrument_output_gain =
+            instrument.map_or(1.0, |device| device.state().output_gain_linear());
+        if self.instrument_output_gain != 1.0 {
+            self.source_mix = PreparedTrackMix {
+                channel_gain: [1.0; 2],
+                effects: None,
+                muted: false,
+            };
+        }
         self
     }
 
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
         self.instrument_id == other.instrument_id
-            && self.instrument_state == other.instrument_state
+            && match (&self.instrument_state, &other.instrument_state) {
+                (Some(a), Some(b)) => a.processing_eq(b),
+                (None, None) => true,
+                _ => false,
+            }
             && self.instrument_bypassed == other.instrument_bypassed
     }
     pub(crate) fn typing_arrangement_sources_match(&self, other: &Self) -> bool {
@@ -823,10 +860,8 @@ impl Track {
         &self.sends
     }
 
-    pub(crate) fn has_stateful_devices(&self) -> bool {
-        self.device_chain
-            .iter()
-            .any(|device| device.definition.is_some())
+    pub(crate) fn has_device_chain(&self) -> bool {
+        !self.device_chain.is_empty()
     }
 
     pub(crate) fn stateful_device_count(&self) -> usize {
@@ -854,10 +889,23 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        self.mutable_instrument
-            || self.has_stateful_devices()
+        (self.instrument_id.is_some() && self.instrument_output_gain != 1.0)
+            || self.mutable_instrument
+            || self.has_device_chain()
             || (self.has_ordered_instrument()
                 && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
+    }
+
+    pub(crate) fn apply_instrument_output_gain(&self, frames: &mut [Frame]) {
+        if !self.instrument_bypassed {
+            let gain = self.instrument_output_gain;
+            if gain != 1.0 {
+                for frame in frames {
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                }
+            }
+        }
     }
 
     pub(crate) fn apply_ordered_prefix(&self, frames: &mut [Frame]) {
@@ -889,7 +937,7 @@ impl Track {
                         })
                     })
         } else {
-            self.has_stateful_devices()
+            self.has_device_chain()
         }
     }
 
@@ -1721,6 +1769,32 @@ impl Project {
         self.audible_end_frame
     }
 
+    pub fn device_meter(
+        &self,
+        device_id: u64,
+    ) -> Option<&std::sync::Arc<hex_lattice::DeviceMeter>> {
+        for track in &self.tracks {
+            if track
+                .instrument_id
+                .is_some_and(|id| id.value() == device_id)
+            {
+                return Some(&track.instrument_meter);
+            }
+            if let Some(device) = track
+                .device_chain
+                .iter()
+                .find(|device| device.device_id == device_id)
+            {
+                return Some(&device.meter);
+            }
+        }
+        self.return_buses
+            .iter()
+            .flat_map(|bus| bus.device_chain.iter())
+            .find(|device| device.device_id == device_id)
+            .map(|device| &device.meter)
+    }
+
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
@@ -2131,7 +2205,7 @@ impl RendererRuntime {
             return Ok(());
         }
         for (index, track) in project.tracks.iter().enumerate() {
-            let stateful = track.has_stateful_devices();
+            let stateful = track.has_device_chain();
             if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
                 let mut chain = if stateful {
                     Some(
@@ -2182,6 +2256,7 @@ impl RendererRuntime {
                             track.apply_ordered_prefix(target);
                         }
                         track.render_instrument_range(start, end, target, None);
+                        track.apply_instrument_output_gain(target);
                         if let Some(chain) = chain.as_deref_mut() {
                             let effect_count = chain.len();
                             chain
@@ -2257,7 +2332,7 @@ impl RendererRuntime {
                 scratch[..count].fill([0.0; 2]);
             }
             for (track_index, track) in project.tracks.iter().enumerate() {
-                let stateful = track.has_stateful_devices();
+                let stateful = track.has_device_chain();
                 let ordered = track.requires_ordered_processing();
                 if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
                     if let Some(provider) = pages.as_deref_mut() {
@@ -2298,6 +2373,7 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.render_instrument_range(start, end, rendered, None);
+                    track.apply_instrument_output_gain(rendered);
                     if stateful {
                         let chain = self
                             .device_chains
@@ -2408,6 +2484,19 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Enable effect telemetry explicitly for headless diagnostics. Offline
+    /// exports leave this disabled; native instrument telemetry uses Playback.
+    pub fn set_effect_metering(&mut self, enabled: bool) {
+        for chain in self
+            .runtime
+            .device_chains
+            .iter_mut()
+            .chain(self.runtime.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
+        }
+    }
+
     pub fn play(&mut self) {
         self.playing = true;
     }
@@ -2433,6 +2522,36 @@ impl<'a> Renderer<'a> {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.runtime
             .render_without_pages(self.project, &mut self.position, self.playing, output)
+    }
+
+    /// Observe the same completed render once, without another source pass.
+    /// No observation occurs on error; observer failure/panic has no rollback
+    /// guarantee because the existing render has already completed.
+    pub fn render_with_main_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut MainOutputObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        self.render(output)?;
+        if let Some(observer) = observer {
+            observer(output);
+        }
+        Ok(())
+    }
+
+    /// Streamed counterpart; retains the existing source-local miss policy.
+    /// The sample borrow is never retained and no telemetry storage is added.
+    pub fn render_with_pages_and_main_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut MainOutputObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        self.render_with_pages(output, pages)?;
+        if let Some(observer) = observer {
+            observer(output);
+        }
+        Ok(())
     }
 
     /// Render with a borrowed page view. Missing streamed pages contribute

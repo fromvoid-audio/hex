@@ -6,6 +6,7 @@ mod diagnostics;
 pub use diagnostics::install_session_log;
 mod editor;
 mod layout;
+pub mod output_meter;
 mod theme;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::{AudioOutput, PreparedOutput};

@@ -317,7 +317,7 @@ impl VerifiedWavReader {
             let decode_count = usize::try_from(available.min(requested))
                 .map_err(|_| ImportError::Invalid("window frame count exceeds address space"))?;
             let block_align = layout.format.block_align;
-            let mut frame_bytes = [0_u8; 8];
+            let mut frame_bytes = [0_u8; 16];
             let byte_offset = start_frame
                 .checked_mul(block_align as u64)
                 .and_then(|offset| layout.data_offset.checked_add(offset))

@@ -1,11 +1,11 @@
 use crate::{
     ControlStyle, DialLayout, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, Selector, Toggle,
+    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
 };
 use gpui::{
-    AppContext, Context, Empty, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers,
-    MouseButton, MouseDownEvent, ParentElement, Render, Styled, TestAppContext, VisualTestContext,
-    Window, div, point, px, size,
+    AppContext, Context, Empty, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    Modifiers, MouseButton, MouseDownEvent, ParentElement, Render, Styled, TestAppContext,
+    VisualTestContext, Window, div, point, px, size,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -86,6 +86,54 @@ struct DiscreteTestRoot {
     toggle: Entity<Toggle>,
     selector: Entity<Selector>,
     key_events: Rc<Cell<usize>>,
+}
+
+struct ToggleTraversalRoot {
+    first: Entity<Toggle>,
+    middle: Entity<Toggle>,
+    last: Entity<Toggle>,
+}
+
+struct TabAvailabilityRoot {
+    toggle: Entity<Toggle>,
+    selector: Entity<Selector>,
+    numeric: Entity<NumericControl>,
+    graph: Entity<ResponseGraph>,
+}
+
+impl Render for TabAvailabilityRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.toggle.clone())
+            .child(self.selector.clone())
+            .child(self.numeric.clone())
+            .child(self.graph.clone())
+    }
+}
+
+impl Render for ToggleTraversalRoot {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" {
+                    cx.stop_propagation();
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                }
+            }))
+            .child(self.first.clone())
+            .child(self.middle.clone())
+            .child(self.last.clone())
+    }
 }
 
 struct ClippedSelectorRoot {
@@ -341,6 +389,188 @@ fn open_discrete_controls(
         })
         .expect("discrete test window");
     (handle, toggle, selector, key_events)
+}
+
+#[gpui::test]
+fn tab_navigation_skips_runtime_disabled_toggle_and_restores_owner_opt_in(cx: &mut TestAppContext) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let (first, middle, last) = cx
+        .update_window(handle, |_, window, cx| {
+            let first = cx
+                .new(|cx| Toggle::new(cx, "first-toggle", "first", false, STYLE).expect("toggle"));
+            let middle = cx.new(|cx| {
+                Toggle::new(cx, "middle-toggle", "middle", false, STYLE).expect("toggle")
+            });
+            let last =
+                cx.new(|cx| Toggle::new(cx, "last-toggle", "last", false, STYLE).expect("toggle"));
+            for toggle in [&first, &middle, &last] {
+                toggle.update(cx, |toggle, cx| toggle.set_tab_navigation(true, cx));
+            }
+            window.replace_root(cx, |_, _| ToggleTraversalRoot {
+                first: first.clone(),
+                middle: middle.clone(),
+                last: last.clone(),
+            });
+            (first, middle, last)
+        })
+        .expect("toggle traversal window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.0), px(100.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let first_focus = first.read_with(cx, |toggle, app| toggle.focus_handle(app));
+    visual.update(|window, _| window.focus(&first_focus));
+    visual.simulate_keystrokes("space");
+    assert!(first.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| toggle.set_enabled(false, cx));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(last.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(!middle.read_with(cx, |toggle, _| toggle.checked()));
+
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("space");
+    assert!(!first.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(!middle.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| toggle.set_enabled(true, cx));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(middle.read_with(cx, |toggle, _| toggle.checked()));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(!last.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| {
+        toggle.set_enabled(false, cx);
+        toggle.set_tab_navigation(false, cx);
+        toggle.set_enabled(true, cx);
+    });
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("space");
+    assert!(first.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(middle.read_with(cx, |toggle, _| toggle.checked()));
+}
+
+fn is_tab_stop<T: Focusable>(entity: &Entity<T>, cx: &TestAppContext) -> bool {
+    entity.read_with(cx, |control, app| control.focus_handle(app).tab_stop)
+}
+
+#[gpui::test]
+fn availability_changes_recompute_all_widget_tab_stops(cx: &mut TestAppContext) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let spec = NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<String>)
+        .expect("numeric spec");
+    let (toggle, selector, numeric, graph) = cx
+        .update_window(handle, |_, window, cx| {
+            let toggle = cx.new(|cx| {
+                Toggle::new(cx, "availability-toggle", "toggle", false, STYLE).expect("toggle")
+            });
+            let selector = cx.new(|cx| {
+                Selector::new(cx, "availability-selector", ["one", "two"], 0, STYLE)
+                    .expect("selector")
+            });
+            let numeric = cx.new(|cx| {
+                NumericControl::new(
+                    cx,
+                    "availability-numeric",
+                    "value",
+                    NumericControlKind::HorizontalSlider,
+                    spec,
+                    0.0,
+                    STYLE,
+                )
+                .expect("numeric control")
+            });
+            let graph = cx.new(|cx| {
+                let mut graph = ResponseGraph::new(cx, "availability-graph", STYLE);
+                graph.set_editable(true, cx);
+                graph
+            });
+            toggle.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            selector.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            numeric.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            graph.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            window.replace_root(cx, |_, _| TabAvailabilityRoot {
+                toggle: toggle.clone(),
+                selector: selector.clone(),
+                numeric: numeric.clone(),
+                graph: graph.clone(),
+            });
+            (toggle, selector, numeric, graph)
+        })
+        .expect("availability test window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(tab_stop, "opted-in available widgets are tab stops");
+    }
+
+    toggle.update(cx, |control, cx| control.set_enabled(false, cx));
+    selector.update(cx, |control, cx| control.set_enabled(false, cx));
+    numeric.update(cx, |control, cx| control.set_enabled(false, cx));
+    graph.update(cx, |control, cx| control.set_editable(false, cx));
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(!tab_stop, "unavailable widgets leave the tab order");
+    }
+
+    toggle.update(cx, |control, cx| control.set_enabled(true, cx));
+    selector.update(cx, |control, cx| control.set_enabled(true, cx));
+    numeric.update(cx, |control, cx| control.set_enabled(true, cx));
+    graph.update(cx, |control, cx| control.set_editable(true, cx));
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(tab_stop, "re-enabled widgets restore their owner's opt-in");
+    }
+
+    toggle.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    selector.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    numeric.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    graph.update(cx, |control, cx| {
+        control.set_editable(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_editable(true, cx);
+    });
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(!tab_stop, "availability restoration respects owner opt-out");
+    }
 }
 
 fn open_clipped_selector(
@@ -1579,4 +1809,367 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
     visual.simulate_click(marker.center(), Modifiers::default());
     control.read_with(cx, |control, _| assert_eq!(control.value(), -0.5));
     assert_eq!(phases.borrow().len(), 3);
+}
+
+#[gpui::test]
+fn accessibility_numeric_uses_real_domain_and_one_event_transaction(cx: &mut TestAppContext) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let events = phases.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            events.borrow_mut().push((event.phase, event.value));
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.), px(180.)));
+    visual.run_until_parked();
+    let id = gpui::AccessibilityId(control.entity_id().as_u64());
+    let descriptor = visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|node| node.descriptor.id == id)
+            .expect("real mounted control")
+            .descriptor
+            .clone()
+    });
+    assert_eq!(descriptor.name.as_ref(), "gain");
+    let gpui::AccessibilityValue::Number {
+        min, max, value, ..
+    } = descriptor.value
+    else {
+        panic!("number");
+    };
+    assert!(min.is_finite() && max.is_finite() && (min..=max).contains(&value));
+    let target = min + (max - min) * 0.75;
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(f64::NAN),
+            app
+        ))
+    );
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(max + 1.),
+            app
+        ))
+    );
+    assert!(phases.borrow().is_empty());
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(target),
+            app
+        ))
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        *phases.borrow(),
+        vec![
+            (crate::NumericEventPhase::Begin, value),
+            (crate::NumericEventPhase::Change, target),
+            (crate::NumericEventPhase::Commit, target)
+        ]
+    );
+    // A cache-only frame must retain semantic nodes just like hitboxes and listeners.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .any(|node| node.descriptor.id == id)
+    }));
+    visual.update(|window, app| window.replace_root(app, |_, _| Empty));
+    visual.run_until_parked();
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Increment,
+            app
+        ))
+    );
+}
+
+#[gpui::test]
+fn accessibility_acknowledged_revision_and_busy_owner_refuse_stale_requests(
+    cx: &mut TestAppContext,
+) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let (value, acknowledged) = control.read_with(cx, |control, _| {
+        (
+            control.value,
+            control
+                .accessibility_value(control.value)
+                .expect("acknowledged value"),
+        )
+    });
+    let admitted = Rc::new(Cell::new(true));
+    let guard_state = admitted.clone();
+    control.update(cx, |control, cx| {
+        control.set_accessibility_binding(
+            gpui::AccessibilityBinding {
+                revision: 7,
+                name: "gain".into(),
+                value: acknowledged.clone(),
+                pending: false,
+                guard: Rc::new(move |_| guard_state.get()),
+            },
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.), px(180.)));
+    visual.run_until_parked();
+    let id = gpui::AccessibilityId(control.entity_id().as_u64());
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id,
+                revision: 6,
+                action: gpui::AccessibilityAction::Increment
+            },
+            app
+        ))
+    );
+    admitted.set(false); // Owner changes between publication and execution.
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id,
+                revision: 7,
+                action: gpui::AccessibilityAction::Increment
+            },
+            app
+        ))
+    );
+    assert_eq!(control.read_with(cx, |control, _| control.value), value);
+    admitted.set(true);
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id,
+                revision: 7,
+                action: gpui::AccessibilityAction::Increment
+            },
+            app
+        ))
+    );
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id,
+                revision: 7,
+                action: gpui::AccessibilityAction::Increment
+            },
+            app
+        ))
+    );
+    visual.run_until_parked();
+    let node = visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|node| node.descriptor.id == id)
+            .unwrap()
+            .clone()
+    });
+    assert!(!node.descriptor.enabled);
+    assert_eq!(
+        node.descriptor.value, acknowledged,
+        "query must retain acknowledged value until owner ACK"
+    );
+}
+
+#[gpui::test]
+fn accessibility_discrete_actions_preserve_choice_inventory_and_focus_only_navigation(
+    cx: &mut TestAppContext,
+) {
+    let (handle, toggle, selector, _) = open_discrete_controls(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.), px(180.)));
+    visual.run_until_parked();
+    let toggle_id = gpui::AccessibilityId(toggle.entity_id().as_u64());
+    let choice_id = gpui::AccessibilityId(selector.entity_id().as_u64());
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            toggle_id,
+            &gpui::AccessibilityAction::Focus,
+            app
+        ))
+    );
+    assert!(!toggle.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            toggle_id,
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    assert!(toggle.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            choice_id,
+            &gpui::AccessibilityAction::Choose(2),
+            app
+        ))
+    );
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            choice_id,
+            &gpui::AccessibilityAction::Choose(1),
+            app
+        ))
+    );
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
+    // Even the previous painted snapshot cannot authorize a newly disabled live owner.
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            choice_id,
+            &gpui::AccessibilityAction::Choose(0),
+            app
+        ))
+    );
+}
+
+#[test]
+fn accessibility_descriptor_rejects_expired_owner_and_malformed_values() {
+    let lifetime = gpui::AccessibilityLifetime::default();
+    let mut descriptor = gpui::AccessibilityDescriptor {
+        id: gpui::AccessibilityId(1),
+        revision: 0,
+        lifetime: lifetime.weak(),
+        name: "gain".into(),
+        value: gpui::AccessibilityValue::Number {
+            value: 0.,
+            min: -1.,
+            max: 1.,
+            text: "0 db".into(),
+        },
+        enabled: true,
+        focused: false,
+        status: None,
+    };
+    assert!(descriptor.is_valid());
+    descriptor.value = gpui::AccessibilityValue::Number {
+        value: f64::INFINITY,
+        min: -1.,
+        max: 1.,
+        text: "invalid".into(),
+    };
+    assert!(!descriptor.is_valid());
+    descriptor.value = gpui::AccessibilityValue::Choice {
+        selected: 1,
+        options: vec!["one".into()],
+    };
+    assert!(!descriptor.is_valid());
+    descriptor.value = gpui::AccessibilityValue::Toggle(false);
+    descriptor.name = "bad\0name".into();
+    assert!(!descriptor.is_valid());
+    descriptor.name = "on".into();
+    drop(lifetime);
+    assert!(!descriptor.is_valid());
+    assert!(!descriptor.permits(&gpui::AccessibilityAction::Press));
+}
+
+struct SemanticLeaf {
+    lifetime: gpui::AccessibilityLifetime,
+    nested_queries: Rc<Cell<usize>>,
+}
+
+impl Render for SemanticLeaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let nested = self.nested_queries.clone();
+        div().w(px(100.)).h(px(20.)).accessibility(
+            gpui::AccessibilityDescriptor {
+                id: gpui::AccessibilityId(9),
+                revision: 1,
+                lifetime: self.lifetime.weak(),
+                name: "fixture control".into(),
+                value: gpui::AccessibilityValue::Toggle(false),
+                enabled: true,
+                focused: false,
+                status: None,
+            },
+            move |_, window, _| {
+                // Exercise nested source queries while dispatching; this is not native AX proof.
+                assert_eq!(window.accessibility_nodes().count(), 1);
+                nested.set(nested.get() + 1);
+                false
+            },
+        )
+    }
+}
+
+struct SemanticRecoveryRoot {
+    first: Entity<SemanticLeaf>,
+    duplicate: Option<Entity<SemanticLeaf>>,
+}
+
+impl Render for SemanticRecoveryRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut sizing = div().w(px(100.)).h(px(20.));
+        let style = sizing.style().clone();
+        let mut root = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(gpui::AnyView::from(self.first.clone()).cached(style.clone()));
+        if let Some(duplicate) = &self.duplicate {
+            root = root.child(gpui::AnyView::from(duplicate.clone()).cached(style));
+        }
+        root
+    }
+}
+
+#[gpui::test]
+fn accessibility_duplicate_snapshot_recovers_through_cached_prepaint_and_nested_query(
+    cx: &mut TestAppContext,
+) {
+    let nested = Rc::new(Cell::new(0));
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let root = cx
+        .update_window(handle, |_, window, cx| {
+            let first = cx.new(|_| SemanticLeaf {
+                lifetime: Default::default(),
+                nested_queries: nested.clone(),
+            });
+            let second = cx.new(|_| SemanticLeaf {
+                lifetime: Default::default(),
+                nested_queries: nested.clone(),
+            });
+            window.replace_root(cx, |_, _| SemanticRecoveryRoot {
+                first,
+                duplicate: Some(second),
+            })
+        })
+        .expect("window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.), px(100.)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(|window, _| window.accessibility_nodes().count()),
+        0,
+        "duplicate IDs must refuse the snapshot"
+    );
+    root.update(cx, |root, cx| {
+        root.duplicate = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(|window, _| window.accessibility_nodes().count()),
+        1,
+        "unmodified cached sibling must recover after removing invalid owner"
+    );
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            gpui::AccessibilityId(9),
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    assert_eq!(nested.get(), 1);
 }

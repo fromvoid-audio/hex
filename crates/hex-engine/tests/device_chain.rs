@@ -435,6 +435,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
             .unwrap()
             .unwrap();
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: hex_lattice::ProcessorChainOwner::Track(3),
             device_id,
             device_type: TEST_TYPE,
@@ -716,4 +717,76 @@ fn return_effect_compilation_requires_explicit_zero_algorithmic_latency() {
             compile::project_with_registry(editor.project(), &media, &registry).unwrap_err();
         assert!(error.0.contains("unknown or nonzero algorithmic latency"));
     }
+}
+
+#[test]
+fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
+    let (mut editor, asset, track) = imported_audio_project();
+    let initial = UTILITY_DEFINITION.default_state().unwrap();
+    let first_state = hex_engine::patch_native_device_parameter(
+        &initial,
+        parameter::GAIN,
+        ParameterValue::Float(2.0),
+    )
+    .unwrap();
+    let first_state = hex_engine::patch_native_device_parameter(
+        &first_state,
+        hex_engine::DEVICE_OUTPUT_GAIN.id,
+        ParameterValue::Float(-6.0206),
+    )
+    .unwrap();
+    // A device-owned edit must retain the independent host trim.
+    let first_state = hex_engine::patch_native_device_parameter(
+        &first_state,
+        parameter::INVERT_LEFT,
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    assert_eq!(first_state.output_gain_millidb(), -6021);
+    let first = add_device(&mut editor, track, first_state);
+    let second = add_device(
+        &mut editor,
+        track,
+        hex_engine::patch_native_device_parameter(
+            &initial,
+            parameter::GAIN,
+            ParameterValue::Float(0.5),
+        )
+        .unwrap(),
+    );
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25, -0.5]]).unwrap())]);
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let first_meter = Arc::clone(prepared.arrangement().device_meter(first.value()).unwrap());
+    let second_meter = Arc::clone(prepared.arrangement().device_meter(second.value()).unwrap());
+    let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap();
+    playback.set_device_metering(true);
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 1];
+    playback.render(&mut output).unwrap();
+    let gain = 10.0_f32.powf(-6.021 / 20.0);
+    assert!((output[0][0] + 0.25 * gain).abs() < 1e-6);
+    assert!((output[0][1] + 0.5 * gain).abs() < 1e-6);
+    assert_eq!(first_meter.take_peaks(), [0.5, gain]);
+    assert_eq!(second_meter.take_peaks(), [gain, gain * 0.5]);
+    // A renderer sharing prepared data cannot contaminate native UI readings.
+    let mut export = Playback::try_from_prepared_with_session(prepared).unwrap();
+    export.apply(PlaybackCommand::Play);
+    export.render(&mut output).unwrap();
+    assert_eq!(first_meter.take_peaks(), [0.0; 2]);
+    assert_eq!(second_meter.take_peaks(), [0.0; 2]);
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: first,
+            bypassed: true,
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [0.125, -0.25]);
 }

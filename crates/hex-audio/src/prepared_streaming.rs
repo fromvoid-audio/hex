@@ -219,6 +219,7 @@ impl Control {
                 }
             }
         }
+        request.playback.set_device_metering(true);
         if request.playback.prepare_retiring_handoff().is_err() {
             return Err(error("retiring graph preparation refused", request));
         }

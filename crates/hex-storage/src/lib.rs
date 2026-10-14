@@ -128,10 +128,14 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema21 for gain lanes or schema20 for feeds, preserving legacy bytes.
+/// Encode schema22 for nonunity host gain, schema21 for gain lanes or schema20
+/// for feeds. Unity host gain preserves the existing legacy byte selection.
 /// Compact JSON keeps a maximum-size provenance byte array within the existing
 /// document ceiling; file tokens continue to compare exact saved bytes.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    if let Some(encoded) = schema::encode_host_gain(project) {
+        return encoded;
+    }
     if project.has_gain_automation() {
         encode_document(&schema::gain_envelopes::DocumentV21::from_project(project)?)
     } else if project.authored_routing().is_empty() {

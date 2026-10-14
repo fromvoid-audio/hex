@@ -195,7 +195,9 @@
     "tests/action_macros.rs": "47b69024f403feb6cb63c9990a6993b8582856146f5a6ae16984714321956a84"
   },
   "patched_files": {
-    "src/app/test_context.rs": "000c0b0723464fc9b07d9fb1b569cd46f3af3e478f285a5fefd082da92595434",
+    "src/app/test_context.rs": "7184ffa989b1837739dc05bf204c1d90e08ed42deed2883c8ec379bea1f0bd6f",
+    "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
+    "src/gpui.rs": "ee99b9899c6ba3c41df00f8712795b87fb0ffc930cdf7c87cd1e58450f69700a",
     "src/interactive.rs": "b6a5bd6781253d81ea82699e8604a8d9556d239d58f3e1c3e0c15ec6ef5b9b1f",
     "src/platform/linux/platform.rs": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba",
     "src/platform/linux/wayland/client.rs": "68e8c74cb35231f09206463a44a3a0795e90265315bc91c9f64c2f3b34e7f140",
@@ -204,11 +206,15 @@
     "src/platform/mac/events.rs": "6fdef5679c740bdbfe31ae3eedae0011263b66631c059947deddfa938373b158",
     "src/platform/mac/platform.rs": "4c978369276c3f29fd98af67f438338858ff27ad797a17a288f50548ec28fe76",
     "src/platform/mac/window.rs": "f1a466028bf259e37fdddb10c2fb32c4dec77375472d211579bf6e7eb07bbf4a",
+    "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
-    "src/platform.rs": "79706c2d99b144323e1c01d99bcb30c6b5813720a0c207a984c8ccd67895e6a4",
-    "src/window.rs": "9f10986bbcc2cc2a67e33134ac1c6f4e7255433c83e1fe08f8449ed725892219",
+    "src/platform.rs": "12447a88980676797eda10c18813388d0c338f2326055901dba9a70ec7f0bb59",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
-    "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f"
+    "src/view.rs": "18ff90982d1647a8016f1f50db872f17656145a1ae8dc4e9f93fa571846d70bd",
+    "src/window.rs": "abc282292a8731d3c74be2449a9193d8981d2bd75bc2fe100e9f8e97a5133878"
+  },
+  "added_files": {
+    "src/accessibility.rs": "0cbcafade9e5a729ef9511b5d852c4d3c057eb25704186ca569900c9b32d954a"
   }
 }

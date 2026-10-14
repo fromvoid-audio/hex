@@ -665,6 +665,7 @@ pub(crate) struct DeferredDraw {
 }
 
 pub(crate) struct Frame {
+    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
@@ -689,6 +690,7 @@ pub(crate) struct Frame {
 
 #[derive(Clone, Default)]
 pub(crate) struct PrepaintStateIndex {
+    accessibility_index: usize,
     hitboxes_index: usize,
     tooltips_index: usize,
     deferred_draws_index: usize,
@@ -711,6 +713,7 @@ pub(crate) struct PaintIndex {
 impl Frame {
     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
         Frame {
+            accessibility: Default::default(),
             focus: None,
             window_active: false,
             element_states: FxHashMap::default(),
@@ -738,6 +741,7 @@ impl Frame {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.accessibility = Default::default();
         self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();
@@ -1137,6 +1141,16 @@ impl Window {
                     .log_err();
             }
         }));
+        platform_window.on_accessibility_action({
+            let mut cx = cx.to_async();
+            Box::new(move |request: crate::AccessibilityRequest| {
+                handle
+                    .update(&mut cx, |_, window, cx| {
+                        window.perform_accessibility_request(&request, cx)
+                    })
+                    .unwrap_or(false)
+            })
+        });
         platform_window.on_input({
             let mut cx = cx.to_async();
             Box::new(move |event| {
@@ -1933,6 +1947,61 @@ impl Window {
         self.platform_window.completed_frame();
     }
 
+    /// Current bounded, actually mounted semantic nodes in rendered order.
+    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
+        self.rendered_frame
+            .accessibility
+            .nodes
+            .iter()
+            .filter(|_| !self.rendered_frame.accessibility.invalid)
+            .map(|(node, _)| node)
+    }
+
+    /// Revalidate a native request's exact acknowledged revision before UI dispatch.
+    pub fn perform_accessibility_request(
+        &mut self,
+        request: &crate::AccessibilityRequest,
+        cx: &mut App,
+    ) -> bool {
+        let callback = self
+            .rendered_frame
+            .accessibility
+            .nodes
+            .iter()
+            .find(|(node, _)| {
+                node.descriptor.id == request.id && node.descriptor.revision == request.revision
+            })
+            .filter(|(node, _)| {
+                !self.rendered_frame.accessibility.invalid
+                    && node.descriptor.permits(&request.action)
+            })
+            .map(|(_, callback)| callback.clone());
+        callback.is_some_and(|callback| callback(request, self, cx))
+    }
+
+    /// Dispatch a UI action using the current published revision, still checking the live owner.
+    pub fn perform_accessibility_action(
+        &mut self,
+        id: crate::AccessibilityId,
+        action: &crate::AccessibilityAction,
+        cx: &mut App,
+    ) -> bool {
+        let revision = self
+            .accessibility_nodes()
+            .find(|node| node.descriptor.id == id)
+            .map(|node| node.descriptor.revision);
+        revision.is_some_and(|revision| {
+            self.perform_accessibility_request(
+                &crate::AccessibilityRequest {
+                    id,
+                    revision,
+                    action: action.clone(),
+                },
+                cx,
+            )
+        })
+    }
+
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
@@ -1966,6 +2035,10 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        self.platform_window.publish_accessibility(
+            self.accessibility_nodes().cloned().collect(),
+            self.rendered_frame.accessibility.invalid,
+        );
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
 
@@ -2245,6 +2318,7 @@ impl Window {
 
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
         PrepaintStateIndex {
+            accessibility_index: self.next_frame.accessibility.nodes.len(),
             hitboxes_index: self.next_frame.hitboxes.len(),
             tooltips_index: self.next_frame.tooltip_requests.len(),
             deferred_draws_index: self.next_frame.deferred_draws.len(),
@@ -2255,6 +2329,14 @@ impl Window {
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+        for (node, callback) in &self.rendered_frame.accessibility.nodes
+            [range.start.accessibility_index..range.end.accessibility_index]
+        {
+            self.next_frame
+                .accessibility
+                .insert(node.clone(), callback.clone());
+        }
+        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -3564,11 +3646,12 @@ impl Window {
         } else {
             self.hidden_cursor_restore.take();
             if self.is_window_hovered() {
-                cx.platform.set_cursor_style(if style == CursorStyle::Hidden {
-                    CursorStyle::Arrow
-                } else {
-                    style
-                });
+                cx.platform
+                    .set_cursor_style(if style == CursorStyle::Hidden {
+                        CursorStyle::Arrow
+                    } else {
+                        style
+                    });
             }
         }
     }

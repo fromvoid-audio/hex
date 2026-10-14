@@ -144,7 +144,8 @@ impl SessionPlayback {
                             .and_then(Option::as_ref)
                             .is_some_and(|runtime| !runtime.committed_is_quiescent())
                         || !track.sends().is_empty()
-                        || track.has_gain_automation();
+                        || track.has_gain_automation()
+                        || (self.device_metering && track.instrument_id.is_some());
                     if buffered
                         || track.requires_ordered_processing()
                         || !track.source_mix().muted()

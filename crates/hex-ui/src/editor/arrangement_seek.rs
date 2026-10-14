@@ -541,6 +541,9 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        if let Some(control) = &self.audio_batch {
+            control.request_cancel();
+        }
         // CandidateReady still lives in PendingPlayback, so convert it into
         // the same bounded result owner before the Service begins shutdown.
         self.invalidate_prepared_seek();

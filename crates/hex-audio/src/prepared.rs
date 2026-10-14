@@ -1085,6 +1085,8 @@ impl Control {
                     decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
                 })
             });
+        let mut playback = playback;
+        playback.set_device_metering(true);
         let publication = Publication {
             stream_source: None,
             revision,

@@ -46,6 +46,7 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.poll_musical_typing();
+        visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -76,6 +77,12 @@ impl EditorView {
                         replace_error(&mut self.error, "an export is already pending");
                 }
                 Err(SubmitError::Closed(request)) => {
+                    if matches!(&request, Request::ImportAudioBatch { .. }) {
+                        if let Some(control) = self.audio_batch.take() {
+                            control.request_cancel();
+                        }
+                        self.audio_batch_progress = None;
+                    }
                     if matches!(request, Request::Export(_)) {
                         self.export_pending = false;
                     }
@@ -142,9 +149,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
-            return self
-                .redraw_gate
-                .should_redraw(visible_change, None, Instant::now());
+            return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
             matches!(
@@ -456,23 +461,13 @@ impl EditorView {
         } else {
             self.session_routes.clear();
         }
-        let frame = AudioFrame {
-            playing: audio.control.status.playing.load(Relaxed),
-            position: audio.control.status.position.load(Relaxed),
-            peak_left: audio.control.status.peak_left.load(Relaxed),
-            peak_right: audio.control.status.peak_right.load(Relaxed),
-            applied_revision: audio.control.status.applied_revision.load(Relaxed),
-            deadline_misses: audio.control.status.deadline_misses.load(Relaxed),
-            callback_us: audio.control.status.callback_max_ns.load(Relaxed) / 1_000,
-            render_fault: audio.control.status.render_fault.load(Relaxed),
-        };
+        let frame = AudioFrame::capture(&audio.control.status);
         let pending_after = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
-        self.redraw_gate
-            .should_redraw(visible_change, Some(frame), Instant::now())
+        self.observe_audio_frame(Some(frame), visible_change, Instant::now())
     }
 
     fn spectrum_target_is_visible_and_current(
@@ -628,6 +623,18 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if event
+            .audio_batch_complete
+            .as_ref()
+            .is_some_and(|completed| {
+                self.audio_batch
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, completed))
+            })
+        {
+            self.audio_batch = None;
+            self.audio_batch_progress = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -1135,6 +1142,27 @@ impl EditorView {
             });
         }
         #[cfg(test)]
+        if let Request::ImportAudioBatch {
+            paths, destination, ..
+        } = &request
+        {
+            if let [path] = paths.as_slice() {
+                match destination {
+                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                        self.last_enqueued_import_to_track =
+                            Some((path.clone(), *track, *start, true))
+                    }
+                    hex_session::import_batch::AudioBatchDestination::NewTracks {
+                        before_track,
+                        start,
+                    } => {
+                        self.last_enqueued_import_to_new_track =
+                            Some((path.clone(), *before_track, *start))
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));
@@ -1155,6 +1183,11 @@ impl EditorView {
         }
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
+        }
+        if request.is_project_open() {
+            if let Some(control) = &self.audio_batch {
+                control.request_cancel();
+            }
         }
         if !matches!(
             &request,
@@ -1186,6 +1219,7 @@ impl EditorView {
                 | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }

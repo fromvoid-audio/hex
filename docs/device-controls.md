@@ -63,6 +63,21 @@ transfer laws, modifier behavior and numerical increments are unverified until
 reference experiments establish them. The visual target is the user-supplied
 Live device screenshot; rendering and assets are independent implementations.
 
+### numeric text shortcut ownership
+
+An active numeric text draft advertises `hex_text_editing` alongside its numeric
+control context. Editor printable shortcuts (space, `s`, Shift-`s`, and `l`) are
+excluded while that context is focused, so unit strings retain their characters
+without changing transport, Solo or loop state. Direct Solo actions also refuse
+that text-edit context. Numeric clipboard, selection, Enter/Escape and existing
+modified-command finalization paths remain unchanged. Focus on a numeric control
+outside text editing still permits the normal Solo shortcuts.
+
+Rendered editor-to-worker regressions cover lost characters, canonical Solo and
+history isolation, uppercase/space, clipboard/cancel, owner finalization, Enter
+and single Undo. Linux headless tests do not establish physical macOS keyboard,
+IME, bundled-font rendering or native visual acceptance.
+
 ### linear-amplitude gain presentation
 
 Parameter descriptors may declare `LinearAmplitudeDecibels` when their
@@ -209,7 +224,7 @@ starts metadata-only drags; it does not construct DSP. Dropping an effect on a
 card's left or right half inserts before that stable device ID, while the empty
 chain tail appends. A browser instrument drop always targets the front position
 and is refused when the focused track already has an instrument; replacement
-remains an explicit menu action. Dragging an existing card by its header grip
+remains an explicit menu action. Dragging an existing card by its title
 moves that stable device identity to the indicated position, including across
 tracks. The rail renders the project's canonical ordered chain, and drop hit
 regions do not add spacing or resize the fixed-height panel.
@@ -222,6 +237,36 @@ the preview without publishing history. The Session actor repeats the generation
 revision, active-gesture, target and anchor checks before applying the typed add
 or move command. These contracts are source-tested; native pointer feel and
 cross-track behavior remain on the user review checklist.
+
+### title dragging and return-chain insertion — 13 october 2026
+
+The title area of every device frame is a drag source, including instruments,
+effects and return effects. The shared frame accepts caller-owned title content;
+device input and canonical commands stay in the editor/session. Header actions
+and parameter controls keep their own input. An open-hand cursor identifies the
+grab area; while dragging, the closed-hand cursor and insertion markers show the
+move without a floating preview.
+
+The left/right halves of each card choose a stable before-device anchor. The
+3 px gap after each card also accepts insertion drops without changing visual
+spacing, and the empty tail appends. Return chains now have the same insertion
+markers and title sources, dispatching one `MoveReturnDevice` within the current
+return owner. Browser effects can also insert at these anchors; return chains
+continue to refuse instruments and transfers from another owner.
+
+Hover leaves the canonical order untouched. Valid release creates one undoable
+move; dropping before itself or at its current position creates no request.
+Escape, outside release, stale source/project and active parameter edits retain
+the existing cancellation/refusal rules. Reordering does not clone device state
+or construct DSP on the UI thread. Horizontal drag autoscroll is still deferred.
+
+Rendered GPUI tests cover regular/return title drags left, right and into the
+inter-card gap, instrument placement among effects, unchanged order while hovering,
+one revision per move, Undo, self-drop and return Escape/outside cancellation.
+Native macOS interaction and listening remain open. User checklist: drag a device
+title left/right/between cards on a regular track and return; move the instrument
+among effects; check insertion markers with no floating preview, Undo/Redo, Escape and outside
+release; confirm knobs, bypass/remove buttons and horizontal scrolling still work.
 
 Starting a native-device drag from the browser reveals the device pane and
 selects device details so the drop receiver is visible, even when the pane was
@@ -452,3 +497,83 @@ remain unchanged. New native appearance acceptance remains required.
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+## windowed chain composition
+
+Track and return rails retain a stable `DeviceId` geometry inventory, an explicit
+GPUI scroll handle and fixed registered card widths. Once the actual rail width
+is observed, composition mounts visible cards plus one maximum-card-width of
+overscan; equal-width placeholders preserve every omitted card's position, gap,
+chain extent and ordered insertion anchors. An unmeasured rail uses a positive finite GPUI window viewport width as a
+conservative upper bound; unavailable bounds retain complete composition. The
+full metadata inventory, including disabled parameters and unsupported-state
+errors, is cached independently of mounted cards. Controls are constructed on
+first mount, then retain their identity and subscriptions across later visibility
+changes. Generic instrument, track-effect and return-effect bodies also window
+vertical parameter rows. Their explicit body viewport, fixed 136px cell width,
+26px float/22px discrete or unsupported heights, padding and row gaps preserve
+all descriptor order and full scroll extent. The visible range includes one
+maximum-height row of overscan. Mixed row heights and width changes reconcile
+geometry while anchoring a surviving parameter. Unknown focus/window context
+retains complete row composition.
+
+A generic row stays mounted for direct control focus, numeric drafts/capture,
+open choice popups, pending values and either parameter of an active paired
+gesture. Previously constructed controls retain identities/subscriptions while
+hidden; descriptor identity/removal and enabled-state reconciliation run against
+the complete metadata inventory before visibility selection. Specialized device
+panels, including Operator, retain their existing layouts.
+Resize and scroll-clamping observations request a fresh composition. Topology
+changes preserve the first surviving visible card's screen position.
+
+A card stays mounted while its focus container contains keyboard focus, a numeric
+control is interacting or editing, optimistic parameter values are pending, a
+canonical device gesture is active, a device drag captures its source or target,
+or EQ8 audition remains active. Visibility
+does not retire cached entities, descriptors, subscriptions, drafts or previews:
+existing project-generation, owner, identity and removal rules remain authoritative.
+Omitted placeholders have no device hit targets. Mounted targets retain the
+existing viewport-clipped drop contract; return rails retain their existing
+return-owned drop behavior. No audio, controller, numeric-control or Operator
+parameter semantics change.
+
+Linux GPUI test-platform CPU timings use no-op text and native drawing; they do
+not establish native frame time, font shaping, presentation, physical input,
+macOS focus/capture or accessibility acceptance. Optimized native review and
+accessible names/roles, readable meters and remaining compact-control acceptance
+for the broader dense-UI request remain pending.
+
+Track and return panel titles derive a readable foreground with
+`theme::readable_text` on their actual surface, including warning titles. The
+saved background/text/accent roles and title strings remain unchanged; a valid
+non-text accent color is not assumed to satisfy the stricter text contrast policy.
+## device card selection — 13 october 2026
+
+Left mouse-down anywhere in an instrument, track effect or Return effect card
+selects that device. The shared frame uses the accent border/title bar with dark
+title text; parameter controls keep their existing colors. Selecting another
+card replaces the selection, which persists after release and redraw. Capture
+routing allows knobs, toggles and drag grips to retain their own input handling.
+Selection is transient editor state keyed by DeviceId; it sends no project edit
+and clears when the panel owner changes, the selected device disappears or the
+project generation changes. Right-click leaves the selection unchanged.
+
+Focused rendered GPUI regressions cover card clicks, selection persistence,
+removal, Return control gesture admission and owner/project retirement. Native
+macOS visual acceptance remains pending: click an instrument then an effect,
+click/adjust a Return effect knob, and verify only the clicked card is highlighted
+while its controls still work.
+
+## windowed navigation integration
+
+Track and Return navigator, panning and window selection share one scroll
+instance. Navigation owns its owner/generation reset; the windowed rail observes
+an alias before geometry reconciliation. Mounted drop wrappers and omitted
+spacers include equal chain padding, so mounting and resizing retain full extent
+and the surviving topology anchor. Focus, drafts and active drag destinations
+keep their existing pins. Numeric ownership and project history are unchanged.
+
+The bottom navigator and 248px output meter retain their fixed controls. Existing
+truncated status fields can shrink to bounded minima with their full tooltip
+text retained, so both controls fit the small supported viewport. Actual native
+glyph readability/truncation and physical panning remain pending.

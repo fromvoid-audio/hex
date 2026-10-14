@@ -302,6 +302,7 @@ impl SessionHandoffReport {
 pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
+    device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -374,6 +375,17 @@ impl fmt::Debug for SessionPlayback {
 }
 
 impl SessionPlayback {
+    pub(crate) fn set_device_metering(&mut self, enabled: bool) {
+        self.device_metering = enabled;
+        for chain in self
+            .device_chains
+            .iter_mut()
+            .chain(self.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
+        }
+    }
+
     pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
         self.historical_floor
             .into_iter()
@@ -809,6 +821,7 @@ impl SessionPlayback {
         Ok(Self {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
+            device_metering: false,
             revision,
             periodic_tempo,
             anchor: None,
@@ -978,7 +991,7 @@ impl SessionPlayback {
                     .arrangement()
                     .tracks()
                     .iter()
-                    .any(crate::Track::has_stateful_devices))
+                    .any(crate::Track::has_device_chain))
     }
 
     pub(crate) fn has_active_arrangement_voices(&self) -> bool {

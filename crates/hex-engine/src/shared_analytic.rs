@@ -240,7 +240,7 @@ impl SharedAnalyticContextTable {
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
-                state: device.state().clone(),
+                state: device.state().clone().without_output_gain(),
                 sample_rate: project.sample_rate(),
             };
             if previous

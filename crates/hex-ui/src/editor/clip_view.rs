@@ -74,7 +74,11 @@ impl EditorView {
         self.focus_clip_details(window, cx)
     }
 
-    pub(super) fn clip_detail_view(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn clip_detail_view(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.selected_clip
@@ -91,7 +95,10 @@ impl EditorView {
             });
         let detail = if open {
             if self.device_panel_active {
-                Some(super::device_panel::view(self, cx).map(|element| div().child(element)))
+                Some(
+                    super::device_panel::view(self, Some(window), cx)
+                        .map(|element| div().child(element)),
+                )
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {

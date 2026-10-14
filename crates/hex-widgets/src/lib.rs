@@ -1,10 +1,12 @@
 //! Small reusable GPUI controls for compact native audio-device interfaces.
 mod color_picker;
 mod curve;
+mod device_meters;
 mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
+pub use device_meters::DeviceMeterReadout;
 mod numeric;
 mod numeric_control;
 mod numeric_text;
