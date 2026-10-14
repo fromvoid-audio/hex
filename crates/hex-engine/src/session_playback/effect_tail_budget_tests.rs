@@ -69,6 +69,7 @@ fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(
         (0..entries)
             .map(|index| PreparedProcessorInstance {
+                meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),
                 device_id: index as u64 + 1,
                 device_type: DeviceTypeId::from_static("test.finite-hold"),

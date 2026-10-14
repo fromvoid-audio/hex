@@ -32,6 +32,10 @@ impl EditorView {
     }
 
     pub(super) fn tick_time_gesture_autoscroll(&mut self, now: Instant) -> bool {
+        // Idle maintenance must not cancel a completed, persistent time range.
+        if self.time_selection_gesture.is_none() && self.time_range_move_gesture.is_none() {
+            return false;
+        }
         let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
             return false;
         };

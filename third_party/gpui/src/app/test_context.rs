@@ -687,6 +687,23 @@ impl VisualTestContext {
         self.update(|window, _| window.rendered_frame.cursor_style(window))
     }
 
+    /// Background of the last painted quad exactly matching a debug element's bounds.
+    /// Reads the completed scene without drawing or injecting pointer events.
+    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .rev()
+                .find(|quad| quad.bounds == scaled)
+                .map(|quad| quad.background)
+        })
+    }
+
     /// Provides a `Window` and `App` for the duration of the closure.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         self.cx
