@@ -38,6 +38,7 @@ fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
 
 fn completed_event(state: &ViewState) -> Event {
     Event {
+        streamed_playback: None,
         state: Arc::new(ViewState {
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),

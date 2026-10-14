@@ -159,6 +159,10 @@ impl EditorView {
         });
         if !seek_publication_inflight
             && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
+            && self
+                .pending_playback
+                .as_ref()
+                .is_none_or(|pending| pending.streamed_paths.is_none())
             && let Some(pending) = self.pending_playback.take()
         {
             let prepared_revision = pending
@@ -217,6 +221,15 @@ impl EditorView {
                     }
                 }
             }
+        } else if self
+            .pending_playback
+            .as_ref()
+            .is_some_and(|pending| pending.streamed_paths.is_some())
+        {
+            visible_change |= replace_status(
+                &mut self.status,
+                "streamed project awaiting audio preparation",
+            );
         } else if self.playback_candidates.len() >= super::PLAYBACK_CANDIDATE_CAPACITY {
             visible_change |= replace_status(
                 &mut self.status,
@@ -1015,7 +1028,21 @@ impl EditorView {
                     }
                     _ => None,
                 });
-        if let Some(playback) = event.playback {
+        let mut streamed_candidate_error = None;
+        let (playback, streamed_paths) = if let Some(candidate) = event.streamed_playback {
+            if candidate.format_version != 1
+                || candidate.project_generation != self.project_generation
+                || candidate.editor_revision != revision
+            {
+                streamed_candidate_error = Some("stale streamed project candidate".into());
+                (None, None)
+            } else {
+                (Some(candidate.playback), Some(candidate.paths))
+            }
+        } else {
+            (event.playback, None)
+        };
+        if let Some(playback) = playback {
             let previous_reset = self
                 .pending_playback
                 .as_ref()
@@ -1043,6 +1070,7 @@ impl EditorView {
             let mut pending =
                 pending_playback_for_state(source_state, self.project_generation, playback);
             pending.prepared_revision = prepared_revision;
+            pending.streamed_paths = streamed_paths;
             pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
                 event.project_replaced,
@@ -1056,6 +1084,9 @@ impl EditorView {
             self.error = None;
         }
         if let Some(error) = event.error {
+            self.error = Some(error);
+        }
+        if let Some(error) = streamed_candidate_error {
             self.error = Some(error);
         }
         if let Some(message) = playback_capability {
@@ -1896,6 +1927,7 @@ fn pending_playback_for_state(
         project_generation,
         state,
         playback,
+        streamed_paths: None,
         install_fresh_runtime: false,
         fresh_runtime_fence: None,
         prepared_revision: None,

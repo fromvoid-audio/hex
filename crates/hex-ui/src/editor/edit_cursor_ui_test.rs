@@ -1293,6 +1293,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
     let failed = editor.read_with(cx, |view, _| Event {
         state: Arc::clone(view.state.as_ref().expect("current project state")),
         playback: None,
+        streamed_playback: None,
         status: None,
         error: Some("test rejection".to_owned()),
         request_complete: true,

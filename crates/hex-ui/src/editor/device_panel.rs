@@ -2547,9 +2547,19 @@ fn parameter_control_with_presentation(
             return unsupported_parameter(descriptor.label);
         }
     }
+    let expected_entity = view
+        .device_panel
+        .controls
+        .get(&key)
+        .map(|control| match control {
+            ParameterControl::Float { entity, .. } => entity.entity_id(),
+            ParameterControl::Bool { entity, .. } => entity.entity_id(),
+            ParameterControl::Choice { entity, .. } => entity.entity_id(),
+        });
     // Semantic queries describe acknowledged canonical values, not effective painted drafts.
     let revision = view.state.as_ref().map_or(0, |state| state.revision);
     let generation = view.project_generation;
+    let panel_owner = view.device_panel.owner;
     let owner = cx.entity().downgrade();
     let pending = view.edit_pending()
         || view.device_gesture.snapshot().is_some()
@@ -2558,7 +2568,22 @@ fn parameter_control_with_presentation(
     let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |app| {
         owner
             .read_with(app, |view, _| {
+                let selected_owner = view
+                    .focused_return
+                    .filter(|id| {
+                        view.state.as_ref().is_some_and(|state| {
+                            state
+                                .project
+                                .return_tracks()
+                                .iter()
+                                .any(|track| track.id() == *id)
+                        })
+                    })
+                    .map(DevicePanelOwner::Return)
+                    .or_else(|| view.selected_track.map(DevicePanelOwner::Track));
                 view.project_generation == generation
+                    && selected_owner == panel_owner
+                    && view.device_panel.owner == panel_owner
                     && view
                         .state
                         .as_ref()
@@ -2567,7 +2592,53 @@ fn parameter_control_with_presentation(
                     && view.device_gesture.snapshot().is_none()
                     && view.device_gesture_barriers.is_empty()
                     && !view.device_panel.pending_values.contains_key(&key)
-                    && view.device_panel.controls.contains_key(&key)
+                    && view.device_panel.controls.get(&key).is_some_and(|control| {
+                        let (entity, class, type_id, current_descriptor) = match control {
+                            ParameterControl::Float {
+                                entity,
+                                class,
+                                type_id,
+                                descriptor,
+                                ..
+                            } => (entity.entity_id(), class, type_id, descriptor),
+                            ParameterControl::Bool {
+                                entity,
+                                class,
+                                type_id,
+                                descriptor,
+                                ..
+                            } => (entity.entity_id(), class, type_id, descriptor),
+                            ParameterControl::Choice {
+                                entity,
+                                class,
+                                type_id,
+                                descriptor,
+                                ..
+                            } => (entity.entity_id(), class, type_id, descriptor),
+                        };
+                        Some(entity) == expected_entity
+                            && *class == identity.class
+                            && *type_id == identity.type_id
+                            && *current_descriptor == descriptor
+                    })
+                    && view
+                        .state
+                        .as_ref()
+                        .and_then(|state| state.project.device(key.device))
+                        .is_some_and(|device| {
+                            device.state().type_id() == identity.type_id
+                                && view.device_panel.views.get(&key.device).is_some_and(
+                                    |(class, state, metadata)| {
+                                        *class == identity.class
+                                            && state == device.state()
+                                            && metadata.as_ref().is_ok_and(|metadata| {
+                                                metadata.parameters.iter().any(|parameter| {
+                                                    parameter.descriptor == descriptor
+                                                })
+                                            })
+                                    },
+                                )
+                        })
             })
             .unwrap_or(false)
     });

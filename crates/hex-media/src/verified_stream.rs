@@ -597,6 +597,7 @@ fn verify_open(
         return Err(ImportError::LimitExceeded("verified page manifest bytes"));
     }
     let preliminary_layout = wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
+    preliminary_layout.format.require_fixed_frames()?;
     if preliminary_layout.frames > limits.reader.max_source_frames {
         return Err(ImportError::LimitExceeded("source frames"));
     }

@@ -1,4 +1,5 @@
 use super::*;
+use gpui::Focusable;
 
 fn boolean_value(
     view: &EditorView,
@@ -266,4 +267,182 @@ fn accessibility_numeric_uses_canonical_codec_worker_commit_and_one_undo(cx: &mu
             .any(|node| node.descriptor.id == id)),
         "Undo must not retire the owner entity"
     );
+}
+
+#[gpui::test]
+fn accessibility_numeric_focus_refuses_published_stale_generation_without_focus_or_history(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let parameter = hex_lattice_contract::ParameterId::from_static(1);
+    let (id, focus) = editor.read_with(cx, |view, app| {
+        match &view.device_panel.controls[&ParameterKey { device, parameter }] {
+            ParameterControl::Float { entity, .. } => (
+                gpui::AccessibilityId(entity.entity_id().as_u64()),
+                entity.read_with(app, |control, app| control.focus_handle(app)),
+            ),
+            _ => panic!("number"),
+        }
+    });
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .any(|node| node.descriptor.id == id)
+    }));
+    assert!(!visual.update(|window, _| focus.is_focused(window)));
+    // A changed selection also retires the logical owner before repaint.
+    editor.update(cx, |view, _| view.selected_track = None);
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Focus,
+            app
+        ))
+    );
+    assert!(!visual.update(|window, _| focus.is_focused(window)));
+    editor.update(cx, |view, _| {
+        view.selected_track = Some(track);
+        view.project_generation += 1;
+    }); // No repaint: old snapshot remains published.
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Focus,
+            app
+        ))
+    );
+    assert!(!visual.update(|window, _| focus.is_focused(window)));
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision),
+        revision
+    );
+}
+
+#[gpui::test]
+fn accessibility_same_key_replacement_refuses_old_entity_without_worker_edit(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, parameter, original) = actor_utility_fixture();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let key = ParameterKey { device, parameter };
+    let id = editor.read_with(cx, |view, _| match &view.device_panel.controls[&key] {
+        ParameterControl::Bool { entity, .. } => gpui::AccessibilityId(entity.entity_id().as_u64()),
+        _ => panic!("boolean"),
+    });
+    // Hold the old entity alive and its already published snapshot. Replace the
+    // control under the identical key without repainting or changing revision.
+    let old = editor.update(cx, |view, app| {
+        let old = view.device_panel.controls.remove(&key).unwrap();
+        let (class, type_id, descriptor) = match &old {
+            ParameterControl::Bool {
+                class,
+                type_id,
+                descriptor,
+                ..
+            } => (*class, *type_id, *descriptor),
+            _ => panic!("boolean"),
+        };
+        let metadata = NativeDeviceParameterView {
+            descriptor,
+            value: ParameterValue::Bool(original),
+            enabled: true,
+        };
+        assert!(
+            create_parameter_control(
+                view,
+                app,
+                key,
+                DeviceControlIdentity { class, type_id },
+                &metadata,
+                ControlPresentation::Standard,
+                ControlText::default()
+            )
+            .is_some()
+        );
+        old
+    });
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(boolean_value(view, track, device, parameter), original);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+    });
+    drop(old);
+}
+
+#[gpui::test]
+fn accessibility_selector_routes_worker_ack_then_undo_and_redo(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let metadata =
+        hex_engine::native_device_view(state.project.device(device).unwrap().state()).unwrap();
+    let choice = metadata
+        .parameters
+        .iter()
+        .find(|parameter| matches!(parameter.descriptor.kind, ParameterKind::Choice { .. }))
+        .unwrap();
+    let parameter = choice.descriptor.id;
+    let ParameterValue::Choice(original) = choice.value else {
+        panic!("choice")
+    };
+    let next = if original == 0 { 1 } else { 0 };
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let id = editor.read_with(cx, |view, _| {
+        match &view.device_panel.controls[&ParameterKey { device, parameter }] {
+            ParameterControl::Choice { entity, .. } => {
+                gpui::AccessibilityId(entity.entity_id().as_u64())
+            }
+            _ => panic!("selector"),
+        }
+    });
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Choose(next as usize),
+            app
+        ))
+    );
+    pump_until(&editor, cx, |view| {
+        !view.edit_pending()
+            && parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+                == ParameterValue::Choice(next)
+    });
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision),
+        revision + 1
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        !view.edit_pending()
+            && parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+                == ParameterValue::Choice(original)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        !view.edit_pending()
+            && parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+                == ParameterValue::Choice(next)
+    });
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .any(|node| node.descriptor.id == id)
+    }));
 }

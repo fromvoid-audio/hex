@@ -13,6 +13,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
             .expect("test revision"),
     );
     Event {
+        streamed_playback: None,
         state: Arc::new(ViewState {
             project,
             waveforms: Default::default(),
@@ -519,4 +520,70 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             );
         })
         .expect("run viewport growth assertions");
+}
+
+#[gpui::test]
+fn neutral_stream_candidate_retains_one_pending_envelope_and_refuses_stale_context(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.add_window(|window, app| {
+        EditorView::new(
+            window,
+            app,
+            Service::new(48_000, 8, 128).unwrap(),
+            Err("offline test".into()),
+        )
+    });
+    window
+        .update(cx, |view, _, _| {
+            let mut current = event(Arc::new(Project::new(48_000).unwrap()), 1, true);
+            let playback = current.playback.take().unwrap();
+            let prepared = playback.prepared_revision().unwrap().clone();
+            let mut paths = Vec::new();
+            paths.reserve_exact(3);
+            let pointer = paths.as_ptr();
+            let capacity = paths.capacity();
+            current.streamed_playback = Some(hex_session::streamed_candidate::StreamedCandidate {
+                format_version: 1,
+                project_generation: 1,
+                editor_revision: 1,
+                playback,
+                paths,
+            });
+            view.receive(current);
+            let pending = view.pending_playback.as_ref().unwrap();
+            let paths = pending.streamed_paths.as_ref().unwrap();
+            assert_eq!(paths.as_ptr(), pointer);
+            assert_eq!(paths.capacity(), capacity);
+            assert!(Arc::ptr_eq(
+                pending.playback.prepared_revision().unwrap(),
+                &prepared
+            ));
+            assert!(view.playback_candidates.is_empty());
+            let mut stale = event(Arc::new(Project::new(48_000).unwrap()), 1, false);
+            stale.status = Some("old source message".into());
+            stale.streamed_playback = Some(hex_session::streamed_candidate::StreamedCandidate {
+                format_version: 1,
+                project_generation: 9,
+                editor_revision: 1,
+                playback: stale.playback.take().unwrap(),
+                paths: Vec::new(),
+            });
+            view.receive(stale);
+            assert_eq!(
+                view.error.as_deref(),
+                Some("stale streamed project candidate")
+            );
+            assert!(Arc::ptr_eq(
+                view.pending_playback
+                    .as_ref()
+                    .unwrap()
+                    .playback
+                    .prepared_revision()
+                    .unwrap(),
+                &prepared
+            ));
+            assert!(view.playback_candidates.is_empty());
+        })
+        .unwrap();
 }

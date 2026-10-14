@@ -898,3 +898,204 @@ fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
         .expect("ordered redo exists");
     assert_eq!(session.project().snapshot(), moved);
 }
+
+#[test]
+fn mixed_streamed_session_retains_exact_bindings_through_edit_undo_redo_and_import() {
+    use hex_session::streamed_candidate::{PreparedSessionAsset, PreparedStreamedAsset};
+    let directory = TempDir::new();
+    let mut original = Session::new(48_000, 16, 64).unwrap();
+    let (track, asset, _) = imported_ids(
+        original
+            .import(prepare(
+                &directory,
+                "stream.wav",
+                48_000,
+                &[[8192, -8192]; 9],
+            ))
+            .unwrap(),
+    );
+    let path = directory.path().join("stream.wav");
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(65_536, 8192, 64, 16_384),
+        4096,
+    );
+    let prepared = PreparedStreamedAsset::prepare(
+        original.project().asset(asset).unwrap(),
+        7,
+        48_000,
+        path.clone(),
+        limits,
+        4,
+    )
+    .unwrap();
+    let mut session = Session::from_mixed_prepared(
+        original.project().clone(),
+        16,
+        64,
+        vec![(asset, PreparedSessionAsset::Streamed(prepared))],
+        original.sine_table(),
+        Some(7),
+    )
+    .unwrap();
+    assert_eq!(session.resident_frames(), 0);
+    assert!(session.audio(asset).is_none());
+    assert!(session.resident_asset_frames(asset).is_none());
+    let initial = session.compile_prepared_revision(None).unwrap();
+    let facts = initial.streamed_sources().next().unwrap().clone();
+    assert_eq!(facts.key().generation(), 7);
+    let waveform = session.waveform(asset).unwrap();
+    assert_eq!(waveform.source_frames, 9);
+    assert_eq!(waveform.bins[0][0].min, 0.25);
+    let (_, edited) = session
+        .command_prepared_revision(
+            Command::RenameTrack {
+                track,
+                name: "edited".into(),
+            },
+            Some(&initial),
+        )
+        .unwrap();
+    assert_eq!(edited.streamed_sources().next(), Some(&facts));
+    let undo = session
+        .undo_prepared_revision(Some(&edited))
+        .unwrap()
+        .unwrap();
+    assert_eq!(undo.streamed_sources().next(), Some(&facts));
+    let redo = session
+        .redo_prepared_revision(Some(&undo))
+        .unwrap()
+        .unwrap();
+    assert_eq!(redo.streamed_sources().next(), Some(&facts));
+    let candidate = session
+        .streamed_candidate(
+            hex_engine::playback::Playback::try_from_prepared_with_session(redo).unwrap(),
+            7,
+            3,
+        )
+        .unwrap();
+    assert_eq!(candidate.paths.len(), 1);
+    assert_eq!(candidate.paths[0], (facts.key(), path, limits));
+    let (_, changed) = session
+        .import_prepared_audio_track_at_revision(
+            prepare(&directory, "resident.wav", 48_000, &[[16384, 0]; 2]),
+            None,
+            0,
+            Some(&initial),
+        )
+        .unwrap();
+    assert_eq!(changed.streamed_sources().next(), Some(&facts));
+    assert_eq!(session.resident_frames(), 2);
+}
+
+#[test]
+fn streamed_session_source_refuses_wrong_generation_mutation_and_preserves_resident_cap() {
+    use hex_session::streamed_candidate::{PreparedSessionAsset, PreparedStreamedAsset};
+    let directory = TempDir::new();
+    let mut original = Session::new(48_000, 8, 64).unwrap();
+    let (_, asset, _) = imported_ids(
+        original
+            .import(prepare(&directory, "stream.wav", 48_000, &[[8192, 0]; 9]))
+            .unwrap(),
+    );
+    let path = directory.path().join("stream.wav");
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(65_536, 8192, 64, 16_384),
+        4096,
+    );
+    let source = || {
+        PreparedStreamedAsset::prepare(
+            original.project().asset(asset).unwrap(),
+            7,
+            48_000,
+            path.clone(),
+            limits,
+            4,
+        )
+        .unwrap()
+    };
+    assert!(
+        Session::from_mixed_prepared(
+            original.project().clone(),
+            8,
+            64,
+            vec![(asset, PreparedSessionAsset::Streamed(source()))],
+            original.sine_table(),
+            Some(8)
+        )
+        .is_err()
+    );
+    let resident = prepare(&directory, "stream.wav", 48_000, &[[8192, 0]; 9]);
+    assert!(
+        Session::from_mixed_prepared(
+            original.project().clone(),
+            8,
+            8,
+            vec![(asset, PreparedSessionAsset::Resident(resident))],
+            original.sine_table(),
+            None
+        )
+        .is_err()
+    );
+    fs::write(&path, wav(44_100, &[[8192, 0]; 9])).unwrap();
+    assert!(
+        PreparedStreamedAsset::prepare(
+            original.project().asset(asset).unwrap(),
+            7,
+            48_000,
+            path,
+            limits,
+            4
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn streamed_waveform_matches_actual_mixed_rate_conversion_partition_peaks() {
+    use hex_session::streamed_candidate::{PreparedSessionAsset, PreparedStreamedAsset};
+    let directory = TempDir::new();
+    let path = directory.path().join("mixed.wav");
+    let samples: Vec<_> = (0..97)
+        .map(|i| [if i % 3 == 0 { 30_000 } else { -20_000 }, i * 127])
+        .collect();
+    fs::write(&path, wav(44_100, &samples)).unwrap();
+    let imported = PreparedImport::at_rate(
+        decode_wav_file(&path, Limits::new(65_536, 8192)).unwrap(),
+        48_000,
+        hex_media::ResampleLimits {
+            max_source_frames: 8192,
+            max_output_frames: 8192,
+        },
+    )
+    .unwrap();
+    let mut resident = Session::new(48_000, 8, 8192).unwrap();
+    let (_, asset, _) = imported_ids(resident.import(imported).unwrap());
+    let expected = hex_media::waveform::summarize(resident.audio(asset).unwrap(), 13).unwrap();
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(65_536, 8192, 64, 16_384),
+        4096,
+    );
+    let source = PreparedStreamedAsset::prepare(
+        resident.project().asset(asset).unwrap(),
+        9,
+        48_000,
+        path,
+        limits,
+        13,
+    )
+    .unwrap();
+    let streamed = Session::from_mixed_prepared(
+        resident.project().clone(),
+        8,
+        0,
+        vec![(asset, PreparedSessionAsset::Streamed(source))],
+        resident.sine_table(),
+        Some(9),
+    )
+    .unwrap();
+    assert_eq!(streamed.waveform(asset).unwrap().bins, expected.bins);
+    assert_eq!(
+        streamed.waveform(asset).unwrap().source_frames,
+        expected.source_frames
+    );
+}

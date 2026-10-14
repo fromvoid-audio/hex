@@ -536,3 +536,29 @@ these functions do not make the stock resident UI import path streamed. Original
 Pulse24 sustained optimized native100-track mixed-rate/edit/seek/launch/fault
 acceptance and guarded resident limits remain required. No issue completion,
 review approval, deployment or native acceptance is claimed by this source unit.
+
+### Session/service source integration checkpoint
+
+The Session media bank can retain verified streamed metadata, resolved paths and
+project-rate waveform peaks alongside resident PCM. Edit, preview, batch import,
+Undo and Redo compile from the same mixed bank; streamed assets do not masquerade
+as resident audio or consume resident PCM accounting. Their cached waveform
+summaries remain included in the existing summary accounting.
+
+Explicit `Request::OpenStreamed` validates current project generation/revision
+before preparing a replacement. Existing file/frame import ceilings remain;
+compressed ADPCM remains a bounded resident fallback. Fixed-frame sources are
+hashed through the verified descriptor and summarized using the actual globally
+phased conversion, in fixed output windows with exact required source scratch.
+The source bank is control-owned, not an installed-page receipt.
+
+One existing bounded Event envelope carries either legacy `playback` or a
+move-only version1 `streamed_playback` candidate: generation, editor revision,
+Playback and deduplicated keyed path/reader-limit tuples covering actual
+Arrangement and Session bindings. It contains no stream worker, endpoint, device
+policy or device epoch. Audio must revalidate source/catalog/context before
+publication. The UI consumer, app reservation policy and streamed seek preroll
+are not connected by this checkpoint; the new open request has no app menu
+activation. No native streaming readiness or full long-project acceptance is
+established here. Production constructors, old resident APIs, component ceilings
+and the two-domain bridge refusal policy remain unchanged.

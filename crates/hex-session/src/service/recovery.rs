@@ -91,6 +91,44 @@ pub(super) fn open_source(
     source: &ProjectSource,
     relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
 ) -> Result<OpenCandidate, String> {
+    open_source_media(current, history_capacity, source, relinks, None)
+}
+
+pub(super) fn open_streamed_source(
+    current: &Session,
+    history_capacity: usize,
+    source: &ProjectSource,
+    relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
+    generation: u64,
+    limits: hex_media::VerifiedWavReaderLimits,
+) -> Result<OpenCandidate, String> {
+    if generation == 0 {
+        return Err("stream generation must be positive".into());
+    }
+    // The opt-in path preserves existing file/frame ceilings. Aggregate resident
+    // PCM is still charged for every source which requires resident decoding.
+    if limits.reader.max_file_bytes > IMPORT_FILE_LIMIT as u64
+        || limits.reader.max_source_frames > IMPORT_FRAME_LIMIT as u64
+    {
+        return Err("streamed open cannot lift source import limits".into());
+    }
+    open_source_media(
+        current,
+        history_capacity,
+        source,
+        relinks,
+        Some((generation, limits)),
+    )
+}
+
+fn open_source_media(
+    current: &Session,
+    history_capacity: usize,
+    source: &ProjectSource,
+    relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
+    streamed: Option<(u64, hex_media::VerifiedWavReaderLimits)>,
+) -> Result<OpenCandidate, String> {
+    use crate::streamed_candidate::{PreparedSessionAsset, PreparedStreamedAsset};
     let (mut project, project_dir, document) = read_source(source)?;
     let dirty = document.is_none() || !relinks.is_empty();
     if !relinks.is_empty() {
@@ -125,6 +163,29 @@ pub(super) fn open_source(
         } else {
             project_dir.join(asset.path())
         };
+        if let Some((generation, limits)) = streamed {
+            match PreparedStreamedAsset::prepare(
+                asset,
+                generation,
+                project.sample_rate(),
+                media_path.clone(),
+                limits,
+                hex_media::waveform::MAX_BINS,
+            ) {
+                Ok(prepared) => {
+                    prepared_assets.push((asset.id(), PreparedSessionAsset::Streamed(prepared)));
+                    continue;
+                }
+                // Fixed-window readers cannot decode all supported compressed
+                // encodings. A complete resident decode may retain those valid
+                // sources, within the original aggregate resident ceiling. Never
+                // fall back after source mutation, cancellation, I/O or capacity failure.
+                Err(SessionError::Media(hex_media::ImportError::Invalid(
+                    "adpcm is supported by resident import only",
+                ))) => {}
+                Err(error) => return Err(error.to_string().to_lowercase()),
+            }
+        }
         if asset.playback_frames() > remaining_frames {
             return Err("project media exceeds resident audio frame limit".into());
         }
@@ -154,14 +215,15 @@ pub(super) fn open_source(
         remaining_frames = remaining_frames
             .checked_sub(asset.playback_frames())
             .ok_or_else(|| "project media exceeds resident audio frame limit".to_owned())?;
-        prepared_assets.push((asset.id(), prepared));
+        prepared_assets.push((asset.id(), PreparedSessionAsset::Resident(prepared)));
     }
-    let session = Session::from_prepared_with_sine_table(
+    let session = Session::from_mixed_prepared(
         project,
         history_capacity,
         current.max_resident_frames(),
         prepared_assets,
         current.sine_table(),
+        streamed.map(|(generation, _)| generation),
     )
     .map_err(|error| error.to_string().to_lowercase())?;
     Ok((session, project_dir, document, dirty))

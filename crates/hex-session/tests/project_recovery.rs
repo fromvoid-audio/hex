@@ -517,3 +517,147 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     assert_eq!(previous.state.project.as_ref(), &expected);
     assert!(previous.state.unsaved && previous.state.document_path.is_none());
 }
+
+#[test]
+fn opt_in_streamed_open_emits_one_owning_neutral_candidate_and_preserves_edit_history() {
+    let directory = Temp::new();
+    let source = directory.0.join("source.wav");
+    wav(&source, 16);
+    let author = Service::new(48_000, 32, 128).unwrap();
+    assert!(wait(&author).error.is_none());
+    let project = mixed_fixture(&author, &source);
+    let saved = directory.0.join("streamed.hex");
+    hex_storage::save_new(&saved, &project).unwrap();
+    // The ordinary resident open still refuses its unchanged aggregate limit.
+    let target = Service::new(48_000, 32, 1).unwrap();
+    assert!(wait(&target).error.is_none());
+    target.submit(Request::Open(saved.clone())).unwrap();
+    let refused = wait(&target);
+    assert!(refused.error.is_some());
+    assert!(!refused.project_replaced);
+    assert_eq!(refused.state.revision, 0);
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 128, 131_072),
+        64 * 1024 * 1024,
+    );
+    let opened = request(
+        &target,
+        Request::OpenStreamed {
+            source: ProjectSource::Saved(saved.clone()),
+            relinks: BTreeMap::new(),
+            project_generation: 0,
+            revision: 0,
+            limits,
+        },
+    );
+    assert!(opened.project_replaced);
+    assert!(opened.playback.is_none());
+    let candidate = opened.streamed_playback.unwrap();
+    assert_eq!(
+        (
+            candidate.format_version,
+            candidate.project_generation,
+            candidate.editor_revision
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(candidate.paths.len(), project.assets().count());
+    let graph = candidate.playback.prepared_revision().unwrap();
+    assert!(graph.session().contains_streamed_sources());
+    assert!(graph.arrangement().contains_streamed_sources());
+    let facts: Vec<_> = graph.streamed_sources().cloned().collect();
+    for (key, path, actual_limits) in &candidate.paths {
+        assert_eq!(key.generation(), 1);
+        assert_eq!(path, &source);
+        assert_eq!(actual_limits, &limits);
+    }
+    let track = project.tracks()[0].id();
+    let changed = edit(
+        &target,
+        Command::RenameTrack {
+            track,
+            name: "streamed edit".into(),
+        },
+    );
+    assert!(changed.playback.is_none());
+    assert_eq!(
+        changed
+            .streamed_playback
+            .unwrap()
+            .playback
+            .prepared_revision()
+            .unwrap()
+            .streamed_sources()
+            .cloned()
+            .collect::<Vec<_>>(),
+        facts
+    );
+    let undone = request(&target, Request::Undo);
+    assert_eq!(
+        undone.state.project.track(track).unwrap().name(),
+        project.track(track).unwrap().name()
+    );
+    assert!(undone.streamed_playback.is_some());
+    let redone = request(&target, Request::Redo);
+    assert_eq!(
+        redone.state.project.track(track).unwrap().name(),
+        "streamed edit"
+    );
+    assert!(redone.streamed_playback.is_some());
+    let revision = redone.state.revision;
+    target
+        .submit(Request::OpenStreamed {
+            source: ProjectSource::Saved(saved),
+            relinks: BTreeMap::new(),
+            project_generation: 0,
+            revision,
+            limits,
+        })
+        .unwrap();
+    let stale = wait(&target);
+    assert_eq!(stale.error.as_deref(), Some("stale streamed open context"));
+    assert!(!stale.project_replaced);
+    assert_eq!(stale.state.revision, revision);
+    assert!(stale.streamed_playback.is_none());
+}
+
+#[test]
+fn opt_in_streamed_open_preserves_supported_compressed_resident_media() {
+    let directory = Temp::new();
+    let media = directory.0.join("compressed.wav");
+    fs::write(
+        &media,
+        include_bytes!("../../hex-media/tests/fixtures/adpcm_ima_wav-1.wav"),
+    )
+    .unwrap();
+    let author = Service::new(48_000, 8, 8_000_000).unwrap();
+    assert!(wait(&author).error.is_none());
+    let imported = request(&author, Request::Import(media));
+    let saved = directory.0.join("compressed.hex");
+    hex_storage::save_new(&saved, &imported.state.project).unwrap();
+    let target = Service::new(48_000, 8, 8_000_000).unwrap();
+    assert!(wait(&target).error.is_none());
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 128, 131_072),
+        64 * 1024 * 1024,
+    );
+    let event = request(
+        &target,
+        Request::OpenStreamed {
+            source: ProjectSource::Saved(saved),
+            relinks: BTreeMap::new(),
+            project_generation: 0,
+            revision: 0,
+            limits,
+        },
+    );
+    assert!(event.project_replaced);
+    assert!(event.streamed_playback.is_none());
+    let playback = event.playback.unwrap();
+    assert!(
+        !playback
+            .prepared_revision()
+            .unwrap()
+            .contains_streamed_sources()
+    );
+}

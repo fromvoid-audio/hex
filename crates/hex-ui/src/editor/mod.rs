@@ -123,6 +123,8 @@ struct PendingPlayback {
     project_generation: u64,
     state: Arc<ViewState>,
     playback: Playback,
+    // Same publication envelope; neutral metadata only, never a joining worker.
+    streamed_paths: Option<Vec<hex_session::streamed_candidate::SourcePath>>,
     install_fresh_runtime: bool,
     fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,

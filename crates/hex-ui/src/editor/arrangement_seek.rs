@@ -424,6 +424,7 @@ impl EditorView {
                 };
                 pending.stage = super::arrangement_seek::SeekStage::CandidateReady;
                 self.pending_playback = Some(PendingPlayback {
+                    streamed_paths: None,
                     project_revision: pending.project_revision,
                     project_generation: pending.project_generation,
                     state,

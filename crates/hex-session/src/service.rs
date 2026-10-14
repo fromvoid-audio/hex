@@ -17,7 +17,9 @@ pub mod preset;
 mod recovery;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
-use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
+use recovery::{
+    absolute_document_path, checkpoint_project, open_source, open_streamed_source, project_for_save,
+};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -60,6 +62,9 @@ pub struct ViewState {
 pub struct Event {
     pub state: Arc<ViewState>,
     pub playback: Option<Playback>,
+    /// Mutually exclusive with playback. Same bounded event envelope; owns only
+    /// the prepared graph and neutral verified path metadata, never workers.
+    pub streamed_playback: Option<crate::streamed_candidate::StreamedCandidate>,
     pub status: Option<String>,
     pub error: Option<String>,
     pub request_complete: bool,
@@ -260,6 +265,15 @@ pub enum Request {
         source: ProjectSource,
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
+    /// Explicit opt-in; supplied bounds cannot increase existing source import
+    /// ceilings. Stale requests refuse before hashing or canonical replacement.
+    OpenStreamed {
+        source: ProjectSource,
+        relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+        project_generation: u64,
+        revision: u64,
+        limits: hex_media::VerifiedWavReaderLimits,
+    },
     Edit(Command),
     CopyTimeRange(hex_project::TimeRange),
     CutTimeRange(hex_project::TimeRange),
@@ -303,7 +317,10 @@ impl Request {
     pub fn is_project_open(&self) -> bool {
         matches!(
             self,
-            Self::Open(_) | Self::OpenWith { .. } | Self::ImportLiveSet { .. }
+            Self::Open(_)
+                | Self::OpenWith { .. }
+                | Self::OpenStreamed { .. }
+                | Self::ImportLiveSet { .. }
         )
     }
 }
@@ -729,6 +746,7 @@ fn run_worker(
             Event {
                 state: Arc::clone(&state),
                 playback: Some(native_playback(prepared)),
+                streamed_playback: None,
                 status: Some("project ready".into()),
                 error: None,
                 request_complete: false,
@@ -749,6 +767,7 @@ fn run_worker(
         Err(error) => Event {
             state: Arc::clone(&state),
             playback: None,
+            streamed_playback: None,
             status: None,
             error: Some(error),
             request_complete: false,
@@ -1167,14 +1186,50 @@ fn run_worker(
                         }
                     }
                 }
-                request @ (Request::Open(_) | Request::OpenWith { .. }) => {
+                request @ (Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenStreamed { .. }) => {
                     open_complete = true;
-                    let (source, relinks) = match request {
-                        Request::Open(path) => (ProjectSource::Saved(path), BTreeMap::new()),
-                        Request::OpenWith { source, relinks } => (source, relinks),
+                    let result = match request {
+                        Request::Open(path) => open_source(
+                            &session,
+                            history_capacity,
+                            &ProjectSource::Saved(path),
+                            &BTreeMap::new(),
+                        ),
+                        Request::OpenWith { source, relinks } => {
+                            open_source(&session, history_capacity, &source, &relinks)
+                        }
+                        Request::OpenStreamed {
+                            source,
+                            relinks,
+                            project_generation: expected_generation,
+                            revision: expected_revision,
+                            limits,
+                        } => {
+                            if expected_generation != project_generation
+                                || expected_revision != revision
+                            {
+                                Err("stale streamed open context".into())
+                            } else if let Some(generation) = project_generation
+                                .checked_add(1)
+                                .filter(|_| revision.checked_add(1).is_some())
+                            {
+                                open_streamed_source(
+                                    &session,
+                                    history_capacity,
+                                    &source,
+                                    &relinks,
+                                    generation,
+                                    limits,
+                                )
+                            } else {
+                                Err("streamed open context exhausted".into())
+                            }
+                        }
                         _ => continue,
                     };
-                    match open_source(&session, history_capacity, &source, &relinks) {
+                    match result {
                         Ok((candidate, candidate_base, candidate_document, dirty)) => {
                             match compile(
                                 &candidate,
@@ -1800,11 +1855,28 @@ fn run_worker(
                 playback
             })
         });
+        let (playback, streamed_playback) = match playback {
+            Some(playback)
+                if playback
+                    .prepared_revision()
+                    .is_some_and(|graph| graph.contains_streamed_sources()) =>
+            {
+                match session.streamed_candidate(playback, project_generation, revision) {
+                    Ok(candidate) => (None, Some(candidate)),
+                    Err(reason) => {
+                        error = Some(reason.to_string());
+                        (None, None)
+                    }
+                }
+            }
+            playback => (playback, None),
+        };
         if !send_event(
             &events,
             Event {
                 state: Arc::clone(&state),
                 playback,
+                streamed_playback,
                 status,
                 error,
                 request_complete: true,

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Own the canonical editable project together with bounded decoded media and
+Own the canonical editable project together with bounded resident/verified streamed media and
 cached waveform summaries. It is the control-side application controller for a
 thin GPUI layer: validated project commands, prepared audio import,
 undo/redo, read-only media views, and playback compilation all pass through one
@@ -199,3 +199,8 @@ Recovery opens dirty without an overwrite association; ordinary relinked Open
 retains its original exact-byte document token. Untitled recovery retains only
 the latest project, with no history. Contracts, source tests and native gaps:
 [project recovery](../../docs/project-recovery.md).
+
+The opt-in streamed source bank and neutral candidate event are described in
+`docs/page-delivery.md` at the repository root. Session owns no streaming worker,
+endpoint or native device policy; app publication and streamed seek integration
+remain required before the production path is complete.

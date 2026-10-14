@@ -145,7 +145,8 @@ impl Session {
                 cursor = end;
             }
             residents.push(ResidentAsset {
-                audio: member.audio,
+                source: hex_engine::compile::PreparedAudioSource::Resident(member.audio),
+                path: None,
                 waveform: Arc::new(member.waveform),
                 frames,
             });
@@ -161,16 +162,20 @@ impl Session {
                                 "audio batch did not create its asset",
                             ));
                         };
-                        if candidate_media
-                            .insert(*asset, resident.audio.clone())
-                            .is_some()
-                        {
+                        let hex_engine::compile::PreparedAudioSource::Resident(audio) =
+                            &resident.source
+                        else {
+                            return Err(SessionError::Invalid(
+                                "batch import requires resident PCM",
+                            ));
+                        };
+                        if candidate_media.insert(*asset, audio.clone()).is_some() {
                             return Err(SessionError::Invalid(
                                 "audio batch asset identity collision",
                             ));
                         }
                     }
-                    let revision = Arc::new(hex_engine::PreparedRevision::prepare(
+                    let revision = Arc::new(crate::prepare_media_revision(
                         candidate,
                         &candidate_media,
                         sine_table,

@@ -691,10 +691,6 @@ impl NumericControl {
         if !self.enabled {
             return false;
         }
-        if matches!(action, AccessibilityAction::Focus) {
-            self.focus.focus(window);
-            return true;
-        }
         if self.is_interacting()
             || self.accessibility_pending
             || self
@@ -703,6 +699,10 @@ impl NumericControl {
                 .is_some_and(|binding| binding.pending || !(binding.guard)(cx))
         {
             return false;
+        }
+        if matches!(action, AccessibilityAction::Focus) {
+            self.focus.focus(window);
+            return true;
         }
         let value = match action {
             AccessibilityAction::SetNumber(value) => Ok(*value),
