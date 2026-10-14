@@ -49,6 +49,7 @@ expected_changes = {
     "src/taffy.rs",
     "src/gpui.rs",
     "src/elements/div.rs",
+    "src/view.rs",
 }
 if set(manifest["patched_files"]) != expected_changes:
     errors.append("unexpected GPUI patch scope")

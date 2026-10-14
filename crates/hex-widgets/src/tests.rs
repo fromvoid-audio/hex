@@ -2072,3 +2072,104 @@ fn accessibility_descriptor_rejects_expired_owner_and_malformed_values() {
     assert!(!descriptor.is_valid());
     assert!(!descriptor.permits(&gpui::AccessibilityAction::Press));
 }
+
+struct SemanticLeaf {
+    lifetime: gpui::AccessibilityLifetime,
+    nested_queries: Rc<Cell<usize>>,
+}
+
+impl Render for SemanticLeaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let nested = self.nested_queries.clone();
+        div().w(px(100.)).h(px(20.)).accessibility(
+            gpui::AccessibilityDescriptor {
+                id: gpui::AccessibilityId(9),
+                revision: 1,
+                lifetime: self.lifetime.weak(),
+                name: "fixture control".into(),
+                value: gpui::AccessibilityValue::Toggle(false),
+                enabled: true,
+                focused: false,
+                status: None,
+            },
+            move |_, window, _| {
+                // Exercise nested source queries while dispatching; this is not native AX proof.
+                assert_eq!(window.accessibility_nodes().count(), 1);
+                nested.set(nested.get() + 1);
+                false
+            },
+        )
+    }
+}
+
+struct SemanticRecoveryRoot {
+    first: Entity<SemanticLeaf>,
+    duplicate: Option<Entity<SemanticLeaf>>,
+}
+
+impl Render for SemanticRecoveryRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut sizing = div().w(px(100.)).h(px(20.));
+        let style = sizing.style().clone();
+        let mut root = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(gpui::AnyView::from(self.first.clone()).cached(style.clone()));
+        if let Some(duplicate) = &self.duplicate {
+            root = root.child(gpui::AnyView::from(duplicate.clone()).cached(style));
+        }
+        root
+    }
+}
+
+#[gpui::test]
+fn accessibility_duplicate_snapshot_recovers_through_cached_prepaint_and_nested_query(
+    cx: &mut TestAppContext,
+) {
+    let nested = Rc::new(Cell::new(0));
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let root = cx
+        .update_window(handle, |_, window, cx| {
+            let first = cx.new(|_| SemanticLeaf {
+                lifetime: Default::default(),
+                nested_queries: nested.clone(),
+            });
+            let second = cx.new(|_| SemanticLeaf {
+                lifetime: Default::default(),
+                nested_queries: nested.clone(),
+            });
+            window.replace_root(cx, |_, _| SemanticRecoveryRoot {
+                first,
+                duplicate: Some(second),
+            })
+        })
+        .expect("window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.), px(100.)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(|window, _| window.accessibility_nodes().count()),
+        0,
+        "duplicate IDs must refuse the snapshot"
+    );
+    root.update(cx, |root, cx| {
+        root.duplicate = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(|window, _| window.accessibility_nodes().count()),
+        1,
+        "unmodified cached sibling must recover after removing invalid owner"
+    );
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            gpui::AccessibilityId(9),
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    assert_eq!(nested.get(), 1);
+}

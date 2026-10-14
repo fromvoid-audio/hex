@@ -13,6 +13,8 @@ changed files are explicitly enumerated and hashed by `check-gpui-patch.py`.
 name, value/range/choices, availability, focus and separate draft/pending status.
 `Div::accessibility` supplies actual clipped layout bounds and a UI-only action
 handler. Nodes follow GPUI's cached prepaint ranges, not a parallel render tree.
+Cached views rebuild after a refused semantic snapshot, allowing recovery when
+invalid owners disappear. Native element release occurs outside the snapshot lock.
 A window admits at most4096nodes,4096bytes per text,128choices per selector and
 two MiB aggregate semantic text. Invalid/duplicate/oversized snapshots refuse as
 a whole. These are accessibility admission bounds, not project/audio limits.
@@ -67,6 +69,8 @@ focus-only navigation, one accepted edit/Undo, busy and rejected edits, concurre
 queries/actions, closure with retained AX objects, owner/generation replacement,
 scroll/unmount/remount identity and actual bounds at960x600/resized/HiDPI windows.
 Check SDK selector/role behavior, notification timing and native parent lifetime.
+Native choice setters must refuse oversized, embedded-null or ambiguous strings;
+exercise invalid-snapshot recovery and nested queries during retirement.
 No AppKit exposure, VoiceOver, native readability or frame-time pass is claimed by
 headless fixtures. Native failures block readiness; do not replace them with
 synthetic AX success.

@@ -209,6 +209,7 @@ impl Element for AnyView {
                         && element_state.cache_key.bounds == bounds
                         && element_state.cache_key.content_mask == content_mask
                         && element_state.cache_key.text_style == text_style
+                        && !window.rendered_frame.accessibility.invalid
                         && !window.dirty_views.contains(&self.entity_id())
                         && !window.refreshing
                     {

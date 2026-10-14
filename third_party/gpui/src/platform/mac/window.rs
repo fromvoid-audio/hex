@@ -991,7 +991,7 @@ impl Drop for MacWindow {
         let mut this = self.0.lock();
         // Revoke all AX dispatch/snapshots before releasing any GPUI input owner.
         this.accessibility_closed = true;
-        this.accessibility_callback.take();
+        let callback = this.accessibility_callback.take();
         this.accessibility_nodes.clear();
         this.accessibility_frames.clear();
         this.accessibility_actions.clear();
@@ -1001,13 +1001,19 @@ impl Drop for MacWindow {
         unsafe {
             this.native_window.setDelegate_(nil);
         }
-        this.input_handler.take();
-        for (_, _, element) in this.accessibility_elements.drain(..) {
-            unsafe {
-                let _: () = msg_send![element, release];
-            }
-        }
-        this.executor
+        let input_handler = this.input_handler.take();
+        let elements = this
+            .accessibility_elements
+            .drain(..)
+            .map(|(_, _, element)| element)
+            .collect();
+        let executor = this.executor.clone();
+        drop(this);
+        // Native superclass deallocation may query AX again; no native-state lock may be held.
+        drop(callback);
+        drop(input_handler);
+        release_accessibility_elements(elements);
+        executor
             .spawn(async move {
                 unsafe {
                     window.close();
@@ -1471,13 +1477,12 @@ impl PlatformWindow for MacWindow {
             })
             .collect();
         // Cached objects survive visual unmount, but never actual owner removal.
+        let mut retired_elements = Vec::new();
         state
             .accessibility_elements
             .retain(|(_, lifetime, element)| {
                 if lifetime.strong_count() == 0 {
-                    unsafe {
-                        let _: () = msg_send![*element, release];
-                    }
+                    retired_elements.push(*element);
                     false
                 } else {
                     true
@@ -1486,6 +1491,8 @@ impl PlatformWindow for MacWindow {
         if nodes.len() > crate::MAX_ACCESSIBILITY_NODES {
             state.accessibility_nodes.clear();
             state.accessibility_unavailable = true;
+            drop(state);
+            release_accessibility_elements(retired_elements);
             return;
         }
         for node in &nodes {
@@ -1499,18 +1506,24 @@ impl PlatformWindow for MacWindow {
             if state.accessibility_elements.len() >= crate::MAX_ACCESSIBILITY_NODES {
                 state.accessibility_nodes.clear();
                 state.accessibility_unavailable = true;
+                drop(state);
+                release_accessibility_elements(retired_elements);
                 return;
             }
             unsafe {
                 if ACCESSIBILITY_CLASS.is_null() {
                     state.accessibility_nodes.clear();
                     state.accessibility_unavailable = true;
+                    drop(state);
+                    release_accessibility_elements(retired_elements);
                     return;
                 }
                 let element: id = msg_send![ACCESSIBILITY_CLASS, new];
                 if element.is_null() {
                     state.accessibility_nodes.clear();
                     state.accessibility_unavailable = true;
+                    drop(state);
+                    release_accessibility_elements(retired_elements);
                     return;
                 }
                 let data = Box::new(AccessibilityElementState {
@@ -1569,6 +1582,7 @@ impl PlatformWindow for MacWindow {
         }
         // Queries during notifications see the complete published snapshot; no window lock or App call.
         drop(state);
+        release_accessibility_elements(retired_elements);
         for (element, changed, focus_changed) in notifications {
             unsafe {
                 if changed {
@@ -3266,9 +3280,15 @@ extern "C" fn accessibility_set_value(this: &Object, _: Sel, value: id) {
                 if string == YES {
                     // Foundation's bounded UTF-8 copy refuses oversized external values.
                     // NSUTF8StringEncoding is4 (the existing platform binding uses the same value).
+                    let byte_count: NSUInteger =
+                        msg_send![value, lengthOfBytesUsingEncoding: 4 as NSUInteger];
+                    if byte_count > crate::MAX_ACCESSIBILITY_TEXT_BYTES as NSUInteger {
+                        return;
+                    }
                     let mut bytes = [0_i8; crate::MAX_ACCESSIBILITY_TEXT_BYTES + 1];
                     let copied: BOOL = msg_send![value, getCString: bytes.as_mut_ptr() maxLength: bytes.len() encoding: 4 as NSUInteger];
                     if copied == YES
+                        && CStr::from_ptr(bytes.as_ptr()).to_bytes().len() == byte_count as usize
                         && let Ok(text) = CStr::from_ptr(bytes.as_ptr()).to_str()
                     {
                         let mut indices = options
@@ -3318,5 +3338,13 @@ extern "C" fn accessibility_hidden(this: &Object, _: Sel) -> BOOL {
         YES
     } else {
         NO
+    }
+}
+
+fn release_accessibility_elements(elements: Vec<id>) {
+    for element in elements {
+        unsafe {
+            let _: () = msg_send![element, release];
+        }
     }
 }
