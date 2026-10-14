@@ -47,9 +47,18 @@ expected_changes = {
     "src/platform/test/platform.rs",
     "src/window.rs",
     "src/taffy.rs",
+    "src/gpui.rs",
+    "src/elements/div.rs",
 }
 if set(manifest["patched_files"]) != expected_changes:
     errors.append("unexpected GPUI patch scope")
+expected_additions = {"src/accessibility.rs"}
+if set(manifest.get("added_files", {})) != expected_additions:
+    errors.append("unexpected GPUI added-file scope")
+for name, expected in manifest.get("added_files", {}).items():
+    path = vendor / name
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        errors.append(f"GPUI added-source/provenance mismatch: {name}")
 for name, original in manifest["original_files"].items():
     path = vendor / name
     expected = manifest["patched_files"].get(name, original)
@@ -58,7 +67,7 @@ for name, original in manifest["original_files"].items():
 local_metadata = {"HEX-PATCHES.md", "hex-provenance.json", "hex-patches.diff"}
 extra = {
     str(path.relative_to(vendor)) for path in vendor.rglob("*") if path.is_file()
-} - set(manifest["original_files"]) - local_metadata
+} - set(manifest["original_files"]) - expected_additions - local_metadata
 if extra:
     errors.append(f"unexpected files in external GPUI: {sorted(extra)}")
 lock = re.split(r"(?m)^\[\[package\]\]\s*\n", (root / "Cargo.lock").read_text())
@@ -67,4 +76,4 @@ if len(gpui) != 1 or string_value(gpui[0], "source") is not None or string_value
     errors.append("lockfile must resolve exactly the local GPUI 0.2.2 patch")
 if errors:
     raise SystemExit("\n".join(errors))
-print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support and explicit grid-literal deltas, excluded native dependency")
+print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support and explicit grid-literal and bounded accessibility deltas, excluded native dependency")

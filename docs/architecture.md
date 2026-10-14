@@ -593,3 +593,13 @@ missing-attribute errno name changes to libc::ENODATA; macOS/BSD retain ENOATTR.
 There is no new workspace FFI or unsafe exception. See
 [xattr compatibility](xattr-compatibility.md) for provenance, locked compile
 regression, macOS query tests and explicit cross-compilation limits.
+
+### bounded native accessibility boundary — 14 october 2026
+
+Ticket29/PR188 additionally authorizes the excluded GPUI semantic-control/AppKit
+patch described in [native-accessibility.md](native-accessibility.md). Native
+object/selector handling stays inside that dependency; Hex retains safe Rust,
+canonical commands and existing gesture/history ownership. The exact original
+archive, changed files and added source remain covered by the vendor guard.
+Mounted generic-control source coverage is separate from native AX/VoiceOver and
+offscreen-navigation acceptance; this decision does not establish those passes.

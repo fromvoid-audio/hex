@@ -2547,11 +2547,49 @@ fn parameter_control_with_presentation(
             return unsupported_parameter(descriptor.label);
         }
     }
+    // Semantic queries describe acknowledged canonical values, not effective painted drafts.
+    let revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let generation = view.project_generation;
+    let owner = cx.entity().downgrade();
+    let pending = view.edit_pending()
+        || view.device_gesture.snapshot().is_some()
+        || !view.device_gesture_barriers.is_empty()
+        || view.device_panel.pending_values.contains_key(&key);
+    let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |app| {
+        owner
+            .read_with(app, |view, _| {
+                view.project_generation == generation
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == revision)
+                    && !view.edit_pending()
+                    && view.device_gesture.snapshot().is_none()
+                    && view.device_gesture_barriers.is_empty()
+                    && !view.device_panel.pending_values.contains_key(&key)
+                    && view.device_panel.controls.contains_key(&key)
+            })
+            .unwrap_or(false)
+    });
     match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2563,6 +2601,20 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2587,6 +2639,18 @@ fn parameter_control_with_presentation(
             if let ParameterValue::Bool(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2598,6 +2662,18 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2625,6 +2701,23 @@ fn parameter_control_with_presentation(
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2636,6 +2729,23 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2876,6 +2986,7 @@ fn create_parameter_control(
             };
             let config = SelectorConfig::new(id, choices, value as usize, style)
                 .ok()?
+                .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
                 .with_appearance(appearance);
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
