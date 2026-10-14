@@ -204,7 +204,59 @@ struct Publication {
     control_context_generation: u64,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
-    playback: Box<Playback>,
+    playback: PublicationPlayback,
+}
+
+// Both slots belong to the persistent publication, never a handoff stack local.
+struct PublicationPlayback {
+    live: Option<Box<Playback>>,
+    retired: Option<hex_engine::playback::RetiredPlayback>,
+}
+impl From<Box<Playback>> for PublicationPlayback {
+    fn from(playback: Box<Playback>) -> Self {
+        Self {
+            live: Some(playback),
+            retired: None,
+        }
+    }
+}
+impl std::ops::Deref for PublicationPlayback {
+    type Target = Playback;
+    fn deref(&self) -> &Playback {
+        self.live
+            .as_deref()
+            .expect("retired publication is not renderable")
+    }
+}
+impl std::ops::DerefMut for PublicationPlayback {
+    fn deref_mut(&mut self) -> &mut Playback {
+        self.live
+            .as_deref_mut()
+            .expect("retired publication is not renderable")
+    }
+}
+impl PublicationPlayback {
+    // Control-only rejected incoming publication, which has not been retired.
+    fn into_live(self) -> Box<Playback> {
+        self.live
+            .expect("uninstalled publication retains live playback")
+    }
+}
+impl Publication {
+    fn into_return(mut self) -> GraphReturn {
+        if let Some(playback) = self.playback.retired.take() {
+            GraphReturn::Retired(RetiredPublication {
+                stream_source: self.stream_source,
+                _revision: self.revision,
+                _control_context_generation: self.control_context_generation,
+                _policy: self.policy,
+                _fresh_runtime_cancellation: self.fresh_runtime_cancellation,
+                _playback: playback,
+            })
+        } else {
+            GraphReturn::Live(self)
+        }
+    }
 }
 
 struct RetiredPublication {
@@ -733,6 +785,8 @@ pub struct Callback {
     held_retirement: Option<GraphReturn>,
     published_route_key: Option<(u64, u64)>,
     #[cfg(test)]
+    test_retiring_panic_after_commit: Option<bool>,
+    #[cfg(test)]
     route_slot_visits: usize,
     #[cfg(test)]
     test_transient_handoff_refusals: usize,
@@ -814,6 +868,8 @@ pub fn channel_with_spectrum(
             deferred: None,
             held_retirement: None,
             published_route_key: None,
+            #[cfg(test)]
+            test_retiring_panic_after_commit: None,
             #[cfg(test)]
             route_slot_visits: 0,
             #[cfg(test)]
@@ -996,13 +1052,13 @@ impl Control {
             control_context_generation,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
-            playback: Box::new(playback),
+            playback: Box::new(playback).into(),
         };
         if let Err(PushError::Full(publication)) = self.publications.push(publication) {
             self.publication_pending.store(false, Release);
             return Err(PublishError {
                 reason: "playback publication queue full",
-                playback: *publication.playback,
+                playback: *publication.playback.into_live(),
             });
         }
         self.revision = revision;
@@ -1153,8 +1209,13 @@ impl Control {
 }
 
 impl Callback {
+    fn return_deferred(&mut self) {
+        if let Some(publication) = self.deferred.take() {
+            self.return_graph(publication);
+        }
+    }
     fn return_graph(&mut self, publication: Publication) {
-        self.return_owner(GraphReturn::Live(publication));
+        self.return_owner(publication.into_return());
     }
     fn return_owner(&mut self, publication: GraphReturn) {
         if let Err(PushError::Full(publication)) = self.retired.push(publication) {
@@ -1254,7 +1315,7 @@ impl Callback {
         // here while the previous runtime continues to render and drain tails.
         // The queue gate prevents a second graph from being admitted meanwhile.
         if (self.active.is_none() || !self.retired.is_full())
-            && let Some(mut next) = self.deferred.take()
+            && let Some(next) = self.deferred.as_mut()
         {
             #[cfg(test)]
             let forced_refusal = self.test_transient_handoff_refusals > 0;
@@ -1308,7 +1369,7 @@ impl Callback {
                     next.revision,
                     PlaybackHandoffRejection::FreshRuntimeCancelled,
                 );
-                self.return_graph(next);
+                self.return_deferred();
                 self.publication_pending.store(false, Release);
                 self.consume_commands();
                 return;
@@ -1320,7 +1381,7 @@ impl Callback {
                     .ok_or(Invalid("stream bridge missing"))
                     .and_then(|streaming| {
                         streaming.candidate_ready(
-                            &mut next,
+                            next,
                             self.active.as_mut(),
                             self.status.consumed_command.load(Acquire),
                         )
@@ -1328,7 +1389,6 @@ impl Callback {
                 match readiness {
                     Ok(true) => {}
                     Ok(false) => {
-                        self.deferred = Some(next);
                         self.consume_commands();
                         return;
                     }
@@ -1340,7 +1400,7 @@ impl Callback {
                             next.revision,
                             PlaybackHandoffRejection::StreamReadiness,
                         );
-                        self.return_graph(next);
+                        self.return_deferred();
                         self.publication_pending.store(false, Release);
                         self.consume_commands();
                         return;
@@ -1354,7 +1414,6 @@ impl Callback {
                     previous.playback.sample_rate(),
                 )
             });
-            let mut retired_predecessor = None;
             let mut retiring_candidate_consumed = false;
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
@@ -1370,40 +1429,26 @@ impl Callback {
                 None
             } else {
                 if next.stream_source.is_some() {
-                    self.active.take().map(|previous| {
-                        let Publication {
-                            stream_source,
-                            revision,
-                            control_context_generation,
-                            policy,
-                            fresh_runtime_cancellation,
-                            playback,
-                        } = previous;
-                        match next.playback.try_inherit_and_retire_previous(playback) {
-                            Ok(playback) => {
-                                retired_predecessor = Some(RetiredPublication {
-                                    stream_source,
-                                    _revision: revision,
-                                    _control_context_generation: control_context_generation,
-                                    _policy: policy,
-                                    _fresh_runtime_cancellation: fresh_runtime_cancellation,
-                                    _playback: playback,
-                                });
-                                Ok(())
-                            }
+                    self.active.as_mut().map(|previous| {
+                        #[cfg(test)]
+                        if self.test_retiring_panic_after_commit == Some(false) {
+                            panic!("injected retiring preflight unwind");
+                        }
+                        let result = match next.playback.try_inherit_and_retire_previous_in_place(
+                            &mut previous.playback.live,
+                            &mut previous.playback.retired,
+                        ) {
+                            Ok(()) => Ok(()),
                             Err(failure) => {
                                 retiring_candidate_consumed = failure.candidate_consumed;
-                                self.active = Some(Publication {
-                                    stream_source,
-                                    revision,
-                                    control_context_generation,
-                                    policy,
-                                    fresh_runtime_cancellation,
-                                    playback: failure.previous,
-                                });
                                 Err(failure.error)
                             }
+                        };
+                        #[cfg(test)]
+                        if result.is_ok() && self.test_retiring_panic_after_commit == Some(true) {
+                            panic!("injected retiring postcommit unwind");
                         }
+                        result
                     })
                 } else {
                     self.active.as_mut().map(|previous| {
@@ -1413,9 +1458,7 @@ impl Callback {
                 }
             };
             match handoff {
-                Some(Err(error)) if error.is_transient() && !retiring_candidate_consumed => {
-                    self.deferred = Some(next);
-                }
+                Some(Err(error)) if error.is_transient() && !retiring_candidate_consumed => {}
                 Some(Err(error)) => {
                     if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                         cancellation.finish();
@@ -1423,7 +1466,7 @@ impl Callback {
                     if let Some(reason) = error.rejection() {
                         self.status.publish_rejected_revision(next.revision, reason);
                     }
-                    self.return_graph(next);
+                    self.return_deferred();
                     self.publication_pending.store(false, Release);
                 }
                 _ => {
@@ -1448,7 +1491,7 @@ impl Callback {
                             next.revision,
                             PlaybackHandoffRejection::FreshRuntimeCancelled,
                         );
-                        self.return_graph(next);
+                        self.return_deferred();
                         self.publication_pending.store(false, Release);
                         self.consume_commands();
                         return;
@@ -1500,11 +1543,15 @@ impl Callback {
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
+                    // Every potentially panicking provider call above borrowed
+                    // the persistent candidate/predecessor fields. Only fixed
+                    // owner moves and bounded return remain before publication.
+                    let next = self
+                        .deferred
+                        .take()
+                        .expect("borrowed candidate remains owned");
                     if let Some(previous) = self.active.replace(next) {
                         self.return_graph(previous);
-                    }
-                    if let Some(previous) = retired_predecessor {
-                        self.return_owner(GraphReturn::Retired(previous));
                     }
                     if let Some(cancellation) = self
                         .active
@@ -3833,7 +3880,7 @@ mod tests {
                 control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
-                playback: Box::new(graph().0),
+                playback: Box::new(graph().0).into(),
             })
             .unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
@@ -4170,7 +4217,7 @@ mod tests {
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
-                    playback: Box::new(graph().0),
+                    playback: Box::new(graph().0).into(),
                 }))
                 .unwrap();
         }
@@ -4481,7 +4528,7 @@ mod tests {
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            playback: Box::new(playback),
+            playback: Box::new(playback).into(),
         }));
         assert!(weak_revision.upgrade().is_some());
         callback.begin_block();
@@ -4595,7 +4642,7 @@ mod tests {
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        playback: Box::new(playback),
+                        playback: Box::new(playback).into(),
                     }))
                     .is_ok()
             );
@@ -4669,7 +4716,7 @@ mod tests {
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        playback: Box::new(playback),
+                        playback: Box::new(playback).into(),
                     }))
                     .is_ok()
             );
@@ -4682,7 +4729,7 @@ mod tests {
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            playback: Box::new(held),
+            playback: Box::new(held).into(),
         }));
         let mut last_ticket = 0;
         for _ in 0..COMMANDS {
@@ -4829,7 +4876,7 @@ mod tests {
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    playback: Box::new(queued),
+                    playback: Box::new(queued).into(),
                 })
                 .is_ok()
         );

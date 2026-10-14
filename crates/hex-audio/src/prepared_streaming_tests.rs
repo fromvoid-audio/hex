@@ -461,7 +461,8 @@ fn same_actual_catalog_reuses_endpoint_but_project_context_change_refuses() {
                 fresh_runtime_cancellation: None,
                 playback: Box::new(Playback::new(
                     hex_engine::Project::new(48_000, Vec::new()).unwrap(),
-                )),
+                ))
+                .into(),
             }))
             .ok()
             .unwrap();
@@ -552,4 +553,84 @@ fn bridge_reports_actual_reservations_and_checked_overflow_without_process_claim
     assert_eq!(root.input_bridge_storage_bytes(), None);
     root.demand_capacities[0] = saved;
     shutdown(&mut control, &mut callback, &mut root);
+}
+
+#[test]
+fn retiring_unwind_keeps_candidate_and_predecessor_in_persistent_publications() {
+    for after_commit in [false, true] {
+        let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+        let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+        let (first, _file) = request(if after_commit { 72 } else { 71 });
+        let id = first.context.project_generation;
+        root.publish(&mut control, first).unwrap();
+        callback.begin_block();
+        let old_address = callback
+            .active
+            .as_ref()
+            .unwrap()
+            .playback
+            .live
+            .as_ref()
+            .unwrap()
+            .as_ref() as *const Playback as usize;
+        let domain = hex_stream::DomainId::new(id).unwrap();
+        let revision = Arc::clone(
+            callback
+                .active
+                .as_ref()
+                .unwrap()
+                .playback
+                .prepared_revision()
+                .unwrap(),
+        );
+        let weak = Arc::downgrade(&revision);
+        let catalog = root.catalog_lease(domain).unwrap();
+        root.publish(
+            &mut control,
+            StreamPublicationRequest {
+                playback: Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap(),
+                verified: hex_stream::VerifiedStreamRevision::new(revision, catalog).unwrap(),
+                source: StreamPublicationSource::Reuse(domain),
+                policy: PublicationPolicy::InheritRuntime,
+                context: StreamingContext {
+                    project_generation: id,
+                    editor_revision: 2,
+                    device_epoch: 1,
+                    timeline_epoch: 1,
+                },
+            },
+        )
+        .unwrap();
+        let before = weak.strong_count();
+        callback.test_retiring_panic_after_commit = Some(after_commit);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback.begin_block()));
+        assert!(result.is_err());
+        assert_eq!(weak.strong_count(), before);
+        let old = callback.active.as_ref().unwrap();
+        assert_eq!(old.revision, 1);
+        assert_eq!(old.control_context_generation, id);
+        assert_eq!(old.stream_source.as_ref().unwrap().domain, domain);
+        assert_eq!(old.playback.retired.is_some(), after_commit);
+        assert_eq!(old.playback.live.is_none(), after_commit);
+        if !after_commit {
+            assert_eq!(
+                old.playback.live.as_ref().unwrap().as_ref() as *const Playback as usize,
+                old_address
+            );
+        }
+        assert_eq!(callback.deferred.as_ref().unwrap().revision, 2);
+        assert!(callback.deferred.as_ref().unwrap().playback.live.is_some());
+        assert_eq!(control.status.applied_revision.load(Relaxed), 1);
+        // Quarantined runtime must not be rendered/retried after an unwind.
+        // Confirmed control-side harness disposal recovers actual endpoint
+        // owners, including the postcommit opaque predecessor.
+        drop(control);
+        drop(callback);
+        assert_eq!(weak.strong_count(), 0);
+        for _ in 0..4 {
+            let _phase = root.tick(true);
+        }
+        assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+    }
 }

@@ -318,7 +318,57 @@ pub struct RetiringHandoffFailure {
     pub candidate_consumed: bool,
 }
 
+/// Refusal metadata for a handoff whose graph owners remain in caller storage.
+pub struct BorrowedRetiringHandoffFailure {
+    pub error: PlaybackHandoffError,
+    pub candidate_consumed: bool,
+}
+
 impl Playback {
+    /// Opt-in retiring handoff with owners borrowed from persistent callback
+    /// storage. A preflight unwind cannot destroy either slot. On success the
+    /// predecessor moves directly into the already-vacant opaque retirement
+    /// slot; no provider call or fallible operation follows that move.
+    ///
+    /// The caller must retain both slots outside the unwinding call, quarantine
+    /// a partially staged candidate on panic, and dispose retirement on control.
+    pub fn try_inherit_and_retire_previous_in_place(
+        &mut self,
+        previous: &mut Option<Box<Playback>>,
+        retired: &mut Option<RetiredPlayback>,
+    ) -> Result<(), BorrowedRetiringHandoffFailure> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let result = if retired.is_some() {
+            Err(invalid())
+        } else if let Some(previous) = previous.as_mut() {
+            match (&mut self.session_runtime, &mut previous.session_runtime) {
+                (Some(candidate), Some(old)) => candidate
+                    .try_inherit_retiring_state_from(old)
+                    .map(|_| ())
+                    .map_err(PlaybackHandoffError::Session),
+                _ => Err(invalid()),
+            }
+        } else {
+            Err(invalid())
+        };
+        if let Err(error) = result {
+            return Err(BorrowedRetiringHandoffFailure {
+                error,
+                candidate_consumed: self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.require_fresh_candidate().is_err()),
+            });
+        }
+        // Exclusive borrows preserve the occupied/vacant slots validated above.
+        // Option moves and construction cannot invoke a provider or destructor.
+        if let Some(previous) = previous.take() {
+            *retired = Some(RetiredPlayback {
+                _playback: previous,
+            });
+        }
+        Ok(())
+    }
     /// Control-only opt-in preparation. Legacy constructors allocate no reserve.
     /// Clones immutable context roots here, not at the retiring callback commit.
     pub fn prepare_retiring_handoff(&mut self) -> Result<(), PlaybackHandoffError> {
@@ -331,6 +381,9 @@ impl Playback {
             .map_err(PlaybackHandoffError::Session)
     }
 
+    /// Control-side owning convenience method. Unlike the persistent-slot
+    /// method, an unwind here destroys its stack-owned predecessor; native
+    /// callback callers must use the in-place method instead.
     /// Consume exclusive ownership of an interactive predecessor. Success
     /// returns only an opaque disposal owner; refusal returns the same Box.
     /// A consumed candidate must be reconstructed on control before retry.
@@ -1168,4 +1221,82 @@ fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod persistent_retirement_tests {
+    use super::*;
+
+    fn playback() -> Box<Playback> {
+        let source = hex_project::Project::new(48_000).unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                &source,
+                &std::collections::BTreeMap::new(),
+                1,
+                Arc::new(crate::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = Box::new(Playback::try_from_prepared_with_session(prepared).unwrap());
+        playback.prepare_retiring_handoff().unwrap();
+        playback
+    }
+
+    #[test]
+    fn persistent_slots_retire_original_box_and_dispose_it_on_control() {
+        let old = playback();
+        let address = old.as_ref() as *const Playback as usize;
+        let old_revision = Arc::downgrade(old.prepared_revision().unwrap());
+        let mut live = Some(old);
+        let mut retired = None;
+        let mut candidate = playback();
+        assert!(
+            candidate
+                .try_inherit_and_retire_previous_in_place(&mut live, &mut retired)
+                .is_ok()
+        );
+        assert!(live.is_none());
+        assert!(retired.is_some());
+        assert!(old_revision.upgrade().is_some());
+        let disposed = std::thread::spawn(move || {
+            drop(retired);
+            (take_retired_disposal(), std::thread::current().id())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(disposed.0, Some((address, disposed.1)));
+        assert_ne!(disposed.1, std::thread::current().id());
+        assert_eq!(old_revision.strong_count(), 0);
+    }
+
+    #[test]
+    fn occupied_retirement_refuses_without_changing_either_owner() {
+        let mut live = Some(playback());
+        let address = live.as_ref().unwrap().as_ref() as *const Playback as usize;
+        let mut other = Some(playback());
+        let mut retired = None;
+        let mut candidate = playback();
+        assert!(
+            candidate
+                .try_inherit_and_retire_previous_in_place(&mut other, &mut retired)
+                .is_ok()
+        );
+        let before = retired.as_ref().unwrap()._playback.as_ref() as *const Playback as usize;
+        let mut fresh = playback();
+        let refusal = fresh
+            .try_inherit_and_retire_previous_in_place(&mut live, &mut retired)
+            .err()
+            .unwrap();
+        assert!(!refusal.candidate_consumed);
+        assert_eq!(
+            live.as_ref().unwrap().as_ref() as *const Playback as usize,
+            address
+        );
+        assert_eq!(
+            retired.as_ref().unwrap()._playback.as_ref() as *const Playback as usize,
+            before
+        );
+    }
 }

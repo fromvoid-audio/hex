@@ -274,7 +274,7 @@ impl Control {
             control_context_generation: context.project_generation,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
-            playback: Box::new(playback),
+            playback: Box::new(playback).into(),
             stream_source: Some(StreamBinding {
                 domain,
                 catalog,
@@ -305,7 +305,7 @@ impl Control {
             return Err(error(
                 "playback publication queue full",
                 StreamPublicationRequest {
-                    playback: *publication.playback,
+                    playback: *publication.playback.into_live(),
                     verified,
                     source,
                     policy,
