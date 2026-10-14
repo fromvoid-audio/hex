@@ -305,6 +305,15 @@ fn non_utf8_success_and_failure_preserve_exact_path_bytes_and_allocation() {
                 [[11.0 / 32768.0, -11.0 / 32768.0]]
             );
             drop(valid);
+            // Rename and open can report different OS errors for this name.
+            // Establish an independent bounded open refusal, not a rename-code
+            // assumption or an arbitrary IO-error acceptance.
+            let reference = File::open(&renamed).unwrap_err();
+            match reference.raw_os_error() {
+                Some(2) => assert_eq!(reference.kind(), std::io::ErrorKind::NotFound),
+                Some(92) => {} // Filesystem may also reject opening the name.
+                _ => panic!("unexpected invalid-name open refusal: {reference}"),
+            }
             for request_cancel in [false, true] {
                 let path = owned_path(&renamed);
                 let expected = identity(&path);
@@ -316,9 +325,11 @@ fn non_utf8_success_and_failure_preserve_exact_path_bytes_and_allocation() {
                 .err()
                 .unwrap();
                 let (error, capacity) = recover(failure, &expected);
-                assert!(
-                    matches!(error, ImportError::Io(ref error) if error.raw_os_error() == Some(92))
-                );
+                let ImportError::Io(error) = error else {
+                    panic!("expected invalid-name IO refusal")
+                };
+                assert_eq!(error.raw_os_error(), reference.raw_os_error());
+                assert_eq!(error.kind(), reference.kind());
                 // File::open precedes page-verification cancellation in both
                 // legacy and owned APIs. This is IO refusal, not Cancelled.
                 assert_eq!(cancel_calls, 0);
