@@ -89,17 +89,48 @@ pub(super) fn revoke_object(this: &Object) {
         revoke(bridge);
     }
 }
+// Use the Objective-C runtime setter rather than fabricating &mut Object from &Object.
+// This is a non-object (void*) ivar: the runtime does not retain/release the boxed Rust owner.
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn object_getInstanceVariable(
+        object: *const Object,
+        name: *const std::ffi::c_char,
+        value: *mut *mut c_void,
+    ) -> *mut c_void;
+    fn object_setInstanceVariable(
+        object: *const Object,
+        name: *const std::ffi::c_char,
+        value: *mut c_void,
+    ) -> *mut c_void;
+}
+
+/// Transfer an exclusively owned native ivar into Rust, making reentrant readers see null first.
+/// The caller owns native teardown; a live ObjC receiver cannot concurrently be deallocated.
+unsafe fn take_owned_ivar<T>(this: &Object, name: &CStr) -> Option<Box<T>> {
+    unsafe {
+        let mut raw = ptr::null_mut();
+        if object_getInstanceVariable(this, name.as_ptr(), &mut raw).is_null() || raw.is_null() {
+            return None;
+        }
+        // A missing ivar refuses ownership transfer; never consume a pointer we failed to clear.
+        if object_setInstanceVariable(this, name.as_ptr(), ptr::null_mut()).is_null() {
+            return None;
+        }
+        Some(Box::from_raw(raw.cast::<T>()))
+    }
+}
+
 pub(super) unsafe fn detach(this: &Object) {
     unsafe {
-        let raw = *this.get_ivar::<*mut c_void>(DATA_IVAR);
-        if !raw.is_null() {
-            // dealloc owns the ivar; no concurrent accessor may use a deallocated object.
-            let bridge = Box::from_raw(raw as *mut Arc<NativeBridge>);
+        if let Some(bridge) = take_owned_ivar::<Arc<NativeBridge>>(this, c"semanticBridge") {
+            // The owning ivar is already null before revoke releases reentrant callbacks/cache.
             revoke(&bridge);
             drop(bridge);
         }
     }
 }
+
 pub(super) fn revoke(bridge: &Arc<NativeBridge>) {
     let newly_revoked = bridge.revoke(); // Unavailable/empty before any UI-owner release.
     if on_ui() {
@@ -320,10 +351,8 @@ fn semantic_node(this: &Object) -> Option<crate::AccessibilityNode> {
 }
 extern "C" fn accessibility_dealloc(this: &Object, _: Sel) {
     unsafe {
-        let raw = *this.get_ivar::<*mut c_void>("semanticState");
-        if !raw.is_null() {
-            drop(Box::from_raw(raw as *mut ElementData));
-        }
+        // Clear before dropping the boxed data: nested queries/teardown must see unavailable.
+        drop(take_owned_ivar::<ElementData>(this, c"semanticState"));
         let _: () = msg_send![super(this, class!(NSAccessibilityElement)), dealloc];
     }
 }
@@ -859,6 +888,64 @@ mod tests {
         snapshot.nodes[0].node.descriptor.enabled = true;
         drop(owner);
         assert!(!permits(&snapshot, &action));
+    }
+    #[test]
+    fn owning_ivars_clear_before_reentrant_drop_and_cannot_be_consumed_twice() {
+        // Real Objective-C ivar storage, independent of GPUI windows/display/GPU.
+        static REGISTER: std::sync::Once = std::sync::Once::new();
+        REGISTER.call_once(|| {
+            let mut class =
+                ClassDecl::new("GPUISemanticOwnerTransferTest", class!(NSObject)).unwrap();
+            class.add_ivar::<*mut c_void>(DATA_IVAR);
+            class.add_ivar::<*mut c_void>("semanticState");
+            class.register();
+        });
+        struct ReentrantDrop {
+            object: id,
+            name: &'static CStr,
+            drops: Rc<Cell<usize>>,
+        }
+        impl Drop for ReentrantDrop {
+            fn drop(&mut self) {
+                unsafe {
+                    let object = &*self.object;
+                    assert!(
+                        (*object.get_ivar::<*mut c_void>(self.name.to_str().unwrap())).is_null()
+                    );
+                    assert!(object_bridge(object).is_none());
+                    assert!(semantic_state(object).is_none());
+                    // Simulate nested teardown during callback/cache/data destruction.
+                    assert!(take_owned_ivar::<ReentrantDrop>(object, self.name).is_none());
+                }
+                self.drops.set(self.drops.get() + 1);
+            }
+        }
+        unsafe {
+            let class = Class::get("GPUISemanticOwnerTransferTest").unwrap();
+            let object: id = msg_send![class, new];
+            assert!(!object.is_null());
+            let drops = Rc::new(Cell::new(0));
+            assert!(take_owned_ivar::<ReentrantDrop>(&*object, c"absentOwner").is_none());
+            for name in [c"semanticBridge", c"semanticState"] {
+                assert!(take_owned_ivar::<ReentrantDrop>(&*object, name).is_none());
+                let raw = Box::into_raw(Box::new(ReentrantDrop {
+                    object,
+                    name,
+                    drops: drops.clone(),
+                }));
+                (*object).set_ivar(name.to_str().unwrap(), raw as *mut c_void);
+                // Negative control: the former Box::from_raw-first ordering still exposes ownership.
+                let old_order = Box::from_raw(raw);
+                assert!(!(*(*object).get_ivar::<*mut c_void>(name.to_str().unwrap())).is_null());
+                assert_eq!(Box::into_raw(old_order), raw); // Return ownership without running Drop.
+                let taken = take_owned_ivar::<ReentrantDrop>(&*object, name).unwrap();
+                assert!((*(*object).get_ivar::<*mut c_void>(name.to_str().unwrap())).is_null());
+                drop(taken); // Reentrant Drop checks cleared pointer and refuses second take.
+                assert!(take_owned_ivar::<ReentrantDrop>(&*object, name).is_none());
+            }
+            assert_eq!(drops.get(), 2);
+            let _: () = msg_send![object, release];
+        }
     }
     #[test]
     fn native_transport_graph_is_send_sync_but_contains_no_ui_owner() {

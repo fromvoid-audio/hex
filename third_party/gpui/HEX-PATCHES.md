@@ -81,3 +81,8 @@ objects. Scalar queries are snapshot-only; off-UI parent/children return unavail
 The original unsafe-lifetime candidate remains quarantined. This native source
 requires exact Mac compilation/AX teardown/veto/VoiceOver checks; Linux tests do
 not establish OS exposure. All baseline identity/hashes and prior patches remain.
+
+14 October native teardown repair: clear semanticBridge/semanticState through the
+Objective-C runtime before reclaiming their owning Box. The private helper and
+real-ivar reentrant-drop/uncleared-pointer negative control stay inside the existing
+Mac accessibility patch. Native execution remains a separate required Mac check.

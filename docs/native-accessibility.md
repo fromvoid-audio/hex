@@ -107,3 +107,23 @@ exercise invalid-snapshot recovery and nested queries during retirement.
 No AppKit exposure, VoiceOver, native readability or frame-time pass is claimed by
 headless fixtures. Native failures block readiness; do not replace them with
 synthetic AX success.
+
+## clear-before-drop teardown repair
+
+Independent review of4308ce5 found that detach/dealloc reconstructed their owning
+Box while the native ivar still exposed its pointer. Callback/cache destruction
+could reenter teardown or queries before that pointer became dangling. This is a
+source-proven hazard; no actual AppKit crash is claimed. Both owning ivars now
+transfer through one private take-and-clear helper: the Objective-C runtime clears
+the non-object void* ivar before Box::from_raw, revoke or Drop. A missing/uncleared
+slot refuses transfer. The runtime setter avoids manufacturing a mutable Rust
+Object reference from a shared reference; no public native API/lifecycle changes.
+
+A third Mac-only regression uses real NSObject ivar storage for both owning names.
+Its old-order negative control observes the still-exposed pointer before returning
+ownership without destruction. The fixed path's destructor performs nested actual
+bridge/element readers and another take: readers see unavailable, second take
+refuses and the two owners drop exactly once. This fixture does not open a window
+or exercise actual AppKit close; it remains unrun until the exact Mac gate.
+Parent4308 full Linux CI is historical for the corrected head. Retain the original
+quarantined backend and default-stack failure evidence; do not relabel either.
