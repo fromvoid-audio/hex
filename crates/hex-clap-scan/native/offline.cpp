@@ -176,13 +176,17 @@ int main(int argc,char** argv)  {
         }
         else check(false,"unsupported MIDI wire type");
         prior=uint32_t(offset);
-      }for(auto* channel:  {
+      }
+      for(auto* channel:  {
         &b.left,&b.right
-      })for(size_t j=0;j<n;j++)  {
-        float v=r.f32();
-        check(std::isfinite(v),"input nonfinite");
-        channel->push_back(v);
-      }input.push_back(std::move(b));
+      }) {
+        for(size_t j=0;j<n;j++)  {
+          float v=r.f32();
+          check(std::isfinite(v),"input nonfinite");
+          channel->push_back(v);
+        }
+      }
+      input.push_back(std::move(b));
     }
     check(r.at==bytes.size(),"request trailing fields");
     Owner owner;
