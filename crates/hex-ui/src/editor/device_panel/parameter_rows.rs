@@ -110,7 +110,7 @@ fn cell_height(parameter: &NativeDeviceParameterView) -> f32 {
 /// Reconcile all cached descriptors, including horizontally/vertically hidden ones.
 /// This never creates an entity for a parameter that has not mounted.
 pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    let descriptors: HashMap<_, _> = view
+    let mut descriptors: HashMap<_, _> = view
         .device_panel
         .views
         .iter()
@@ -134,6 +134,23 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             })
         })
         .collect();
+    // Host gain is not a device-owned row descriptor. Preserve its cached entity
+    // even for unavailable DSP metadata, until the actual owner/type retires.
+    for (device, (class, state, _)) in &view.device_panel.views {
+        descriptors.insert(
+            ParameterKey {
+                device: *device,
+                parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
+            },
+            (
+                *class,
+                state.type_id(),
+                &hex_engine::DEVICE_OUTPUT_GAIN,
+                true,
+                true,
+            ),
+        );
+    }
     let stale: Vec<_> =
         view.device_panel
             .controls

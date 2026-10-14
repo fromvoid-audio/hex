@@ -10747,3 +10747,51 @@ mod device_capacity_tests;
 
 #[path = "analytic_continuation_tests.rs"]
 mod analytic_continuation_tests;
+#[test]
+fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
+    let project = project(0.758_499_15, 0, 8 << 32);
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepared = revision(&project, Arc::clone(&table));
+    let device = project.tracks()[0].instrument().unwrap().id();
+    let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
+    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut metered = SessionPlayback::new(prepared).unwrap();
+    metered.set_device_metering(true);
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    metered.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut a = [[0.0; 2]; 127];
+    let mut b = a;
+    for _ in 0..5 {
+        ordinary.render(&mut a).unwrap();
+        metered.render(&mut b).unwrap();
+        assert_eq!(a, b, "telemetry must preserve per-voice summation order");
+    }
+    let peaks = meter.take_peaks();
+    assert_eq!(peaks[0], 0.0);
+    assert!(peaks[1] > 0.0);
+    let mut snapshot = project.snapshot();
+    let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
+    instrument.state = instrument.state.clone().with_output_gain_db(-12.0).unwrap();
+    let changed = Project::from_snapshot(snapshot).unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            &changed,
+            &BTreeMap::new(),
+            table,
+            Some(ordinary.revision.session()),
+        )
+        .unwrap(),
+    );
+    let mut trimmed = SessionPlayback::new(prepared).unwrap();
+    trimmed.try_inherit_state_from(&mut ordinary).unwrap();
+    assert!(
+        trimmed.releases.is_empty(),
+        "host trim must not create a duplicate voice release"
+    );
+    ordinary.render(&mut a).unwrap();
+    trimmed.render(&mut b).unwrap();
+    let gain = 10.0_f32.powf(-12.0 / 20.0);
+    for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+        assert!((a * gain - b).abs() < 1e-7);
+    }
+}

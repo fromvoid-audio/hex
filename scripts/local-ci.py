@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import errno
@@ -628,6 +629,226 @@ class LocalCiRunner:
                 raise TargetCacheError("workspace package metadata is malformed")
             argv.extend(("--package", package["spec"]))
         return argv
+
+    def _release_scope(self) -> list[dict[str, str]]:
+        """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
+        result = command_output(
+            ["cargo", "metadata", "--format-version", "1", "--locked"], self.root, self.env
+        )
+        if result.returncode != 0:
+            raise TargetCacheError(f"release package metadata failed: {result.stderr.strip()}")
+        try:
+            metadata = json.loads(result.stdout)
+            members = set(metadata["workspace_members"])
+            packages = metadata["packages"]
+            scope = sorted(
+                ({"name": p["name"], "version": p["version"], "spec": p["id"]}
+                 for p in packages if p["id"] in members), key=lambda p: p["name"]
+            )
+            names = {p["name"] for p in scope}
+            if not scope or len(names) != len(scope) or any(
+                p["id"] not in members and p["name"] in names for p in packages
+            ):
+                raise ValueError("workspace package names overlap other packages")
+            if any(not all(isinstance(v, str) and v for v in p.values()) for p in scope):
+                raise ValueError("invalid package fields")
+            if self.cargo_identity is None or {p["spec"] for p in scope} != {
+                p["spec"] for p in self.cargo_identity["workspace_packages"]
+            }:
+                raise ValueError("workspace package metadata changed")
+            return scope
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise TargetCacheError(f"unsafe release package selection: {error}") from error
+
+    @staticmethod
+    def _write_release_owner(path: Path, payload: dict[str, object]) -> None:
+        if path.is_symlink():
+            raise TargetCacheError("release ownership marker is a symlink")
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @contextmanager
+    def guarded_release(self, *, adopt: bool = False):
+        """Explicit release handoff; caller must identify its artifact before exit.
+
+        Uses the dev driver's SAME target-wide lock, but a separate durable
+        marker. Exceptions leave pending ownership, requiring explicit recovery.
+        Raw Cargo commands do not participate in this cooperative contract.
+        """
+        if self.target_lock is not None:
+            raise TargetCacheError("release preparation requires an unheld runner")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if not self._capture_repository_state("start_tree") or self.summary["start_tree"]["dirty"]:
+            raise TargetCacheError("release preparation requires exact clean source")
+        if not self._resolve_cargo_identity() or not self._check_disk_headroom():
+            raise TargetCacheError(f"release preparation failed: {self.summary}")
+        target = Path(str(self.cargo_identity["target_directory"]))
+        lock_path, dev_owner_path = target_state_paths(target, self.target_state_dir)
+        owner_path = dev_owner_path.with_name(dev_owner_path.name.replace(".owner.json", ".release-owner.json"))
+        lock = CargoTargetLock(lock_path, {
+            "run_id": self.run_id, "profile": "release", "target_directory": str(target),
+            "workspace_root": str(self.root), "commit": self.git_identity["commit"],
+        })
+        lock.acquire()
+        self.target_lock = lock
+        try:
+            # Recheck source after acquiring ownership; a changed checkout refuses.
+            if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
+                raise TargetCacheError("release source changed before lock acquisition")
+            scope = self._release_scope()
+            workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
+            source = self.summary["start_tree"]
+            identity = self._directory_identity(target)
+            record = None
+            malformed = False
+            if owner_path.exists() or owner_path.is_symlink():
+                try:
+                    if owner_path.is_symlink():
+                        raise ValueError("symlink marker")
+                    record = json.loads(owner_path.read_text())
+                    if (not isinstance(record, dict) or record.get("schema_version") != 1
+                            or not {"target_identity", "source", "workspace_owner", "packages"}.issubset(record)
+                            or record.get("profile") != "release" or record.get("target_directory") != str(target)
+                            or record.get("state") not in {"pending", "ready"}
+                            or not isinstance(record.get("workspace_owner"), dict)
+                            or set(record["workspace_owner"]) != {"workspace_root", "git_common_dir"}
+                            or not all(isinstance(v, str) and v for v in record["workspace_owner"].values())
+                            or not isinstance(record.get("source"), dict)
+                            or set(record["source"]) != {"commit", "dirty", "dirty_files", "content_sha256"}
+                            or record["source"].get("dirty") is not False
+                            or record["source"].get("dirty_files") != []
+                            or not isinstance(record["source"].get("commit"), str)
+                            or not isinstance(record["source"].get("content_sha256"), str)
+                            or len(record["source"]["content_sha256"]) != 64
+                            or any(c not in "0123456789abcdef" for c in record["source"]["content_sha256"])
+                            or not isinstance(record.get("target_identity"), (dict, type(None)))
+                            or (record["target_identity"] is not None and
+                                (set(record["target_identity"]) != {"device", "inode"} or
+                                 not all(type(v) is int and v >= 0 for v in record["target_identity"].values())))
+                            or not isinstance(record.get("packages"), list)
+                            or not record["packages"]
+                            or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
+                                   or not all(isinstance(v, str) and v for v in p.values()) for p in record["packages"])):
+                        raise ValueError("invalid release owner fields")
+                    if record["state"] == "ready":
+                        artifact = record.get("artifact")
+                        if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
+                                or not all(isinstance(v, str) for v in artifact.values())
+                                or len(artifact["sha256"]) != 64
+                                or any(c not in "0123456789abcdef" for c in artifact["sha256"])
+                                or not isinstance(record.get("build_argv"), list)):
+                            raise ValueError("invalid release artifact fields")
+                except (ValueError, TypeError, OSError) as error:
+                    if not adopt:
+                        raise TargetCacheError(f"malformed release ownership: {error}") from error
+                    record = None
+                    malformed = True
+            if record is not None:
+                old_scope = [(p["name"], p["version"]) for p in record["packages"]]
+                if old_scope != [(p["name"], p["version"]) for p in scope]:
+                    raise TargetCacheError("removed, renamed or version-changed workspace packages require a fresh release target")
+                if record["state"] == "pending" and not adopt:
+                    raise TargetCacheError("release handoff is pending; explicit adoption/recovery required")
+                if (record.get("target_identity") != identity or record["workspace_owner"].get("git_common_dir") != workspace["git_common_dir"]) and not adopt:
+                    raise TargetCacheError("release target identity/repository changed; explicit adoption required")
+            # An existing dev marker is NOT evidence of release ownership.
+            populated = target.exists() and any(target.iterdir())
+            if record is None and populated and not adopt:
+                raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
+            reuse = bool(record and record["state"] == "ready" and not adopt
+                         and record.get("target_identity") == identity
+                         and record["workspace_owner"] == workspace and record["source"] == source)
+            pending = {"schema_version": 1, "profile": "release", "state": "pending",
+                       "target_directory": str(target), "target_identity": identity,
+                       "workspace_owner": workspace, "source": source, "packages": scope,
+                       "recorded_at": utc_now()}
+            report = {**pending, "owner_path": str(owner_path), "lock_path": str(lock_path),
+                      "action": "reuse" if reuse else ("adopted" if adopt else "handoff"),
+                      "cleanup_status": "not_needed", "previous_owner": record,
+                      "malformed_previous_owner": malformed}
+            self.summary["release_target_cache"] = report
+            self._write_release_owner(owner_path, pending)
+            if not reuse and populated:
+                argv = self._workspace_clean_argv(target)
+                argv[3] = "release"
+                report["cleanup_argv"] = argv
+                report["cleanup_status"] = "pending"
+                # Keep release and dev cleanup evidence independent.
+                log_path = self.output_dir / "release-handoff-clean.log"
+                with log_path.open("w") as log:
+                    result = subprocess.run(argv, cwd=self.root, env=self.env, stdout=log,
+                                            stderr=subprocess.STDOUT, check=False)
+                report.update(cleanup_exit_code=result.returncode, cleanup_log=str(log_path))
+                if result.returncode != 0:
+                    report["cleanup_status"] = "failed"
+                    raise TargetCacheError("release cleanup failed; pending owner retained")
+                report["cleanup_status"] = "passed"
+            yield report
+            if not isinstance(report.get("artifact"), dict) or report.get("build_exit_code") != 0:
+                raise TargetCacheError("release artifact identification is required")
+            artifact = report["artifact"]
+            if self.identify_release_artifact(Path(artifact["path"]), report["build_argv"]) != artifact:
+                raise TargetCacheError("release artifact changed before ownership completion")
+            if not self._capture_repository_state("release_end_tree") or self.summary["release_end_tree"] != source:
+                raise TargetCacheError("release source changed during build")
+            pending.update(state="ready", target_identity=self._directory_identity(target),
+                           artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
+            self._write_release_owner(owner_path, pending)
+            report["state"] = "ready"
+        except BaseException as error:
+            self.summary["release_target_error"] = {"type": type(error).__name__, "message": str(error)}
+            raise
+        finally:
+            try:
+                self._write_summary()
+            finally:
+                error = lock.release()
+                self.target_lock = None
+            if error:
+                raise TargetCacheError(error)
+
+    def identify_release_artifact(self, path: Path, argv: list[str]) -> dict[str, str]:
+        """Identify the Cargo-reported optimized executable while still locked."""
+        if self.target_lock is None or self.cargo_identity is None:
+            raise TargetCacheError("release artifact identification requires target ownership")
+        if argv[:2] != ["cargo", "build"] or "--release" not in argv or "--target-dir" in argv:
+            raise TargetCacheError("unsupported release build arguments")
+        target = Path(str(self.cargo_identity["target_directory"]))
+        lexical = path.absolute()
+        resolved = lexical.resolve()
+        # Cargo's owned target is canonical. System aliases above it (macOS
+        # /var -> /private/var, for example) are not artifact symlinks. Locate
+        # the outermost lexical spelling of that same root, then inspect every
+        # component below it without resolving away an in-target symlink.
+        roots = [p for p in reversed(lexical.parents) if p.resolve() == target]
+        root = roots[0] if roots else None
+        if (target.resolve() != target or root is None or root.is_symlink()
+                or self._directory_identity(root) != self._directory_identity(target)
+                or not resolved.is_relative_to(target) or not lexical.is_file()):
+            raise TargetCacheError("release artifact is not a plain file inside the owned target")
+        relative = lexical.relative_to(root)
+        component = root
+        for part in relative.parts:
+            if part == "..":
+                raise TargetCacheError("release artifact traverses outside its target-relative path")
+            component = component / part
+            if component.is_symlink():
+                raise TargetCacheError("release artifact is not a plain file inside the owned target")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return {"path": str(resolved), "sha256": digest.hexdigest()}
 
     def _run_target_cleanup(self, argv: list[str]) -> bool:
         log_path = self.output_dir / "target-handoff-clean.log"

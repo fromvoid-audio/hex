@@ -78,6 +78,7 @@ pub enum NumericControlAppearance {
     MiniDial,
     MicroDial,
     InlineValue,
+    DeviceMeters,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +191,7 @@ pub struct NumericControl {
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
     pub(crate) style: ControlStyle,
+    meter_readout: crate::DeviceMeterReadout,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
     tab_navigation: bool,
@@ -248,10 +250,22 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            meter_readout: Default::default(),
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
+        }
+    }
+
+    pub fn set_meter_readout(
+        &mut self,
+        readout: crate::DeviceMeterReadout,
+        cx: &mut Context<Self>,
+    ) {
+        if self.meter_readout != readout {
+            self.meter_readout = readout;
+            cx.notify();
         }
     }
 
@@ -357,7 +371,8 @@ impl NumericControl {
         if !self.enabled || event.button != MouseButton::Left {
             return;
         }
-        if matches!(self.kind, NumericControlKind::Knob)
+        if (matches!(self.kind, NumericControlKind::Knob)
+            || self.appearance == NumericControlAppearance::DeviceMeters)
             && matches!(target, PressTarget::Control)
             && event.click_count >= 2
         {
@@ -1053,6 +1068,27 @@ impl gpui::Render for NumericControl {
         }
 
         let mut root = match (self.kind, self.appearance) {
+            (_, NumericControlAppearance::DeviceMeters) => div()
+                .id(self.id.clone())
+                .w(px(25.0))
+                .h(px(self.meter_readout.height))
+                .flex()
+                .gap(px(3.0))
+                .px(px(2.0))
+                .py(px(4.0))
+                .track_focus(&self.focus)
+                .key_context("hex_numeric_control")
+                .child(crate::device_meters::well(
+                    self.id.clone(),
+                    0,
+                    &self.meter_readout,
+                    style,
+                ))
+                .child(
+                    crate::device_meters::well(self.id.clone(), 1, &self.meter_readout, style)
+                        .cursor(gpui::CursorStyle::ResizeUpDown)
+                        .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
+                ),
             (
                 NumericControlKind::Knob,
                 NumericControlAppearance::MicroDial | NumericControlAppearance::MiniDial,

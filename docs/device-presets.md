@@ -23,7 +23,7 @@ filtering would require a separately coordinated platform API change.
 The independent JSON envelope has `format: "hex-device-preset"`, `schema: 1`,
 `class` (`instrument` or `effect`), `type_id`, `state_version`, and a complete
 opaque byte-array `payload`. It contains no project identity, device identity,
-neighbor ordering, bypass, or external assets. Unknown envelope fields, formats,
+neighbor ordering, bypass, host output trim, or external assets. Unknown envelope fields, formats,
 schemas, classes, malformed type identifiers, version zero, and oversized payloads
 are rejected. The existing 4096-byte native-state and 128-byte type-id limits are
 unchanged. The file limit derives from worst-case compact byte-array JSON plus
@@ -33,7 +33,9 @@ Loading requires the target's exact native class and type. Its existing provider
 must validate the state and support its version; newer/unknown/malformed native
 states refuse before mutation. Existing provider-supported legacy migrations
 remain authoritative. Presets preserve original payload bytes and native state
-version rather than re-encoding a migration or stripping unsupported content.
+version rather than re-encoding a migration or stripping unsupported content. Host-owned
+output trim stays at the target's exact millidB value during load and Undo/Redo;
+it is not part of the native opaque-payload envelope.
 Envelope schema 1 has no migration to other envelope versions.
 
 Dialogs capture project generation, canonical revision, stable device identity,
@@ -68,3 +70,22 @@ tuning, envelopes, signed routing and supported LFO state, including a freely
 positioned instrument between two effects. Native acceptance remains pending.
 This draft remains blocked under the readiness hold; no passing gate or receipt
 is registered.
+
+## current-main integration
+
+The current candidate retains original PR164 enable-state and PR186 preview/draft
+histories while integrating PR186 `4286997a495b857123874ca59578e8fa99506313`
+(including main `5785bf7c47c5c8a168cfec33bfe1ecbe3aa72c1c`). Header actions
+share the current drag-title surface; there is no second drag grip. Oscillator
+badges retain canonical enable toggles and current controls-first focus. Invalid
+current previews still refuse, and untouched numeric display rounding stays out
+of preset finalization and project history.
+
+Capture and device metering retain separate ownership. One shared predicate
+identifies the meter-only analytic path whose output already includes track mix;
+both Main and capture use that decision, avoiding a second gain/balance pass.
+Independent asymmetric-channel, partition, hybrid prefix/suffix, nonlinear send/
+return, inherited-release and late-refusal regressions cover the integration.
+This does not add host musical typing; PR190 runtime evidence remains separate
+and is not a prerequisite invented for the preset workflow. Optimized macOS
+preset acceptance must use the complete integrated candidate, not an older bundle.

@@ -492,7 +492,7 @@ impl PreparedSessionInventory {
                 track: track.id(),
                 config,
                 device_id: slot.map(|device| device.id()),
-                state: slot.map(|device| device.state().clone()),
+                state: slot.map(|device| device.state().clone().without_output_gain()),
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
                 mutable_runtime,

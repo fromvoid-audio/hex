@@ -388,7 +388,7 @@ impl Playback {
                 || project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()));
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()));
         let linear_runtime = (session_runtime.is_none() && !refuses_unowned_prepared_fallback)
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
@@ -802,6 +802,12 @@ impl Playback {
     }
 
     /// Render either the selected mixed source or the legacy finite Arrangement.
+    pub fn set_device_metering(&mut self, enabled: bool) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.set_device_metering(enabled);
+        }
+    }
+
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
     }
@@ -828,7 +834,7 @@ impl Playback {
                     .project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }
@@ -905,7 +911,7 @@ impl Playback {
                     .project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }
@@ -1033,7 +1039,7 @@ fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
             .project
             .tracks()
             .iter()
-            .any(crate::Track::has_stateful_devices)
+            .any(crate::Track::has_device_chain)
     {
         return true;
     }

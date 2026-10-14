@@ -108,6 +108,57 @@ It cannot detect a direct `cargo build`, a separate local-CI implementation, or
 another process that ignores the advisory lock. Do not share a Cargo target with
 such a process during a run or while a worktree handoff is cleaning it.
 
+## explicit optimized release ownership
+
+The dev owner marker does **not** certify release artifacts. The accepted dev
+handoff above continues to preserve release files. Before an optimized build,
+`LocalCiRunner.guarded_release()` acquires the same target-wide nonblocking
+`CargoTargetLock` and uses a separate `.release-owner.json` marker. Source commit
+and content hash, workspace/common Git directory, target path/inode, release
+profile and explicit workspace package IDs are recorded independently of dev.
+
+An empty target can be claimed. Unknown populated targets, malformed metadata,
+pending handoffs, changed target identity or another repository refuse unless
+the caller explicitly adopts release ownership after checking sole ownership.
+The packaging CLI exposes `--adopt-release-target` for that assertion; it does
+not imply dev adoption or loosen any disk/profile/source checks. Direct Cargo
+builds still do not participate in this cooperative lock.
+
+Before incompatible release cleanup, the guard durably writes a pending marker.
+It invokes `cargo clean --profile release` for current workspace package IDs
+only; it never clears the whole target. Failed cleanup, interrupted builds,
+source changes, unidentified/changed artifacts and consumer exceptions leave
+pending ownership. Explicit recovery repeats selective cleanup; normal reuse
+refuses. The marker becomes ready only after optimized compilation, exact-source
+verification, executable hashing and successful guarded consumption. Logs and
+the complete ownership report are retained in the runner's artifact directory.
+
+Cargo's cleaner ignores URL/version qualifiers in package selectors. Release
+preparation therefore checks full locked metadata for workspace/external package
+name collisions and refuses those cases. A previous recorded workspace with
+removed, renamed or version-changed packages also refuses, even with adoption:
+use a fresh target rather than guessing deletion paths or broadening cleanup.
+The real-Cargo test preserves this limitation explicitly.
+
+`scripts/hex-test-build.py` exposes `optimized_artifact(runner, package=...,
+adopt=False)` for both existing delivery and artifact-only review preparation.
+It builds with `--release --locked --message-format=json`, requires a unique
+opt-level-3 executable event, identifies the plain executable inside the owned
+target and keeps the lock across the caller's copy. Importing and calling this
+helper does not activate, install or launch an app. Artifact-only callers should
+copy the yielded binary into their independently authorized staging directory;
+they must not call `build`, `activate` or `recover` to achieve staging.
+
+The release fixture uses real Cargo in isolated temporary worktrees/targets:
+incompatible numeric/string APIs and executable outputs A→B→A, a dev-only
+negative control which leaves the release artifact intact, unchanged external
+release dependencies and dev hashes, retained binaries, same-source reuse and
+removed/renamed refusal. The original dev-only real-Cargo regression remains
+unchanged. Contention, malformed/recreated target ownership, failed/interrupted
+cleanup, changed source/artifact and failed staging consumption have focused
+refusal tests. These checks do not substitute for the required exact-source
+full local CI or native optimized build/signature/bundle validation.
+
 ## read-only disk headroom
 
 Before running checks and each full-run target-using Cargo step, the runner

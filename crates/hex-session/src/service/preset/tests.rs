@@ -154,6 +154,23 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         let dir = Directory::new();
         let path = dir.0.join("Exact.hex-device-preset.json");
         let (service, added, device) = fixture(class, type_name);
+        let trimmed = added
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+            .with_output_gain_millidb(-12_345)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::ReplaceDeviceState {
+                device,
+                state: trimmed,
+            }))
+            .unwrap();
+        let added = event(&service);
+        assert!(added.error.is_none());
         let original = added.state.project.clone();
         let mut state = original.device(device).unwrap().state().clone();
         let mut edits = vec![(1, ParameterValue::Float(0.37))];
@@ -232,6 +249,17 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
                 .unwrap()
                 .state()
                 .clone()
+                .without_output_gain()
+        );
+        assert_eq!(
+            redone
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .output_gain_millidb(),
+            -12_345
         );
         assert_eq!(redone.state.project.device(device).unwrap().id(), device);
     }
