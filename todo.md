@@ -2444,3 +2444,11 @@ Mac visual/drag/hover/slow-attack/listening/save-reopen acceptance remains user-
 Pulse issue intake is currently blocked: the live create_ticket endpoint requires
 request_id but the installed connector does not transmit that field. No ticket
 creation is claimed; the focused PR and this dated evidence retain source scope.
+
+14 October 2026 — device gain follow-up: both meter wells adjust persisted host
+gain and reset on double-click. Gain and unity markers accompany live peak fills.
+Audible meter handles survive preview/canonical handoffs without clearing the
+display. Regression coverage includes pre/post DSP levels, bypass, input/output
+undo, schema-19 loading and readout updates during a held pointer press. Native
+Mac pointer/paint/listening acceptance remains user-owned. Pulse discovery is
+blocked by list_projects/list_tags server errors; no issue update is claimed.

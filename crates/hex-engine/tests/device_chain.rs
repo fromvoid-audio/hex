@@ -735,6 +735,13 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
         ParameterValue::Float(-6.0206),
     )
     .unwrap();
+    let first_state = hex_engine::patch_native_device_parameter(
+        &first_state,
+        hex_engine::DEVICE_INPUT_GAIN.id,
+        ParameterValue::Float(-12.0),
+    )
+    .unwrap();
+    let input_gain = 10.0_f32.powf(-12.0 / 20.0);
     // A device-owned edit must retain the independent host trim.
     let first_state = hex_engine::patch_native_device_parameter(
         &first_state,
@@ -743,6 +750,7 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     )
     .unwrap();
     assert_eq!(first_state.output_gain_millidb(), -6021);
+    assert_eq!(first_state.input_gain_db(), -12.0);
     let first = add_device(&mut editor, track, first_state);
     let second = add_device(
         &mut editor,
@@ -772,10 +780,16 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     let mut output = [[0.0; 2]; 1];
     playback.render(&mut output).unwrap();
     let gain = 10.0_f32.powf(-6.021 / 20.0);
-    assert!((output[0][0] + 0.25 * gain).abs() < 1e-6);
-    assert!((output[0][1] + 0.5 * gain).abs() < 1e-6);
-    assert_eq!(first_meter.take_peaks(), [0.5, gain]);
-    assert_eq!(second_meter.take_peaks(), [gain, gain * 0.5]);
+    assert!((output[0][0] + 0.25 * gain * input_gain).abs() < 1e-6);
+    assert!((output[0][1] + 0.5 * gain * input_gain).abs() < 1e-6);
+    assert_eq!(
+        first_meter.take_peaks(),
+        [0.5 * input_gain, gain * input_gain]
+    );
+    assert_eq!(
+        second_meter.take_peaks(),
+        [gain * input_gain, gain * input_gain * 0.5]
+    );
     // A renderer sharing prepared data cannot contaminate native UI readings.
     let mut export = Playback::try_from_prepared_with_session(prepared).unwrap();
     export.apply(PlaybackCommand::Play);

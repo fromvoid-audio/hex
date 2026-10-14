@@ -1,4 +1,4 @@
-//! Compact paired device meters; all labels and tooltip text come from the host.
+//! Compact device meter gain controls; all labels and tooltip text come from the host.
 use crate::ControlStyle;
 use gpui::{
     Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative, rgb,
@@ -7,6 +7,8 @@ use gpui::{
 #[derive(Clone, Default, PartialEq)]
 pub struct DeviceMeterReadout {
     pub height: f32,
+    pub index: usize,
+    pub gain_db: f32,
     pub levels: [f32; 2],
     pub held: [f32; 2],
     pub tooltips: [SharedString; 2],
@@ -27,6 +29,7 @@ pub(crate) fn well(
     let peak_height = fraction(held);
     let tooltip = readout.tooltips[index].clone();
     let selector = format!("{id}-{}-meter", if index == 0 { "input" } else { "output" });
+    let fill_selector = format!("{selector}-fill");
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
@@ -37,6 +40,7 @@ pub(crate) fn well(
         .bg(rgb(style.rail))
         .child(
             div()
+                .debug_selector(move || fill_selector.clone())
                 .absolute()
                 .bottom(px(0.0))
                 .w_full()
@@ -63,6 +67,23 @@ pub(crate) fn well(
                     })),
             )
         })
+        .child(
+            div()
+                .absolute()
+                .bottom(relative(60.0 / 84.0))
+                .w_full()
+                .h(px(1.0))
+                .bg(rgb(style.text))
+                .opacity(0.35),
+        )
+        .child(
+            div()
+                .absolute()
+                .bottom(relative(((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)))
+                .w_full()
+                .h(px(2.0))
+                .bg(rgb(readout.warning)),
+        )
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 fn fraction(amplitude: f32) -> f32 {

@@ -21,7 +21,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
-            state: device.state().clone().without_output_gain(),
+            state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
     }
