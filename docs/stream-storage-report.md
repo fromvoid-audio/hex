@@ -21,9 +21,9 @@ Inline tempo-period/onset/span/tail arrays need no separate heap charge.
 Current traversal reports Arrangement root/track/clip containers, resident PCM,
 clip metadata Boxes, streamed metadata, processor slices/meters, prepared roots,
 Session runtime Vec capacities/retained contexts and renderer Vec capacities.
-Unexpanded gain/instrument, inventory/preview/revision metadata,
-Return-tail, typing, mutable and lattice-internal owners explicitly remain
-Unknown. Existing DSP-twin declarations are separate from these incomplete
+Gain/instrument/provider/state dependencies, unapproved Arc overhead and
+lattice-internal owners explicitly remain Unknown. Ordinary owned buffers
+expanded in the sections below do not complete those enclosing owners. Existing DSP-twin declarations are separate from these incomplete
 nested reports. No provider is assumed complete by default, and no provider
 trait or lattice admission contract changes in this unit.
 
@@ -136,12 +136,13 @@ so reused templates can be deduplicated independently of inventory/graph roots;
 equal-content templates with different owners remain separate charges.
 
 The existing public Playback visitor reaches these buffers through a private
-Session-inventory traversal. Other inventory fields (including names/strings and instrument-template/provider
-dependencies not covered here) still remain Unknown. Source Arc owner overhead
+Session-inventory traversal. The later ordinary-container unit below covers inventory names and vectors,
+instrument-template buffers and note-bank entries. Their unapproved Arc
+and opaque provider/state dependencies still remain Unknown. Source Arc owner overhead
 independently remains Unknown. The Session tempo family is now reported through
 the reviewed owning hex-project accessor described below; point lengths are
-never substituted for allocation capacities. Instrument templates/note banks/provider storage and retirement
-receipts remain incomplete. No provider/Arc/whole-Playback completeness claim,
+never substituted for allocation capacities. Instrument/note-bank Arc and provider storage, and retirement receipts,
+remain incomplete. No provider/Arc/whole-Playback completeness claim,
 callback traversal, public trait redesign, cap/root/preroll change is made.
 
 On any visitor error, callers MUST discard the partial sink: no returned complete
@@ -202,3 +203,54 @@ bookkeeping and RSS are outside scope, including custom global allocator physica
 behavior; no final allocator policy or compiler hash infrastructure is added.
 All other Arc/provider/retirement Unknowns remain independent. No whole Playback
 completeness, caller reservation/root publication, cap or preroll is enabled.
+
+## ordinary prepared/session owned-container coverage
+
+The control-only traversal now covers the following additional backing storage.
+This is owned-container coverage, not completeness of their opaque/shared
+children. Vec capacity and String byte capacity are charged, never logical len;
+containing headers and reserved element slots stay in their parent charge.
+
+| enclosing allocation | backing allocations and charge location |
+| --- | --- |
+| actual Session inventory Arc pointee | scenes, cells, scene-cell index/range vectors, tracks, MIDI/audio clips and mutable-factory vector; every scene/track/MIDI/audio name String indexed within that inventory |
+| actual shared context-table Arc pointee | owner-handle and ID-index vectors; nested context owners retain separate actual Arc identity and explicit opaque-provider Unknown; cached payload declarations are not duplicated as measured data |
+| actual PreparedRevision Arc pointee | mutable-track descriptor vector, each effect descriptor vector and Arrangement MIDI-source descriptor vector |
+| actual Session MIDI-instrument-template Arc | intro/repeat voice vectors and intro/repeat interval-node vectors; actual nested note-bank Arc separately owns its entry vector, while context/provider and all unapproved Arc overhead costs remain Unknown |
+| actual nested MIDI-preview clip-slice Arc | each preview sample vector; the slice pointee charges clip headers, separately from the outer preview Arc |
+| exclusively control-owned Session runtime | each active/tail mutable occurrence primary/scratch vector, distinguished by active/tail role and slot |
+| each active/tail TypingPerformance Box | its inline arm's effect-topology vector; Box and topology locations distinguish active slot0 from tail slots1 onward |
+| inline Return-effect tail bank in Session runtime | reserved Option<ReturnEffectTail> slot vector, including vacant/spare slots; each occupied chain's existing declaration plus opaque-owner Unknown |
+
+Existing Session route, release, suppression, continuation, context-slot,
+mutable-event and runtime-chain vectors remain reported. Typing palettes,
+voices, command/receipt/event arrays, Return scratch and other fixed arrays are
+inline, so no extra heap charge is added. The actual containing Box/pointee or
+reserved element stride includes those arrays and any scalar receipt fields.
+The Return tail chain itself is inline in its slot; lattice-owned entries,
+configuration, meters and opaque processor storage still require their own
+contract and remain Unknown. NativeDeviceState/source-identity internals,
+inventory sine/context owners and instrument/note-bank Arc overhead, typing note/context/state
+providers and Weak-only lifetimes likewise remain explicitly Unknown. This
+unit neither infers those costs from size_of_val nor applies the approved PCM
+origin declaration to another Arc family. All unsupported costs still refuse
+complete admission independently of any measured items the sink retains.
+
+DSP-chain declaration/Unknown locations now distinguish Session track0,
+Return1, track-tail2, Return-tail3, renderer track4 and renderer Return5, followed
+by the actual vector slot index. Previously repeated chain locations could not
+distinguish distinct exclusively owned chains. Shared preview sample locations
+use their actual clip-slice allocation identity, so two wrapper clones alias
+that allocation while equal-content independent previews do not. Shared
+inventory/revision containers similarly use their actual enclosing owners.
+Exclusive locations remain scoped to the inspected Playback root.
+
+Tests exercise real spare capacities (including empty vectors), name byte
+capacities, nested header exclusion, actual shared allocation alias versus
+independent equal data, unchanged strong counts, distinct typing/tail/chain
+locations, retained mutable ledger ownership, and every bounded partial-sink
+refusal. Checked multiplication refuses before emission; every partial sink on
+any error must be discarded. The visitor adds no public provider contract,
+callback traversal, allocation, ownership clone, runtime mutation or limit
+change. Retirement receipts, caller-reservation/root-publication wiring and
+preroll remain unfinished. No full Playback or native acceptance is claimed.

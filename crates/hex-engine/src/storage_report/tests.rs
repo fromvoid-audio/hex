@@ -236,7 +236,7 @@ fn opaque_chain_defaults_unknown_even_when_declared_payload_is_zero() {
     let mut sink = Sink::new(256);
     let mut report = Report::new(&mut sink);
     report
-        .chain(&hex_lattice::NativeRuntimeChain::empty())
+        .chain(&hex_lattice::NativeRuntimeChain::empty(), [0; 2])
         .unwrap();
     assert!(report.finish().require_complete().is_err());
     assert!(

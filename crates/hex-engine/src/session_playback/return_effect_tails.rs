@@ -429,3 +429,94 @@ fn reserve_chain(
     }
     Ok(())
 }
+
+impl ReturnEffectTailBank {
+    pub(super) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self { slots, scratch: _ } = self;
+        report.vec(
+            crate::storage_report::StorageOwner::Exclusive,
+            "session.return_tail_slots",
+            [0; 2],
+            slots,
+        )?;
+        for (index, tail) in slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tail)| tail.as_ref().map(|tail| (index, tail)))
+        {
+            let ReturnEffectTail {
+                chain,
+                return_id: _,
+                matrix: _,
+                gain: _,
+                muted: _,
+                output_active: _,
+                output_scratch: _,
+            } = tail;
+            report.chain(chain, [3, index])?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use crate::storage_report::{Report, StorageReportError, owned_tests::Sink};
+    #[test]
+    fn return_tail_capacity_includes_spare_slots_but_not_inline_scratch() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::ReturnTrack(return_id) = editor
+            .execute(hex_project::Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        let mut bank = ReturnEffectTailBank::new().unwrap();
+        for slot in [0, 2] {
+            bank.slots[slot] = Some(ReturnEffectTail {
+                chain: NativeRuntimeChain::empty(),
+                return_id,
+                matrix: None,
+                gain: 1.0,
+                muted: false,
+                output_active: true,
+                output_scratch: true,
+            });
+        }
+        let capacity = bank.slots.capacity();
+        let mut sink = Sink::new(5);
+        let mut report = Report::new(&mut sink);
+        bank.visit_owned_storage(&mut report).unwrap();
+        assert!(report.finish().require_complete().is_err());
+        let stride = std::mem::size_of::<Option<ReturnEffectTail>>();
+        assert_eq!(
+            sink.measured("session.return_tail_slots", [0; 2]),
+            (capacity, stride, capacity * stride)
+        );
+        let locations: Vec<_> = sink
+            .items
+            .iter()
+            .filter(|item| item.location.component == "chain.dsp_twins")
+            .map(|item| item.location.indices)
+            .collect();
+        assert_eq!(locations, [[3, 0], [3, 2]]);
+        assert_eq!(sink.items.len(), 5); // Bank header and inline scratch already parent-owned.
+        for limit in 0..5 {
+            let mut sink = Sink::new(limit);
+            assert_eq!(
+                bank.visit_owned_storage(&mut Report::new(&mut sink)),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert!(bank.slots[0].as_ref().unwrap().output_active);
+            assert!(bank.slots[2].as_ref().unwrap().output_active);
+            assert_eq!(bank.slots.capacity(), capacity);
+        }
+    }
+}

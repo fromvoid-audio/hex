@@ -330,3 +330,31 @@ impl PreparedTypingArm {
             .map_err(|_| Invalid("typing continuation sample was refused"))
     }
 }
+
+impl PreparedTypingArm {
+    fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        slot: usize,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            target: _,
+            state: _,
+            sample_rate: _,
+            entries: _,
+            context: _,
+            mutable: _,
+            voice_limit: _,
+            release_frames: _,
+            context_id: _,
+            effect_topology,
+            instrument_position: _,
+        } = self;
+        report.vec(
+            crate::storage_report::StorageOwner::Exclusive,
+            "session.typing_topology",
+            [slot, 0],
+            effect_topology,
+        )
+    }
+}

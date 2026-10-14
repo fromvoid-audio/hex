@@ -457,3 +457,135 @@ fn prepare_mutable_track_revisions(
     revisions.sort_unstable_by_key(|revision| revision.id);
     Ok(revisions)
 }
+
+impl PreparedRevision {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &'a self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        owner: crate::storage_report::StorageOwner<'a>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            arrangement: _,
+            session: _,
+            midi_preview: _,
+            mutable_track_revisions,
+        } = self;
+        report.vec(
+            owner,
+            "revision.mutable_tracks",
+            [0; 2],
+            mutable_track_revisions,
+        )?;
+        for (index, track) in mutable_track_revisions.iter().enumerate() {
+            let PreparedMutableTrackRevision {
+                id: _,
+                instrument: _,
+                instrument_position: _,
+                effects,
+                arrangement_midi_sources,
+            } = track;
+            report.vec(owner, "revision.effects", [index, 0], effects)?;
+            report.vec(
+                owner,
+                "revision.midi_sources",
+                [index, 0],
+                arrangement_midi_sources,
+            )?;
+            // Device state and source identity internals remain covered by
+            // revision.nested_owners Unknown, not presumed scalar-only.
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod owned_storage_tests {
+    use super::*;
+    use crate::storage_report::{Report, StorageOwner, StorageReportError, owned_tests::Sink};
+    #[test]
+    fn descriptor_nested_backings_exclude_headers_and_preserve_refusal_owners() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let mut revision = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap();
+        // A private accounting-only fixture exercises empty spare nested buffers.
+        // It is never published or used to bypass preparation validation.
+        revision.mutable_track_revisions = Vec::with_capacity(7);
+        revision
+            .mutable_track_revisions
+            .push(PreparedMutableTrackRevision {
+                id: track,
+                instrument: None,
+                instrument_position: None,
+                effects: Vec::with_capacity(11),
+                arrangement_midi_sources: Vec::with_capacity(13),
+            });
+        let outer = revision.mutable_track_revisions.capacity();
+        let effects = revision.mutable_track_revisions[0].effects.capacity();
+        let sources = revision.mutable_track_revisions[0]
+            .arrangement_midi_sources
+            .capacity();
+        let revision = Arc::new(revision);
+        let strong = Arc::strong_count(&revision);
+        let mut sink = Sink::new(16);
+        let mut report = Report::new(&mut sink);
+        let owner = report.arc(&revision, "prepared_revision").unwrap();
+        revision.visit_owned_storage(&mut report, owner).unwrap();
+        assert!(report.finish().require_complete().is_err());
+        for (name, capacity, stride) in [
+            (
+                "revision.mutable_tracks",
+                outer,
+                std::mem::size_of::<PreparedMutableTrackRevision>(),
+            ),
+            (
+                "revision.effects",
+                effects,
+                std::mem::size_of::<PreparedDeviceIdentity>(),
+            ),
+            (
+                "revision.midi_sources",
+                sources,
+                std::mem::size_of::<PreparedArrangementMidiSource>(),
+            ),
+        ] {
+            assert_eq!(
+                sink.measured(name, [0; 2]),
+                (capacity, stride, capacity * stride)
+            );
+        }
+        assert!(
+            sink.items
+                .iter()
+                .all(|item| matches!(item.owner, StorageOwner::Shared(_)))
+        );
+        assert_eq!(Arc::strong_count(&revision), strong);
+        drop(sink);
+        for limit in 0..3 {
+            let mut sink = Sink::new(limit);
+            let mut report = Report::new(&mut sink);
+            let owner = StorageOwner::Shared(crate::storage_report::SharedOwnerRef::new(
+                &revision,
+                "prepared_revision",
+            ));
+            assert_eq!(
+                revision.visit_owned_storage(&mut report, owner),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert_eq!(revision.mutable_track_revisions.len(), 1);
+            assert_eq!(Arc::strong_count(&revision), strong);
+        }
+    }
+}

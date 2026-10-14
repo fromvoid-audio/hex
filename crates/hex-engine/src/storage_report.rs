@@ -4,6 +4,8 @@
 use std::{any::Any, fmt, sync::Arc};
 mod graph;
 #[cfg(test)]
+pub(crate) mod owned_tests;
+#[cfg(test)]
 mod tests;
 
 /// Identity is usable only while the actual owner remains borrowed/anchored.

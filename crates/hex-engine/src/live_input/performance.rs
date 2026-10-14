@@ -589,3 +589,109 @@ impl TypingPerformance {
         self.applied[index].take()
     }
 }
+
+impl TypingPerformance {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        slot: usize,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        // Arm is inline in the already charged TypingPerformance Box. Its
+        // palette/transaction arrays are inline; opaque entries remain Unknown.
+        let Self {
+            arm,
+            owner: _,
+            epoch: _,
+            through_epoch: _,
+            armed: _,
+            primary: _,
+            scratch: _,
+            pending: _,
+            pending_len: _,
+            last_ticket: _,
+            receipts: _,
+            receipt_len: _,
+            applied: _,
+            native_events: _,
+            event_len: _,
+            transaction: _,
+            block_frame: _,
+            live_limit: _,
+            authored_reservation: _,
+            authored_events: _,
+            inherited_authored: _,
+            inherited_until: _,
+            inherited_bound_known: _,
+            stable_authored: _,
+            inherited_before: _,
+            admitted_source: _,
+            serial_primary: _,
+            serial_scratch: _,
+            continuation: _,
+            bridge_bytes: _,
+        } = self;
+        arm.visit_owned_storage(report, slot)
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use crate::storage_report::{Report, StorageReportError, owned_tests::Sink};
+    #[test]
+    fn typing_topology_spare_storage_is_per_box_slot_without_inline_array_charge() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "typing".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let mut arm = PreparedTypingArm::prepare(
+            editor.project(),
+            crate::live_input::TypingTarget {
+                project_generation: 1,
+                project_revision: 1,
+                track,
+                device,
+            },
+        )
+        .unwrap();
+        arm.effect_topology.reserve(31);
+        let capacity = arm.effect_topology.capacity();
+        let input = TypingPerformance::new(arm, 1).unwrap();
+        let mut sink = Sink::new(2);
+        let mut report = Report::new(&mut sink);
+        input.visit_owned_storage(&mut report, 0).unwrap();
+        input.visit_owned_storage(&mut report, 3).unwrap();
+        for slot in [0, 3] {
+            let stride = std::mem::size_of::<(
+                hex_project::DeviceId,
+                hex_lattice_contract::DeviceTypeId,
+                bool,
+            )>();
+            assert_eq!(
+                sink.measured("session.typing_topology", [slot, 0]),
+                (capacity, stride, capacity * stride)
+            );
+        }
+        assert_eq!(sink.items.len(), 2); // Palette, voices and receipts are inline.
+        let mut sink = Sink::new(0);
+        assert_eq!(
+            input.visit_owned_storage(&mut Report::new(&mut sink), 0),
+            Err(StorageReportError::SinkCapacity)
+        );
+        assert!(input.is_armed());
+        assert_eq!(input.arm.effect_topology.capacity(), capacity);
+    }
+}

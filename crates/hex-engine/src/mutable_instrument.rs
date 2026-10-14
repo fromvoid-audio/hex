@@ -926,3 +926,37 @@ pub(crate) fn validate_prepared_graph_budget(
 
     validate_mutable_graph_budget(effect_count, effect_bytes, mutable_count, mutable_bytes)
 }
+
+impl MutableInstrumentTrackRuntime {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        indices: [usize; 2],
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            pair: _,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        report.vec(
+            crate::storage_report::StorageOwner::Exclusive,
+            "session.mutable_primary",
+            indices,
+            primary,
+        )?;
+        report.vec(
+            crate::storage_report::StorageOwner::Exclusive,
+            "session.mutable_scratch",
+            indices,
+            scratch,
+        )
+    }
+}
+#[cfg(test)]
+impl MutableInstrumentTrackRuntime {
+    pub(crate) fn primary_capacity_for_storage_test(&self) -> usize {
+        self.primary.capacity()
+    }
+}

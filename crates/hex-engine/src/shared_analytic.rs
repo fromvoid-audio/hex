@@ -580,3 +580,62 @@ mod tests {
         }
     }
 }
+
+impl SharedAnalyticContextTable {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &'a self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        owner: crate::storage_report::StorageOwner<'a>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            owners,
+            ids,
+            payload_bytes: _,
+        } = self;
+        report.vec(owner, "context_table.owners", [0; 2], owners)?;
+        report.vec(owner, "context_table.ids", [0; 2], ids)?;
+        for context in owners {
+            report.opaque_arc(context, "context_table_owner")?;
+        }
+        // Cached provider payload_bytes is not measured storage and must not
+        // be charged again as if it covered state/provider/Arc nested owners.
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod owned_storage_tests {
+    use super::*;
+    use crate::storage_report::{Report, StorageReportError, owned_tests::Sink};
+    #[test]
+    fn context_table_spare_handle_and_index_buffers_exclude_headers_and_provider_total() {
+        let table = Arc::new(SharedAnalyticContextTable {
+            owners: Vec::with_capacity(13),
+            ids: Vec::with_capacity(17),
+            payload_bytes: 12345,
+        });
+        let strong = Arc::strong_count(&table);
+        let mut sink = Sink::new(8);
+        let mut report = Report::new(&mut sink);
+        report.context_table(&table, "table").unwrap();
+        assert!(report.finish().require_complete().is_err());
+        let a = std::mem::size_of::<Arc<SharedContextOwner>>();
+        let b = std::mem::size_of::<(SharedContextId, u16)>();
+        assert_eq!(
+            sink.measured("context_table.owners", [0; 2]),
+            (13, a, 13 * a)
+        );
+        assert_eq!(sink.measured("context_table.ids", [0; 2]), (17, b, 17 * b));
+        assert_eq!(sink.items.len(), 4); // Pointee, Arc Unknown, two backings only.
+        assert_eq!(Arc::strong_count(&table), strong);
+        for limit in 0..4 {
+            let mut sink = Sink::new(limit);
+            assert_eq!(
+                Report::new(&mut sink).context_table(&table, "table"),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert_eq!(table.payload_bytes, 12345);
+            assert_eq!(Arc::strong_count(&table), strong);
+        }
+    }
+}

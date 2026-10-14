@@ -17,7 +17,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         self.vec(owner, "arrangement.tracks", [0; 2], tracks)?;
         self.vec(owner, "arrangement.returns", [0; 2], return_buses)?;
         return_feed_plan.visit_storage(self, owner)?;
-        self.opaque_arc(shared_contexts, "shared_context_table")?;
+        self.context_table(shared_contexts, "shared_context_table")?;
         for (index, track) in tracks.iter().enumerate() {
             self.track(track, owner, index)?;
         }
@@ -145,6 +145,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             "revision.nested_owners",
             UnknownStorageReason::NestedOwnerContract,
         )?;
+        revision.visit_owned_storage(self, owner)?;
         self.project(revision.arrangement())?;
         let session_owner = self.arc(revision.session(), "session_inventory")?;
         self.unknown(
@@ -155,7 +156,8 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         revision
             .session()
             .visit_source_templates_and_tempo(self, session_owner)?;
-        self.opaque_arc(revision.midi_preview(), "midi_preview")?;
+        self.arc(revision.midi_preview(), "midi_preview")?;
+        revision.midi_preview().visit_owned_storage(self)?;
         Ok(())
     }
     pub(crate) fn opaque_arc<T: 'static + ?Sized>(
@@ -166,9 +168,18 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         let owner = self.arc(value, category)?;
         self.unknown(owner, category, UnknownStorageReason::NestedOwnerContract)
     }
+    pub(crate) fn context_table(
+        &mut self,
+        table: &'a Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        category: &'static str,
+    ) -> Result<(), StorageReportError> {
+        let owner = self.arc(table, category)?;
+        table.visit_owned_storage(self, owner)
+    }
     pub(crate) fn chain(
         &mut self,
         chain: &hex_lattice::NativeRuntimeChain,
+        indices: [usize; 2],
     ) -> Result<(), StorageReportError> {
         let bytes = chain
             .declared_runtime_bytes()
@@ -177,15 +188,16 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         self.item(
             StorageOwner::Exclusive,
             "chain.dsp_twins",
-            [0; 2],
+            indices,
             StorageCharge::ProviderDeclared { bytes },
         )?;
         // Default Unknown: entries capacity and opaque/configuration/meter owners
         // require the owning lattice module's audited report. No guessed bytes.
-        self.unknown(
+        self.item(
             StorageOwner::Exclusive,
             "chain.owners",
-            UnknownStorageReason::OpaqueProvider,
+            indices,
+            StorageCharge::Unknown(UnknownStorageReason::OpaqueProvider),
         )
     }
     pub(crate) fn renderer(&mut self, runtime: &RendererRuntime) -> Result<(), StorageReportError> {
@@ -213,8 +225,11 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             [0; 2],
             return_scratch,
         )?;
-        for chain in device_chains.iter().chain(return_chains) {
-            self.chain(chain)?;
+        for (index, chain) in device_chains.iter().enumerate() {
+            self.chain(chain, [4, index])?;
+        }
+        for (index, chain) in return_chains.iter().enumerate() {
+            self.chain(chain, [5, index])?;
         }
         Ok(())
     }

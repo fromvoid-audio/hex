@@ -132,12 +132,16 @@ impl SessionPlayback {
             [0; 2],
             suppression_scratch,
         )?;
-        for chain in device_chains
-            .iter()
-            .chain(return_chains)
-            .chain(tail_groups.iter().flatten())
-        {
-            report.chain(chain)?;
+        for (index, chain) in device_chains.iter().enumerate() {
+            report.chain(chain, [0, index])?;
+        }
+        for (index, chain) in return_chains.iter().enumerate() {
+            report.chain(chain, [1, index])?;
+        }
+        for (index, chain) in tail_groups.iter().enumerate() {
+            if let Some(chain) = chain {
+                report.chain(chain, [2, index])?;
+            }
         }
         for context in retained_contexts
             .iter()
@@ -160,24 +164,44 @@ impl SessionPlayback {
             "session.return_effect_tails",
             UnknownStorageReason::NestedOwnerContract,
         )?;
-        let _ = return_effect_tails; // Entire nested owner explicitly Unknown.
-        for typing in typing.iter().chain(tail_typing.iter().flatten()) {
+        return_effect_tails.visit_owned_storage(report)?;
+        for (index, runtime) in mutable_instruments.iter().enumerate() {
+            if let Some(runtime) = runtime {
+                runtime.visit_owned_storage(report, [0, index])?;
+            }
+        }
+        for (index, tail) in tail_mutable_instruments.iter().enumerate() {
+            if let Some(tail) = tail {
+                tail.runtime.visit_owned_storage(report, [1, index])?;
+            }
+        }
+        for (slot, typing) in typing.iter().map(|typing| (0, typing)).chain(
+            tail_typing
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, typing)| typing.as_ref().map(|typing| (slot + 1, typing))),
+        ) {
+            typing.visit_owned_storage(report, slot)?;
             report.data(
                 owner,
                 "session.typing_box",
-                [0; 2],
+                [slot, 0],
                 1,
                 std::mem::size_of_val(typing.as_ref()),
             )?;
-            report.unknown(
+            report.item(
                 owner,
                 "session.typing_nested",
-                UnknownStorageReason::OpaqueProvider,
+                [slot, 0],
+                crate::storage_report::StorageCharge::Unknown(UnknownStorageReason::OpaqueProvider),
             )?;
-            report.unknown(
+            report.item(
                 owner,
                 "session.typing_weak",
-                UnknownStorageReason::WeakOwnerBookkeeping,
+                [slot, 0],
+                crate::storage_report::StorageCharge::Unknown(
+                    UnknownStorageReason::WeakOwnerBookkeeping,
+                ),
             )?;
         }
         Ok(())

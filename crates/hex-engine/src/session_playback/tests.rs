@@ -10945,3 +10945,70 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         assert!((a * gain - b).abs() < 1e-7);
     }
 }
+
+#[test]
+fn owned_runtime_report_covers_tail_slots_ledgers_and_unique_chain_locations() {
+    use crate::storage_report::{Report, StorageCharge, StorageReportError, owned_tests::Sink};
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    let primary_capacity = runtime.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .primary_capacity_for_storage_test();
+    let moved = runtime.mutable_instruments[0].take().unwrap();
+    runtime.tail_mutable_instruments[0] = Some(crate::mutable_instrument::MutableInstrumentTail {
+        track_id: track,
+        runtime: moved,
+    });
+    let mut sink = Sink::new(1024);
+    let summary = {
+        let mut report = Report::new(&mut sink);
+        runtime.visit_storage(&mut report).unwrap();
+        report.finish()
+    };
+    assert!(summary.require_complete().is_err());
+    let stride = std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>();
+    assert_eq!(
+        sink.measured("session.mutable_primary", [1, 0]),
+        (primary_capacity, stride, primary_capacity * stride)
+    );
+    assert_eq!(
+        sink.measured("session.mutable_scratch", [1, 0]),
+        (primary_capacity, stride, primary_capacity * stride)
+    );
+    let measured = sink.measured("session.return_tail_slots", [0; 2]);
+    assert_eq!(
+        measured.0,
+        super::return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY
+    );
+    assert_eq!(
+        measured.2,
+        measured.0 * std::mem::size_of::<Option<super::return_effect_tails::ReturnEffectTail>>()
+    );
+    let locations: Vec<_> = sink
+        .items
+        .iter()
+        .filter(|item| item.location.component == "chain.dsp_twins")
+        .map(|item| item.location.indices)
+        .collect();
+    assert!(!locations.is_empty());
+    for (i, location) in locations.iter().enumerate() {
+        assert!(!locations[..i].contains(location));
+    }
+    assert!(
+        sink.items
+            .iter()
+            .any(|item| matches!(item.charge, StorageCharge::Unknown(_)))
+    );
+    let count = sink.items.len();
+    drop(sink);
+    for limit in 0..count {
+        let mut sink = Sink::new(limit);
+        assert_eq!(
+            runtime.visit_storage(&mut Report::new(&mut sink)),
+            Err(StorageReportError::SinkCapacity)
+        );
+        assert_eq!(runtime.performance_frame(), 0);
+        assert!(runtime.tail_mutable_instruments[0].is_some());
+    }
+}

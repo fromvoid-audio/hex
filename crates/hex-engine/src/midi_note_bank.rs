@@ -520,6 +520,23 @@ fn complete_revision_limits() -> Result<(usize, usize), Invalid> {
     Ok((max_bank_bytes, max_index_count))
 }
 
+impl PreparedMidiNoteBank {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        owner: crate::storage_report::StorageOwner<'a>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            entries,
+            context_id: _,
+            context_index: _,
+        } = self;
+        // Entries carry fixed by-value note payloads and scalar context indices,
+        // not graph/context handles. Context owners are reported separately.
+        report.vec(owner, "note_bank.entries", [0; 2], entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

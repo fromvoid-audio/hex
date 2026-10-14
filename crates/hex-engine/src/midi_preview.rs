@@ -101,3 +101,115 @@ mod tests {
         assert_eq!(samples, sample_ordinals(1_000).expect("repeat selection"));
     }
 }
+
+impl MidiArrangementPreview {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &'a self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self { clips } = self;
+        let owner = report.arc(clips, "midi_preview_clips")?;
+        for (index, clip) in clips.iter().enumerate() {
+            let MidiClipPreview {
+                clip_id: _,
+                frame_start: _,
+                frame_end: _,
+                authored_note_count: _,
+                occurrence_count: _,
+                samples,
+            } = clip;
+            report.vec(owner, "preview.samples", [index, 0], samples)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod owned_storage_tests {
+    use super::*;
+    use crate::storage_report::{Report, StorageOwner, StorageReportError, owned_tests::Sink};
+    #[test]
+    fn preview_samples_follow_actual_nested_owner_not_parent_or_equal_content() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let hex_project::Created::Scene(scene) = editor
+            .execute(hex_project::Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let hex_project::Created::SessionClip(clip_id) = editor
+            .execute(hex_project::Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "clip".into(),
+                source_length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let mut samples = Vec::with_capacity(17);
+        samples.push(MidiPreviewSample {
+            frame_start: 0,
+            frame_gate_end: 1,
+            pitch: 60,
+        });
+        let preview = MidiArrangementPreview::from_sorted_clips(vec![MidiClipPreview {
+            clip_id,
+            frame_start: 0,
+            frame_end: 1,
+            authored_note_count: 1,
+            occurrence_count: 1,
+            samples,
+        }]);
+        let alias = preview.clone();
+        let independent = MidiArrangementPreview::from_sorted_clips(preview.clips().to_vec());
+        let capacity = preview.clips[0].samples.capacity();
+        let strong = Arc::strong_count(&preview.clips);
+        let mut sink = Sink::new(16);
+        for value in [&preview, &alias, &independent] {
+            value
+                .visit_owned_storage(&mut Report::new(&mut sink))
+                .unwrap();
+        }
+        let stride = std::mem::size_of::<MidiPreviewSample>();
+        assert_eq!(
+            sink.measured("preview.samples", [0; 2]),
+            (capacity, stride, capacity * stride)
+        );
+        let owners: Vec<_> = sink
+            .items
+            .iter()
+            .filter(|item| item.location.component == "preview.samples")
+            .map(|item| {
+                let StorageOwner::Shared(owner) = item.owner else {
+                    panic!("nested owner")
+                };
+                owner
+            })
+            .collect();
+        assert!(owners[0].same_allocation(owners[1]));
+        assert!(!owners[0].same_allocation(owners[2]));
+        assert_eq!(Arc::strong_count(&preview.clips), strong);
+        drop(sink);
+        for limit in 0..3 {
+            let mut sink = Sink::new(limit);
+            assert_eq!(
+                preview.visit_owned_storage(&mut Report::new(&mut sink)),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert_eq!(Arc::strong_count(&preview.clips), strong);
+        }
+    }
+}

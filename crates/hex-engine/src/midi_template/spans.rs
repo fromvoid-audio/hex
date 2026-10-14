@@ -1446,3 +1446,177 @@ mod note_bank_lifetime_tests {
         );
     }
 }
+
+impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &'a self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        owner: crate::storage_report::StorageOwner<'a>,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            track: _,
+            clip: _,
+            sample_rate: _,
+            admitted_max_micro_bpm: _,
+            first_pass: _,
+            period: _,
+            release_raw: _,
+            intro,
+            repeats,
+            intro_nodes,
+            repeat_nodes,
+            intro_root: _,
+            repeat_root: _,
+            max_active_voices: _,
+            max_query_onsets: _,
+            max_span_hits: _,
+            max_query_visits: _,
+            max_period_windows: _,
+            bank,
+            shared_contexts,
+            release_frames: _,
+            event_source: _,
+        } = self;
+        report.vec(owner, "instrument_template.intro", [0; 2], intro)?;
+        report.vec(owner, "instrument_template.repeats", [0; 2], repeats)?;
+        report.vec(
+            owner,
+            "instrument_template.intro_nodes",
+            [0; 2],
+            intro_nodes,
+        )?;
+        report.vec(
+            owner,
+            "instrument_template.repeat_nodes",
+            [0; 2],
+            repeat_nodes,
+        )?;
+        let bank_owner = report.arc(bank, "midi_note_bank")?;
+        bank.visit_owned_storage(report, bank_owner)?;
+        report.context_table(shared_contexts, "instrument_template_contexts")
+    }
+}
+
+#[cfg(test)]
+mod owned_storage_tests {
+    use super::*;
+    use crate::storage_report::{
+        Report, SharedOwnerRef, StorageOwner, StorageReportError, owned_tests::Sink,
+    };
+    use std::sync::Arc;
+    #[test]
+    fn instrument_template_backings_and_nested_bank_have_separate_actual_owners() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let hex_project::Created::Scene(scene) = editor
+            .execute(hex_project::Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let hex_project::Created::SessionClip(clip) = editor
+            .execute(hex_project::Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "clip".into(),
+                source_length: BeatTime::from_quarters(1).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(hex_project::Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let table = Arc::new(SineTable::new());
+        let inventory =
+            crate::PreparedSessionInventory::prepare(editor.project(), table.clone(), None)
+                .unwrap();
+        let mut template = PreparedMidiInstrumentTemplate::prepare(
+            inventory.midi_clips()[0].source_template(),
+            &table,
+        )
+        .unwrap();
+        template.intro.reserve(11);
+        template.repeats.reserve(12);
+        template.intro_nodes.reserve(13);
+        template.repeat_nodes.reserve(14);
+        let expected = [
+            (
+                "instrument_template.intro",
+                template.intro.capacity(),
+                std::mem::size_of::<VoiceSpan>(),
+            ),
+            (
+                "instrument_template.repeats",
+                template.repeats.capacity(),
+                std::mem::size_of::<VoiceSpan>(),
+            ),
+            (
+                "instrument_template.intro_nodes",
+                template.intro_nodes.capacity(),
+                std::mem::size_of::<IntervalNode>(),
+            ),
+            (
+                "instrument_template.repeat_nodes",
+                template.repeat_nodes.capacity(),
+                std::mem::size_of::<IntervalNode>(),
+            ),
+        ];
+        let template = Arc::new(template);
+        let strong = Arc::strong_count(&template.bank);
+        let mut sink = Sink::new(32);
+        let mut report = Report::new(&mut sink);
+        let owner = StorageOwner::Shared(SharedOwnerRef::new(
+            &template,
+            "session_midi_instrument_template",
+        ));
+        template.visit_owned_storage(&mut report, owner).unwrap();
+        assert!(report.finish().require_complete().is_err());
+        for (name, capacity, stride) in expected {
+            assert_eq!(
+                sink.measured(name, [0; 2]),
+                (capacity, stride, capacity * stride)
+            );
+        }
+        let item = sink
+            .items
+            .iter()
+            .find(|item| item.location.component == "note_bank.entries")
+            .unwrap();
+        let StorageOwner::Shared(bank) = item.owner else {
+            panic!("bank owner")
+        };
+        assert!(bank.same_allocation(SharedOwnerRef::new(&template.bank, "midi_note_bank")));
+        assert!(!bank.same_allocation(SharedOwnerRef::new(&template, "template")));
+        assert!(sink.measured("note_bank.entries", [0; 2]).2 > 0);
+        let count = sink.items.len();
+        drop(sink);
+        for limit in 0..count {
+            let mut sink = Sink::new(limit);
+            assert_eq!(
+                template.visit_owned_storage(&mut Report::new(&mut sink), owner),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert_eq!(Arc::strong_count(&template.bank), strong);
+            assert_eq!(template.intro.capacity(), expected[0].1);
+        }
+    }
+}
