@@ -163,10 +163,10 @@ fn main() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() {
-    macos_cli::scan();
+    macos_scan::scan();
 }
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
-mod macos_cli;
+mod macos_scan;
 #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
 fn main() {
     eprintln!(

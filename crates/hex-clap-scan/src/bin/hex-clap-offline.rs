@@ -171,11 +171,11 @@ fn main() {
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() {
-    macos_cli::gain();
+    macos_gain::gain();
 }
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
-#[path = "../macos_cli.rs"]
-mod macos_cli;
+#[path = "../macos_gain.rs"]
+mod macos_gain;
 #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
 fn main() {
     eprintln!(
