@@ -1,5 +1,12 @@
 //! Control-only physical lease custody; not graph retirement/admission authority.
 use super::*;
+#[path = "catalog_custody/coverage.rs"]
+mod coverage;
+pub use coverage::{
+    CatalogCoverageAck, CatalogCoverageBinding, CatalogCoverageCovered, CatalogCoveragePending,
+    CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
+    CatalogCoverageStorageReport, VerifiedCoverageRefusal,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CatalogCustodyError {
@@ -18,20 +25,36 @@ pub struct CatalogCustodyCapacity {
     pub leases: usize,
     pub bytes: usize,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecordState {
     Empty,
     Reserved,
     Committed,
+    CoverageReserved,
+    CoverageSourceReserved,
+    CoverageHeld,
+    RedundantPending,
+    DisposalPending,
+    AckReady,
+    AckIssued,
+    Failed,
 }
 struct Record {
     nonce: u64,
     state: RecordState,
+    lease_cell: usize,
+    target: Option<(usize, u64)>,
+    first_panic: Option<Box<dyn std::any::Any + Send>>,
+    #[cfg(test)]
+    fail_disposal: bool,
+    #[cfg(test)]
+    disposal_attempts: usize,
 }
 #[derive(Default)]
 pub(super) struct CatalogCustody {
     records: Vec<Record>,
-    leases: Vec<CatalogLease>,
+    leases: Vec<Option<CatalogLease>>,
+    coverage: Option<(usize, u64)>,
     next_nonce: u64,
     configured: bool,
 }
@@ -43,15 +66,35 @@ impl CatalogCustody {
         self.records.iter().any(|r| r.state != RecordState::Empty)
     }
     pub(super) fn reserved(&self) -> bool {
-        self.records
-            .iter()
-            .any(|r| r.state == RecordState::Reserved)
+        self.records.iter().any(|r| {
+            matches!(
+                r.state,
+                RecordState::Reserved
+                    | RecordState::CoverageReserved
+                    | RecordState::CoverageSourceReserved
+                    | RecordState::RedundantPending
+                    | RecordState::DisposalPending
+                    | RecordState::AckReady
+                    | RecordState::AckIssued
+            )
+        })
+    }
+    pub(super) fn failed(&self) -> bool {
+        self.records.iter().any(|r| r.state == RecordState::Failed)
     }
     pub(super) fn lease_count(&self) -> usize {
-        self.leases.len()
+        self.leases.iter().filter(|lease| lease.is_some()).count()
+    }
+    pub(super) fn matches_catalog(&self, catalog: &CatalogLease) -> bool {
+        self.leases
+            .iter()
+            .flatten()
+            .all(|lease| lease.same_verified_catalog(catalog))
     }
     pub(super) fn release_leases(&mut self) {
-        self.leases.clear();
+        for lease in &mut self.leases {
+            drop(lease.take());
+        }
     }
 }
 /// Nonclone control handle. Dropping it leaves its reservation occupied.
@@ -123,7 +166,7 @@ impl MediaDomainReaper {
             .and_then(|n| {
                 leases
                     .capacity()
-                    .checked_mul(std::mem::size_of::<CatalogLease>())
+                    .checked_mul(std::mem::size_of::<Option<CatalogLease>>())
                     .and_then(|b| n.checked_add(b))
             })
             .ok_or(CatalogCustodyError::Overflow)?;
@@ -139,10 +182,20 @@ impl MediaDomainReaper {
             .domain_data_bytes
             .and_then(|n| n.checked_add(bytes))
             .ok_or(CatalogCustodyError::Overflow)?;
-        records.resize_with(capacity, || Record {
-            nonce: 0,
-            state: RecordState::Empty,
-        });
+        for lease_cell in 0..capacity {
+            records.push(Record {
+                nonce: 0,
+                state: RecordState::Empty,
+                lease_cell,
+                target: None,
+                first_panic: None,
+                #[cfg(test)]
+                fail_disposal: false,
+                #[cfg(test)]
+                disposal_attempts: 0,
+            });
+        }
+        leases.resize_with(capacity, || None);
         let report = CatalogCustodyCapacity {
             records: records.capacity(),
             leases: leases.capacity(),
@@ -153,6 +206,7 @@ impl MediaDomainReaper {
             leases,
             next_nonce: slot.custody.next_nonce,
             configured: true,
+            coverage: None,
         };
         slot.data_bytes = domain_bytes;
         self.footprint.domain_data_bytes = Some(total);
@@ -181,7 +235,7 @@ impl MediaDomainReaper {
                 slot.custody
                     .leases
                     .capacity()
-                    .checked_mul(std::mem::size_of::<CatalogLease>())
+                    .checked_mul(std::mem::size_of::<Option<CatalogLease>>())
                     .and_then(|b| n.checked_add(b))
             })
             .ok_or(CatalogCustodyError::Overflow)?;
@@ -256,6 +310,13 @@ impl MediaDomainReaper {
         slot.custody.records[record] = Record {
             nonce,
             state: RecordState::Reserved,
+            lease_cell: record,
+            target: None,
+            first_panic: None,
+            #[cfg(test)]
+            fail_disposal: false,
+            #[cfg(test)]
+            disposal_attempts: 0,
         };
         Ok(CatalogCustodyReservation {
             seal,
@@ -303,7 +364,8 @@ impl MediaDomainReaper {
         {
             return Err(CatalogCustodyError::WrongPair);
         }
-        if slot.custody.leases.len() >= slot.custody.leases.capacity() {
+        let cell = slot.custody.records[r.record].lease_cell;
+        if !slot.custody.leases.get(cell).is_some_and(Option::is_none) {
             return Err(CatalogCustodyError::Capacity);
         }
         Ok(())
@@ -332,7 +394,8 @@ impl MediaDomainReaper {
             }));
         }
         let slot = &mut self.slots[r.index];
-        slot.custody.leases.push(lease); // preallocated, sole exclusive control borrow
+        let cell = slot.custody.records[r.record].lease_cell;
+        slot.custody.leases[cell] = Some(lease); // validated empty, no allocation/drop
         slot.custody.records[r.record].state = RecordState::Committed;
         Ok(CatalogCustodyAwaiter(r))
     }
@@ -353,7 +416,8 @@ impl MediaDomainReaper {
         }
         let (prepared, lease) = verified.into_parts();
         let slot = &mut self.slots[r.index];
-        slot.custody.leases.push(lease);
+        let cell = slot.custody.records[r.record].lease_cell;
+        slot.custody.leases[cell] = Some(lease);
         slot.custody.records[r.record].state = RecordState::Committed;
         Ok((prepared, CatalogCustodyAwaiter(r)))
     }
@@ -391,6 +455,9 @@ impl MediaDomainReaper {
             return Err((CatalogCustodyError::Incomplete, receipt));
         }
         self.slots[r.index].custody.records[r.record].state = RecordState::Empty;
+        if self.slots[r.index].custody.coverage == Some((r.record, r.nonce)) {
+            self.slots[r.index].custody.coverage = None;
+        }
         self.update_phase();
         Ok(receipt.report)
     }

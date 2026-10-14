@@ -29,9 +29,10 @@ pub use construction::{
 pub use construction_report::WorkerConstructionObservation;
 pub use construction_transport::TransportSetupObservation;
 pub use domain_escrow::{
-    CallbackDomainBatch, DomainAdmission, DomainAdmissionFailure, MediaCleanupObserver,
-    MediaDomainReaper, MediaReturnFailure, RejectedMediaReturn, ReturnedMediaDomain,
-    TerminalBatchFailure, TerminalBatchSender, domain_escrow, reusable_domain_escrow,
+    CallbackDomainBatch, CatalogCoverageStorageReport, DomainAdmission, DomainAdmissionFailure,
+    MediaCleanupObserver, MediaDomainReaper, MediaReturnFailure, RejectedMediaReturn,
+    ReturnedMediaDomain, TerminalBatchFailure, TerminalBatchSender, domain_escrow,
+    reusable_domain_escrow,
 };
 pub use domain_types::{
     DomainCleanupProgress, DomainEscrowFootprint, DomainId, DomainIds, DomainPoll, DomainRefusal,
@@ -73,6 +74,9 @@ pub use types::{
 pub use hex_media::{VerifiedWavReaderLimits, WavReaderLimits};
 
 pub use domain_escrow::{
+    CatalogCoverageAck, CatalogCoverageBinding, CatalogCoverageCovered, CatalogCoveragePending,
+    CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
     CatalogCustodyAwaiter, CatalogCustodyCapacity, CatalogCustodyError, CatalogCustodyReceipt,
     CatalogCustodyRefusal, CatalogCustodyReservation, VerifiedCatalogCustodyRefusal,
+    VerifiedCoverageRefusal,
 };

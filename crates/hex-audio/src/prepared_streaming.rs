@@ -484,6 +484,9 @@ impl StreamBridgeControl {
         }
         Ok(std::array::from_fn(|index| {
             let id = ids[index]?;
+            // Native callers hold this bridge in persistent extracted cleanup
+            // custody outside the ordinary root mutex. Headless is exclusive.
+            let _ = self.reaper.advance_catalog_coverage_on_control(id);
             let _ = self.reaper.try_reap_domain(id);
             if consume_reports {
                 let report = self.reaper.take_reclaimed_report(id)?;
@@ -606,6 +609,28 @@ impl StreamBridgeControl {
             .as_mut()
             .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
             .cancel_catalog(association, &mut self.reaper)
+    }
+    /// Borrow-only actual claim/root binding; no graph-release authority.
+    pub fn reserve_claim_catalog_coverage_on_control(
+        &mut self,
+        association: &crate::publication_claims::ClaimAssociation,
+        input: &crate::publication_claims::PublicationClaims,
+        domain: hex_stream::DomainId,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_publication_open()?;
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .reserve_coverage(association, input, &mut self.reaper, domain)
+    }
+    pub fn cancel_claim_catalog_coverage_on_control(
+        &mut self,
+        association: &crate::publication_claims::ClaimAssociation,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .cancel_coverage(association, &mut self.reaper)
     }
     pub fn rollback_claim_placeholder_on_control(
         &mut self,

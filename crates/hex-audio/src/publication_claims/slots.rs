@@ -52,6 +52,10 @@ struct Slot {
     identity: Option<ClaimIdentity>,
     anchors: Option<PublicationAnchors>,
     catalog_reservation: Option<hex_stream::CatalogCustodyReservation>,
+    coverage_reservation: Option<(
+        hex_stream::CatalogCoverageReservation,
+        hex_stream::CatalogCoverageBinding,
+    )>,
     returned: Option<ClaimedPlaybackOwner>,
     facts: Facts,
     disposal: Disposal,
@@ -67,6 +71,7 @@ impl Slot {
             identity: None,
             anchors: None,
             catalog_reservation: None,
+            coverage_reservation: None,
             returned: None,
             facts: Facts::default(),
             disposal: Disposal::None,
@@ -301,6 +306,7 @@ impl ClaimUnionSlots {
                 && s.anchors.is_none()
                 && s.returned.is_none()
                 && s.catalog_reservation.is_none()
+                && s.coverage_reservation.is_none()
             {
                 s.phase = Phase::Vacant;
                 s.identity = None;
@@ -432,7 +438,10 @@ impl ClaimUnionSlots {
         domain: hex_stream::DomainId,
     ) -> Result<(), ClaimSlotError> {
         let slot = self.slot(association)?;
-        if slot.phase != Phase::Reserved || slot.catalog_reservation.is_some() {
+        if slot.phase != Phase::Reserved
+            || slot.catalog_reservation.is_some()
+            || slot.coverage_reservation.is_some()
+        {
             return Err(ClaimSlotError::Busy);
         }
         if slot.identity.is_none() {
@@ -467,12 +476,62 @@ impl ClaimUnionSlots {
             }
         }
     }
+    pub(crate) fn reserve_coverage(
+        &mut self,
+        association: &ClaimAssociation,
+        input: &PublicationClaims,
+        reaper: &mut hex_stream::MediaDomainReaper,
+        domain: hex_stream::DomainId,
+    ) -> Result<(), ClaimSlotError> {
+        let slot = self.slot(association)?; // actual lifecycle root + slot incarnation
+        if slot.phase != Phase::Reserved
+            || slot.catalog_reservation.is_some()
+            || slot.coverage_reservation.is_some()
+        {
+            return Err(ClaimSlotError::Busy);
+        }
+        if slot.identity.is_none() {
+            return Err(ClaimSlotError::Incomplete);
+        }
+        if slot.identity != Some(input.claims.identity_on_control())
+            || !input.verified.matches_claims(&input.claims)
+        {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        let reservation = reaper
+            .reserve_verified_catalog_coverage(domain, &input.verified)
+            .map_err(|_| ClaimSlotError::Incomplete)?;
+        let binding = reservation.binding_on_control();
+        self.slots[association.slot].coverage_reservation = Some((reservation, binding));
+        Ok(())
+    }
+    pub(crate) fn cancel_coverage(
+        &mut self,
+        association: &ClaimAssociation,
+        reaper: &mut hex_stream::MediaDomainReaper,
+    ) -> Result<(), ClaimSlotError> {
+        let slot = self.slot_mut(association)?;
+        let (reservation, binding) = slot
+            .coverage_reservation
+            .take()
+            .ok_or(ClaimSlotError::Incomplete)?;
+        if let Err((_, reservation)) = reaper.cancel_catalog_coverage(reservation) {
+            slot.coverage_reservation = Some((reservation, binding));
+            return Err(ClaimSlotError::Incomplete);
+        }
+        // Neither object contains a catalog/graph owner; release seals on control.
+        Ok(())
+    }
     pub(crate) fn rollback_reserved(
         &mut self,
         a: ClaimAssociation,
     ) -> Result<(), (ClaimSlotError, ClaimAssociation)> {
         match self.slot(&a) {
-            Ok(s) if s.phase == Phase::Reserved && s.catalog_reservation.is_none() => {
+            Ok(s)
+                if s.phase == Phase::Reserved
+                    && s.catalog_reservation.is_none()
+                    && s.coverage_reservation.is_none() =>
+            {
                 let s = &mut self.slots[a.slot];
                 s.phase = Phase::Vacant;
                 s.identity = None;
@@ -652,6 +711,7 @@ impl ClaimUnionSlots {
             || s.returned.is_none()
             || s.anchors.is_none()
             || s.catalog_reservation.is_some()
+            || s.coverage_reservation.is_some()
         {
             return Err((ClaimSlotError::RetirementPending, a));
         }
@@ -703,6 +763,48 @@ impl Drop for Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closing_keeps_actual_coverage_reservation_and_exact_cancel_recovers_storage() {
+        let id = hex_stream::DomainId::new(1).unwrap();
+        let mut runtime = hex_stream::StreamRuntime::new(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            Vec::new(),
+        )
+        .unwrap();
+        runtime
+            .wait_until_ready(std::time::Duration::from_secs(2))
+            .unwrap();
+        let (control, pages) = runtime.split().ok().unwrap();
+        let catalog = control.catalog_lease().unwrap();
+        let endpoint =
+            hex_stream::VerifiedPageEndpoint::new(pages, control.catalog_lease().unwrap()).unwrap();
+        let (_batch, _terminal, mut reaper) = hex_stream::reusable_domain_escrow(2).unwrap();
+        let _admission = reaper
+            .reserve_domain(hex_stream::MediaDomainInput {
+                id,
+                control,
+                endpoint: hex_stream::PageReadiness::new(endpoint, 3).unwrap(),
+                retained_leases: Vec::new(),
+            })
+            .ok()
+            .unwrap();
+        reaper.configure_catalog_custody(id, 2, usize::MAX).unwrap();
+        let physical = reaper.reserve_catalog_coverage(id, &catalog).unwrap();
+        let binding = physical.binding_on_control();
+        let mut root = ClaimUnionSlots::new(reservation()).unwrap();
+        let association = root.reserve_storage().unwrap();
+        // Storage-only fixture, NO admitted Box identity or role assertions.
+        root.slots[association.slot].coverage_reservation = Some((physical, binding));
+        root.close_unstaged();
+        assert!(root.slot(&association).is_ok());
+        assert!(root.slots[association.slot].coverage_reservation.is_some());
+        let error = root.rollback_reserved(association).err().unwrap();
+        root.cancel_coverage(&error.1, &mut reaper).unwrap();
+        assert!(root.slots[error.1.slot].coverage_reservation.is_none());
+        assert!(root.rollback_reserved(error.1).is_ok());
+        assert_eq!(root.phase(), hex_stream::MediaCleanupPhase::Complete);
+        assert!(reaper.release_catalog_custody_capacity(id).is_ok());
+    }
     fn reservation() -> ClaimReservation {
         ClaimReservation {
             items: 1,

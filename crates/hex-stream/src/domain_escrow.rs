@@ -23,8 +23,11 @@ struct BatchSlot {
 #[path = "catalog_custody.rs"]
 mod custody;
 pub use custody::{
-    CatalogCustodyAwaiter, CatalogCustodyCapacity, CatalogCustodyError, CatalogCustodyReceipt,
-    CatalogCustodyRefusal, CatalogCustodyReservation, VerifiedCatalogCustodyRefusal,
+    CatalogCoverageAck, CatalogCoverageBinding, CatalogCoverageCovered, CatalogCoveragePending,
+    CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
+    CatalogCoverageStorageReport, CatalogCustodyAwaiter, CatalogCustodyCapacity,
+    CatalogCustodyError, CatalogCustodyReceipt, CatalogCustodyRefusal, CatalogCustodyReservation,
+    VerifiedCatalogCustodyRefusal, VerifiedCoverageRefusal,
 };
 
 struct ControlSlot {
@@ -339,6 +342,9 @@ impl MediaDomainReaper {
         if slot.terminal_error.is_some() {
             return DomainCleanupProgress::Refused(DomainRefusal::UnexpectedShutdownRefusal);
         }
+        if slot.custody.failed() {
+            return DomainCleanupProgress::Refused(DomainRefusal::UnexpectedShutdownRefusal);
+        }
         if slot.custody.reserved() {
             return DomainCleanupProgress::WaitingForReturn;
         }
@@ -354,6 +360,9 @@ impl MediaDomainReaper {
             .iter()
             .any(|lease| !endpoint.catalog().same_catalog(lease))
         {
+            return DomainCleanupProgress::Refused(DomainRefusal::WrongLease);
+        }
+        if !slot.custody.matches_catalog(endpoint.catalog()) {
             return DomainCleanupProgress::Refused(DomainRefusal::WrongLease);
         }
         let Some(known) = slot
@@ -398,6 +407,7 @@ impl MediaDomainReaper {
     fn update_phase(&self) {
         let failed = self.slots.iter().any(|slot| {
             slot.terminal_error.is_some()
+                || slot.custody.failed()
                 || slot
                     .report
                     .is_some_and(|report| report.successful_report().is_none())

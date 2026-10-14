@@ -609,3 +609,51 @@ This is headless engine infrastructure, not enabled native admission or usable
 whole-project streaming. Stable actual-domain catalog continued coverage,
 complete aggregate owner accounting, native lifecycle/publication wiring,
 streamed preroll and actual sustained native acceptance remain outstanding.
+
+### indexed stable catalog custody (disabled graph release)
+
+Catalog custody now uses preallocated indexed `Option<CatalogLease>` cells and
+private record/cell associations. Legacy `ControlSlot.retained_leases` and its
+original Vec/rollback behavior remain intact. Actual reference preflight counts
+both legacy leases and occupied indexed cells, including stable coverage and
+pending redundant disposal; it validates the actual verified catalog as well as
+owner/pair identity before shutdown. Record nonces and domain incarnations are
+checked, and root identity remains anchored by the existing private seal.
+
+Each actual domain/catalog has one stable coverage record, independent of
+successor graph lifetime. Borrowed reservation validates the actual control/pair,
+source and destination records and available cells before moves. Owning commit
+revalidates and returns the original verifier/lease and reservation on refusal.
+The destination holds the actual lease first. A matching destination stages a
+redundant source lease in persistent reaper custody, without dropping it during
+commit. Existing native cleanup extraction runs its disposal outside the ordinary
+root mutex; the callback touches no cleanup lock. Pending precedes take, borrowed
+catch retains a first payload/failure tombstone, and failed destruction is never
+repeated. A real matching destination retains all three CatalogLease Arc owners;
+normal redundant release cannot be their final drop.
+
+Continued-coverage acknowledgment and its consumed result are sealed, move-only
+physical responsibility facts. They are distinct from runtime disposal, owner
+role retirement and final worker shutdown. Source reservations, pending/abandoned
+acknowledgments and failures block reaping/rollback/storage reuse. Exact cancel
+is available only before owning commit. Successful ack consumption recycles the
+source record while stable destination custody stays pinned. Only actual
+accounting-complete shutdown produces the separate final cleanup receipt; its
+consumption remains necessary before domain slot/report reuse.
+
+The whole existing domain footprint remains charged once through continued
+coverage. The storage report identifies indexed backing as a SUBSET already
+charged to the domain, separate token/carrier header sizes, caller-declared
+metadata and checked construction overlap. Do not add that indexed subset again
+or copy/subtract CatalogLease allocation footprints for each graph. Failure
+payload storage is Unknown. Cross-ledger assets and Arc overlap remain unresolved;
+these data-capacity reports are not allocator/RSS or complete aggregate admission.
+
+Audio reserves physical coverage with its private lifecycle/claim association
+and actual runtime/verifier pairing before split/moves. Close/rollback preserves
+its outstanding reservation and cancellation recovery. The post-disposal graph
+commit/release remains explicitly refused: native accepted/final-transfer custody
+and exhaustive owner-group retirement are not yet wired into the claim slot.
+Actual headless unpublished Box disposal fixtures and repeated physical coverage
+are not proof of native obsolete-claim-slot release or whole-project streaming.
+No provider, import/runtime cap, default publisher or streamed preroll is enabled.

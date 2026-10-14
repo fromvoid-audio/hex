@@ -86,6 +86,9 @@ impl Clone for CatalogLease {
 }
 
 impl CatalogLease {
+    pub(crate) fn same_verified_catalog(&self, other: &Self) -> bool {
+        self.same_catalog(other) && Arc::ptr_eq(&self.catalog, &other.catalog)
+    }
     pub(crate) fn source_metadata(
         &self,
         key: StreamSourceKey,

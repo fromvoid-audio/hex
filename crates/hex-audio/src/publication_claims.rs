@@ -76,7 +76,33 @@ pub struct CatalogAnchorCommitRefusal {
     pub anchors: PublicationAnchors,
     pub reservation: hex_stream::CatalogCustodyReservation,
 }
+pub struct CatalogCoverageAnchorCommitRefusal {
+    pub reason: ClaimSlotError,
+    pub anchors: PublicationAnchors,
+    pub reservation: hex_stream::CatalogCoverageReservation,
+}
 impl PublicationAnchors {
+    /// Actual native accepted/final-transfer + owner-group closure authority is
+    /// not integrated yet. Physical stream coverage alone cannot bypass that
+    /// gate or complete Unknown aggregate ownership. Return BOTH original inputs.
+    pub fn commit_catalog_coverage_on_control(
+        self,
+        reservation: hex_stream::CatalogCoverageReservation,
+        _reaper: &mut hex_stream::MediaDomainReaper,
+    ) -> Result<
+        (
+            hex_engine::storage_report::AnchoredPlaybackClaims,
+            hex_engine::OwnedPreparedRevision,
+            hex_stream::CatalogCoveragePending,
+        ),
+        Box<CatalogCoverageAnchorCommitRefusal>,
+    > {
+        Err(Box::new(CatalogCoverageAnchorCommitRefusal {
+            reason: ClaimSlotError::Incomplete,
+            anchors: self,
+            reservation,
+        }))
+    }
     /// No authoritative disposal/final-transfer proof exists yet. Never reconstruct
     /// PlaybackClaims or a disposed runtime, and never mint a completion assertion.
     pub fn commit_catalog_custody_on_control(
