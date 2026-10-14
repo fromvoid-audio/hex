@@ -25,6 +25,7 @@ pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS,
 };
 mod return_feed_plan;
+pub mod storage_report;
 mod stream_demand;
 mod streamed;
 pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
