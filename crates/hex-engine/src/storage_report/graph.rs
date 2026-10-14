@@ -101,8 +101,19 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             let crate::Audio {
                 sample_rate: _,
                 frames,
+                pcm_arc_receipt,
             } = audio;
-            self.arc(frames, "resident_pcm")?;
+            if let Some((payload, overhead)) =
+                pcm_arc_receipt.and_then(|r| r.checked_parts(frames.len()))
+            {
+                let owner = StorageOwner::Shared(SharedOwnerRef::new(frames, "resident_pcm"));
+                self.data(owner, "arc.pointee", [0; 2], 1, payload)?;
+                self.item(owner, "arc.owner_overhead", [0; 2], StorageCharge::OwnerOverheadDeclared {
+                    bytes: overhead, assumption: "Rust1.94.0-4a4ef493-native-official-std-VecIntoArc-PCM-requested-layout-v1",
+                })?;
+            } else {
+                self.arc(frames, "resident_pcm")?;
+            }
         }
         if let Some(metadata) = metadata {
             self.data(

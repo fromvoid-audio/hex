@@ -13,6 +13,7 @@ pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
 mod native_device_view;
+mod pcm_arc;
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
@@ -283,6 +284,7 @@ impl Tempo {
 pub struct Audio {
     sample_rate: u32,
     frames: Arc<[Frame]>,
+    pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
 }
 impl Audio {
     /// Source rate; compilation currently requires an exact project-rate match.
@@ -304,9 +306,12 @@ impl Audio {
         if frames.iter().flatten().any(|s| !s.is_finite()) {
             return Err(Invalid("audio must contain finite samples"));
         }
+        let frames: Arc<[Frame]> = frames.into();
+        let pcm_arc_receipt = pcm_arc::PcmArcReceipt::current(frames.len());
         Ok(Self {
             sample_rate,
-            frames: frames.into(),
+            frames,
+            pcm_arc_receipt,
         })
     }
 }

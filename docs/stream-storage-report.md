@@ -12,7 +12,7 @@ Unknown. A measured pointee is not a claim about its internal heap. OS and
 allocator bookkeeping remain outside this data-accounting contract. No RSS or
 exact allocator total is claimed. A summary can be complete only within this
 stated contract; any Unknown makes `require_complete` refuse independently of
-what the sink retains. This initial unit always has Unknown Arc overhead.
+what the sink retains. General Arc overhead remains Unknown; only the narrowly gated PCM producer below may emit a declaration.
 
 The borrowed Playback header is inline in its caller's envelope, not necessarily
 boxed. Callers charge their actual envelope/Box. Session and renderer runtime
@@ -53,8 +53,8 @@ and Weak-only lifetime. Derive an alignment-aware conservative bound from that
 implementation and validate supported target/stdlib provenance; treat it as an
 assumption-bound declaration, not measured allocator bytes. The installed cloud
 toolchain lacks rust-src, and no native target layout evidence is supplied by
-this unit. Until that audit/declaration is approved, Arc overhead remains
-Unknown and complete admission refuses. Opaque providers likewise require
+this unit. The narrowly approved version-bound PCM producer below does not generalize to
+other Arc families; generic Arc costs remain Unknown and complete admission refuses. Opaque providers likewise require
 exhaustive audited fixed-storage and nested-owner reporting; size_of_val cannot
 stand in for it.
 
@@ -121,8 +121,8 @@ allocating paths versus untracked shared defaults, clones, weak-only ownership,
 overreserved source Vecs, replacement and separate Vec/String storage. Alignment
 is DECLARED only: this counter never observes Layout::align. Every receipt still
 reports `requested_alignment_verified=false`. Requested-alignment observer results and native helper runs must be combined
-and reviewed separately; this private helper unit supplies no such evidence. All production
-Arc costs remain Unknown; no whole admission/root wiring is enabled.
+and reviewed separately; this private helper unit supplies no such evidence. The private helper never enables a producer. The narrow PCM declaration below
+has its own build gate; all other Arc costs remain Unknown and no whole admission/root wiring is enabled.
 
 ## completed session midi source-template family
 
@@ -170,3 +170,35 @@ location; exclusive items always remain scoped to the inspected Playback root.
 All other inventory/provider/Arc/retirement unknowns independently prevent
 complete admission. Any failed partial sink must be discarded. There is no
 callback traversal, root publication, preroll or Arc completeness activation.
+
+## version-bound declared pcm arc overhead
+
+Only `Audio::new` validated nonempty Vec-to-Arc PCM origin now caches a private
+checked requested-layout receipt while the actual strong slice is live. Audio
+clones preserve that receipt and the actual allocation; no new Arc clone occurs
+in reporting. Only this known family may emit separate OwnerOverheadDeclared
+bytes. Payload data remains measured separately; the receipt's inline fields
+increase actual parent pointee/Clip stride and are not charged again. Raw,
+default-empty, untracked future origin or missing/mismatched receipt stays Unknown.
+There is no PCM Weak API; claims must remain retained through actual graph/tail
+retirement. Future Weak coverage requires separate approval and lifetime proof.
+
+The std-only engine build script actually invokes Cargo-selected RUSTC `-Vv` and
+`--print sysroot`, checks pinned release1.94.0/commit4a4ef493, native HOST==TARGET
+on the two supported targets, and ordinary official install component metadata.
+Wrapper/ambiguous flags/custom sysroot/build-std inputs, missing metadata,
+malformed/failed commands or failed evidence write select Unknown without
+breaking legacy Audio construction. Relevant compiler/target/wrapper/flag inputs
+and installation metadata are Cargo rerun triggers. Deterministic build evidence
+archives command/compiler/sysroot paths, stdout/stderr/exit diagnostics and the
+decision; no flag values or environment dump. Build-script output overrides
+caller "verified" environment text. It is NOT a security attestation or detection
+of disguised compiler/stdlib tampering; unsupported known configurations refuse.
+
+Formula uses checked Layout::array<AtomicUsize>(2).extend(payload).pad_to_align
+under this version-bound declaration, never a guessed fixed header. This is the
+Layout requested from the allocator by audited std. Physical allocator rounding,
+bookkeeping and RSS are outside scope, including custom global allocator physical
+behavior; no final allocator policy or compiler hash infrastructure is added.
+All other Arc/provider/retirement Unknowns remain independent. No whole Playback
+completeness, caller reservation/root publication, cap or preroll is enabled.
