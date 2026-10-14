@@ -1,6 +1,7 @@
 //! Control-side plan for the admitted stereo, post-Return additive feed DAG.
 //! Existing track sends and Main summation remain owned by their old kernels.
 use crate::{Frame, Invalid};
+mod storage;
 
 #[derive(Clone, Copy, Debug)]
 struct Feed {

@@ -7,7 +7,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             sample_rate: _,
             tracks,
             return_buses,
-            return_feed_plan: _,
+            return_feed_plan,
             loop_region: _,
             master_gain: _,
             audible_end_frame: _,
@@ -16,11 +16,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         } = project.as_ref();
         self.vec(owner, "arrangement.tracks", [0; 2], tracks)?;
         self.vec(owner, "arrangement.returns", [0; 2], return_buses)?;
-        self.unknown(
-            owner,
-            "arrangement.return_feed_plan",
-            UnknownStorageReason::NestedOwnerContract,
-        )?;
+        return_feed_plan.visit_storage(self, owner)?;
         self.opaque_arc(shared_contexts, "shared_context_table")?;
         for (index, track) in tracks.iter().enumerate() {
             self.track(track, owner, index)?;

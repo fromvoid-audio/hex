@@ -21,7 +21,7 @@ Inline tempo-period/onset/span/tail arrays need no separate heap charge.
 Current traversal reports Arrangement root/track/clip containers, resident PCM,
 clip metadata Boxes, streamed metadata, processor slices/meters, prepared roots,
 Session runtime Vec capacities/retained contexts and renderer Vec capacities.
-Unexpanded Return-feed, gain/instrument, inventory/preview/revision metadata,
+Unexpanded gain/instrument, inventory/preview/revision metadata,
 Return-tail, typing, mutable and lattice-internal owners explicitly remain
 Unknown. Existing DSP-twin declarations are separate from these incomplete
 nested reports. No provider is assumed complete by default, and no provider
@@ -72,3 +72,19 @@ is not wired to those reservations and is not complete admission evidence.
 Root publication/reuse, opted-in resident-only/new-generation empty catalogs,
 tokens and preroll remain separate unfinished work. Linux/container tests do
 not establish native CoreAudio/100-track/deadline/listening acceptance.
+
+## completed engine-owned return-feed family
+
+The Return-feed DAG now exhaustively visits its order Vec, outer outgoing
+Vec<Vec<Feed>>, and every inner Feed Vec. The enclosing graph pointee already
+contains the plan and its two Vec headers; outer reserved slots contain inner
+Vec headers. Only backing capacities are added, including empty overreserved
+inner buffers and unused outer slots. Feed leaves are exhaustively matched as
+scalar-only; adding fields to plan or Feed requires reviewing the owning module.
+Nested containers use the actual graph owner plus distinct component/index
+locations, allowing bounded caller scratch to deduplicate repeated graph visits
+without collapsing equal-content allocations belonging to different graphs.
+There are no independent shared owners or provider declarations inside this
+family. This completes only its owned data traversal, not its containing Arc
+or Playback. Arc overhead and other families still remain Unknown. No admission,
+publication, clock, routing, DSP or limit behavior changes.
