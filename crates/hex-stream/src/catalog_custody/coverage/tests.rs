@@ -378,3 +378,154 @@ fn actual_domain_slot_reuse_rejects_prior_incarnation_even_when_record_nonces_re
     // Actual new uninstalled owner remains recoverable through legacy rollback.
     assert!(reaper.rollback_domain(admission).is_ok());
 }
+
+#[test]
+fn current_cover_permit_rechecks_physical_target_and_historical_source_reuse() {
+    let (mut batch, _terminal, mut reaper, admission) = setup(2);
+    let id = DomainId::new(1).unwrap();
+    let lease = reaper.catalog_lease(id).unwrap();
+    let reservation = reaper.reserve_catalog_coverage(id, &lease).unwrap();
+    let binding = reservation.binding_on_control();
+    let pending = reaper
+        .commit_catalog_coverage(reservation, lease.clone())
+        .ok()
+        .unwrap();
+    let ack = reaper.catalog_coverage_ack(pending).ok().unwrap();
+    let historical = reaper.consume_catalog_coverage_ack(ack).ok().unwrap();
+    assert!(
+        reaper
+            .validate_current_catalog_coverage(&binding, &historical)
+            .unwrap()
+            .matches_binding(&binding)
+    );
+    // A departing source record may be reused; its historical transition does
+    // not independently authorize release, but the SAME actual target remains.
+    let later = cover(&mut reaper, lease.clone());
+    assert!(
+        reaper
+            .validate_current_catalog_coverage(&binding, &historical)
+            .is_ok()
+    );
+    drop(later);
+    let other = reaper.reserve_catalog_coverage(id, &lease).unwrap();
+    let wrong = other.binding_on_control();
+    assert!(matches!(
+        reaper.validate_current_catalog_coverage(&wrong, &historical),
+        Err(CatalogCustodyError::Stale)
+    ));
+    reaper.cancel_catalog_coverage(other).ok().unwrap();
+    let target = reaper.slots[0].custody.coverage.unwrap().0;
+    let cell = reaper.slots[0].custody.records[target].lease_cell;
+    let actual = reaper.slots[0].custody.leases[cell].take().unwrap();
+    assert!(matches!(
+        reaper.validate_current_catalog_coverage(&binding, &historical),
+        Err(CatalogCustodyError::Incomplete)
+    ));
+    reaper.slots[0].custody.leases[cell] = Some(actual);
+    assert!(
+        reaper
+            .validate_current_catalog_coverage(&binding, &historical)
+            .is_ok()
+    );
+    drop(lease);
+    batch.install_domain(admission).ok().unwrap();
+    assert_eq!(batch.try_return_domain(id), DomainReturnStatus::Accepted);
+    while reaper.poll_one().unwrap() != DomainPoll::Empty {}
+    assert!(matches!(
+        reaper.try_reap_domain(id),
+        DomainCleanupProgress::Finished(_)
+    ));
+    assert!(matches!(
+        reaper.validate_current_catalog_coverage(&binding, &historical),
+        Err(CatalogCustodyError::Incomplete)
+    ));
+    let cleanup = reaper.stable_catalog_cleanup_receipt(id).unwrap();
+    reaper
+        .consume_catalog_cleanup_receipt(cleanup)
+        .ok()
+        .unwrap();
+    reaper.take_reclaimed_report(id).unwrap();
+    assert!(matches!(
+        reaper.validate_current_catalog_coverage(&binding, &historical),
+        Err(CatalogCustodyError::Stale)
+    ));
+    // Historical binding equality survives; it is intentionally not live proof.
+    assert!(binding.matches_covered(&historical));
+    let mut runtime =
+        crate::StreamRuntime::new(crate::StreamConfig::with_pool_pages(4), Vec::new()).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (control, pages) = runtime.split().ok().unwrap();
+    let endpoint =
+        crate::VerifiedPageEndpoint::new(pages, control.catalog_lease().unwrap()).unwrap();
+    let replacement = reaper
+        .reserve_domain(MediaDomainInput {
+            id,
+            control,
+            endpoint: PageReadiness::new(endpoint, 3).unwrap(),
+            retained_leases: Vec::new(),
+        })
+        .ok()
+        .unwrap();
+    reaper.configure_catalog_custody(id, 2, usize::MAX).unwrap();
+    let replacement_lease = reaper.catalog_lease(id).unwrap();
+    let _replacement_coverage = cover(&mut reaper, replacement_lease);
+    assert!(matches!(
+        reaper.validate_current_catalog_coverage(&binding, &historical),
+        Err(CatalogCustodyError::Stale)
+    ));
+    batch.install_domain(replacement).ok().unwrap();
+    assert_eq!(batch.try_return_domain(id), DomainReturnStatus::Accepted);
+    while reaper.poll_one().unwrap() != DomainPoll::Empty {}
+    assert!(matches!(
+        reaper.try_reap_domain(id),
+        DomainCleanupProgress::Finished(_)
+    ));
+    let cleanup = reaper.stable_catalog_cleanup_receipt(id).unwrap();
+    reaper
+        .consume_catalog_cleanup_receipt(cleanup)
+        .ok()
+        .unwrap();
+    reaper.take_reclaimed_report(id).unwrap();
+}
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn borrowed_current_cover_validation_allocates_frees_and_clones_no_catalog_owner() {
+    let (_batch, _terminal, mut reaper, _admission) = setup(2);
+    let id = DomainId::new(1).unwrap();
+    let lease = reaper.catalog_lease(id).unwrap();
+    let reservation = reaper.reserve_catalog_coverage(id, &lease).unwrap();
+    let binding = reservation.binding_on_control();
+    let pending = reaper
+        .commit_catalog_coverage(reservation, lease)
+        .ok()
+        .unwrap();
+    let ack = reaper.catalog_coverage_ack(pending).ok().unwrap();
+    let historical = reaper.consume_catalog_coverage_ack(ack).ok().unwrap();
+    let before = reaper.slots[0].control.as_ref().unwrap().owner_references();
+    let measured = allocation_counter::measure(|| {
+        let permit = reaper
+            .validate_current_catalog_coverage(&binding, &historical)
+            .unwrap();
+        assert!(permit.matches_binding(&binding));
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.count_current,
+            measured.bytes_total,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(
+        before,
+        reaper.slots[0].control.as_ref().unwrap().owner_references()
+    );
+    let positive = allocation_counter::measure(|| {
+        let value = std::hint::black_box(Box::new(std::hint::black_box(9_u64)));
+        std::hint::black_box(&value);
+        drop(value);
+    });
+    assert_eq!(positive.count_total, 1);
+    assert_eq!(positive.bytes_total, 8);
+}

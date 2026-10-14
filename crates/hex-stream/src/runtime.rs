@@ -597,6 +597,19 @@ impl StreamControl {
         Arc::ptr_eq(&self.owner, &lease.owner) && Arc::ptr_eq(&self.pair_id, &lease.pair_id)
     }
 
+    /// Control-only exact immutable catalog check, without manufacturing another
+    /// lease. This briefly borrows the existing catalog-state mutex; never call
+    /// it from callback demand/render or retain the guard across cleanup.
+    pub(crate) fn matches_verified_catalog(&self, lease: &CatalogLease) -> bool {
+        self.matches_catalog(lease)
+            && self.owner.catalog_state.lock().ok().is_some_and(|state| {
+                state.result.as_ref().is_some_and(|result| match result {
+                    Ok(catalog) => Arc::ptr_eq(catalog, &lease.catalog),
+                    Err(_) => false,
+                })
+            })
+    }
+
     pub(crate) fn owner_references(&self) -> usize {
         Arc::strong_count(&self.owner)
     }

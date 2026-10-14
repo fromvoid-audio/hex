@@ -1108,8 +1108,35 @@ fn tracked_owner_groups_close_dormant_subset_at_returned_box_disposal_while_succ
         .into_control_teardown()
         .dispose_on_control()
         .unwrap();
-    a_archive.record_disposal_on_control(&b_disposed).unwrap();
-    b_archive.record_disposal_on_control(&b_disposed).unwrap();
+    let a_before = a_archive.remaining_handle_count();
+    // Exhaustive fanout refusal must precede ALL archive mutation: B's book
+    // contains one A-origin leftover and B's own returned runtime.
+    assert!(
+        b_disposed
+            .record_disposal_fanout_on_control(&mut [&mut b_archive])
+            .is_err()
+    );
+    assert_eq!(a_archive.remaining_handle_count(), a_before);
+    assert!(!b_archive.original_runtime_was_disposed());
+    b_disposed
+        .record_disposal_fanout_on_control(&mut [&mut a_archive, &mut b_archive])
+        .unwrap();
+    let after = (
+        a_archive.remaining_handle_count(),
+        b_archive.remaining_handle_count(),
+    );
+    assert!(
+        b_disposed
+            .record_disposal_fanout_on_control(&mut [&mut a_archive, &mut b_archive])
+            .is_err()
+    );
+    assert_eq!(
+        (
+            a_archive.remaining_handle_count(),
+            b_archive.remaining_handle_count()
+        ),
+        after
+    );
     assert_eq!(a_archive.remaining_handle_count(), 1);
     assert_eq!(b_archive.remaining_handle_count(), 0);
     let mut output = [[0.0; 2]; 1];

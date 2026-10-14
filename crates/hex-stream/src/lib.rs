@@ -77,6 +77,6 @@ pub use domain_escrow::{
     CatalogCoverageAck, CatalogCoverageBinding, CatalogCoverageCovered, CatalogCoveragePending,
     CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
     CatalogCustodyAwaiter, CatalogCustodyCapacity, CatalogCustodyError, CatalogCustodyReceipt,
-    CatalogCustodyRefusal, CatalogCustodyReservation, VerifiedCatalogCustodyRefusal,
-    VerifiedCoverageRefusal,
+    CatalogCustodyRefusal, CatalogCustodyReservation, CurrentCatalogCoverage,
+    VerifiedCatalogCustodyRefusal, VerifiedCoverageRefusal,
 };

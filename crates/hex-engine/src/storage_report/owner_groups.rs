@@ -672,6 +672,11 @@ impl OwnerGroupArchive {
         &mut self,
         proof: &OwnerGroupsDisposed,
     ) -> Result<(), OwnerGroupError> {
+        self.preflight_disposal(proof)?;
+        self.commit_disposal(proof);
+        Ok(())
+    }
+    fn preflight_disposal(&self, proof: &OwnerGroupsDisposed) -> Result<(), OwnerGroupError> {
         let original = proof.identity() == self.runtime;
         if original && self.original_runtime_disposed {
             return Err(OwnerGroupError::Consumed);
@@ -695,7 +700,12 @@ impl OwnerGroupArchive {
         if matched == 0 && !original {
             return Err(OwnerGroupError::PairMismatch);
         }
-        if original {
+        Ok(())
+    }
+    // Only fixed existing boolean fields change after the whole fanout passes
+    // preflight. No allocation, provider call, destructor or fallible arithmetic.
+    fn commit_disposal(&mut self, proof: &OwnerGroupsDisposed) {
+        if proof.identity() == self.runtime {
             self.original_runtime_disposed = true;
         }
         for row in &mut self.groups {
@@ -707,6 +717,58 @@ impl OwnerGroupArchive {
             }) {
                 row.closed = true;
             }
+        }
+    }
+}
+impl OwnerGroupsDisposed {
+    /// Control-only atomic fanout of one actual successful destructor fact.
+    /// The caller supplies preallocated borrowed archive destinations: the
+    /// original runtime and EVERY origin still in this disposed book must be
+    /// represented exactly once. No owners or proof are consumed on refusal.
+    /// Archive closure bits are durable ingestion state; a duplicate refuses.
+    /// This closes only actual left-behind groups, never descendant owners,
+    /// admission, catalog responsibility or a native final-transfer boundary.
+    pub fn record_disposal_fanout_on_control(
+        &self,
+        archives: &mut [&mut OwnerGroupArchive],
+    ) -> Result<(), OwnerGroupError> {
+        if !archives
+            .iter()
+            .any(|archive| archive.runtime == self.identity())
+        {
+            return Err(OwnerGroupError::PairMismatch);
+        }
+        for (index, archive) in archives.iter().enumerate() {
+            if archives[..index]
+                .iter()
+                .any(|earlier| earlier.runtime == archive.runtime)
+            {
+                return Err(OwnerGroupError::InvalidTransfer);
+            }
+        }
+        for member in &self.book.members {
+            if let Some(group) = &member.group
+                && !archives
+                    .iter()
+                    .any(|archive| archive.runtime == group.0.runtime)
+            {
+                return Err(OwnerGroupError::PairMismatch);
+            }
+        }
+        for archive in archives.iter() {
+            let affected = archive.runtime == self.identity()
+                || self.book.members.iter().any(|member| {
+                    member
+                        .group
+                        .as_ref()
+                        .is_some_and(|g| g.0.runtime == archive.runtime)
+                });
+            if affected {
+                archive.preflight_disposal(self)?;
+            }
+        }
+        for archive in archives.iter_mut() {
+            archive.commit_disposal(self);
         }
         Ok(())
     }

@@ -657,3 +657,32 @@ and exhaustive owner-group retirement are not yet wired into the claim slot.
 Actual headless unpublished Box disposal fixtures and repeated physical coverage
 are not proof of native obsolete-claim-slot release or whole-project streaming.
 No provider, import/runtime cap, default publisher or streamed preroll is enabled.
+
+
+### control reclamation preflight (partial)
+
+`CurrentCatalogCoverage` is a borrowed control transaction permit, not a lasting
+receipt. `CatalogCoverageCovered` records a historical source-to-target move;
+its binding alone cannot establish that the target still retains responsibility.
+The permit rechecks the reaper seal, domain incarnation, stable record nonce,
+physical lease and exact verified catalog against its control owner. Its exclusive
+reaper borrow prevents shutdown/report consumption/reuse until the transaction
+releases it. It must not span a destructor, join, provider call or callback. A
+retired/reused domain refuses; a genuine successful cleanup successor still needs
+separate pre-reserved, privately retained dependent-claim custody.
+
+`OwnerGroupsDisposed::record_disposal_fanout_on_control` preflights the original
+runtime archive and every actual origin left in the disposed book before changing
+any archive bit. Caller-provided borrowed destinations must be preallocated and
+charged by the caller; this method creates no new container or scratch allocation.
+Missing/malformed/duplicate/already-ingested destinations refuse without changing
+any archive. After full preflight only existing closure booleans change; no
+fallible call, provider, destructor or owning move follows. The actual destructor
+proof remains borrowed/persistent throughout. This closes left-behind groups only,
+not descendants, native installation/final-transfer authority or graph charges.
+
+These control preflight operations do not enable publication or reclamation.
+Native tracked envelopes, authoritative callback installation/final-transfer facts,
+private cleanup-successor dependencies and consuming post-disposal slot reclamation
+remain unfinished. Complete aggregate ownership still refuses Unknown and fixture
+INCOMPLETE; existing numeric policy and native acceptance requirements are unchanged.

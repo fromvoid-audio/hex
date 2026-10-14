@@ -478,3 +478,37 @@ fn sealed_preview_matches_exact_legacy_planner_and_refusal_discards_speculative_
     assert_eq!(direct, expected);
     assert!(next.is_incomplete_fixture() && old.is_incomplete_fixture());
 }
+
+#[test]
+fn disposal_fanout_preflights_every_archive_before_any_closure_and_rejects_replay() {
+    // Obtain the actual corresponding archive via the owning constructor,
+    // rather than fabricating a successful disposal or runtime identity.
+    let (owner, anchors) = pair(root());
+    let (owner, mut archive, _) = owner
+        .try_acquire_owner_groups_on_control(&anchors, reservation())
+        .unwrap();
+    let mut teardown = owner.into_control_teardown();
+    let proof = teardown.dispose_on_control().unwrap();
+    assert_eq!(proof.identity(), archive.runtime);
+    let row = archive.groups.pop().unwrap(); // private malformed destination negative control
+    assert!(
+        proof
+            .record_disposal_fanout_on_control(&mut [&mut archive])
+            .is_err()
+    );
+    assert!(!archive.original_runtime_was_disposed());
+    assert!(archive.groups.iter().all(|row| !row.closed));
+    archive.groups.push(row);
+    proof
+        .record_disposal_fanout_on_control(&mut [&mut archive])
+        .unwrap();
+    assert_eq!(archive.remaining_handle_count(), 0);
+    assert!(archive.original_runtime_was_disposed());
+    assert!(
+        proof
+            .record_disposal_fanout_on_control(&mut [&mut archive])
+            .is_err()
+    );
+    assert_eq!(archive.remaining_handle_count(), 0);
+    assert!(archive.report().incomplete_source && proof.is_incomplete_fixture());
+}

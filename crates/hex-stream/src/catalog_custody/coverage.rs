@@ -18,6 +18,33 @@ pub struct CatalogCoverageReservation(Key);
 pub struct CatalogCoveragePending(Key);
 pub struct CatalogCoverageAck(Key);
 pub struct CatalogCoverageCovered(Key);
+/// Borrowed current responsibility, not a durable receipt. The exclusive reaper
+/// borrow prevents retirement, shutdown, report consumption or domain reuse
+/// until the control transaction releases this permit.
+/// ```compile_fail
+/// fn retire_while_borrowed(
+///     reaper: &mut hex_stream::MediaDomainReaper,
+///     binding: &hex_stream::CatalogCoverageBinding,
+///     covered: &hex_stream::CatalogCoverageCovered,
+/// ) {
+///     let permit = reaper.validate_current_catalog_coverage(binding, covered).unwrap();
+///     reaper.try_reap_domain(hex_stream::DomainId::new(1).unwrap());
+///     assert!(permit.matches_binding(binding));
+/// }
+/// ```
+/// Never hold it across
+/// destructors, provider calls, joins or callback work.
+pub struct CurrentCatalogCoverage<'a> {
+    _reaper: &'a mut MediaDomainReaper,
+    key: &'a Key,
+}
+impl CurrentCatalogCoverage<'_> {
+    /// Identity check for the control owner's private claim association. The
+    /// caller must also validate its own lifecycle/runtime/slot incarnation.
+    pub fn matches_binding(&self, binding: &CatalogCoverageBinding) -> bool {
+        self.key.same(&binding.0)
+    }
+}
 /// Control-only identity anchor for audio's private claim association binding.
 /// No public scalar factory, catalog clone or graph retirement assertion.
 pub struct CatalogCoverageBinding(Key);
@@ -93,6 +120,51 @@ impl CatalogCoverageBinding {
     }
 }
 impl MediaDomainReaper {
+    /// Validate CURRENT physical custody rather than the historical source
+    /// transition. Source record reuse is allowed; the stable target and actual
+    /// domain incarnation may not have retired or been replaced. No allocation
+    /// or catalog/Arc clone is performed, and no lasting authority is minted.
+    pub fn validate_current_catalog_coverage<'a>(
+        &'a mut self,
+        binding: &CatalogCoverageBinding,
+        covered: &'a CatalogCoverageCovered,
+    ) -> Result<CurrentCatalogCoverage<'a>, CatalogCustodyError> {
+        let key = &covered.0;
+        if !binding.0.same(key) || !Arc::ptr_eq(&self.seal, &key.seal) {
+            return Err(CatalogCustodyError::Stale);
+        }
+        let slot = self
+            .slots
+            .get(key.domain)
+            .filter(|s| !s.vacant && s.incarnation == key.incarnation)
+            .ok_or(CatalogCustodyError::Stale)?;
+        if slot.report.is_some() || slot.terminal_error.is_some() || slot.custody.failed() {
+            return Err(CatalogCustodyError::Incomplete);
+        }
+        if slot.custody.coverage != Some((key.target, key.target_nonce)) {
+            return Err(CatalogCustodyError::Stale);
+        }
+        let record = slot
+            .custody
+            .records
+            .get(key.target)
+            .filter(|r| r.nonce == key.target_nonce && r.state == RecordState::CoverageHeld)
+            .ok_or(CatalogCustodyError::Stale)?;
+        let lease = slot
+            .custody
+            .leases
+            .get(record.lease_cell)
+            .and_then(Option::as_ref)
+            .ok_or(CatalogCustodyError::Incomplete)?;
+        let control = slot
+            .control
+            .as_ref()
+            .ok_or(CatalogCustodyError::Incomplete)?;
+        if !control.matches_verified_catalog(lease) {
+            return Err(CatalogCustodyError::WrongPair);
+        }
+        Ok(CurrentCatalogCoverage { _reaper: self, key })
+    }
     /// Borrowed control report; declarations must be disjoint from existing
     /// domain/graph/claim storage. No admission or unknown-owner completion.
     pub fn catalog_coverage_storage_report(
