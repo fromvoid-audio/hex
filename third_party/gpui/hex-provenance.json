@@ -205,16 +205,18 @@
     "src/platform/linux/x11/client.rs": "2ac7094d4b403d0b1928027481c82e456bdbed1c8aab9cdd97c72acd2fb64fd2",
     "src/platform/mac/events.rs": "6fdef5679c740bdbfe31ae3eedae0011263b66631c059947deddfa938373b158",
     "src/platform/mac/platform.rs": "4c978369276c3f29fd98af67f438338858ff27ad797a17a288f50548ec28fe76",
-    "src/platform/mac/window.rs": "f1a466028bf259e37fdddb10c2fb32c4dec77375472d211579bf6e7eb07bbf4a",
+    "src/platform/mac/window.rs": "93f86e8a31f7753c3363921eacb9addda72e2bf16ae989898dd51f8ff048f598",
     "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
-    "src/platform.rs": "12447a88980676797eda10c18813388d0c338f2326055901dba9a70ec7f0bb59",
+    "src/platform.rs": "8eea0ae17f4a94de370109000b3cf46d1b32aab73b221b9564d5d742746d5970",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "18ff90982d1647a8016f1f50db872f17656145a1ae8dc4e9f93fa571846d70bd",
-    "src/window.rs": "abc282292a8731d3c74be2449a9193d8981d2bd75bc2fe100e9f8e97a5133878"
+    "src/window.rs": "8bb8a2e8a60d3fa1946c9c079ca2d9fb32c4f1dda2001b996be21884dc354573"
   },
   "added_files": {
-    "src/accessibility.rs": "0cbcafade9e5a729ef9511b5d852c4d3c057eb25704186ca569900c9b32d954a"
+    "src/accessibility.rs": "0cbcafade9e5a729ef9511b5d852c4d3c057eb25704186ca569900c9b32d954a",
+    "src/platform/accessibility_bridge.rs": "058e85679e070373d4dab346f5fcda22c6ad89de05371f2c6cfb6cf6b3801e99",
+    "src/platform/mac/accessibility.rs": "6172b50c97abf3ec3ac5522bbb5d68d00a477cadbbd1dd9be277a157a5b2211b"
   }
 }

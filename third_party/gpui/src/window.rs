@@ -1411,6 +1411,7 @@ impl Window {
 
     /// Close this window.
     pub fn remove_window(&mut self) {
+        self.platform_window.revoke_accessibility();
         self.hidden_cursor_restore.take();
         self.removed = true;
     }

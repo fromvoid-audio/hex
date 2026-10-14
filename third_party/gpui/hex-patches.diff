@@ -282,7 +282,22 @@
 +            });
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
-@@ -161,0 +162,8 @@
+@@ -0,0 +1,2 @@
++#[path = "accessibility.rs"]
++mod native_accessibility;
+@@ -107,0 +110 @@
++        native_accessibility::initialize_class();
+@@ -112,0 +116,9 @@
++            decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
++            decl.add_method(
++                sel!(accessibilityChildren),
++                native_accessibility::children as extern "C" fn(&Object, Sel) -> id,
++            );
++            decl.add_method(
++                sel!(accessibilityLabel),
++                native_accessibility::root_label as extern "C" fn(&Object, Sel) -> id,
++            );
+@@ -161,0 +174,8 @@
 +                    handle_view_event as extern "C" fn(&Object, Sel, id),
 +                );
 +                decl.add_method(
@@ -291,9 +306,13 @@
 +                );
 +                decl.add_method(
 +                    sel!(otherMouseDragged:),
-@@ -407,0 +416 @@
+@@ -283,0 +304 @@
++        decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
+@@ -388,0 +410 @@
++    accessibility: Option<Arc<native_accessibility::NativeBridge>>,
+@@ -407,0 +430 @@
 +    hide_native_window_controls: bool,
-@@ -425,0 +435,19 @@
+@@ -425,0 +449,19 @@
 +        if self.hide_native_window_controls {
 +            unsafe {
 +                for button_kind in [
@@ -313,10 +332,81 @@
 +            return;
 +        }
 +
-@@ -712,0 +741,3 @@
+@@ -706,0 +749 @@
++                accessibility: None,
+@@ -712,0 +756,3 @@
 +                hide_native_window_controls: titlebar
 +                    .as_ref()
 +                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
+@@ -739,0 +786,8 @@
++            if let Some(bridge) =
++                native_accessibility::register(handle.window_id().as_u64(), native_view)
++            {
++                native_accessibility::attach(native_window, &bridge);
++                native_accessibility::attach(native_view, &bridge);
++                window.0.lock().accessibility = Some(bridge);
++            }
++
+@@ -933,0 +988 @@
++        self.revoke_accessibility();
+@@ -953,0 +1009,51 @@
++    fn revoke_accessibility(&self) {
++        let bridge = self.0.lock().accessibility.clone();
++        if let Some(bridge) = bridge {
++            native_accessibility::revoke(&bridge);
++        }
++    }
++    fn on_accessibility_action(
++        &self,
++        callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++    ) {
++        let bridge = self.0.lock().accessibility.clone();
++        if let Some(bridge) = bridge {
++            native_accessibility::set_callback(&bridge, callback);
++        }
++    }
++    fn publish_accessibility(&self, nodes: Vec<crate::AccessibilityNode>, refused: bool) {
++        let (bridge, frames) = {
++            let state = self.0.lock();
++            let Some(bridge) = state.accessibility.clone() else {
++                return;
++            };
++            let height = state.content_size().height.0;
++            let frames = nodes
++                .iter()
++                .map(|node| {
++                    let b = node.bounds;
++                    let local = NSRect::new(
++                        NSPoint::new(
++                            b.origin.x.0 as f64,
++                            (height - b.origin.y.0 - b.size.height.0) as f64,
++                        ),
++                        NSSize::new(b.size.width.0 as f64, b.size.height.0 as f64),
++                    );
++                    let screen: NSRect = unsafe {
++                        let rect: NSRect =
++                            msg_send![state.native_view.as_ptr(), convertRect: local toView: nil];
++                        msg_send![state.native_window, convertRectToScreen: rect]
++                    };
++                    [
++                        screen.origin.x,
++                        screen.origin.y,
++                        screen.size.width,
++                        screen.size.height,
++                    ]
++                })
++                .collect();
++            (bridge, frames)
++        };
++        native_accessibility::publish(&bridge, nodes, frames, refused);
++    }
++
+@@ -1610,0 +1717 @@
++        native_accessibility::detach(this);
+@@ -1617,0 +1725 @@
++        native_accessibility::detach(this);
+@@ -2058,0 +2167 @@
++    native_accessibility::revoke_object(this);
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
 @@ -93,0 +94,4 @@
@@ -337,26 +427,31 @@
 +        | CursorStyle::ResizeRightBracket
 --- a/src/platform.rs
 +++ b/src/platform.rs
-@@ -491,0 +492,6 @@
+@@ -0,0 +1,2 @@
++#[cfg(any(target_os = "macos", test))]
++mod accessibility_bridge;
+@@ -491,0 +494,8 @@
 +    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
++    /// Revoke before accepted close callbacks or UI-owned resources are released.
++    fn revoke_accessibility(&self) {}
 +    fn on_accessibility_action(
 +        &self,
 +        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
 +    ) {
 +    }
-@@ -1228,0 +1235 @@
+@@ -1228,0 +1239 @@
 +                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1265,4 @@
+@@ -1257,0 +1269,4 @@
 +
 +    /// Hide the standard macOS close, minimize, and zoom buttons.
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
-@@ -1411,0 +1423,4 @@
+@@ -1411,0 +1427,4 @@
 +    /// A persistent invisible cursor for a window-scoped pointer adjustment.
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1438,0 +1454,6 @@
+@@ -1438,0 +1458,6 @@
 +
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
@@ -423,9 +518,10 @@
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1414 @@
+@@ -1375,0 +1414,2 @@
++        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +1950,55 @@
+@@ -1910,0 +1951,55 @@
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -481,14 +577,14 @@
 +        })
 +    }
 +
-@@ -1943,0 +2038,4 @@
+@@ -1943,0 +2039,4 @@
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -2222,0 +2321 @@
+@@ -2222,0 +2322 @@
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2332,8 @@
+@@ -2232,0 +2333,8 @@
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -497,7 +593,7 @@
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -3527,7 +3634,11 @@
+@@ -3527,7 +3635,11 @@
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -516,7 +612,7 @@
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3646,10 @@
+@@ -3534,0 +3647,10 @@
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -772,4 +868,1168 @@
 +    pub revision: u64,
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
++}
+--- /dev/null
++++ b/src/platform/accessibility_bridge.rs
+@@ -0,0 +1,288 @@
++//! Data-only revocable native accessibility transport. No platform/application references.
++use std::{
++    collections::{HashMap, VecDeque},
++    marker::PhantomData,
++    rc::Rc,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicU64, Ordering},
++    },
++};
++
++pub(super) const MAILBOX_CAPACITY: usize = 64;
++static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub(super) struct WindowKey {
++    pub window: u64,
++    pub epoch: u64,
++}
++
++struct State<S, R> {
++    snapshot: Option<Arc<S>>,
++    requests: VecDeque<R>,
++    scheduled: bool,
++    revoked: bool,
++}
++
++/// The only shared native object graph: immutable owned data and a bounded mailbox.
++pub(super) struct Bridge<S, R> {
++    pub key: WindowKey,
++    state: Mutex<State<S, R>>,
++}
++impl<S, R> Bridge<S, R> {
++    fn new(key: WindowKey) -> Self {
++        Self {
++            key,
++            state: Mutex::new(State {
++                snapshot: None,
++                requests: VecDeque::with_capacity(MAILBOX_CAPACITY),
++                scheduled: false,
++                revoked: false,
++            }),
++        }
++    }
++    pub fn snapshot(&self) -> Option<Arc<S>> {
++        let state = self.state.lock().ok()?;
++        if state.revoked {
++            None
++        } else {
++            state.snapshot.clone()
++        }
++    }
++    /// Returns the prior snapshot for destruction outside the lock.
++    pub fn publish(&self, snapshot: S) -> Option<Arc<S>> {
++        let Ok(mut state) = self.state.lock() else {
++            return None;
++        };
++        if state.revoked {
++            return None;
++        }
++        state.snapshot.replace(Arc::new(snapshot))
++    }
++    /// Some(true): accepted and needs one ID-only wake. Queue acceptance is not edit acceptance.
++    pub fn enqueue(&self, request: R, permits: impl FnOnce(&S, &R) -> bool) -> Option<bool> {
++        let mut state = self.state.lock().ok()?;
++        if state.revoked
++            || state.requests.len() >= MAILBOX_CAPACITY
++            || !state
++                .snapshot
++                .as_ref()
++                .is_some_and(|s| permits(s, &request))
++        {
++            return None;
++        }
++        state.requests.push_back(request);
++        let wake = !state.scheduled;
++        state.scheduled = true;
++        Some(wake)
++    }
++    /// One bounded dispatch; concurrent arrivals schedule a separate wake.
++    pub fn drain(&self) -> VecDeque<R> {
++        let Ok(mut state) = self.state.lock() else {
++            return VecDeque::new();
++        };
++        state.scheduled = false;
++        std::mem::replace(
++            &mut state.requests,
++            VecDeque::with_capacity(MAILBOX_CAPACITY),
++        )
++    }
++    pub fn is_revoked(&self) -> bool {
++        self.state.lock().map_or(true, |state| state.revoked)
++    }
++    pub fn revoke(&self) -> bool {
++        let retired = {
++            let Ok(mut state) = self.state.lock() else {
++                return false;
++            };
++            if state.revoked {
++                return false;
++            }
++            state.revoked = true;
++            state.scheduled = false;
++            (state.snapshot.take(), std::mem::take(&mut state.requests))
++        };
++        drop(retired); // Never destroy data while holding the snapshot lock.
++        true
++    }
++}
++
++/// Explicitly UI-local registry. No closed-window tombstones, and no reusable epoch.
++pub(super) struct Registry<T> {
++    entries: HashMap<WindowKey, T>,
++    _ui_only: PhantomData<Rc<()>>,
++}
++impl<T> Default for Registry<T> {
++    fn default() -> Self {
++        Self {
++            entries: HashMap::new(),
++            _ui_only: PhantomData,
++        }
++    }
++}
++impl<T> Registry<T> {
++    pub fn register<S, R>(
++        &mut self,
++        window: u64,
++        make: impl FnOnce(Arc<Bridge<S, R>>) -> T,
++    ) -> Option<Arc<Bridge<S, R>>> {
++        let epoch = NEXT_EPOCH
++            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
++                epoch.checked_add(1)
++            })
++            .ok()?;
++        let bridge = Arc::new(Bridge::new(WindowKey { window, epoch }));
++        self.entries.insert(bridge.key, make(bridge.clone()));
++        Some(bridge)
++    }
++    /// Restore an entry temporarily extracted by UI code; caller must recheck revocation first.
++    pub fn restore(&mut self, key: WindowKey, value: T) -> Option<T> {
++        self.entries.insert(key, value)
++    }
++    pub fn get(&self, key: WindowKey) -> Option<&T> {
++        self.entries.get(&key)
++    }
++    pub fn get_mut(&mut self, key: WindowKey) -> Option<&mut T> {
++        self.entries.get_mut(&key)
++    }
++    pub fn remove(&mut self, key: WindowKey) -> Option<T> {
++        self.entries.remove(&key)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn registered() -> (Registry<Arc<Bridge<u64, u64>>>, Arc<Bridge<u64, u64>>) {
++        let mut registry = Registry::default();
++        let bridge = registry.register(7, |bridge| bridge).unwrap();
++        (registry, bridge)
++    }
++    #[test]
++    fn immutable_snapshot_survives_background_query_but_revocation_refuses_future_queries() {
++        fn send_sync<T: Send + Sync>() {}
++        send_sync::<Bridge<u64, u64>>();
++        let (mut registry, bridge) = registered();
++        bridge.publish(3);
++        let reader = bridge.clone();
++        let barrier = Arc::new(std::sync::Barrier::new(2));
++        let other = barrier.clone();
++        let thread = std::thread::spawn(move || {
++            let snapshot = reader.snapshot().unwrap();
++            other.wait();
++            other.wait();
++            assert_eq!(*snapshot, 3);
++            assert!(reader.snapshot().is_none());
++            assert_eq!(reader.enqueue(3, |_, _| true), None);
++        });
++        barrier.wait();
++        bridge.revoke();
++        drop(registry.remove(bridge.key));
++        barrier.wait();
++        thread.join().unwrap();
++        assert!(registry.get(bridge.key).is_none());
++    }
++    #[test]
++    fn mailbox_bounds_wakes_and_revalidates_current_revision_without_truncation() {
++        let (_, bridge) = registered();
++        bridge.publish(9);
++        assert_eq!(bridge.enqueue(8, |s, r| s == r), None);
++        for index in 0..MAILBOX_CAPACITY {
++            assert_eq!(bridge.enqueue(9, |s, r| s == r), Some(index == 0));
++        }
++        assert_eq!(bridge.enqueue(9, |_, _| true), None);
++        assert_eq!(bridge.drain().len(), MAILBOX_CAPACITY);
++        bridge.publish(10);
++        assert_eq!(bridge.enqueue(9, |s, r| s == r), None);
++        assert_eq!(bridge.enqueue(10, |s, r| s == r), Some(true));
++        bridge.revoke();
++        assert!(bridge.drain().is_empty());
++        bridge.publish(11);
++        assert!(bridge.snapshot().is_none());
++    }
++    #[test]
++    fn reused_window_slot_has_new_epoch_and_nested_close_cannot_restore_callback() {
++        let (mut registry, bridge) = registered();
++        // Simulate temporarily extracting a UI callback before calling application code.
++        let callback = registry.get_mut(bridge.key).unwrap().clone();
++        bridge.revoke();
++        drop(registry.remove(bridge.key));
++        let reopened = registry
++            .register(7, |bridge: Arc<Bridge<u64, u64>>| bridge)
++            .unwrap();
++        assert_ne!(bridge.key, reopened.key);
++        assert!(registry.get_mut(callback.key).is_none());
++        assert!(registry.get(reopened.key).is_some());
++        let entry = registry.remove(reopened.key).unwrap();
++        assert!(registry.restore(reopened.key, entry).is_none());
++    }
++    #[test]
++    fn ui_registry_owner_drops_on_ui_while_last_data_reader_drops_on_worker() {
++        struct UiOwner {
++            thread: std::thread::ThreadId,
++            dropped: Rc<std::cell::Cell<bool>>,
++        }
++        impl Drop for UiOwner {
++            fn drop(&mut self) {
++                assert_eq!(self.thread, std::thread::current().id());
++                self.dropped.set(true);
++            }
++        }
++        let dropped = Rc::new(std::cell::Cell::new(false));
++        let mut registry = Registry::default();
++        let bridge = registry
++            .register(19, |bridge: Arc<Bridge<u64, u64>>| {
++                (
++                    bridge,
++                    UiOwner {
++                        thread: std::thread::current().id(),
++                        dropped: dropped.clone(),
++                    },
++                )
++            })
++            .unwrap();
++        bridge.publish(5);
++        let reader = bridge.clone();
++        let barrier = Arc::new(std::sync::Barrier::new(2));
++        let worker_barrier = barrier.clone();
++        let worker = std::thread::spawn(move || {
++            let snapshot = reader.snapshot().unwrap();
++            worker_barrier.wait();
++            worker_barrier.wait();
++            assert_eq!(*snapshot, 5);
++            assert!(reader.is_revoked());
++            // These are the last data-only owners; no UI owner is reachable from them.
++            drop(snapshot);
++            drop(reader);
++        });
++        barrier.wait();
++        bridge.revoke();
++        drop(registry.remove(bridge.key));
++        drop(bridge);
++        assert!(dropped.get());
++        barrier.wait();
++        worker.join().unwrap();
++        assert!(registry.entries.is_empty());
++    }
++    #[test]
++    fn retired_snapshot_drop_can_reenter_transport_outside_lock() {
++        struct Reenter(std::sync::Weak<Bridge<Reenter, ()>>);
++        impl Drop for Reenter {
++            fn drop(&mut self) {
++                if let Some(bridge) = self.0.upgrade() {
++                    assert!(bridge.state.try_lock().is_ok());
++                }
++            }
++        }
++        let mut registry = Registry::default();
++        let bridge = registry
++            .register(8, |_: Arc<Bridge<Reenter, ()>>| ())
++            .unwrap();
++        bridge.publish(Reenter(Arc::downgrade(&bridge)));
++        drop(bridge.publish(Reenter(Arc::downgrade(&bridge))));
++        assert!(bridge.revoke());
++        assert!(bridge.is_revoked());
++        assert!(!bridge.revoke());
++    }
++}
+--- /dev/null
++++ b/src/platform/mac/accessibility.rs
+@@ -0,0 +1,870 @@
++//! AppKit bridge: cross-thread objects contain data only; window/GPUI owners stay on UI.
++use super::*;
++use crate::platform::accessibility_bridge::{Bridge, Registry, WindowKey};
++use std::{cell::RefCell, collections::VecDeque};
++
++pub(super) const DATA_IVAR: &str = "semanticBridge";
++static mut CONTROL_CLASS: *const Class = ptr::null();
++
++#[derive(Clone)]
++struct SnapshotNode {
++    node: crate::AccessibilityNode,
++    screen: [f64; 4],
++}
++pub(super) struct Snapshot {
++    nodes: Vec<SnapshotNode>,
++    refused: bool,
++}
++pub(super) struct Action {
++    request: crate::AccessibilityRequest,
++    owner: Weak<()>,
++    inventory: Option<Vec<SharedString>>,
++}
++pub(super) type NativeBridge = Bridge<Snapshot, Action>;
++struct Element {
++    id: crate::AccessibilityId,
++    owner: Weak<()>,
++    object: id,
++}
++impl Drop for Element {
++    fn drop(&mut self) {
++        // Element cache is exclusively UI-owned. Its native object contains data only.
++        unsafe {
++            let _: () = msg_send![self.object, release];
++        }
++    }
++}
++struct Entry {
++    bridge: Arc<NativeBridge>,
++    view: id, // Borrowed real view, usable only while this UI registry entry remains live.
++    elements: Vec<Rc<Element>>,
++    callback: Option<Box<dyn FnMut(crate::AccessibilityRequest) -> bool>>,
++}
++thread_local! { static WINDOWS: RefCell<Registry<Entry>> = RefCell::new(Registry::default()); }
++
++fn on_ui() -> bool {
++    unsafe {
++        let main: BOOL = msg_send![class!(NSThread), isMainThread];
++        main == YES
++    }
++}
++
++pub(super) unsafe fn initialize_class() {
++    unsafe {
++        CONTROL_CLASS = build_class();
++    }
++}
++
++pub(super) fn register(window: u64, view: id) -> Option<Arc<NativeBridge>> {
++    fn send_sync<T: Send + Sync>() {}
++    send_sync::<NativeBridge>();
++    send_sync::<ElementData>();
++    if !on_ui() {
++        return None;
++    }
++    WINDOWS.with(|registry| {
++        registry.borrow_mut().register(window, |bridge| Entry {
++            bridge,
++            view,
++            elements: Vec::new(),
++            callback: None,
++        })
++    })
++}
++
++pub(super) unsafe fn attach(object: id, bridge: &Arc<NativeBridge>) {
++    unsafe {
++        (*object).set_ivar(
++            DATA_IVAR,
++            Box::into_raw(Box::new(bridge.clone())) as *mut c_void,
++        );
++    }
++}
++fn object_bridge(this: &Object) -> Option<&Arc<NativeBridge>> {
++    let raw = unsafe { *this.get_ivar::<*mut c_void>(DATA_IVAR) };
++    unsafe { (raw as *const Arc<NativeBridge>).as_ref() }
++}
++pub(super) fn revoke_object(this: &Object) {
++    if let Some(bridge) = object_bridge(this) {
++        revoke(bridge);
++    }
++}
++pub(super) unsafe fn detach(this: &Object) {
++    unsafe {
++        let raw = *this.get_ivar::<*mut c_void>(DATA_IVAR);
++        if !raw.is_null() {
++            // dealloc owns the ivar; no concurrent accessor may use a deallocated object.
++            let bridge = Box::from_raw(raw as *mut Arc<NativeBridge>);
++            revoke(&bridge);
++            drop(bridge);
++        }
++    }
++}
++pub(super) fn revoke(bridge: &Arc<NativeBridge>) {
++    let newly_revoked = bridge.revoke(); // Unavailable/empty before any UI-owner release.
++    if on_ui() {
++        let retired = WINDOWS.with(|registry| registry.borrow_mut().remove(bridge.key));
++        drop(retired); // Native release and callback drop may reenter, with no registry borrow.
++    } else if newly_revoked {
++        schedule(bridge.key); // ID only; cleanup must happen on UI, never on the query thread.
++    }
++}
++pub(super) fn set_callback(
++    bridge: &Arc<NativeBridge>,
++    callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++) {
++    if !on_ui() {
++        return;
++    }
++    let mut incoming = Some(callback);
++    let retired = WINDOWS.with(|registry| {
++        let mut registry = registry.borrow_mut();
++        if let Some(entry) = registry.get_mut(bridge.key) {
++            std::mem::replace(&mut entry.callback, incoming.take())
++        } else {
++            None
++        }
++    });
++    drop(retired);
++    drop(incoming); // Missing/revoked registration also drops the callback outside the borrow.
++}
++
++pub(super) fn publish(
++    bridge: &Arc<NativeBridge>,
++    nodes: Vec<crate::AccessibilityNode>,
++    frames: Vec<[f64; 4]>,
++    refused: bool,
++) {
++    if !on_ui() || bridge.is_revoked() {
++        return;
++    }
++    let mut ids = std::collections::HashSet::new();
++    let mut text_bytes = 0usize;
++    let invalid = refused
++        || nodes.len() > crate::MAX_ACCESSIBILITY_NODES
++        || nodes.len() != frames.len()
++        || nodes.iter().any(|node| {
++            let descriptor = &node.descriptor;
++            if !descriptor.is_valid() || !ids.insert(descriptor.id) {
++                return true;
++            }
++            let value_bytes = match &descriptor.value {
++                crate::AccessibilityValue::Number { text, .. } => text.len(),
++                crate::AccessibilityValue::Toggle(_) => 0,
++                crate::AccessibilityValue::Choice { options, .. } => {
++                    options.iter().map(|text| text.len()).sum()
++                }
++            };
++            let bytes = descriptor.name.len()
++                + descriptor.status.as_ref().map_or(0, |text| text.len())
++                + value_bytes;
++            if bytes > crate::MAX_ACCESSIBILITY_SNAPSHOT_BYTES.saturating_sub(text_bytes) {
++                return true;
++            }
++            text_bytes += bytes;
++            false
++        })
++        || frames.iter().any(|frame| {
++            frame.iter().any(|value| !value.is_finite()) || frame[2] <= 0. || frame[3] <= 0.
++        });
++    let previous = bridge.snapshot();
++    let mut snapshot = Snapshot {
++        nodes: Vec::new(),
++        refused: invalid,
++    };
++    if !invalid {
++        snapshot.nodes = nodes
++            .into_iter()
++            .zip(frames)
++            .map(|(node, screen)| SnapshotNode { node, screen })
++            .collect();
++    }
++    // Take the entry, so every native allocation/release can reenter without a RefCell borrow.
++    let entry = WINDOWS.with(|registry| registry.borrow_mut().remove(bridge.key));
++    let Some(mut entry) = entry else {
++        return;
++    };
++    let mut retained = Vec::with_capacity(snapshot.nodes.len());
++    for element in std::mem::take(&mut entry.elements) {
++        if snapshot.nodes.iter().any(|node| {
++            node.node.descriptor.id == element.id
++                && Weak::ptr_eq(&node.node.descriptor.lifetime, &element.owner)
++        }) {
++            retained.push(element);
++        } else {
++            drop(element);
++        }
++    }
++    let mut failed = false;
++    for node in &snapshot.nodes {
++        let descriptor = &node.node.descriptor;
++        if retained.iter().any(|element| element.id == descriptor.id) {
++            continue;
++        }
++        let object: id = unsafe {
++            if CONTROL_CLASS.is_null() {
++                nil
++            } else {
++                let allocated: id = msg_send![CONTROL_CLASS, alloc];
++                if allocated.is_null() {
++                    nil
++                } else {
++                    msg_send![allocated, init]
++                }
++            }
++        };
++        if object.is_null() {
++            failed = true;
++            break;
++        }
++        let data = Box::new(ElementData {
++            bridge: bridge.clone(),
++            id: descriptor.id,
++            owner: descriptor.lifetime.clone(),
++        });
++        unsafe {
++            (*object).set_ivar("semanticState", Box::into_raw(data) as *mut c_void);
++        }
++        retained.push(Rc::new(Element {
++            id: descriptor.id,
++            owner: descriptor.lifetime.clone(),
++            object,
++        }));
++    }
++    if failed {
++        snapshot.nodes.clear();
++        snapshot.refused = true;
++        retained.clear();
++    }
++    entry.elements = retained;
++    // An allocation/retirement hook may have closed this window. Never restore its registry entry.
++    if bridge.is_revoked() {
++        drop(entry);
++        return;
++    }
++    let notifications: Vec<(Rc<Element>, bool, bool)> = snapshot
++        .nodes
++        .iter()
++        .filter_map(|current| {
++            let current = &current.node.descriptor;
++            let old = previous.as_ref()?.nodes.iter().find(|old| {
++                old.node.descriptor.id == current.id
++                    && Weak::ptr_eq(&old.node.descriptor.lifetime, &current.lifetime)
++            })?;
++            let old = &old.node.descriptor;
++            let changed = old.revision != current.revision && old.value != current.value;
++            let focus = !old.focused && current.focused;
++            let element = entry
++                .elements
++                .iter()
++                .find(|element| element.id == current.id)?;
++            if changed || focus {
++                Some((element.clone(), changed, focus))
++            } else {
++                None
++            }
++        })
++        .collect();
++    drop(bridge.publish(snapshot));
++    let displaced = WINDOWS.with(|registry| registry.borrow_mut().restore(bridge.key, entry));
++    drop(displaced);
++    for (element, changed, focus) in notifications {
++        unsafe {
++            if !bridge.is_revoked() {
++                if changed {
++                    NSAccessibilityPostNotification(
++                        element.object,
++                        NSAccessibilityValueChangedNotification,
++                    );
++                }
++                if focus {
++                    NSAccessibilityPostNotification(
++                        element.object,
++                        NSAccessibilityFocusedUIElementChangedNotification,
++                    );
++                }
++            }
++        }
++    }
++}
++
++// No MacWindowState, NSWindow/View, callback, Rc or executor is reachable from a native element.
++struct ElementData {
++    bridge: Arc<NativeBridge>,
++    id: crate::AccessibilityId,
++    owner: Weak<()>,
++}
++fn semantic_state(this: &Object) -> Option<&ElementData> {
++    let raw = unsafe { *this.get_ivar::<*mut c_void>("semanticState") };
++    unsafe { (raw as *const ElementData).as_ref() }
++}
++fn current_node(data: &ElementData) -> Option<SnapshotNode> {
++    let snapshot = data.bridge.snapshot()?;
++    let node = snapshot
++        .nodes
++        .iter()
++        .find(|node| {
++            node.node.descriptor.id == data.id
++                && Weak::ptr_eq(&node.node.descriptor.lifetime, &data.owner)
++                && node.node.descriptor.is_valid()
++        })?
++        .clone();
++    if data.bridge.is_revoked() {
++        None
++    } else {
++        Some(node)
++    }
++}
++fn semantic_node(this: &Object) -> Option<crate::AccessibilityNode> {
++    current_node(semantic_state(this)?).map(|node| node.node)
++}
++extern "C" fn accessibility_dealloc(this: &Object, _: Sel) {
++    unsafe {
++        let raw = *this.get_ivar::<*mut c_void>("semanticState");
++        if !raw.is_null() {
++            drop(Box::from_raw(raw as *mut ElementData));
++        }
++        let _: () = msg_send![super(this, class!(NSAccessibilityElement)), dealloc];
++    }
++}
++pub(super) extern "C" fn children(this: &Object, _: Sel) -> id {
++    if !on_ui() {
++        return nil;
++    } // Object-tree access is UI-only, never synchronous dispatch.
++    let Some(bridge) = object_bridge(this) else {
++        return nil;
++    };
++    if bridge.is_revoked() {
++        return nil;
++    }
++    // Retain a temporary cache copy while on UI, then release the registry borrow before ObjC calls.
++    let elements: Vec<Rc<Element>> = WINDOWS.with(|registry| {
++        registry
++            .borrow()
++            .get(bridge.key)
++            .map_or_else(Vec::new, |entry| {
++                entry
++                    .elements
++                    .iter()
++                    .filter(|element| element.owner.strong_count() > 0)
++                    .cloned()
++                    .collect()
++            })
++    });
++    unsafe {
++        let array: id = msg_send![class!(NSMutableArray), array];
++        for element in elements {
++            if !bridge.is_revoked() {
++                let _: () = msg_send![array, addObject: element.object];
++            }
++        }
++        array
++    }
++}
++
++pub(super) extern "C" fn root_label(this: &Object, _: Sel) -> id {
++    let snapshot = object_bridge(this).and_then(|bridge| bridge.snapshot());
++    unsafe {
++        ns_string(if snapshot.is_some_and(|snapshot| !snapshot.refused) {
++            "controls"
++        } else {
++            "controls unavailable"
++        })
++    }
++}
++extern "C" fn accessibility_frame(this: &Object, _: Sel) -> NSRect {
++    let frame = semantic_state(this)
++        .and_then(current_node)
++        .map_or([0.; 4], |node| node.screen);
++    NSRect::new(
++        NSPoint::new(frame[0], frame[1]),
++        NSSize::new(frame[2], frame[3]),
++    )
++}
++extern "C" fn accessibility_parent(this: &Object, _: Sel) -> id {
++    if !on_ui() {
++        return nil;
++    }
++    let Some(data) = semantic_state(this) else {
++        return nil;
++    };
++    if current_node(data).is_none() {
++        return nil;
++    }
++    let parent = WINDOWS.with(|registry| {
++        registry
++            .borrow()
++            .get(data.bridge.key)
++            .map_or(nil, |entry| entry.view)
++    });
++    if parent.is_null() {
++        nil
++    } else {
++        unsafe {
++            let retained: id = msg_send![parent, retain];
++            msg_send![retained, autorelease]
++        }
++    }
++}
++extern "C" fn accessibility_enabled(this: &Object, _: Sel) -> BOOL {
++    semantic_node(this)
++        .is_some_and(|node| node.descriptor.enabled)
++        .to_objc()
++}
++extern "C" fn accessibility_focused(this: &Object, _: Sel) -> BOOL {
++    semantic_node(this)
++        .is_some_and(|node| node.descriptor.focused)
++        .to_objc()
++}
++extern "C" fn accessibility_hidden(this: &Object, _: Sel) -> BOOL {
++    semantic_node(this).is_none().to_objc()
++}
++
++// Exact owner/revision and immutable choice inventory are revalidated after the handoff.
++fn permits(snapshot: &Snapshot, action: &Action) -> bool {
++    snapshot.nodes.iter().any(|node| {
++        let node = &node.node.descriptor;
++        node.id == action.request.id
++            && node.revision == action.request.revision
++            && Weak::ptr_eq(&node.lifetime, &action.owner)
++            && node.permits(&action.request.action)
++            && match (&node.value, &action.inventory) {
++                (crate::AccessibilityValue::Choice { options, .. }, Some(inventory)) => {
++                    options == inventory
++                }
++                (crate::AccessibilityValue::Choice { .. }, None) | (_, Some(_)) => false,
++                (_, None) => true,
++            }
++    })
++}
++fn semantic_action(this: &Object, action: crate::AccessibilityAction) -> BOOL {
++    let Some(data) = semantic_state(this) else {
++        return NO;
++    };
++    let Some(node) = current_node(data) else {
++        return NO;
++    };
++    submit(data, &node.node.descriptor, action)
++}
++fn submit(
++    data: &ElementData,
++    descriptor: &crate::AccessibilityDescriptor,
++    action: crate::AccessibilityAction,
++) -> BOOL {
++    let inventory = match &descriptor.value {
++        crate::AccessibilityValue::Choice { options, .. } => Some(options.clone()),
++        _ => None,
++    };
++    let action = Action {
++        request: crate::AccessibilityRequest {
++            id: data.id,
++            revision: descriptor.revision,
++            action,
++        },
++        owner: data.owner.clone(),
++        inventory,
++    };
++    match data.bridge.enqueue(action, permits) {
++        Some(wake) => {
++            if wake {
++                schedule(data.bridge.key);
++            }
++            YES
++        }
++        None => NO,
++    }
++}
++fn schedule(key: WindowKey) {
++    // Payload contains ONLY checked IDs. No closures, App/GPUI refs or weak native-window refs.
++    let payload = Box::into_raw(Box::new(key));
++    unsafe {
++        dispatch_async_f(
++            dispatch_get_main_queue(),
++            payload as *mut c_void,
++            Some(drain),
++        );
++    }
++}
++extern "C" fn drain(payload: *mut c_void) {
++    let key = unsafe { *Box::from_raw(payload as *mut WindowKey) };
++    if !on_ui() {
++        return;
++    }
++    let bridge =
++        WINDOWS.with(|registry| registry.borrow().get(key).map(|entry| entry.bridge.clone()));
++    let Some(bridge) = bridge else {
++        return;
++    };
++    if bridge.is_revoked() {
++        revoke(&bridge);
++        return;
++    }
++    let requests: VecDeque<Action> = bridge.drain();
++    let callback = WINDOWS.with(|registry| {
++        registry
++            .borrow_mut()
++            .get_mut(key)
++            .and_then(|entry| entry.callback.take())
++    });
++    let Some(mut callback) = callback else {
++        return;
++    };
++    for action in requests {
++        if bridge
++            .snapshot()
++            .is_some_and(|snapshot| permits(&snapshot, &action))
++            && !bridge.is_revoked()
++        {
++            // Revalidates actual GPUI/current project guards; no registry/snapshot borrow held.
++            let _canonical_accepted = callback(action.request);
++        }
++    }
++    let mut callback = Some(callback);
++    WINDOWS.with(|registry| {
++        if !bridge.is_revoked()
++            && let Some(entry) = registry.borrow_mut().get_mut(key)
++        {
++            // A reentrant replacement has priority; never overwrite it or resurrect a closed owner.
++            if entry.callback.is_none() {
++                entry.callback = callback.take();
++            }
++        }
++    });
++    drop(callback); // UI-only, after all registry borrows end.
++}
++
++unsafe fn build_class() -> *const Class {
++    unsafe {
++        let Some(superclass) = Class::get("NSAccessibilityElement") else {
++            return ptr::null();
++        };
++        let Some(mut decl) = ClassDecl::new("GPUISemanticControl", superclass) else {
++            return ptr::null();
++        };
++        decl.add_ivar::<*mut c_void>("semanticState");
++        decl.add_method(
++            sel!(dealloc),
++            accessibility_dealloc as extern "C" fn(&Object, Sel),
++        );
++        decl.add_method(
++            sel!(accessibilityHidden),
++            accessibility_hidden as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(isAccessibilityElement),
++            accessibility_is_element as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(accessibilityRole),
++            accessibility_role as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityHelp),
++            accessibility_help as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityLabel),
++            accessibility_label as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityValue),
++            accessibility_value as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityValueDescription),
++            accessibility_value_description as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityMinValue),
++            accessibility_min as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityMaxValue),
++            accessibility_max as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityAllowedValues),
++            accessibility_allowed_values as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityFrame),
++            accessibility_frame as extern "C" fn(&Object, Sel) -> NSRect,
++        );
++        decl.add_method(
++            sel!(accessibilityParent),
++            accessibility_parent as extern "C" fn(&Object, Sel) -> id,
++        );
++        decl.add_method(
++            sel!(accessibilityEnabled),
++            accessibility_enabled as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(accessibilityFocused),
++            accessibility_focused as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(setAccessibilityFocused:),
++            accessibility_set_focus as extern "C" fn(&Object, Sel, BOOL),
++        );
++        decl.add_method(
++            sel!(setAccessibilityValue:),
++            accessibility_set_value as extern "C" fn(&Object, Sel, id),
++        );
++        decl.add_method(
++            sel!(accessibilityPerformPress),
++            accessibility_press as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(accessibilityPerformIncrement),
++            accessibility_increment as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.add_method(
++            sel!(accessibilityPerformDecrement),
++            accessibility_decrement as extern "C" fn(&Object, Sel) -> BOOL,
++        );
++        decl.register()
++    }
++}
++
++extern "C" fn accessibility_is_element(this: &Object, _: Sel) -> BOOL {
++    if semantic_node(this).is_some() {
++        YES
++    } else {
++        NO
++    }
++}
++extern "C" fn accessibility_role(this: &Object, _: Sel) -> id {
++    let Some(node) = semantic_node(this) else {
++        return nil;
++    };
++    unsafe {
++        ns_string(match node.descriptor.value {
++            crate::AccessibilityValue::Number { .. } => "AXSlider",
++            crate::AccessibilityValue::Toggle(_) => "AXCheckBox",
++            crate::AccessibilityValue::Choice { .. } => "AXPopUpButton",
++        })
++    }
++}
++extern "C" fn accessibility_label(this: &Object, _: Sel) -> id {
++    semantic_node(this).map_or(nil, |node| unsafe { ns_string(&node.descriptor.name) })
++}
++extern "C" fn accessibility_value(this: &Object, _: Sel) -> id {
++    let Some(node) = semantic_node(this) else {
++        return nil;
++    };
++    unsafe {
++        match node.descriptor.value {
++            crate::AccessibilityValue::Number { value, .. } => {
++                msg_send![class!(NSNumber), numberWithDouble: value]
++            }
++            crate::AccessibilityValue::Toggle(value) => {
++                msg_send![class!(NSNumber), numberWithBool: if value { YES } else { NO }]
++            }
++            crate::AccessibilityValue::Choice { selected, options } => {
++                options.get(selected).map_or(nil, |text| ns_string(text))
++            }
++        }
++    }
++}
++extern "C" fn accessibility_value_description(this: &Object, _: Sel) -> id {
++    let Some(node) = semantic_node(this) else {
++        return nil;
++    };
++    unsafe {
++        match node.descriptor.value {
++            crate::AccessibilityValue::Number { text, .. } => ns_string(&text),
++            crate::AccessibilityValue::Choice { selected, options } => {
++                options.get(selected).map_or(nil, |text| ns_string(text))
++            }
++            crate::AccessibilityValue::Toggle(_) => nil,
++        }
++    }
++}
++extern "C" fn accessibility_min(this: &Object, _: Sel) -> id {
++    match semantic_node(this).map(|node| node.descriptor.value) {
++        Some(crate::AccessibilityValue::Number { min, .. }) => unsafe {
++            msg_send![class!(NSNumber), numberWithDouble: min]
++        },
++        _ => nil,
++    }
++}
++extern "C" fn accessibility_max(this: &Object, _: Sel) -> id {
++    match semantic_node(this).map(|node| node.descriptor.value) {
++        Some(crate::AccessibilityValue::Number { max, .. }) => unsafe {
++            msg_send![class!(NSNumber), numberWithDouble: max]
++        },
++        _ => nil,
++    }
++}
++extern "C" fn accessibility_allowed_values(this: &Object, _: Sel) -> id {
++    let Some(crate::AccessibilityValue::Choice { options, .. }) =
++        semantic_node(this).map(|node| node.descriptor.value)
++    else {
++        return nil;
++    };
++    unsafe {
++        let array: id = msg_send![class!(NSMutableArray), array];
++        for option in options {
++            let _: () = msg_send![array, addObject: ns_string(&option)];
++        }
++        array
++    }
++}
++
++extern "C" fn accessibility_press(this: &Object, _: Sel) -> BOOL {
++    semantic_action(this, crate::AccessibilityAction::Press)
++}
++extern "C" fn accessibility_increment(this: &Object, _: Sel) -> BOOL {
++    semantic_action(this, crate::AccessibilityAction::Increment)
++}
++extern "C" fn accessibility_decrement(this: &Object, _: Sel) -> BOOL {
++    semantic_action(this, crate::AccessibilityAction::Decrement)
++}
++extern "C" fn accessibility_set_focus(this: &Object, _: Sel, focused: BOOL) {
++    if focused == YES {
++        semantic_action(this, crate::AccessibilityAction::Focus);
++    }
++}
++extern "C" fn accessibility_set_value(this: &Object, _: Sel, value: id) {
++    if value.is_null() {
++        return;
++    }
++    let Some(data) = semantic_state(this) else {
++        return;
++    };
++    let Some(node) = current_node(data).map(|node| node.node) else {
++        return;
++    };
++    let descriptor = node.descriptor.clone();
++    unsafe {
++        match node.descriptor.value {
++            crate::AccessibilityValue::Number { .. } => {
++                let numeric: BOOL = msg_send![value, isKindOfClass: class!(NSNumber)];
++                if numeric == YES {
++                    let value: f64 = msg_send![value, doubleValue];
++                    submit(
++                        data,
++                        &descriptor,
++                        crate::AccessibilityAction::SetNumber(value),
++                    );
++                }
++            }
++            crate::AccessibilityValue::Choice { options, .. } => {
++                let string: BOOL = msg_send![value, isKindOfClass: class!(NSString)];
++                if string == YES {
++                    // Foundation's bounded UTF-8 copy refuses oversized external values.
++                    // NSUTF8StringEncoding is4 (the existing platform binding uses the same value).
++                    let byte_count: NSUInteger =
++                        msg_send![value, lengthOfBytesUsingEncoding: 4 as NSUInteger];
++                    if byte_count > crate::MAX_ACCESSIBILITY_TEXT_BYTES as NSUInteger {
++                        return;
++                    }
++                    let mut bytes = [0_i8; crate::MAX_ACCESSIBILITY_TEXT_BYTES + 1];
++                    let copied: BOOL = msg_send![value, getCString: bytes.as_mut_ptr() maxLength: bytes.len() encoding: 4 as NSUInteger];
++                    if copied == YES
++                        && CStr::from_ptr(bytes.as_ptr()).to_bytes().len() == byte_count as usize
++                        && let Ok(text) = CStr::from_ptr(bytes.as_ptr()).to_str()
++                    {
++                        let mut indices = options
++                            .iter()
++                            .enumerate()
++                            .filter(|(_, option)| option.as_ref() == text);
++                        if let Some((index, _)) = indices.next() {
++                            if indices.next().is_none() {
++                                submit(
++                                    data,
++                                    &descriptor,
++                                    crate::AccessibilityAction::Choose(index),
++                                );
++                            }
++                        }
++                    }
++                }
++            }
++            crate::AccessibilityValue::Toggle(_) => {}
++        }
++    }
++}
++
++extern "C" fn accessibility_help(this: &Object, _: Sel) -> id {
++    semantic_node(this)
++        .and_then(|node| node.descriptor.status)
++        .map_or(nil, |status| unsafe { ns_string(&status) })
++}
++
++#[link(name = "AppKit", kind = "framework")]
++unsafe extern "C" {
++    fn NSAccessibilityPostNotification(element: id, notification: id);
++    static NSAccessibilityValueChangedNotification: id;
++    static NSAccessibilityFocusedUIElementChangedNotification: id;
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn fixture() -> (crate::AccessibilityLifetime, Snapshot) {
++        let owner = crate::AccessibilityLifetime::default();
++        let node = crate::AccessibilityNode {
++            descriptor: crate::AccessibilityDescriptor {
++                id: crate::AccessibilityId(12),
++                revision: 4,
++                lifetime: owner.weak(),
++                name: "wave".into(),
++                value: crate::AccessibilityValue::Choice {
++                    selected: 0,
++                    options: vec!["sine".into(), "triangle".into()],
++                },
++                enabled: true,
++                focused: false,
++                status: None,
++            },
++            bounds: Bounds::new(point(px(1.), px(2.)), size(px(30.), px(20.))),
++        };
++        (
++            owner,
++            Snapshot {
++                nodes: vec![SnapshotNode {
++                    node,
++                    screen: [1., 2., 30., 20.],
++                }],
++                refused: false,
++            },
++        )
++    }
++    #[test]
++    fn choice_inventory_owner_revision_and_availability_refuse_stale_actions() {
++        let (owner, mut snapshot) = fixture();
++        let mut action = Action {
++            request: crate::AccessibilityRequest {
++                id: crate::AccessibilityId(12),
++                revision: 4,
++                action: crate::AccessibilityAction::Choose(1),
++            },
++            owner: owner.weak(),
++            inventory: Some(vec!["sine".into(), "triangle".into()]),
++        };
++        assert!(permits(&snapshot, &action));
++        action.inventory = Some(vec!["triangle".into(), "sine".into()]);
++        assert!(!permits(&snapshot, &action));
++        action.inventory = Some(vec!["sine".into(), "triangle".into()]);
++        action.request.revision = 3;
++        assert!(!permits(&snapshot, &action));
++        action.request.revision = 4;
++        let replacement = crate::AccessibilityLifetime::default();
++        snapshot.nodes[0].node.descriptor.lifetime = replacement.weak();
++        assert!(!permits(&snapshot, &action));
++        snapshot.nodes[0].node.descriptor.lifetime = owner.weak();
++        snapshot.nodes[0].node.descriptor.enabled = false;
++        assert!(!permits(&snapshot, &action));
++        snapshot.nodes[0].node.descriptor.enabled = true;
++        drop(owner);
++        assert!(!permits(&snapshot, &action));
++    }
++    #[test]
++    fn native_transport_graph_is_send_sync_but_contains_no_ui_owner() {
++        fn send_sync<T: Send + Sync>() {}
++        send_sync::<Snapshot>();
++        send_sync::<Action>();
++        send_sync::<ElementData>();
++    }
 +}

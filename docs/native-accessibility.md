@@ -29,38 +29,67 @@ A queued action is not an accepted canonical edit. Pending/refused values are no
 published as acknowledged values. A future native value-change notification must require an actual acknowledged
 revision/value change; local draft status is separate.
 
-## native backend blocker and required next contract
+## native backend ownership and acceptance boundary
 
-The first AppKit candidate is quarantined and is **not included** in this source
-checkpoint. Its off-UI queries upgraded a weak token to the full MacWindowState.
-Concurrent closure could make an AX query the final strong owner and destroy
-GPUI/GPU state off the UI thread. Linux source/CI passes do not validate that
-ownership path. The candidate patch is preserved in the worker's evidence; do not
-restore it without resolving this blocker and native verification.
+The original AppKit candidate remains quarantined in published history/evidence.
+It upgraded weak MacWindowState on arbitrary AX query threads, permitting an off-UI
+final drop of GPUI/GPU state. Do not restore that implementation.
 
-The next backend must use a separate data-only, Send+Sync semantic snapshot whose
-last drop cannot destroy any GPUI/window/renderer/input-handler state. Native
-objects hold revocable weak references only to that data and actual-owner leases.
-Queries read owned scalar/text/frame data without rendering, mounting, project or
-audio calls, or synchronous UI dispatch. Off-UI queries must never upgrade the
-full MacWindowState or retain a GPUI host NSView. UI-only parent lookup and action
-dispatch need an opaque generation token and a UI-owned weak registry; only typed
-requests/data cross threads. Teardown revokes the token and detaches dispatch
-before GPUI release; retained native objects then become unavailable.
+The replacement backend is source-enabled in the excluded dependency, pending
+actual macOS compilation and native acceptance. `platform/accessibility_bridge.rs`
+is a data-only transport: immutable Arc snapshots, owned scalar/text/frame data,
+actual-owner Weak<()> leases, a64-request mailbox and checked window/registration
+epochs. Its last drop cannot release App/Window/renderer/input-handler state.
+Native element ivars contain only that transport and owner IDs/leases. There are
+no window pointers, window weak references, executors, callbacks, Rc or GPUI refs
+reachable from an element. Snapshot queries do not render, mount, call the worker
+or synchronously dispatch. A query already holding data may linearize before
+revocation; later queries and actions refuse.
 
-The proposed native queue remains bounded to64requests, with main-thread owner,
-revision, payload and availability revalidation, never a canonical-success claim
-at enqueue. Object release/notifications must occur outside snapshot locks.
-Actual AppKit role/value/action selectors, parent lifetime, concurrent queries,
-closure and native exposure still require the primary's exact-source Mac gate.
-No native class, native query/action hook or native notification is enabled by
-this checkpoint. PlatformWindow's publication/action hooks are currently unwired.
+A separate main-thread-only registry holds UI callbacks and the native cache.
+It has one entry per real window, no closed-window tombstones, at most4096cached
+controls and non-reusable checked registration epochs. It is structurally !Send.
+The existing `dispatch_async_f` main queue receives only a boxed checked window
+key. No ForegroundExecutor/AsyncApp or window reference crosses threads. On UI,
+requests recheck owner lease, revision, action domain and exact choice inventory,
+then invoke the existing accessibility callback/AnyWindowHandle update outside
+all registry and snapshot borrows. The existing widget/project guards revalidate
+again. A callback is restored only into the same still-live registration; reentrant
+close cannot recreate an entry. Queue acceptance never claims a canonical edit.
+Value notifications require changed acknowledged revision and value, not enqueue
+or pending success. The64request bound includes owned choice inventories (up to
+128bounded labels per request); no work occurs on the audio callback.
+
+Revocation starts `Window::remove_window`, accepted native close before its
+callback, and idempotent Drop/deallocation fallbacks. Vetoed should-close does not
+revoke. Revocation makes the snapshot unavailable and clears queued requests
+before detaching the registry. Native cache/callback release occurs on UI outside
+registry borrows. UI cache entries retain no widget and native elements retain no
+parent view, preventing a parent/window cycle. A retained native element remains
+data-only after window teardown. Repeated off-UI fallback revocation schedules
+cleanup only on its first transition.
+
+Native object-tree parent/children lookup is UI-only. Off-UI tree requests return
+unavailable rather than dispatch synchronously or touch window/native-cache
+owners. Scalar/name/value/range/frame queries remain data-only on any thread.
+Actual Accessibility Inspector/VoiceOver must establish whether that restriction
+is sufficient for real clients. If not, a separate reviewed object-tree lifetime
+contract is required; a Send wrapper or weak window upgrade is not a solution.
+Unmounted nodes have no fabricated frame and editing them refuses; scroll/mount
+navigation remains a separate gap.
+
+The shared transport tests cover concurrent retained snapshot revocation, mailbox
+capacity/wake/refusal, stale epochs, nested-close restoration refusal, UI owner
+versus background data destruction and reentrant data-drop lock availability.
+A compile-negative control rejects moving Registry<()> to another thread. Native
+owner/inventory/domain tests are included under the Mac module but cannot run on
+Linux. These checks do not prove actual AppKit teardown or veto handling.
 
 ## coverage and remaining native acceptance
 
-This checkpoint builds mounted NumericControl/Toggle/Selector device-panel
+The source builds mounted NumericControl/Toggle/Selector device-panel
 semantic descriptors and validates source-level actions through existing controls.
-It does not yet expose those controls to the OS accessibility tree.
+The replacement AppKit hooks await actual Mac compilation/exposure validation; no OS accessibility pass is claimed.
 Unmounted controls have no fabricated frame and stale source requests refuse. A complete offscreen logical navigation/scroll-to-mount path
 is not implemented; the explicit refusal remains an accessibility coverage gap.
 Other specialized controls/graphs, complete context hierarchy and physical-input/

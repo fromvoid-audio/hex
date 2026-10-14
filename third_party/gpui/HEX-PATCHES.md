@@ -71,3 +71,13 @@ See docs/native-accessibility.md in the Hex repository for owner/revision,
 revocation, asynchronous dispatch, offscreen refusal and native acceptance limits.
 The unified diff uses zero context; apply only against the verified archive with
 `git apply --unidiff-zero`. Hash verification remains mandatory.
+
+14 October replacement AppKit accessibility boundary: data-only immutable snapshots,
+revocable bounded mailbox and UI-only generational native registry in explicitly
+listed added platform files. PlatformWindow revokes before core removal; accepted
+native close and Drop/dealloc revoke before callbacks/resources. Main-queue wake
+contains checked IDs only. No weak/strong MacWindowState is reachable from AX
+objects. Scalar queries are snapshot-only; off-UI parent/children return unavailable.
+The original unsafe-lifetime candidate remains quarantined. This native source
+requires exact Mac compilation/AX teardown/veto/VoiceOver checks; Linux tests do
+not establish OS exposure. All baseline identity/hashes and prior patches remain.

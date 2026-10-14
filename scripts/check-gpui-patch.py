@@ -53,7 +53,11 @@ expected_changes = {
 }
 if set(manifest["patched_files"]) != expected_changes:
     errors.append("unexpected GPUI patch scope")
-expected_additions = {"src/accessibility.rs"}
+expected_additions = {
+    "src/accessibility.rs",
+    "src/platform/accessibility_bridge.rs",
+    "src/platform/mac/accessibility.rs",
+}
 if set(manifest.get("added_files", {})) != expected_additions:
     errors.append("unexpected GPUI added-file scope")
 for name, expected in manifest.get("added_files", {}).items():
