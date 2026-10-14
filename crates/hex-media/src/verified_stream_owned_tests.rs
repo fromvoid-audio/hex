@@ -290,8 +290,53 @@ fn non_utf8_success_and_failure_preserve_exact_path_bytes_and_allocation() {
     let mut raw = fixture.path().as_os_str().as_encoded_bytes().to_vec();
     raw.extend_from_slice(b"-Case-\xff\xfe");
     let renamed = PathBuf::from(std::ffi::OsString::from_vec(raw));
-    fs::rename(fixture.path(), &renamed).unwrap();
-    fixture.0 = renamed;
+    let original_identity = identity(&fixture.0);
+    let original_bytes = fs::read(fixture.path()).unwrap();
+    match fs::rename(fixture.path(), &renamed) {
+        Ok(()) => fixture.0 = renamed,
+        // Some macOS filesystems reject invalid UTF8 names. Accept only
+        // the observed EILSEQ capability refusal, never another OS error.
+        Err(error) if cfg!(target_os = "macos") && error.raw_os_error() == Some(92) => {
+            assert_eq!(identity(&fixture.0), original_identity);
+            assert_eq!(fs::read(fixture.path()).unwrap(), original_bytes);
+            let mut valid = VerifiedWavReader::open(fixture.path(), limits(8)).unwrap();
+            assert_eq!(
+                valid.read_frames(0, 1).unwrap(),
+                [[11.0 / 32768.0, -11.0 / 32768.0]]
+            );
+            drop(valid);
+            for request_cancel in [false, true] {
+                let path = owned_path(&renamed);
+                let expected = identity(&path);
+                let mut cancel_calls = 0;
+                let failure = VerifiedWavReader::open_owned_with_cancel(path, limits(8), || {
+                    cancel_calls += 1;
+                    request_cancel
+                })
+                .err()
+                .unwrap();
+                let (error, capacity) = recover(failure, &expected);
+                assert!(
+                    matches!(error, ImportError::Io(ref error) if error.raw_os_error() == Some(92))
+                );
+                // File::open precedes page-verification cancellation in both
+                // legacy and owned APIs. This is IO refusal, not Cancelled.
+                assert_eq!(cancel_calls, 0);
+                assert!(!capacity.manifest_reservation_attempted);
+                assert_eq!(capacity.manifest_slots, 0);
+            }
+            assert_eq!(identity(&fixture.0), original_identity);
+            assert_eq!(fs::read(fixture.path()).unwrap(), original_bytes);
+            let original_path = fixture.path().to_path_buf();
+            drop(fixture); // Cleanup owns only the unchanged valid fixture.
+            assert_eq!(
+                fs::metadata(original_path).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            return;
+        }
+        Err(error) => panic!("unexpected non-UTF8 fixture rename refusal: {error}"),
+    }
     let path = owned_path(fixture.path());
     let expected = identity(&path);
     let reader = VerifiedWavReader::open_owned_with_cancel(path, limits(8), || false).unwrap();
