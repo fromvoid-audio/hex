@@ -3,6 +3,7 @@
 // moves through the bounded worker, ready and return queues.
 #![allow(clippy::vec_box)]
 
+mod borrowed_staging;
 mod construction;
 mod construction_report;
 mod construction_transport;
@@ -20,6 +21,7 @@ mod staging;
 mod types;
 mod worker;
 
+pub use borrowed_staging::{BorrowedCompactCopy, BorrowedCopyFailure, BorrowedSourcePath};
 pub use construction::{
     ConstructionCapacityReport, ConstructionCleanup, ConstructionRefusal, ConstructionState,
     FinishedStreamInput, RecoveredStreamInput, StreamConstructionRequest,

@@ -49,7 +49,7 @@ impl CompactCopyReport {
             .checked_add(self.reservations.other_construction_bytes)
     }
 
-    fn check(self) -> Result<Self, CompactCopyError> {
+    pub(crate) fn check(self) -> Result<Self, CompactCopyError> {
         let copy = self
             .compact
             .bytes()
@@ -100,6 +100,17 @@ pub struct CompactSourceInput {
     report: Option<CompactCopyReport>,
 }
 impl CompactSourceInput {
+    pub(crate) fn from_borrowed_copy(
+        originals: Vec<SourceDefinition>,
+        compact: Vec<SourceDefinition>,
+        report: CompactCopyReport,
+    ) -> Self {
+        Self {
+            originals,
+            compact: Some(compact),
+            report: Some(report),
+        }
+    }
     pub(crate) fn into_stage_parts(
         self,
     ) -> (
