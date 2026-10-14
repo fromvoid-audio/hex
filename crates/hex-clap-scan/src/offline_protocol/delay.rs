@@ -329,11 +329,24 @@ mod tests {
         w.bytes.extend(o.module_sha256.as_bytes());
         w.bytes
     }
-    fn response(req: &DelayRequest) -> Vec<u8> {
+    struct ResponseFixture {
+        bytes: Vec<u8>,
+        platform: usize,
+        pcm: usize,
+        profile: usize,
+        owner_version: usize,
+        module: usize,
+        demand: usize,
+    }
+    fn response_for(req: &DelayRequest, platform: &str) -> ResponseFixture {
         let mut w = Writer::default();
         w.u16(3);
         w.u64(req.request);
-        for s in [SDK, crate::platform(), DELAY_PLUGIN_ID] {
+        let mut platform_at = 0;
+        for s in [SDK, platform, DELAY_PLUGIN_ID] {
+            if s == platform {
+                platform_at = 16 + w.bytes.len();
+            }
             w.blob(s.as_bytes());
         }
         w.u32(48000);
@@ -349,21 +362,41 @@ mod tests {
         }
         w.blob(b"gain");
         w.u32(1);
+        let pcm = 12 + w.bytes.len();
         w.u32(0);
         w.u32(0);
-        w.blob(&state(&owner()));
+        let mut actual_state = state(&owner());
+        // Original one-frame gain-before-FIFO input leaves these queue samples.
+        actual_state[32..36].copy_from_slice(&1f32.to_le_bytes());
+        actual_state[160..164].copy_from_slice(&(-1f32).to_le_bytes());
+        w.blob(&actual_state);
         w.u32(0);
         w.u32(0);
         w.u32(1);
         w.u32(1);
+        let profile = 16 + w.bytes.len();
         w.blob(DELAY_PROFILE.as_bytes());
+        let owner_version = 12 + w.bytes.len();
         w.u32(3);
+        let module = 16 + w.bytes.len();
         w.blob("a".repeat(64).as_bytes());
+        let demand = 12 + w.bytes.len();
         for n in [0, 16, 256, 32] {
             w.u32(n);
         }
         w.u64(128 * 56);
-        packet(b"HCOFFR03", w.bytes).unwrap()
+        ResponseFixture {
+            bytes: packet(b"HCOFFR03", w.bytes).unwrap(),
+            platform: platform_at,
+            pcm,
+            profile,
+            owner_version,
+            module,
+            demand,
+        }
+    }
+    fn response(req: &DelayRequest) -> Vec<u8> {
+        response_for(req, crate::platform()).bytes
     }
     #[test]
     fn bounded_framing_identity_and_all_truncations() {
@@ -379,6 +412,79 @@ mod tests {
         assert!(decode_delay(&p, &req, &"b".repeat(64)).is_err());
         let encoded = req.encode_bound(&"a".repeat(64)).unwrap();
         assert_eq!(&encoded[..8], b"HCOFFQ03");
+    }
+    #[test]
+    fn both_platform_response_locations_and_specific_owner_demand_pcm_refusal() {
+        let req = fresh();
+        for platform in ["linux-x86_64", "macos-arm64"] {
+            let fixture = response_for(&req, platform);
+            for end in 0..fixture.bytes.len() {
+                assert!(decode_delay(&fixture.bytes[..end], &req, &"a".repeat(64)).is_err());
+            }
+            assert_eq!(
+                &fixture.bytes[fixture.platform..fixture.platform + platform.len()],
+                platform.as_bytes()
+            );
+            assert_eq!(
+                &fixture.bytes[fixture.profile..fixture.profile + DELAY_PROFILE.len()],
+                DELAY_PROFILE.as_bytes()
+            );
+            assert_eq!(
+                &fixture.bytes[fixture.owner_version..fixture.owner_version + 4],
+                &3u32.to_le_bytes()
+            );
+            assert_eq!(
+                &fixture.bytes[fixture.module..fixture.module + 64],
+                "a".repeat(64).as_bytes()
+            );
+            assert_eq!(&fixture.bytes[fixture.pcm..fixture.pcm + 8], &[0; 8]);
+            for (offset, value) in [(0, 0u32), (4, 16), (8, 256), (12, 32)] {
+                let at = fixture.demand + offset;
+                assert_eq!(&fixture.bytes[at..at + 4], &value.to_le_bytes());
+            }
+            if platform != crate::platform() {
+                assert_eq!(
+                    decode_delay(&fixture.bytes, &req, &"a".repeat(64)).unwrap_err(),
+                    "offline identity/capability refused"
+                );
+            }
+        }
+        let fixture = response_for(&req, crate::platform());
+        for at in [
+            fixture.profile,
+            fixture.owner_version,
+            fixture.module,
+            fixture.demand,
+            fixture.demand + 4,
+            fixture.demand + 8,
+            fixture.demand + 12,
+            fixture.demand + 16,
+        ] {
+            let mut bad = fixture.bytes.clone();
+            bad[at] = if at == fixture.profile || at == fixture.module {
+                b'z'
+            } else {
+                bad[at] ^ 0xff
+            };
+            assert_eq!(
+                decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
+                "finite-delay response owner/demand refused"
+            );
+        }
+        for sample in 0..2 {
+            let mut bad = fixture.bytes.clone();
+            let at = fixture.pcm + sample * 4;
+            bad[at..at + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+            assert_eq!(
+                decode_delay(&bad, &req, &"a".repeat(64)).unwrap_err(),
+                "non-finite processed PCM refused"
+            );
+        }
+        let unsupported = response_for(&req, "unsupported");
+        assert_eq!(
+            decode_delay(&unsupported.bytes, &req, &"a".repeat(64)).unwrap_err(),
+            "offline identity/capability refused"
+        );
     }
     #[test]
     fn cumulative_drain_owner_bytes_cannot_reset_ledger() {

@@ -26,17 +26,33 @@ fn blob(b: &mut Vec<u8>, v: &[u8]) {
     u(b, v.len() as u64, 4);
     b.extend(v);
 }
+fn original_state(magic: u32, gain: f64, frames: u64) -> Vec<u8> {
+    let mut state = vec![];
+    u(&mut state, magic.into(), 4);
+    u(&mut state, gain.to_bits(), 8);
+    u(&mut state, frames, 8);
+    u(&mut state, 0, 4);
+    u(&mut state, 0, 4);
+    u(&mut state, 0, 4);
+    state
+}
 struct PacketFixture {
     bytes: Vec<u8>,
     reject_offsets: Vec<usize>,
     pcm_start: usize,
+    status: usize,
+    platform_data: usize,
 }
 fn packet_for(platform: &str) -> PacketFixture {
     let mut p = vec![];
     let mut reject_offsets = vec![0, 8, 12, 14];
     u(&mut p, 1, 2);
     u(&mut p, 7, 8);
+    let mut platform_data = 0;
     for text in [SDK, platform, PLUGIN_ID] {
+        if text == platform {
+            platform_data = 16 + p.len();
+        }
         reject_offsets.extend([12 + p.len(), 16 + p.len()]);
         blob(&mut p, text.as_bytes());
     }
@@ -59,11 +75,12 @@ fn packet_for(platform: &str) -> PacketFixture {
     for value in [1.0_f32, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0] {
         u(&mut p, u64::from(value.to_bits()), 4);
     }
-    blob(&mut p, &[0; 32]);
+    blob(&mut p, &original_state(1, 1.0, 4));
     u(&mut p, 1, 4);
     blob(&mut p, b"unload main");
     u(&mut p, 0, 4);
     u(&mut p, 1, 4);
+    let status = 12 + p.len();
     u(&mut p, 1, 4);
     let mut bytes = b"HCOFFR01".to_vec();
     u(&mut bytes, p.len() as u64, 4);
@@ -72,6 +89,8 @@ fn packet_for(platform: &str) -> PacketFixture {
         bytes,
         reject_offsets,
         pcm_start,
+        status,
+        platform_data,
     }
 }
 fn packet() -> Vec<u8> {
@@ -113,9 +132,11 @@ fn response_identity_clock_capability_pcm_status_refuse() {
         }
     }
     let mut bad = b;
-    let n = bad.len();
-    bad[n - 4..].copy_from_slice(&0u32.to_le_bytes());
-    assert!(decode(&bad, &request()).is_err());
+    bad[fixture.status..fixture.status + 4].copy_from_slice(&0u32.to_le_bytes());
+    assert_eq!(
+        decode(&bad, &request()).unwrap_err(),
+        "process status refused"
+    );
 }
 #[test]
 fn platform_tag_lengths_do_not_move_the_negative_control_out_of_pcm() {
@@ -220,10 +241,10 @@ fn strict_json_and_impossible_sleep_skip_refuse() {
     let mut json = serde_json::to_value(&r).unwrap();
     json["device"] = serde_json::json!("installed");
     assert!(serde_json::from_value::<Request>(json).is_err());
-    let mut b = packet();
-    let n = b.len();
-    b[n - 4..].copy_from_slice(&5u32.to_le_bytes());
-    assert!(decode(&b, &r).is_err());
+    let fixture = packet_for(hex_clap_scan::platform());
+    let mut b = fixture.bytes;
+    b[fixture.status..fixture.status + 4].copy_from_slice(&5u32.to_le_bytes());
+    assert_eq!(decode(&b, &r).unwrap_err(), "invalid sleep skip refused");
 }
 
 use hex_clap_scan::offline_protocol::{
@@ -257,11 +278,29 @@ fn midi_request() -> MidiRequest {
         }],
     }
 }
-fn midi_packet() -> Vec<u8> {
+struct MidiFixture {
+    bytes: Vec<u8>,
+    pcm: usize,
+    platform_data: usize,
+    profile: usize,
+    owner: usize,
+    owner_version: usize,
+    port: usize,
+    abi: usize,
+    final_gain: usize,
+    event_count: usize,
+    event: usize,
+    event_end: usize,
+}
+fn midi_packet_for(platform: &str) -> MidiFixture {
     let mut p = vec![];
     u(&mut p, 2, 2);
     u(&mut p, 7, 8);
-    for text in [SDK, hex_clap_scan::platform(), MIDI_PLUGIN_ID] {
+    let mut platform_data = 0;
+    for text in [SDK, platform, MIDI_PLUGIN_ID] {
+        if text == platform {
+            platform_data = 16 + p.len();
+        }
         blob(&mut p, text.as_bytes());
     }
     u(&mut p, 48000, 4);
@@ -275,38 +314,64 @@ fn midi_packet() -> Vec<u8> {
     }
     blob(&mut p, b"gain");
     u(&mut p, 4, 4);
+    let pcm = 12 + p.len();
     for v in [0.5_f32, 0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5] {
         u(&mut p, u64::from(v.to_bits()), 4);
     }
-    blob(&mut p, &[0; 32]);
+    blob(&mut p, &original_state(0x43433702, 0.5, 4));
     u(&mut p, 1, 4);
     blob(&mut p, b"unload main");
     u(&mut p, 0, 4);
     u(&mut p, 1, 4);
     u(&mut p, 1, 4);
+    let profile = 16 + p.len();
     blob(&mut p, MIDI_PROFILE.as_bytes());
+    let owner_version = 12 + p.len();
     u(&mut p, 2, 4);
+    let owner = 16 + p.len();
     blob(&mut p, "0".repeat(64).as_bytes());
+    let port = 12 + p.len();
     for v in [MIDI_PORT_ID, 2, 2] {
         u(&mut p, u64::from(v), 4);
     }
     blob(&mut p, b"original cc7 input");
+    let abi = 12 + p.len();
     for v in [24, 56, 64] {
         u(&mut p, v, 4);
     }
     u(&mut p, 8192, 8);
     u(&mut p, 32768, 8);
+    let final_gain = 12 + p.len();
     u(&mut p, 0.5_f64.to_bits(), 8);
+    let event_count = 12 + p.len();
     u(&mut p, 1, 4);
+    let event = 12 + p.len();
     for v in [0, 0, 2, GAIN_ID] {
         u(&mut p, u64::from(v), 4);
     }
     u(&mut p, 0, 8);
     u(&mut p, 2.0_f64.to_bits(), 8);
+    let event_end = 12 + p.len();
     let mut b = b"HCOFFR02".to_vec();
     u(&mut b, p.len() as u64, 4);
     b.extend(p);
-    b
+    MidiFixture {
+        bytes: b,
+        pcm,
+        platform_data,
+        profile,
+        owner,
+        owner_version,
+        port,
+        abi,
+        final_gain,
+        event_count,
+        event,
+        event_end,
+    }
+}
+fn midi_packet() -> Vec<u8> {
+    midi_packet_for(hex_clap_scan::platform()).bytes
 }
 #[test]
 fn midi_owned_profile_and_all_response_truncations_refuse() {
@@ -327,39 +392,50 @@ fn midi_owned_profile_and_all_response_truncations_refuse() {
 }
 #[test]
 fn midi_response_profile_owner_port_abi_flags_clock_value_refuse() {
-    let b = midi_packet();
-    let mut positions = vec![0, 8, 12, 14, 26];
-    let tail = b.len() - 32;
-    positions.extend([tail, tail + 4, tail + 8, tail + 12, tail + 16, tail + 23]);
-    let profile_at = b
-        .windows(MIDI_PROFILE.len())
-        .position(|w| w == MIDI_PROFILE.as_bytes())
-        .unwrap();
-    positions.push(profile_at);
-    let owner_at = b
-        .windows(64)
-        .position(|w| w == "0".repeat(64).as_bytes())
-        .unwrap();
-    positions.push(owner_at);
-    let port_at = b
-        .windows(4)
-        .position(|w| w == MIDI_PORT_ID.to_le_bytes())
-        .unwrap();
-    positions.extend([port_at, port_at + 4, port_at + 8]);
-    let abi_at = b.len() - 32 - 4 - 8 - 16 - 12;
-    positions.extend([abi_at, abi_at + 4, abi_at + 8, abi_at + 12, abi_at + 20]);
-    for at in positions {
-        let mut bad = b.clone();
-        bad[at] ^= 0xff;
-        assert!(
-            decode_midi(&bad, &midi_request(), &"0".repeat(64)).is_err(),
+    let fixture = midi_packet_for(hex_clap_scan::platform());
+    let positions = [
+        (fixture.profile, "MIDI state owner/profile refused"),
+        (fixture.owner, "MIDI state owner/profile refused"),
+        (fixture.owner_version, "MIDI state owner/profile refused"),
+        (fixture.port, "MIDI port/profile refused"),
+        (fixture.port + 4, "MIDI port/profile refused"),
+        (fixture.port + 8, "MIDI port/profile refused"),
+        (fixture.abi, "MIDI ABI reservation refused"),
+        (fixture.abi + 4, "MIDI ABI reservation refused"),
+        (fixture.abi + 8, "MIDI ABI reservation refused"),
+        (fixture.abi + 12, "MIDI ABI reservation refused"),
+        (fixture.abi + 20, "MIDI ABI reservation refused"),
+        (fixture.event, "output block refused"),
+        (fixture.event + 4, "MIDI output event refused"),
+        (fixture.event + 8, "MIDI output event refused"),
+        (fixture.event + 12, "MIDI output event refused"),
+        (fixture.event + 16, "MIDI output frame refused"),
+    ];
+    for (at, error) in positions {
+        let mut bad = fixture.bytes.clone();
+        // ASCII-preserving string mutation reaches identity checks, not UTF8 errors.
+        bad[at] = if at == fixture.profile || at == fixture.owner {
+            b'z'
+        } else {
+            bad[at] ^ 0xff
+        };
+        assert_eq!(
+            decode_midi(&bad, &midi_request(), &"0".repeat(64)).unwrap_err(),
+            error,
             "{at}"
         );
     }
-    let mut bad = b;
-    let n = bad.len();
-    bad[n - 8..].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
-    assert!(decode_midi(&bad, &midi_request(), &"0".repeat(64)).is_err());
+    for (at, error) in [
+        (fixture.final_gain, "MIDI final gain refused"),
+        (fixture.event + 24, "MIDI output event refused"),
+    ] {
+        let mut bad = fixture.bytes.clone();
+        bad[at..at + 8].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert_eq!(
+            decode_midi(&bad, &midi_request(), &"0".repeat(64)).unwrap_err(),
+            error
+        );
+    }
 }
 #[test]
 fn midi_request_kind_dialect_order_target_and_strict_json_refuse() {
@@ -453,15 +529,87 @@ fn midi_combined_capacity_does_not_double_and_output_order_bounds_refuse() {
     r.blocks[0].events.pop();
     r.blocks.push(r.blocks[0].clone());
     assert!(r.validate().is_err());
-    let mut b = midi_packet();
-    let n = b.len();
-    let event = b[n - 32..].to_vec();
-    let count_at = n - 36;
+    let fixture = midi_packet_for(hex_clap_scan::platform());
+    let mut b = fixture.bytes;
+    let event = b[fixture.event..fixture.event_end].to_vec();
+    assert_eq!(event.len(), 32); // fixed scalar output record ABI; independent of tag length.
+    let count_at = fixture.event_count;
     b[count_at..count_at + 4].copy_from_slice(&129u32.to_le_bytes());
     for _ in 0..128 {
         b.extend(&event);
     }
     let len = b.len() - 12;
     b[8..12].copy_from_slice(&(len as u32).to_le_bytes());
-    assert!(decode_midi(&b, &midi_request(), &"0".repeat(64)).is_err());
+    assert_eq!(
+        decode_midi(&b, &midi_request(), &"0".repeat(64)).unwrap_err(),
+        "MIDI block output capacity refused"
+    );
+}
+
+#[test]
+fn gain_and_midi_locations_for_both_supported_tags_and_foreign_tag_refusal() {
+    for platform in ["linux-x86_64", "macos-arm64"] {
+        let gain = packet_for(platform);
+        for end in 0..gain.bytes.len() {
+            assert!(decode(&gain.bytes[..end], &request()).is_err());
+        }
+        assert_eq!(
+            &gain.bytes[gain.platform_data..gain.platform_data + platform.len()],
+            platform.as_bytes()
+        );
+        assert_eq!(
+            &gain.bytes[gain.status..gain.status + 4],
+            &1u32.to_le_bytes()
+        );
+        let midi = midi_packet_for(platform);
+        for end in 0..midi.bytes.len() {
+            assert!(decode_midi(&midi.bytes[..end], &midi_request(), &"0".repeat(64)).is_err());
+        }
+        assert_eq!(
+            &midi.bytes[midi.platform_data..midi.platform_data + platform.len()],
+            platform.as_bytes()
+        );
+        for (at, word) in [
+            (midi.owner_version, 2u32),
+            (midi.port, MIDI_PORT_ID),
+            (midi.abi, 24),
+            (midi.abi + 4, 56),
+            (midi.abi + 8, 64),
+            (midi.event_count, 1),
+            (midi.event, 0),
+            (midi.event + 8, 2),
+            (midi.event + 12, GAIN_ID),
+        ] {
+            assert_eq!(&midi.bytes[at..at + 4], &word.to_le_bytes());
+        }
+        assert_eq!(midi.event_end - midi.event, 32);
+        assert_eq!(&midi.bytes[midi.pcm..midi.pcm + 4], &0.5f32.to_le_bytes());
+        assert_eq!(
+            &midi.bytes[midi.profile..midi.profile + MIDI_PROFILE.len()],
+            MIDI_PROFILE.as_bytes()
+        );
+        if platform != hex_clap_scan::platform() {
+            assert_eq!(
+                decode(&gain.bytes, &request()).unwrap_err(),
+                "offline identity/capability refused"
+            );
+            assert_eq!(
+                decode_midi(&midi.bytes, &midi_request(), &"0".repeat(64)).unwrap_err(),
+                "offline identity/capability refused"
+            );
+        }
+    }
+    assert_eq!(
+        decode(&packet_for("unsupported").bytes, &request()).unwrap_err(),
+        "offline identity/capability refused"
+    );
+    assert_eq!(
+        decode_midi(
+            &midi_packet_for("unsupported").bytes,
+            &midi_request(),
+            &"0".repeat(64)
+        )
+        .unwrap_err(),
+        "offline identity/capability refused"
+    );
 }

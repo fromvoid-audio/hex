@@ -10,15 +10,35 @@ fn text(v: &mut Vec<u8>, s: &[u8]) {
     number(v, s.len() as u64, 4);
     v.extend(s);
 }
-fn payload(id: &str, name: &[u8], features: &[&[u8]], copies: u32) -> Vec<u8> {
+struct PayloadFixture {
+    bytes: Vec<u8>,
+    sdk: usize,
+    platform: usize,
+    api: usize,
+    count: usize,
+    descriptor_api: Option<usize>,
+}
+fn payload_for(
+    platform: &str,
+    id: &str,
+    name: &[u8],
+    features: &[&[u8]],
+    copies: u32,
+) -> PayloadFixture {
     let mut p = vec![];
     number(&mut p, 1, 2);
     number(&mut p, 7, 8);
+    let sdk = p.len() + 4;
     text(&mut p, SDK.as_bytes());
-    text(&mut p, hex_clap_scan::platform().as_bytes());
-    for n in [1, 2, 10, copies] {
+    let platform_at = p.len() + 4;
+    text(&mut p, platform.as_bytes());
+    let api = p.len();
+    for n in [1, 2, 10] {
         number(&mut p, n as u64, 4);
     }
+    let count = p.len();
+    number(&mut p, copies.into(), 4);
+    let descriptor_api = (copies > 0).then_some(p.len());
     for _ in 0..copies {
         for n in [1, 2, 10] {
             number(&mut p, n, 4);
@@ -40,7 +60,17 @@ fn payload(id: &str, name: &[u8], features: &[&[u8]], copies: u32) -> Vec<u8> {
             text(&mut p, s);
         }
     }
-    p
+    PayloadFixture {
+        bytes: p,
+        sdk,
+        platform: platform_at,
+        api,
+        count,
+        descriptor_api,
+    }
+}
+fn payload(id: &str, name: &[u8], features: &[&[u8]], copies: u32) -> Vec<u8> {
+    payload_for(hex_clap_scan::platform(), id, name, features, copies).bytes
 }
 fn packet(p: Vec<u8>) -> Vec<u8> {
     let mut b = b"HCLSCAN1".to_vec();
@@ -79,10 +109,34 @@ fn all_truncation_header_length_version_request_api_source_and_trailing_refuse()
     for i in 0..bytes.len() {
         assert!(decode_packet(&bytes[..i], 7).is_err(), "truncation{i}");
     }
-    for at in [0, 8, 12, 14, 22, 30, 70, 82, 98] {
+    let fixture = payload_for(
+        hex_clap_scan::platform(),
+        "org.hex.original",
+        b"original \"fixture\"",
+        &[b"audio-effect", b"unknown-feature"],
+        1,
+    );
+    for (at, value, error) in [
+        (0, b'X', "clap packet header/capacity refused"),
+        (8, 0, "clap packet length/trailing refused"),
+        (12, 2, "clap protocol version refused"),
+        (14, 8, "stale request identity"),
+        (12 + fixture.sdk, b'z', "clap source/platform/API refused"),
+        (
+            12 + fixture.platform,
+            b'z',
+            "clap source/platform/API refused",
+        ),
+        (12 + fixture.api, 2, "clap source/platform/API refused"),
+        (
+            12 + fixture.descriptor_api.unwrap(),
+            2,
+            "descriptor api refused",
+        ),
+    ] {
         let mut bad = bytes.clone();
-        bad[at] ^= 0xff;
-        assert!(decode_packet(&bad, 7).is_err(), "offset{at}");
+        bad[at] = value;
+        assert_eq!(decode_packet(&bad, 7).unwrap_err(), error, "offset{at}");
     }
     assert!(decode_packet(&bytes, 8).is_err());
     let mut bad = bytes;
@@ -109,10 +163,54 @@ fn duplicate_blank_utf8_and_capacity_fields_refuse() {
         .is_err()
     );
     assert!(decode_packet(&packet(payload("id", b"name", &[&[b'x'; 129]], 1)), 7).is_err());
-    let mut p = payload("id", b"name", &[], 0);
-    p[82..86].copy_from_slice(&1025u32.to_le_bytes());
-    assert!(decode_packet(&packet(p), 7).is_err());
+    let mut fixture = payload_for(hex_clap_scan::platform(), "id", b"name", &[], 0);
+    fixture.bytes[fixture.count..fixture.count + 4].copy_from_slice(&1025u32.to_le_bytes());
+    assert_eq!(
+        decode_packet(&packet(fixture.bytes), 7).unwrap_err(),
+        "clap descriptor count refused"
+    );
 }
+#[test]
+fn both_platform_count_api_and_string_locations_and_foreign_tag_refusal() {
+    for platform in ["linux-x86_64", "macos-arm64"] {
+        let mut fixture = payload_for(platform, "id", b"name", &[], 0);
+        assert_eq!(
+            &fixture.bytes[fixture.platform..fixture.platform + platform.len()],
+            platform.as_bytes()
+        );
+        assert_eq!(
+            &fixture.bytes[fixture.api..fixture.api + 4],
+            &1u32.to_le_bytes()
+        );
+        assert_eq!(fixture.bytes.len(), fixture.count + 4);
+        assert_eq!(
+            &fixture.bytes[fixture.count..fixture.count + 4],
+            &0u32.to_le_bytes()
+        );
+        fixture.bytes[fixture.count..fixture.count + 4].copy_from_slice(&1025u32.to_le_bytes());
+        assert_eq!(
+            &fixture.bytes[fixture.count..fixture.count + 4],
+            &1025u32.to_le_bytes()
+        );
+        if platform == hex_clap_scan::platform() {
+            assert_eq!(
+                decode_packet(&packet(fixture.bytes), 7).unwrap_err(),
+                "clap descriptor count refused"
+            );
+        } else {
+            assert_eq!(
+                decode_packet(&packet(fixture.bytes), 7).unwrap_err(),
+                "clap source/platform/API refused"
+            );
+        }
+    }
+    let foreign = payload_for("unsupported", "id", b"name", &[], 0);
+    assert_eq!(
+        decode_packet(&packet(foreign.bytes), 7).unwrap_err(),
+        "clap source/platform/API refused"
+    );
+}
+
 #[test]
 fn failed_attempt_retains_previous_descriptor_and_error() {
     let discovery = decode_packet(&good(), 7).unwrap();
