@@ -1,5 +1,7 @@
 use super::{BeatTime, MAX_TEMPO_POINTS, Tempo};
 use crate::Invalid;
+mod allocation_layout;
+pub use allocation_layout::TempoMapOwnedAllocationLayout;
 
 const FRAME_FRACTION_BITS: u32 = 32;
 const FRAME_FRACTION_MASK: u128 = (1_u128 << FRAME_FRACTION_BITS) - 1;

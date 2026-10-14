@@ -135,8 +135,15 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             UnknownStorageReason::NestedOwnerContract,
         )?;
         self.project(revision.arrangement())?;
-        self.opaque_arc(revision.session(), "session_inventory")?;
-        revision.session().visit_source_templates(self)?;
+        let session_owner = self.arc(revision.session(), "session_inventory")?;
+        self.unknown(
+            session_owner,
+            "session_inventory",
+            UnknownStorageReason::NestedOwnerContract,
+        )?;
+        revision
+            .session()
+            .visit_source_templates_and_tempo(self, session_owner)?;
         self.opaque_arc(revision.midi_preview(), "midi_preview")?;
         Ok(())
     }

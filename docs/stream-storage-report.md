@@ -120,8 +120,8 @@ code. It verifies requested SIZE/counts and actual reclamation, including empty
 allocating paths versus untracked shared defaults, clones, weak-only ownership,
 overreserved source Vecs, replacement and separate Vec/String storage. Alignment
 is DECLARED only: this counter never observes Layout::align. Every receipt still
-reports `requested_alignment_verified=false`. Separate independently reviewed
-alignment observation and actual Mac target checks remain pending. All production
+reports `requested_alignment_verified=false`. Requested-alignment observer results and native helper runs must be combined
+and reviewed separately; this private helper unit supplies no such evidence. All production
 Arc costs remain Unknown; no whole admission/root wiring is enabled.
 
 ## completed session midi source-template family
@@ -136,12 +136,11 @@ so reused templates can be deduplicated independently of inventory/graph roots;
 equal-content templates with different owners remain separate charges.
 
 The existing public Playback visitor reaches these buffers through a private
-Session-inventory traversal. Other inventory fields (including names/strings,
-timing/templates/provider dependencies not covered here) still remain Unknown.
-Source Arc owner overhead independently remains Unknown. TempoMap's private
-point/prefix capacities live in hex-project and require a separately reviewed
-read-only boundary; this unit does not change that API or pretend point lengths
-are capacities. Instrument templates/note banks/provider storage and retirement
+Session-inventory traversal. Other inventory fields (including names/strings and instrument-template/provider
+dependencies not covered here) still remain Unknown. Source Arc owner overhead
+independently remains Unknown. The Session tempo family is now reported through
+the reviewed owning hex-project accessor described below; point lengths are
+never substituted for allocation capacities. Instrument templates/note banks/provider storage and retirement
 receipts remain incomplete. No provider/Arc/whole-Playback completeness claim,
 callback traversal, public trait redesign, cap/root/preroll change is made.
 
@@ -150,3 +149,24 @@ summary exists and partially accumulated items are not an admission receipt.
 Tests cover all four partial-refusal points, overflow, actual overreserved
 capacities, no repeated headers/density charge, per-container actual-owner dedup
 versus independent equal sources, and the real Playback/Session consumer seam.
+
+## completed session tempo backing family
+
+`TempoMap::owned_allocation_layout` returns an immutable scalar layout descriptor
+from the owning hex-project module: actual point/prefix capacities, privately
+computed element sizes, and checked backing-byte totals. It exposes no mutable
+map, point/key, pointer or vector and does not change validation, numerical
+conversion, capacities, policies or caps. The two Vecs have scalar elements and
+no nested/shared ownership. Zero-length spare buffers in private accounting
+fixtures still have a charge; such fixtures do not bypass nonempty valid-map
+construction. Multiplication and combined-total overflow return None.
+
+The control Session visitor now adds both backing allocations under the actual
+Session inventory Arc owner, independently of source-template owners. The
+inventory pointee already includes PreparedTempoMap/TempoMap/Vec headers and
+periodic scalar metadata, so those are not charged again. Repeated prepared and
+runtime references to the same inventory need dedup by actual owner AND charge
+location; exclusive items always remain scoped to the inspected Playback root.
+All other inventory/provider/Arc/retirement unknowns independently prevent
+complete admission. Any failed partial sink must be discarded. There is no
+callback traversal, root publication, preroll or Arc completeness activation.

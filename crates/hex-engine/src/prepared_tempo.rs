@@ -7,6 +7,7 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod storage;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.
 pub const MAX_PREPARED_TEMPO_POINTS: usize = 1_024;
