@@ -139,10 +139,12 @@ impl MediaDomainReaper {
                 && slot.endpoint.is_none()
                 && slot.report.is_none()
                 && slot.terminal_error.is_none()
+                && !slot.custody.reserved()
                 && slot
                     .retained_leases
                     .len()
-                    .checked_add(3)
+                    .checked_add(slot.custody.lease_count())
+                    .and_then(|n| n.checked_add(3))
                     .is_some_and(|known| {
                         slot.control
                             .as_ref()
@@ -220,6 +222,8 @@ impl MediaDomainReaper {
                     && slot.id == admission.id
                     && slot.endpoint.is_none()
                     && slot.control.is_some()
+                    && !slot.custody.configured()
+                    && !slot.custody.outstanding()
                     && slot.report.is_none()
             })
         {
@@ -251,6 +255,9 @@ impl MediaDomainReaper {
             .slots
             .iter_mut()
             .find(|slot| !slot.vacant && slot.id == id)?;
+        if slot.custody.outstanding() {
+            return None;
+        }
         let report = slot
             .report
             .filter(|report| report.successful_report().is_some())?;
@@ -259,6 +266,7 @@ impl MediaDomainReaper {
             .domain_data_bytes?
             .checked_sub(slot.data_bytes)?;
         slot.retained_leases = Vec::new();
+        slot.custody = Default::default();
         slot.report = None;
         slot.data_bytes = 0;
         slot.vacant = true;
@@ -277,6 +285,15 @@ impl MediaDomainReaper {
             Ok(reservation) => reservation,
             Err(reason) => return Err(Box::new(DomainAdmissionFailure { reason, input })),
         };
+        let incarnation = match self.slots[index].incarnation.checked_add(1) {
+            Some(value) => value,
+            None => {
+                return Err(Box::new(DomainAdmissionFailure {
+                    reason: DomainRefusal::IdentityExhausted,
+                    input,
+                }));
+            }
+        };
         let MediaDomainInput {
             id,
             control,
@@ -284,6 +301,8 @@ impl MediaDomainReaper {
             retained_leases,
         } = input;
         self.slots[index] = ControlSlot {
+            incarnation,
+            custody: Default::default(),
             vacant: false,
             data_bytes: bytes.expect("checked domain bytes"),
             id,

@@ -69,3 +69,32 @@ pub use slots::{
     ClaimAssociation, ClaimReceipt, ClaimReclamation, ClaimReturnedOwnerRefusal, ClaimSlotError,
     ClaimStageRefusal, ClaimUnionCapacityReport, Fact as ClaimFactKind,
 };
+
+/// Owning post-disposal refusal: original anchors and physical reservation retained.
+pub struct CatalogAnchorCommitRefusal {
+    pub reason: ClaimSlotError,
+    pub anchors: PublicationAnchors,
+    pub reservation: hex_stream::CatalogCustodyReservation,
+}
+impl PublicationAnchors {
+    /// No authoritative disposal/final-transfer proof exists yet. Never reconstruct
+    /// PlaybackClaims or a disposed runtime, and never mint a completion assertion.
+    pub fn commit_catalog_custody_on_control(
+        self,
+        reservation: hex_stream::CatalogCustodyReservation,
+        _reaper: &mut hex_stream::MediaDomainReaper,
+    ) -> Result<
+        (
+            hex_engine::storage_report::AnchoredPlaybackClaims,
+            hex_engine::OwnedPreparedRevision,
+            hex_stream::CatalogCustodyAwaiter,
+        ),
+        Box<CatalogAnchorCommitRefusal>,
+    > {
+        Err(Box::new(CatalogAnchorCommitRefusal {
+            reason: ClaimSlotError::Incomplete,
+            anchors: self,
+            reservation,
+        }))
+    }
+}

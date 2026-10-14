@@ -578,6 +578,30 @@ impl StreamBridgeControl {
             .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
             .reserve(input)
     }
+    /// Borrow-only binding before split/moves. Complete admission remains refused.
+    pub fn reserve_claim_catalog_on_control(
+        &mut self,
+        association: &crate::publication_claims::ClaimAssociation,
+        input: &crate::publication_claims::PublicationClaims,
+        domain: hex_stream::DomainId,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_publication_open()?;
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .reserve_catalog(association, input, &mut self.reaper, domain)
+    }
+    /// Exact control cancellation remains available during close; failed
+    /// cancellation retains the original physical reservation in its claim slot.
+    pub fn cancel_claim_catalog_on_control(
+        &mut self,
+        association: &crate::publication_claims::ClaimAssociation,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .cancel_catalog(association, &mut self.reaper)
+    }
     pub fn rollback_claim_placeholder_on_control(
         &mut self,
         token: crate::publication_claims::ClaimAssociation,

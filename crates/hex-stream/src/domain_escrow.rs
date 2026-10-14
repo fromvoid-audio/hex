@@ -20,7 +20,16 @@ struct BatchSlot {
     endpoint: Option<Box<PageReadiness>>,
     admission_seal: Option<Arc<()>>,
 }
+#[path = "catalog_custody.rs"]
+mod custody;
+pub use custody::{
+    CatalogCustodyAwaiter, CatalogCustodyCapacity, CatalogCustodyError, CatalogCustodyReceipt,
+    CatalogCustodyRefusal, CatalogCustodyReservation, VerifiedCatalogCustodyRefusal,
+};
+
 struct ControlSlot {
+    incarnation: u64,
+    custody: custody::CatalogCustody,
     vacant: bool,
     data_bytes: usize,
     id: DomainId,
@@ -330,6 +339,9 @@ impl MediaDomainReaper {
         if slot.terminal_error.is_some() {
             return DomainCleanupProgress::Refused(DomainRefusal::UnexpectedShutdownRefusal);
         }
+        if slot.custody.reserved() {
+            return DomainCleanupProgress::WaitingForReturn;
+        }
         let (Some(control), Some(endpoint)) = (slot.control.as_ref(), slot.endpoint.as_ref())
         else {
             return DomainCleanupProgress::WaitingForReturn;
@@ -344,7 +356,12 @@ impl MediaDomainReaper {
         {
             return DomainCleanupProgress::Refused(DomainRefusal::WrongLease);
         }
-        let Some(known) = slot.retained_leases.len().checked_add(3) else {
+        let Some(known) = slot
+            .retained_leases
+            .len()
+            .checked_add(slot.custody.lease_count())
+            .and_then(|n| n.checked_add(3))
+        else {
             return DomainCleanupProgress::Refused(DomainRefusal::InvalidCapacity);
         };
         let references = control.owner_references();
@@ -359,6 +376,7 @@ impl MediaDomainReaper {
         // No public Weak or clonable control/pages exist. At exactly known
         // references, no external lease can concurrently manufacture a clone.
         slot.retained_leases.clear();
+        slot.custody.release_leases();
         let (Some(control), Some(endpoint)) = (slot.control.take(), slot.endpoint.take()) else {
             return DomainCleanupProgress::Refused(DomainRefusal::UnexpectedShutdownRefusal);
         };
@@ -388,9 +406,10 @@ impl MediaDomainReaper {
             && self.returns.is_empty()
             && self.slots.iter().all(|slot| {
                 slot.vacant
-                    || slot
-                        .report
-                        .is_some_and(|report| report.successful_report().is_some())
+                    || (!slot.custody.outstanding()
+                        && slot
+                            .report
+                            .is_some_and(|report| report.successful_report().is_some()))
             });
         self.phase.store(
             if failed {
@@ -548,6 +567,8 @@ fn build(
     // unchanged; no graph/source owners are cloned or page producers duplicated.
     for input in inputs {
         controls.push(ControlSlot {
+            incarnation: 1,
+            custody: Default::default(),
             vacant: false,
             data_bytes: input
                 .endpoint
@@ -576,6 +597,8 @@ fn build(
     }
     while controls.len() < slot_capacity {
         controls.push(ControlSlot {
+            incarnation: 0,
+            custody: Default::default(),
             vacant: true,
             data_bytes: 0,
             id: DomainId::new(1).expect("positive placeholder"),

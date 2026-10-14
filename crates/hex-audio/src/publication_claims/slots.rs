@@ -51,6 +51,7 @@ struct Slot {
     phase: Phase,
     identity: Option<ClaimIdentity>,
     anchors: Option<PublicationAnchors>,
+    catalog_reservation: Option<hex_stream::CatalogCustodyReservation>,
     returned: Option<ClaimedPlaybackOwner>,
     facts: Facts,
     #[cfg(test)]
@@ -63,6 +64,7 @@ impl Slot {
             phase: Phase::Vacant,
             identity: None,
             anchors: None,
+            catalog_reservation: None,
             returned: None,
             facts: Facts::default(),
             #[cfg(test)]
@@ -245,7 +247,11 @@ impl ClaimUnionSlots {
     }
     pub(crate) fn close_unstaged(&mut self) {
         for s in &mut self.slots {
-            if s.phase == Phase::Reserved && s.anchors.is_none() && s.returned.is_none() {
+            if s.phase == Phase::Reserved
+                && s.anchors.is_none()
+                && s.returned.is_none()
+                && s.catalog_reservation.is_none()
+            {
                 s.phase = Phase::Vacant;
                 s.identity = None;
             }
@@ -365,12 +371,55 @@ impl ClaimUnionSlots {
         // or graph declarations. This first unit seals/reserves storage only.
         Err(ClaimSlotError::Incomplete)
     }
+    pub(crate) fn reserve_catalog(
+        &mut self,
+        association: &ClaimAssociation,
+        input: &PublicationClaims,
+        reaper: &mut hex_stream::MediaDomainReaper,
+        domain: hex_stream::DomainId,
+    ) -> Result<(), ClaimSlotError> {
+        let slot = self.slot(association)?;
+        if slot.phase != Phase::Reserved || slot.catalog_reservation.is_some() {
+            return Err(ClaimSlotError::Busy);
+        }
+        if slot.identity.is_none() {
+            return Err(ClaimSlotError::Incomplete);
+        }
+        if slot.identity != Some(input.claims.identity_on_control()) {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        // Full claim admission remains refused; this can only bind a future
+        // admitted slot. Actual verifier/root pairing was sealed at construction.
+        let reservation = reaper
+            .reserve_verified_catalog_custody(domain, &input.verified)
+            .map_err(|_| ClaimSlotError::Incomplete)?;
+        self.slots[association.slot].catalog_reservation = Some(reservation);
+        Ok(())
+    }
+    pub(crate) fn cancel_catalog(
+        &mut self,
+        association: &ClaimAssociation,
+        reaper: &mut hex_stream::MediaDomainReaper,
+    ) -> Result<(), ClaimSlotError> {
+        let slot = self.slot_mut(association)?;
+        let reservation = slot
+            .catalog_reservation
+            .take()
+            .ok_or(ClaimSlotError::Incomplete)?;
+        match reaper.cancel_catalog_custody(reservation) {
+            Ok(()) => Ok(()),
+            Err((_, reservation)) => {
+                slot.catalog_reservation = Some(reservation);
+                Err(ClaimSlotError::Incomplete)
+            }
+        }
+    }
     pub(crate) fn rollback_reserved(
         &mut self,
         a: ClaimAssociation,
     ) -> Result<(), (ClaimSlotError, ClaimAssociation)> {
         match self.slot(&a) {
-            Ok(s) if s.phase == Phase::Reserved => {
+            Ok(s) if s.phase == Phase::Reserved && s.catalog_reservation.is_none() => {
                 let s = &mut self.slots[a.slot];
                 s.phase = Phase::Vacant;
                 s.identity = None;
@@ -490,7 +539,11 @@ impl ClaimUnionSlots {
             Ok(s) => s,
             Err(e) => return Err((e, a)),
         };
-        if !s.facts.ready() || s.returned.is_none() || s.anchors.is_none() {
+        if !s.facts.ready()
+            || s.returned.is_none()
+            || s.anchors.is_none()
+            || s.catalog_reservation.is_some()
+        {
             return Err((ClaimSlotError::RetirementPending, a));
         }
         let s = &mut self.slots[a.slot];

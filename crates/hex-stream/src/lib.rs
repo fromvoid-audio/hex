@@ -71,3 +71,8 @@ pub use types::{
 
 // Typed control inputs; audio does not depend directly on media or decode WAVs.
 pub use hex_media::{VerifiedWavReaderLimits, WavReaderLimits};
+
+pub use domain_escrow::{
+    CatalogCustodyAwaiter, CatalogCustodyCapacity, CatalogCustodyError, CatalogCustodyReceipt,
+    CatalogCustodyRefusal, CatalogCustodyReservation, VerifiedCatalogCustodyRefusal,
+};

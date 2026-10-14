@@ -419,3 +419,57 @@ input requires Accepted phase and currently refuses every fact as Incomplete:
 accepted custody/incarnation alone cannot prove a final transfer boundary that
 prevents later dormant owner transfers from invalidating completed roles. No
 catalog cleanup receipt or role fact is manufactured by this infrastructure.
+
+## opt-in catalog custody reservations
+
+The reaper can preallocate caller-bounded late-lease records and a distinct lease
+Vec, reporting actual backing capacities/checked bytes. ControlSlot inline
+metadata remains charged in existing escrow slot size. These declarations are
+data capacities, not RSS/allocator bookkeeping or a new aggregate memory cap.
+Existing legacy constructors reserve zero late cells; the N2 domain policy and
+per-worker limits are unchanged. Original source/path owners are never touched.
+Configuration refusal leaves domain ownership and accounting unchanged.
+
+Move-only reservation/awaiter/receipt handles carry the existing actual reaper
+seal, domain-slot incarnation and checked reservation nonce. Existing seal
+clones happen only on control; no new allocation/Arc layout assertion is made.
+Exact cancellation is explicit; abandoned handles keep bounded occupied rows.
+Records/leases and their charges stay in existing durable lifecycle custody.
+Pending reservations block domain return/reaping and rollback; configured
+storage must be explicitly released after exact cancellation before legacy
+rollback can recover its original inputs. Release/reconfigure preserves nonce
+history. Actual domain reuse advances incarnation, refusing overflow before
+input owners move.
+
+Low-level stream commit validates actual catalog/control pair and reservation
+before moving a lease into its preallocated destination. Typed verifier commit
+returns the restricted graph root, with no clone/allocation/drop after the move.
+It proves physical custody only, not graph-owner retirement. Actual shutdown
+releases known custody leases on control and retains its actual join/pool report.
+Only successful accounted shutdown yields a private sealed cleanup receipt;
+receipt consumption returns the actual report, and outstanding proof rows block
+report consumption/slot reuse. Busy, missing/panicked/incomplete reports never
+produce completion. Legacy normal/terminal callback return transports unchanged.
+
+Audio binds a reservation to its private claim root/incarnation and unique
+runtime identity in the already allocated claim slot. Closing/rollback cannot
+discard it; exact cancellation restores the original token on refusal. Current
+full claim admission still refuses, so this binding has no enabled publication
+producer. The post-disposal API consumes PublicationAnchors, never reconstructs
+a disposed PlaybackClaims, and currently returns original anchors plus token as
+Incomplete. Its eventual success owns anchored graph claims, restricted prepared
+root and stream cleanup waiter. The authoritative control-disposal/final-transfer
+boundary and claim-bound cleanup-fact ingestion are not implemented; no fake
+proof is supplied. Entire graph/cached catalog charges remain retained. No
+callback forwarding, preroll, provider expansion or whole24/native claim.
+
+The standalone control reaper tests call shutdown outside any media-root mutex.
+This does not establish native integration: existing NativeStreamRoot::tick
+still calls legacy reclaim_receiver while holding that mutex. Before enabling
+the new claim path, lifecycle must take actual cleanup custody into persistent
+control-owned storage with a Busy marker, perform teardown outside the mutex,
+and restore/retain all reports and owners on uncertainty. This unit neither
+changes that legacy ordering nor claims native unlocked cleanup is complete.
+Successful physical lease-move tests observe zero allocation/free and unchanged
+actual catalog-owner counts with an allocating positive control; they are not
+whole-callback, hard-real-time or native acceptance evidence.

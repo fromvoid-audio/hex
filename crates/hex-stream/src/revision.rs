@@ -134,6 +134,9 @@ impl VerifiedOwnedStreamRevision {
         }
         Ok(Self { revision, catalog })
     }
+    pub(crate) fn catalog_on_control(&self) -> &CatalogLease {
+        &self.catalog
+    }
     pub fn metadata(&self) -> hex_engine::OwnedPreparedRevisionView<'_> {
         self.revision.metadata()
     }

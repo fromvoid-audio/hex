@@ -229,7 +229,7 @@ fn capacity_report_counts_actual_slots_and_each_catalog_once_not_per_lease() {
     finish(batch, terminal, root);
 }
 
-fn damaged_input(panic_worker: bool) -> MediaDomainInput {
+pub(super) fn damaged_input(panic_worker: bool) -> MediaDomainInput {
     use crate::{
         TransportSetupObservation,
         construction_transport::{PreparedTransport, SetupFaults},
