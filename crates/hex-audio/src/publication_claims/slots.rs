@@ -457,32 +457,21 @@ impl ClaimUnionSlots {
             Ok(s) => s,
             Err(e) => return Err((e, receipt)),
         };
-        let flag = match receipt.fact {
-            Fact::Role(role) if role < 5 => &mut s.facts.inherited_roles,
-            Fact::Role(_) => return Err((ClaimSlotError::Incomplete, receipt)),
-            _ => {
-                let flag = match receipt.fact {
-                    Fact::CatalogAccounted => &mut s.facts.catalog_accounted,
-                    Fact::Quiescent => &mut s.facts.quiescent,
-                    _ => return Err((ClaimSlotError::Incomplete, receipt)),
-                };
-                if *flag {
-                    return Err((ClaimSlotError::Duplicate, receipt));
-                }
-                *flag = true;
-                return Ok(());
-            }
-        };
-        let Fact::Role(role) = receipt.fact else {
-            return Err((ClaimSlotError::Incomplete, receipt));
-        };
-        let bit = 1 << role;
-        if *flag & bit != 0 {
-            return Err((ClaimSlotError::Duplicate, receipt));
+        if s.phase != Phase::Accepted {
+            return Err((ClaimSlotError::Busy, receipt));
         }
-        *flag |= bit;
-        Ok(())
+        // Accepted custody alone cannot freeze a role: a later owner transfer
+        // could invalidate an earlier retirement fact. No sealed final-transfer
+        // proof producer exists yet, so ALL facts conservatively remain refused.
+        // Inspect the kind only; never mutate protection/retirement state.
+        match receipt.fact {
+            Fact::Role(role) if role >= 5 => Err((ClaimSlotError::Incomplete, receipt)),
+            Fact::Role(_) | Fact::CatalogAccounted | Fact::Quiescent => {
+                Err((ClaimSlotError::Incomplete, receipt))
+            }
+        }
     }
+
     pub(crate) fn fault(
         &mut self,
         a: &ClaimAssociation,
@@ -643,38 +632,45 @@ mod tests {
     fn ack_boxreturn_missing_duplicate_stale_and_incomplete_facts_never_free() {
         let mut root = ClaimUnionSlots::new(reservation()).unwrap();
         let a = root.reserve_storage().unwrap();
-        let slot = &mut root.slots[a.slot];
-        slot.phase = Phase::Accepted; // private protocol model, no graph admission
         let bytes = root.report.bytes;
-        assert!(!root.slots[a.slot].facts.ready()); // ACK does not add a retirement fact
+        // Pre-acceptance receipt is refused before any fact mutation.
+        assert!(matches!(
+            root.receipt(receipt(&a, Fact::Role(0))),
+            Err((ClaimSlotError::Busy, _))
+        ));
+        root.slots[a.slot].phase = Phase::Accepted; // private model, no graph admission
         root.slots[a.slot].facts.custody_returned = true;
-        assert!(!root.slots[a.slot].facts.ready()); // Box return alone insufficient
-        for role in 0..5 {
-            assert!(root.receipt(receipt(&a, Fact::Role(role))).is_ok());
+        for fact in [
+            Fact::Role(0),
+            Fact::Role(4),
+            Fact::CatalogAccounted,
+            Fact::Quiescent,
+        ] {
             assert!(matches!(
-                root.receipt(receipt(&a, Fact::Role(role))),
-                Err((ClaimSlotError::Duplicate, _))
+                root.receipt(receipt(&a, fact)),
+                Err((ClaimSlotError::Incomplete, _))
             ));
+            assert_eq!(root.slots[a.slot].facts.inherited_roles, 0);
+            assert!(!root.slots[a.slot].facts.catalog_accounted);
+            assert!(!root.slots[a.slot].facts.quiescent);
             assert_eq!(root.report.bytes, bytes);
         }
-        assert!(!root.slots[a.slot].facts.ready()); // catalog fact still missing
-        root.fault(&a, false).unwrap();
-        assert!(root.receipt(receipt(&a, Fact::CatalogAccounted)).is_ok());
-        assert!(!root.slots[a.slot].facts.ready()); // terminal quiescence missing
-        assert!(root.receipt(receipt(&a, Fact::Quiescent)).is_ok());
-        assert!(root.slots[a.slot].facts.ready()); // only closed fact-model predicate
+        // Repeated assertions cannot acquire retirement authority.
+        assert!(matches!(
+            root.receipt(receipt(&a, Fact::Role(0))),
+            Err((ClaimSlotError::Incomplete, _))
+        ));
+        assert!(!root.slots[a.slot].facts.ready());
         assert!(matches!(
             root.take_ready(token(&root, a.slot)),
             Err((ClaimSlotError::RetirementPending, _))
-        )); // no real sealed owner/anchors: still refused
+        ));
         root.fault(&a, true).unwrap();
-        assert!(!root.slots[a.slot].facts.ready());
         root.close_unstaged();
         assert_eq!(
             root.phase(),
             hex_stream::MediaCleanupPhase::FailedIncomplete
         );
-        assert_eq!(root.report.bytes, bytes);
         let mut stale = receipt(&a, Fact::Quiescent);
         stale.incarnation += 1;
         assert!(matches!(

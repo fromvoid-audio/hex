@@ -412,3 +412,10 @@ slots retain custody. The actual-root test observes control-thread disposal
 outside that mutex. The existing native publisher still refuses owned origin;
 sealed render/handoff delegation is the next engine seam, not public raw mutable
 access. No typed production publication, preroll or whole24/native claim exists.
+
+Closed lifecycle roots reject publication preflight and staging before slot
+reservation or owner moves; staging refusal returns all sealed inputs. Receipt
+input requires Accepted phase and currently refuses every fact as Incomplete:
+accepted custody/incarnation alone cannot prove a final transfer boundary that
+prevents later dormant owner transfers from invalidating completed roles. No
+catalog cleanup receipt or role fact is manufactured by this infrastructure.

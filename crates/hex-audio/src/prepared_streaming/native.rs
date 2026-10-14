@@ -456,6 +456,7 @@ mod claim_storage_tests {
                 *result.lock().unwrap() =
                     Some((std::thread::current().id(), actual.try_lock().is_ok()));
             }));
+        assert!(root.lock().bridge.claim_publication_open().is_ok());
         let token = root
             .lock()
             .bridge
@@ -469,6 +470,10 @@ mod claim_storage_tests {
         let _ = root.tick(true); // concurrent-style busy marker cannot clear/recreate root
         assert!(root.lock().bridge.claim_union_enabled);
         assert!(root.lock().bridge.claim_union.is_none());
+        assert!(matches!(
+            root.lock().bridge.claim_publication_open(),
+            Err(ClaimSlotError::Busy)
+        ));
         assert!(observed.lock().unwrap().is_none());
         root.lock().bridge.claim_union = Some(held);
         let _ = root.tick(true); // only unstaged/no-owner reservation may be cancelled

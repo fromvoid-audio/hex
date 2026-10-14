@@ -558,6 +558,13 @@ impl StreamBridgeControl {
             .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
             .reserve_storage()
     }
+    fn claim_publication_open(&self) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        if self.claim_union_closed {
+            Err(crate::publication_claims::ClaimSlotError::Busy)
+        } else {
+            Ok(())
+        }
+    }
     pub fn preflight_claim_publication_on_control(
         &mut self,
         input: &crate::publication_claims::PublicationClaims,
@@ -565,6 +572,7 @@ impl StreamBridgeControl {
         crate::publication_claims::ClaimAssociation,
         crate::publication_claims::ClaimSlotError,
     > {
+        self.claim_publication_open()?;
         self.claim_union
             .as_mut()
             .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
@@ -597,6 +605,14 @@ impl StreamBridgeControl {
         ),
         Box<crate::publication_claims::ClaimStageRefusal>,
     > {
+        if let Err(reason) = self.claim_publication_open() {
+            return Err(Box::new(crate::publication_claims::ClaimStageRefusal {
+                reason,
+                association: token,
+                owner,
+                anchors,
+            }));
+        }
         match self.claim_union.as_mut() {
             Some(slots) => slots.stage(token, owner, anchors),
             None => Err(Box::new(crate::publication_claims::ClaimStageRefusal {
