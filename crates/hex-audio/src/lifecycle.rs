@@ -602,16 +602,34 @@ fn retire_prepared_output(retirement: Retirement) {
             }
             NativeQuiescence::Proved => {}
         }
+        // Cleanup-custody -> ordinary-state lock order. The permit releases
+        // ordinary state before terminal carrier/callback destruction. Neither
+        // backend guard nor callback rendering ever acquires this mutex.
+        let disposal_root = retirement.media_root.clone(); // control preflight anchor, never callback
+        let disposal_permit = match disposal_root.as_ref() {
+            Some(root) => match root.cleanup_permit() {
+                Ok(permit) => Some(permit),
+                Err(phase) => {
+                    retirement.failed_incomplete |=
+                        phase == hex_stream::MediaCleanupPhase::FailedIncomplete;
+                    retain_pending(retirement);
+                    return;
+                }
+            },
+            None => None,
+        };
         let terminal = retirement
             .terminal
             .as_mut()
             .expect("retained terminal custody");
         let Some(owner) = terminal.try_take() else {
+            drop(disposal_permit);
             retain_pending(retirement);
             return;
         };
         // No root mutex is held: Callback::drop itself returns media into it.
         drop(owner);
+        drop(disposal_permit);
         retirement.terminal = None;
     }
     while retirement

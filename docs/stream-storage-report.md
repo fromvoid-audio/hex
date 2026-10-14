@@ -473,3 +473,37 @@ changes that legacy ordering nor claims native unlocked cleanup is complete.
 Successful physical lease-move tests observe zero allocation/free and unchanged
 actual catalog-owner counts with an allocating positive control; they are not
 whole-callback, hard-real-time or native acceptance evidence.
+
+## partial native outside-lock cleanup custody
+
+NativeRootOwner now preanchors ordinary state and a companion CONTROL-only
+cleanup mutex in the same allocation. Actual inline capsule/receiver/panic slot
+and existing identity-handle sizes are charged in root storage before caller
+path preparation. The existing bridge tag anchors exact root identity; checked
+extraction incarnation and vacant destinations guard reconciliation. No new
+reaper executor, global registry, domain cap, callback lock or provider API.
+
+Tick and restricted report consumption move actual bridge/preparation/return
+receiver into persistent custody before releasing ordinary state. Only a borrow
+crosses catch_unwind. Graph/container/catalog disposal and shutdown/join run
+outside the ordinary mutex; failed/panicked/mismatched custody stays faulted with
+actual reports and the first cleanup payload, and destructive retry is refused.
+Closing is sticky through reconciliation. UI publication/preparation/status
+refuses Busy while custody is away, preserving original input/path allocations.
+Headless exclusive bridge reclaim remains unchanged. The idle terminal-disposal
+permit holds only control custody, with ordinary state unlocked; native lifecycle
+acquires it before taking coupled terminal owners and retains terminal custody
+on Busy/fault. Backend guards/rendering never acquire this mutex.
+
+This checkpoint is NOT complete native lifecycle custody. Existing
+retire_prepared_output still owns Retirement on its stack and calls drop(owner)
+outside the borrowed cleanup-capsule catch. Actual NativeCallbackOwner's retained
+panic payload can itself panic in Drop. A real-owner negative control confirms
+that failure is outside the capsule latch; in production it can unwind the
+stack-owned Retirement/lease. Before claiming completion, the lifecycle executor
+needs persistent bounded Retirement/terminal-disposal custody through a borrowed
+catch, an incomplete disposal tombstone and retained destructor-panic payload.
+Do not reconstruct a partially destroyed Box or invent cleanup/role completion.
+This further ownership contract is escalated before implementation. Full claim
+admission/disposal-role proofs remain refused, with no callback publication,
+provider expansion, preroll, native100-track or hardware performance claim.
