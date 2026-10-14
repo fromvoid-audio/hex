@@ -1856,16 +1856,19 @@ fn run_worker(
             })
         });
         let (playback, streamed_playback) = match playback {
-            Some(playback)
-                if playback
-                    .prepared_revision()
-                    .is_some_and(|graph| graph.contains_streamed_sources()) =>
-            {
-                match session.streamed_candidate(playback, project_generation, revision) {
+            Some(playback) if playback.contains_streamed_sources() => {
+                match session.streamed_candidate_recovering(playback, project_generation, revision)
+                {
                     Ok(candidate) => (None, Some(candidate)),
-                    Err(reason) => {
+                    Err((reason, playback)) => {
                         error = Some(reason.to_string());
-                        (None, None)
+                        if playback.prepared_origin()
+                            == hex_engine::playback::PreparedOrigin::OwnedMetadata
+                        {
+                            (Some(*playback), None) // Retain refused opt-in input; never resident fallback.
+                        } else {
+                            (None, None)
+                        } // Existing legacy refusal behavior.
                     }
                 }
             }

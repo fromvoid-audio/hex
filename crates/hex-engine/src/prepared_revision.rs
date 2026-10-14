@@ -74,9 +74,9 @@ impl PreparedMutableTrackRevision {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
-    arrangement: Arc<PlaybackProject>,
-    session: Arc<PreparedSessionInventory>,
-    midi_preview: Arc<MidiArrangementPreview>,
+    arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
+    session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
+    midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
 }
 
@@ -137,7 +137,7 @@ impl PreparedRevision {
                 Some(Arc::clone(&sine_table)),
                 &effects,
                 instruments,
-                Some(Arc::clone(&shared_contexts)),
+                Some(shared_contexts.clone_on_control()),
             )?;
         let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
             project,
@@ -165,9 +165,9 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
         })
     }
@@ -225,7 +225,7 @@ impl PreparedRevision {
                 sources,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
-                Some(Arc::clone(&shared_contexts)),
+                Some(shared_contexts.clone_on_control()),
             )?;
         let session =
             PreparedSessionInventory::prepare_with_prepared_audio_sources_and_shared_contexts(
@@ -255,9 +255,9 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
         })
     }
@@ -587,5 +587,212 @@ mod owned_storage_tests {
             assert_eq!(revision.mutable_track_revisions.len(), 1);
             assert_eq!(Arc::strong_count(&revision), strong);
         }
+    }
+}
+
+impl PreparedRevision {
+    pub fn into_owned_shared(self) -> crate::OwnedPreparedRevision {
+        crate::OwnedPreparedRevision::new(self)
+    }
+    pub(crate) fn arrangement_owner(&self) -> &crate::owned_shared::OwnedShared<PlaybackProject> {
+        &self.arrangement
+    }
+    pub(crate) fn session_owner(
+        &self,
+    ) -> &crate::owned_shared::OwnedShared<PreparedSessionInventory> {
+        &self.session
+    }
+    pub(crate) fn preview_owner(
+        &self,
+    ) -> &crate::owned_shared::OwnedShared<MidiArrangementPreview> {
+        &self.midi_preview
+    }
+}
+
+#[cfg(test)]
+mod owned_ingress_tests {
+    use super::*;
+    use crate::{
+        owned_shared::OwnedShared,
+        playback::{Playback, PreparedOrigin},
+    };
+    #[test]
+    fn owned_ingress_recovers_exact_owner_and_receipt_on_preflight_refusal() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap();
+        let mut value = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap();
+        // Accounting-only invalid fixture, never published: force the existing
+        // exact Arrangement/Session track mismatch before any root clone.
+        value.arrangement = OwnedShared::new_owned(PlaybackProject::new(48_000, vec![]).unwrap());
+        let owner = value.into_owned_shared();
+        let before = owner.owner.parts();
+        let alias = owner.clone_on_control();
+        assert_eq!(Arc::strong_count(owner.owner.arc()), 2);
+        crate::owned_shared::reset_clone_count();
+        let Err((error, returned)) = Playback::try_from_owned_prepared_with_session(owner) else {
+            panic!("expected mismatch")
+        };
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert_eq!(error, crate::SessionPlaybackError::RevisionTrackMismatch);
+        assert!(Arc::ptr_eq(returned.owner.arc(), alias.owner.arc()));
+        assert_eq!(returned.owner.parts(), before);
+        assert_eq!(Arc::strong_count(returned.owner.arc()), 2);
+        assert_eq!(returned.metadata().sample_rate(), 48_000);
+        assert!(!returned.metadata().contains_streamed_sources());
+    }
+    #[test]
+    fn owned_metadata_and_playback_identity_do_not_expose_the_legacy_arc() {
+        let canonical = Project::new(48_000).unwrap();
+        let make = || {
+            PreparedRevision::prepare(
+                &canonical,
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap()
+        };
+        let owner = make().into_owned_shared();
+        let alias = owner.clone_on_control();
+        let independent = make().into_owned_shared();
+        let playback = Playback::try_from_owned_prepared_with_session(owner)
+            .ok()
+            .unwrap();
+        assert_eq!(playback.prepared_origin(), PreparedOrigin::OwnedMetadata);
+        assert!(playback.prepared_revision().is_none());
+        assert_eq!(playback.owned_metadata().unwrap().sample_rate(), 48_000);
+        assert!(playback.same_prepared_owner(&alias));
+        assert!(!playback.same_prepared_owner(&independent));
+        assert_eq!(Arc::strong_count(alias.owner.arc()), 3); // Runtime, Playback, tracked alias.
+        let mut playback = playback;
+        crate::owned_shared::reset_clone_count();
+        playback.apply(crate::playback::PlaybackCommand::Play);
+        let mut frames = [[0.0; 2]; 64];
+        playback.render(&mut frames).unwrap();
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert!(playback.same_prepared_owner(&alias));
+        assert_eq!(Arc::strong_count(alias.owner.arc()), 3);
+        let positive = alias.clone_on_control();
+        assert_eq!(crate::owned_shared::clone_count(), 1);
+        drop(positive);
+        let legacy = Playback::try_from_prepared_with_session(Arc::new(make())).unwrap();
+        assert_eq!(legacy.prepared_origin(), PreparedOrigin::LegacyArc);
+        assert!(legacy.prepared_revision().is_some());
+        assert!(legacy.owned_metadata().is_none());
+        assert!(!legacy.same_prepared_owner(&alias));
+    }
+}
+
+#[cfg(test)]
+mod owned_report_tests {
+    use super::*;
+    use crate::{
+        playback::Playback,
+        storage_report::{
+            StorageCharge, StorageOwner, StorageReportError, UnknownStorageReason,
+            owned_tests::Sink,
+        },
+    };
+    #[test]
+    fn paired_root_parent_sizes_alias_dedup_and_every_partial_refusal_are_truthful() {
+        let canonical = Project::new(48_000).unwrap();
+        let owner = PreparedRevision::prepare(
+            &canonical,
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap()
+        .into_owned_shared();
+        let alias = owner.clone_on_control();
+        let root_receipt = owner.owner.parts();
+        let mut playback = Playback::try_from_owned_prepared_with_session(owner)
+            .ok()
+            .unwrap();
+        let before = Arc::strong_count(alias.owner.arc());
+        let mut sink = Sink::new(512);
+        let summary = playback.visit_storage_on_control(&mut sink).unwrap();
+        assert!(summary.require_complete().is_err());
+        let roots: Vec<_> = sink.items.iter().filter(|item| item.location.component == "arc.pointee" && matches!(item.owner, StorageOwner::Shared(owner) if owner.category() == "prepared_revision")).collect();
+        assert_eq!(roots.len(), 2); // Playback and its Session runtime alias one root.
+        for item in &roots {
+            assert!(
+                matches!(item.charge, StorageCharge::MeasuredData { bytes, .. } if bytes == std::mem::size_of::<PreparedRevision>())
+            );
+        }
+        let owner_ref = |index: usize| {
+            let StorageOwner::Shared(owner) = roots[index].owner else {
+                panic!("root")
+            };
+            owner
+        };
+        assert!(owner_ref(0).same_allocation(owner_ref(1)));
+        assert!(sink.items.iter().any(|item| matches!(
+            item.charge,
+            StorageCharge::Unknown(UnknownStorageReason::RetirementReceipt)
+        )));
+        if let Some((payload, overhead)) = root_receipt {
+            assert_eq!(payload, std::mem::size_of::<PreparedRevision>());
+            assert!(sink.items.iter().any(|item| item.location.component == "arc.owner_overhead" && matches!(item.charge, StorageCharge::OwnerOverheadDeclared { bytes, .. } if bytes == overhead)));
+        }
+        assert_eq!(Arc::strong_count(alias.owner.arc()), before);
+        let count = sink.items.len();
+        drop(sink);
+        for limit in 0..count {
+            let mut sink = Sink::new(limit);
+            assert_eq!(
+                playback.visit_storage_on_control(&mut sink),
+                Err(StorageReportError::SinkCapacity)
+            );
+            assert_eq!(Arc::strong_count(alias.owner.arc()), before);
+            assert_eq!(playback.position(), 0);
+            // No partial sink is reused as an admission receipt.
+        }
+    }
+    #[test]
+    fn restricted_metadata_queries_have_stable_ids_and_borrow_only_leaf_samples() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "TrackName".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let hex_project::Created::Scene(scene) = editor
+            .execute(hex_project::Command::AddScene {
+                name: "SceneName".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let root = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap()
+        .into_owned_shared();
+        let view = root.metadata();
+        assert_eq!(view.track_ids().collect::<Vec<_>>(), [track]);
+        assert_eq!(
+            view.scene_names().collect::<Vec<_>>(),
+            [(scene, "SceneName")]
+        );
+        assert_eq!(view.streamed_sources().count(), 0);
+        assert_eq!(Arc::strong_count(root.owner.arc()), 1);
     }
 }

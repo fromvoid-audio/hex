@@ -230,8 +230,8 @@ pub(crate) type NoteKeys = Vec<u16>;
 
 pub(crate) fn prepare_silent(
     keys: &mut NoteKeys,
-    previous: Option<&Arc<PreparedMidiNoteBank>>,
-) -> Result<Arc<PreparedMidiNoteBank>, Invalid> {
+    previous: Option<&crate::owned_shared::OwnedShared<PreparedMidiNoteBank>>,
+) -> Result<crate::owned_shared::OwnedShared<PreparedMidiNoteBank>, Invalid> {
     PreparedMidiNoteBank::prepare(keys, &SilentInstrument, previous, None)
 }
 
@@ -261,8 +261,8 @@ fn silent_sample(
 }
 
 impl PreparedMidiNoteBank {
-    pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
+        crate::owned_shared::OwnedShared::new_owned(Self {
             entries: Vec::new(),
             context_id: None,
             context_index: None,
@@ -290,9 +290,9 @@ impl PreparedMidiNoteBank {
     pub(crate) fn prepare(
         keys: &mut NoteKeys,
         instrument: &dyn PreparedNativeInstrument,
-        previous: Option<&Arc<Self>>,
+        previous: Option<&crate::owned_shared::OwnedShared<Self>>,
         shared_context: Option<(u16, &SharedContextOwner)>,
-    ) -> Result<Arc<Self>, Invalid> {
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
         keys.sort_unstable();
         keys.dedup();
         let count = keys.len();
@@ -323,7 +323,7 @@ impl PreparedMidiNoteBank {
         if let Some(previous) =
             previous.filter(|bank| bank.matches(keys, count, context_id, context_index))
         {
-            return Ok(Arc::clone(previous));
+            return Ok(previous.clone_on_control());
         }
         let mut entries = Vec::new();
         entries
@@ -356,7 +356,7 @@ impl PreparedMidiNoteBank {
                 "midi note bank admission changed during preparation",
             ));
         }
-        Ok(Arc::new(Self {
+        Ok(crate::owned_shared::OwnedShared::new_owned(Self {
             entries,
             context_id,
             context_index,
@@ -418,6 +418,9 @@ impl PreparedMidiNoteBank {
         Ok(())
     }
 
+    // Preserve the existing payload/index/legacy Arc-handle guard definition.
+    // New receipt fields are charged in actual containing graph/Vec sizes by
+    // the control visitor; this historical guard is not total graph accounting.
     pub(crate) fn storage_bytes(&self) -> Result<usize, Invalid> {
         self.entries
             .capacity()

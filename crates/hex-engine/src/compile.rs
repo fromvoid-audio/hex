@@ -114,7 +114,9 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     sources: &BTreeMap<AssetId, PreparedAudioSource>,
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
@@ -187,7 +189,9 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview(
         snapshot,
@@ -205,7 +209,9 @@ fn compile_with_midi_preview<'a>(
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -243,7 +249,9 @@ fn compile_project<'a>(
     _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
@@ -357,7 +365,7 @@ fn compile_project<'a>(
                         .instrument()
                         .and_then(|device| shared_contexts.index_for_device(device.id()))
                         .and_then(|index| shared_contexts.owner(index).map(|owner| (index, owner))),
-                    Arc::clone(&shared_contexts),
+                    shared_contexts.clone_on_control(),
                     previews.as_deref_mut(),
                 )?
                 .ok_or(Invalid("instrument content missing after compile"))?,

@@ -91,8 +91,11 @@ fn actual_capacity_nested_owner_identity_and_strong_counts() {
         i.charge,
         StorageCharge::Unknown(UnknownStorageReason::ArcOwnerOverhead)
     )));
-    assert!(sink.items().filter(|i| matches!(i.charge, StorageCharge::OwnerOverheadDeclared { .. }))
-        .all(|i| matches!(i.owner, StorageOwner::Shared(owner) if owner.category() == "resident_pcm")));
+    assert!(
+        sink.items()
+            .filter(|i| matches!(i.charge, StorageCharge::OwnerOverheadDeclared { .. }))
+            .all(|i| matches!(i.owner, StorageOwner::Shared(_)))
+    );
 }
 #[test]
 fn bounded_sink_refusal_changes_no_runtime_or_owners() {

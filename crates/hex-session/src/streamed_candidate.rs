@@ -180,18 +180,50 @@ impl Session {
         project_generation: u64,
         editor_revision: u64,
     ) -> Result<StreamedCandidate, SessionError> {
+        self.streamed_candidate_recovering(playback, project_generation, editor_revision)
+            .map_err(|(error, _playback)| error)
+    }
+    /// Control-only candidate construction. Every API refusal returns the
+    /// original Playback in a control-allocated recovery Box; no clone, publication
+    /// or worker owner escapes. Process-fatal Box OOM/abort is excluded, as in
+    /// existing control allocation APIs. This is not complete construction admission.
+    pub fn streamed_candidate_recovering(
+        &self,
+        playback: Playback,
+        project_generation: u64,
+        editor_revision: u64,
+    ) -> Result<StreamedCandidate, (SessionError, Box<Playback>)> {
+        let paths = match self.streamed_candidate_paths(&playback, project_generation) {
+            Ok(paths) => paths,
+            Err(error) => return Err((error, Box::new(playback))),
+        };
+        Ok(StreamedCandidate {
+            format_version: 1,
+            project_generation,
+            editor_revision,
+            playback,
+            paths,
+        })
+    }
+    fn streamed_candidate_paths(
+        &self,
+        playback: &Playback,
+        project_generation: u64,
+    ) -> Result<Vec<SourcePath>, SessionError> {
         if self.stream_generation != Some(project_generation) {
             return Err(SessionError::Invalid("stale streamed candidate context"));
         }
-        let prepared = playback.prepared_revision().ok_or(SessionError::Invalid(
-            "streamed candidate requires prepared playback",
-        ))?;
+        let bindings = playback
+            .streamed_source_metadata()
+            .ok_or(SessionError::Invalid(
+                "streamed candidate requires prepared playback",
+            ))?;
         let mut keys = BTreeSet::new();
         let mut paths = Vec::new();
         paths
             .try_reserve_exact(self.media.len())
             .map_err(|_| SessionError::Allocation)?;
-        for facts in prepared.streamed_sources() {
+        for facts in bindings {
             let asset = self
                 .media
                 .get(&facts.key().asset())
@@ -214,12 +246,42 @@ impl Session {
                 paths.push((facts.key(), path.clone(), *limits));
             }
         }
-        Ok(StreamedCandidate {
-            format_version: 1,
-            project_generation,
-            editor_revision,
-            playback,
-            paths,
-        })
+        Ok(paths)
+    }
+}
+
+#[cfg(test)]
+mod owned_tests {
+    use super::*;
+    #[test]
+    fn opt_in_compile_metadata_legacy_behavior_and_refusal_preserve_actual_owner() {
+        let session = Session::new(48_000, 8, 100_000).unwrap();
+        let owner = session.compile_owned_prepared_revision(None).unwrap();
+        let alias = owner.clone_on_control();
+        assert_eq!(owner.metadata().sample_rate(), 48_000);
+        assert_eq!(owner.metadata().track_ids().count(), 0);
+        assert_eq!(owner.metadata().scene_names().count(), 0);
+        let playback = Playback::try_from_owned_prepared_with_session(owner)
+            .ok()
+            .unwrap();
+        let Err((error, returned)) = session.streamed_candidate_recovering(playback, 7, 1) else {
+            panic!("stale generation")
+        };
+        assert!(matches!(
+            error,
+            SessionError::Invalid("stale streamed candidate context")
+        ));
+        assert!(returned.same_prepared_owner(&alias));
+        assert!(returned.prepared_revision().is_none());
+        assert!(returned.owned_metadata().is_some());
+        let legacy = session.compile_prepared_revision(None).unwrap();
+        assert_eq!(
+            legacy.arrangement().sample_rate(),
+            alias.metadata().sample_rate()
+        );
+        assert_eq!(
+            legacy.streamed_sources().count(),
+            alias.metadata().streamed_sources().count()
+        );
     }
 }

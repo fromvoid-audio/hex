@@ -163,6 +163,10 @@ impl EditorView {
                 .pending_playback
                 .as_ref()
                 .is_none_or(|pending| pending.streamed_paths.is_none())
+            && self.pending_playback.as_ref().is_none_or(|pending| {
+                pending.playback.prepared_origin()
+                    != hex_engine::playback::PreparedOrigin::OwnedMetadata
+            })
             && let Some(pending) = self.pending_playback.take()
         {
             let prepared_revision = pending
@@ -1071,6 +1075,14 @@ impl EditorView {
                 pending_playback_for_state(source_state, self.project_generation, playback);
             pending.prepared_revision = prepared_revision;
             pending.streamed_paths = streamed_paths;
+            if pending.playback.prepared_origin()
+                == hex_engine::playback::PreparedOrigin::OwnedMetadata
+            {
+                replace_error(
+                    &mut self.error,
+                    "project playback preparation is not yet supported",
+                );
+            }
             pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
                 event.project_replaced,

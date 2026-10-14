@@ -13,16 +13,7 @@ enum PcmArcOrigin {
 }
 impl PcmArcReceipt {
     pub(crate) fn current(len: usize) -> Option<Self> {
-        let native = match option_env!("HEX_PCM_ARC_LAYOUT_TARGET") {
-            Some("x86_64-unknown-linux-gnu") => cfg!(all(
-                target_arch = "x86_64",
-                target_os = "linux",
-                target_env = "gnu"
-            )),
-            Some("aarch64-apple-darwin") => cfg!(all(target_arch = "aarch64", target_os = "macos")),
-            _ => false,
-        };
-        let known = native && option_env!("HEX_PCM_ARC_LAYOUT_KNOWN") == Some("1");
+        let known = native_layout_known();
         Self::capture(
             len,
             if known {
@@ -54,6 +45,19 @@ impl PcmArcReceipt {
         (self.len == len).then_some((self.payload_bytes, self.overhead_bytes))
     }
 }
+pub(crate) fn native_layout_known() -> bool {
+    let native = match option_env!("HEX_PCM_ARC_LAYOUT_TARGET") {
+        Some("x86_64-unknown-linux-gnu") => cfg!(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_env = "gnu"
+        )),
+        Some("aarch64-apple-darwin") => cfg!(all(target_arch = "aarch64", target_os = "macos")),
+        _ => false,
+    };
+    native && option_env!("HEX_PCM_ARC_LAYOUT_KNOWN") == Some("1")
+}
+
 #[cfg(test)]
 #[path = "../build_support/pcm_gate.rs"]
 mod build_gate_tests;

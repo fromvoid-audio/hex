@@ -2,6 +2,7 @@
 
 use crate::Invalid;
 use hex_project::ClipId;
+#[cfg(test)]
 use std::sync::Arc;
 
 /// Maximum exact note samples retained for one MIDI clip preview.
@@ -31,13 +32,13 @@ pub struct MidiClipPreview {
 /// Immutable project-wide preview index. Clips are sorted by ID for O(log n) lookup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MidiArrangementPreview {
-    clips: Arc<[MidiClipPreview]>,
+    clips: crate::owned_shared::OwnedShared<[MidiClipPreview]>,
 }
 
 impl MidiArrangementPreview {
     pub(crate) fn from_sorted_clips(clips: Vec<MidiClipPreview>) -> Self {
         Self {
-            clips: clips.into(),
+            clips: crate::owned_shared::OwnedShared::from_owned_vec(clips),
         }
     }
 
@@ -108,7 +109,7 @@ impl MidiArrangementPreview {
         report: &mut crate::storage_report::Report<'a, '_, V>,
     ) -> Result<(), crate::storage_report::StorageReportError> {
         let Self { clips } = self;
-        let owner = report.arc(clips, "midi_preview_clips")?;
+        let owner = report.owned_arc(clips, "midi_preview_clips")?;
         for (index, clip) in clips.iter().enumerate() {
             let MidiClipPreview {
                 clip_id: _,

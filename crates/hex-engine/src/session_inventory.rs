@@ -24,7 +24,8 @@ struct PreparedTrackInstrumentConfig {
     device_id: Option<DeviceId>,
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
-    note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
+    note_bank:
+        Option<crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
@@ -129,8 +130,8 @@ pub struct PreparedSessionMidiClip {
     pub scene: SceneId,
     pub name: String,
     source_identity: MidiSourceIdentity,
-    source: Arc<PreparedMidiSourceTemplate>,
-    instrument: Arc<PreparedMidiInstrumentTemplate>,
+    source: crate::owned_shared::OwnedShared<PreparedMidiSourceTemplate>,
+    instrument: crate::owned_shared::OwnedShared<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_enabled: bool,
@@ -290,7 +291,8 @@ pub struct PreparedSessionInventory {
     contains_streamed_sources: bool,
     midi_note_bank_storage_bytes: usize,
     midi_note_bank_reference_count: usize,
-    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts:
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
 }
 
 impl std::fmt::Debug for PreparedSessionInventory {
@@ -359,7 +361,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver(
             project,
@@ -402,7 +406,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         if expected_generation == 0 {
             return Err(crate::Invalid("stream source generation must be positive"));
@@ -424,7 +430,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+        shared_contexts: Option<
+            crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
         mut resolve_source: impl FnMut(
             &'a hex_project::Asset,
             u32,
@@ -650,7 +658,7 @@ impl PreparedSessionInventory {
                                 && clip.instrument_enabled == enabled
                         })
                     })
-                    .map(|clip| Arc::clone(clip.instrument.note_bank()));
+                    .map(|clip| clip.instrument.note_bank().clone_on_control());
                 config.note_bank = Some(
                     previous_bank
                         .unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
@@ -672,7 +680,7 @@ impl PreparedSessionInventory {
                                     && clip.instrument_state == config.state
                                     && clip.instrument_enabled == enabled
                             })
-                            .map(|clip| Arc::clone(clip.instrument.note_bank()))
+                            .map(|clip| clip.instrument.note_bank().clone_on_control())
                     })
                 })
                 .flatten();
@@ -807,9 +815,9 @@ impl PreparedSessionInventory {
                                 && old.instrument_enabled == instrument_enabled
                         });
                     let source = if let Some(old) = cached {
-                        Arc::clone(&old.source)
+                        old.source.clone_on_control()
                     } else {
-                        Arc::new(
+                        crate::owned_shared::OwnedShared::new_owned(
                             PreparedMidiSourceTemplate::prepare_source(
                                 cell.track(),
                                 clip.id(),
@@ -826,18 +834,18 @@ impl PreparedSessionInventory {
                             && old.instrument.is_event_source() == mutable_limits.is_some()
                             && old.mutable_limits == mutable_limits
                     }) {
-                        Arc::clone(&old.instrument)
+                        old.instrument.clone_on_control()
                     } else if let Some(limits) = mutable_limits {
-                        Arc::new(
+                        crate::owned_shared::OwnedShared::new_owned(
                             PreparedMidiInstrumentTemplate::prepare_events(&source, limits)
                                 .map_err(template_error)?,
                         )
                     } else {
-                        Arc::new(
+                        crate::owned_shared::OwnedShared::new_owned(
                             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                                 &source,
-                                Arc::clone(bank),
-                                Arc::clone(&shared_contexts),
+                                bank.clone_on_control(),
+                                shared_contexts.clone_on_control(),
                             )
                             .map_err(template_error)?,
                         )
@@ -856,6 +864,8 @@ impl PreparedSessionInventory {
                         .ok_or(crate::Invalid(
                             "Session MIDI note bank reference count overflow",
                         ))?;
+                    // Preserve the legacy bank-handle guard. Receipt metadata
+                    // is charged in the containing graph/Vec by the visitor.
                     midi_bank_bytes = midi_bank_bytes
                         .checked_add(std::mem::size_of::<
                             Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
@@ -1073,7 +1083,7 @@ impl PreparedSessionInventory {
 
     pub(crate) fn shared_contexts(
         &self,
-    ) -> &Arc<crate::shared_analytic::SharedAnalyticContextTable> {
+    ) -> &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
 

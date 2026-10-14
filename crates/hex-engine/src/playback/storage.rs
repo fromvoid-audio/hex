@@ -23,9 +23,9 @@ impl Playback {
             playing: _,
         } = self;
         let mut report = Report::new(sink);
-        report.project(project)?;
+        report.owned_project(project)?;
         if let Some(revision) = prepared_revision {
-            report.revision(revision)?;
+            report.owned_revision(revision)?;
         }
         if let Some(runtime) = session_runtime {
             report.data(

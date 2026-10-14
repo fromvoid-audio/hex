@@ -197,6 +197,22 @@ impl PreparedGainEnvelope {
     }
 }
 
+impl PreparedGainEnvelope {
+    pub(crate) fn visit_owned_storage<'a, V: crate::storage_report::PlaybackStorageVisitor<'a>>(
+        &self,
+        report: &mut crate::storage_report::Report<'a, '_, V>,
+        owner: crate::storage_report::StorageOwner<'a>,
+        track: usize,
+    ) -> Result<(), crate::storage_report::StorageReportError> {
+        let Self {
+            knots,
+            mix: _,
+            authored_points: _,
+        } = self;
+        report.vec(owner, "track.gain_knots", [track, 0], knots)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

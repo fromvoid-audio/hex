@@ -2,7 +2,6 @@
 use crate::Invalid;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
-use std::sync::Arc;
 
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
 /// Maximum prepared MIDI note occurrences across the entire project.
@@ -238,7 +237,9 @@ pub(crate) fn compile_instrument_track(
     instrument: Option<&dyn PreparedNativeInstrument>,
     mutable_limits: Option<MutableInstrumentLimits>,
     shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
-    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: crate::owned_shared::OwnedShared<
+        crate::shared_analytic::SharedAnalyticContextTable,
+    >,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
     // MIDI clip timing and editor previews are project data even when the

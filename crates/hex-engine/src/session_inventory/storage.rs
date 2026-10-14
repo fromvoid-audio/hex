@@ -118,9 +118,9 @@ impl PreparedSessionInventory {
         report.context_table(shared_contexts, "session_inventory_contexts")?;
         timing.visit_storage(report, owner)?;
         for clip in &self.midi_clips {
-            let owner = report.arc(&clip.source, "session_midi_source_template")?;
+            let owner = report.owned_arc(&clip.source, "session_midi_source_template")?;
             clip.source.visit_storage(report, owner)?;
-            let owner = report.arc(&clip.instrument, "session_midi_instrument_template")?;
+            let owner = report.owned_arc(&clip.instrument, "session_midi_instrument_template")?;
             clip.instrument.visit_owned_storage(report, owner)?;
         }
         Ok(())

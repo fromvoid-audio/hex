@@ -13,6 +13,8 @@ pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
 mod native_device_view;
+mod owned_prepared;
+mod owned_shared;
 mod pcm_arc;
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -20,6 +22,7 @@ pub use native_device_view::{
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
     native_effect_frequency_response,
 };
+pub use owned_prepared::{OwnedPreparedRevision, OwnedPreparedRevisionView};
 
 mod gain_envelope;
 pub use gain_envelope::{
@@ -1611,8 +1614,9 @@ pub(crate) struct InstrumentTrack {
     pub(crate) nodes: Vec<midi_compile::SpanNode>,
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
-    pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
-    pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    pub(crate) bank: crate::owned_shared::OwnedShared<midi_note_bank::PreparedMidiNoteBank>,
+    pub(crate) shared_contexts:
+        crate::owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
     pub(crate) max_active_voices: usize,
 }
@@ -1627,7 +1631,7 @@ pub struct Project {
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
-    shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: crate::owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
     /// Accounted Arrangement note-bank bytes, including each bank's entry
@@ -1714,7 +1718,9 @@ impl Project {
             loop_region,
             master_gain,
             has_streamed_sources,
-            shared_contexts: Arc::new(shared_analytic::SharedAnalyticContextTable::default()),
+            shared_contexts: owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            ),
         })
     }
 
@@ -1724,7 +1730,9 @@ impl Project {
         return_buses: Vec<ReturnBus>,
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
-        shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
         project.return_buses = return_buses;
@@ -1748,7 +1756,9 @@ impl Project {
         Ok(project)
     }
 
-    pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
+    pub(crate) fn shared_contexts(
+        &self,
+    ) -> &crate::owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
     pub fn gain_automation_capacity(&self) -> GainAutomationCapacity {

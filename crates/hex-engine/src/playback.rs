@@ -267,9 +267,15 @@ impl PlaybackHandoffError {
 }
 
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedOrigin {
+    ArrangementOnly,
+    LegacyArc,
+    OwnedMetadata,
+}
 pub struct Playback {
-    project: Arc<Project>,
-    prepared_revision: Option<Arc<PreparedRevision>>,
+    project: crate::owned_shared::OwnedShared<Project>,
+    prepared_revision: Option<crate::owned_shared::OwnedShared<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,
@@ -416,12 +422,15 @@ impl Playback {
         }
     }
     pub fn new(project: Project) -> Self {
-        Self::from_shared(Arc::new(project))
+        Self::from_project_owner(crate::owned_shared::OwnedShared::new_owned(project))
     }
 
     /// Share a control-side compiled project without recompiling or copying its graph.
     /// This constructor deliberately keeps legacy Arrangement-only behavior.
     pub fn from_shared(project: Arc<Project>) -> Self {
+        Self::from_project_owner(crate::owned_shared::OwnedShared::untracked(project))
+    }
+    fn from_project_owner(project: crate::owned_shared::OwnedShared<Project>) -> Self {
         let linear_runtime = Some(Box::new(RendererRuntime::new(&project)));
         Self {
             project,
@@ -497,8 +506,10 @@ impl Playback {
         let performance_frame = runtime.performance_frame();
         let playing = runtime.playing();
         Self {
-            project,
-            prepared_revision: Some(prepared_revision),
+            project: crate::owned_shared::OwnedShared::untracked(project),
+            prepared_revision: Some(crate::owned_shared::OwnedShared::untracked(
+                prepared_revision,
+            )),
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
@@ -523,7 +534,18 @@ impl Playback {
         session_runtime: Option<Box<SessionPlayback>>,
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
-        let project = Arc::clone(prepared_revision.arrangement());
+        Self::from_owner_parts(
+            crate::owned_shared::OwnedShared::untracked(prepared_revision),
+            session_runtime,
+            session_unavailable,
+        )
+    }
+    fn from_owner_parts(
+        prepared_revision: crate::owned_shared::OwnedShared<PreparedRevision>,
+        session_runtime: Option<Box<SessionPlayback>>,
+        session_unavailable: Option<crate::SessionPlaybackError>,
+    ) -> Self {
+        let project = prepared_revision.arrangement_owner().clone_on_control();
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()
@@ -546,8 +568,58 @@ impl Playback {
         }
     }
 
+    /// Raw Arc availability for legacy origins only. None can also mean a
+    /// sealed owned revision; inspect prepared_origin instead of inferring no graph.
     pub fn prepared_revision(&self) -> Option<&Arc<PreparedRevision>> {
-        self.prepared_revision.as_ref()
+        if self.prepared_origin() == PreparedOrigin::OwnedMetadata {
+            None
+        } else {
+            self.prepared_revision.as_ref().map(|owner| owner.arc())
+        }
+    }
+    pub fn prepared_origin(&self) -> PreparedOrigin {
+        match self.prepared_revision.as_ref() {
+            Some(owner) if owner.is_owned_origin() => PreparedOrigin::OwnedMetadata,
+            Some(_) => PreparedOrigin::LegacyArc,
+            None => PreparedOrigin::ArrangementOnly,
+        }
+    }
+    pub fn owned_metadata(&self) -> Option<crate::OwnedPreparedRevisionView<'_>> {
+        (self.prepared_origin() == PreparedOrigin::OwnedMetadata)
+            .then_some(self.prepared_revision.as_ref())
+            .flatten()
+            .map(|owner| crate::OwnedPreparedRevisionView {
+                prepared: owner.as_ref(),
+            })
+    }
+    /// Borrow source facts, not their graph/catalog owners. None means
+    /// Arrangement-only; owned prepared roots remain visible through this view.
+    pub fn streamed_source_metadata(
+        &self,
+    ) -> Option<impl Iterator<Item = &crate::StreamedSourceMetadata>> {
+        self.prepared_revision
+            .as_ref()
+            .map(|owner| owner.streamed_sources())
+    }
+    pub fn same_prepared_owner(&self, other: &crate::OwnedPreparedRevision) -> bool {
+        self.prepared_origin() == PreparedOrigin::OwnedMetadata
+            && self
+                .prepared_revision
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner.arc(), other.owner.arc()))
+    }
+    pub fn try_from_owned_prepared_with_session(
+        owner: crate::OwnedPreparedRevision,
+    ) -> Result<Self, (crate::SessionPlaybackError, crate::OwnedPreparedRevision)> {
+        let runtime = match SessionPlayback::new_for_owned(&owner.owner) {
+            Ok(runtime) => runtime,
+            Err(error) => return Err((error, owner)),
+        };
+        Ok(Self::from_owner_parts(
+            owner.owner,
+            Some(Box::new(runtime)),
+            None,
+        ))
     }
 
     /// Set or smoothly release one transient post-node processor audition on

@@ -254,3 +254,67 @@ any error must be discarded. The visitor adds no public provider contract,
 callback traversal, allocation, ownership clone, runtime mutation or limit
 change. Retirement receipts, caller-reservation/root-publication wiring and
 preroll remain unfinished. No full Playback or native acceptance is claimed.
+
+## tracked prepared metadata and explicit owned seam
+
+Private `OwnedShared<T>` pairs an actual Arc with a checked version-bound
+requested-overhead receipt. Only audited owned sized and nonempty Vec-to-slice
+constructors capture it. Untracked Arc intake never upgrades; ambiguous empty
+slices/defaults stay Unknown. The same pinned compiler/target/build gate as PCM
+is reused, without broadening that gate's trust claim. A scalar stores constructor
+origin and optional checked overhead; pointee data size is read only while the
+paired strong owner is live. It is not a Weak-only reclamation receipt. Metadata
+fields are included in actual enclosing pointee/element sizes, not added twice.
+No persistent address/registry, custom unsafe, mutable exposure or callback
+reporting/ownership operation is introduced.
+
+Audited constructor uses in this unit are Project/PreparedRevision owned roots,
+prepared Arrangement/Session/preview roots, Session source/instrument templates,
+note banks, nonempty preview clip slices and context tables. Cached control
+reuse carries the same actual allocation/receipt. State/device/sine/provider and
+trait-object Arcs remain untracked/Unknown. Requested-layout declarations never
+imply complete retirement: `arc.retirement_receipt` is explicitly Unknown until
+actual old/new/tail ownership union and cleanup receipts are implemented. The
+legacy note-bank payload/index/Arc-handle guards and exact numeric ceilings are
+unchanged; receipt bytes belong to actual containing graph/Vec charges, not a
+silently enlarged bank cap. The guard is not total graph/process memory.
+
+`OwnedPreparedRevision` exposes only a restricted view: sample rate, streamed
+flag/bindings, seek-history requirement, track IDs, scene ID/name leaves and
+borrowed scalar MIDI-preview samples. It has no public Arc/Weak, Deref, AsRef or
+raw PreparedRevision/Project/Inventory/Preview access. `clone_on_control` shares
+the paired root explicitly. `Session::compile_owned_prepared_revision` is opt-in
+and uses the same compile-value validation before allocation as legacy methods;
+no production default is switched. Unsupported compiler layouts remain Unknown
+without rejecting otherwise valid preparation. Fatal allocation OOM/abort stays
+outside API-reported recovery, as in the legacy control constructors.
+
+Owned Playback returns None from legacy `prepared_revision`: that means raw Arc
+unavailable, not unprepared. `prepared_origin` distinguishes Arrangement-only,
+legacy Arc and owned metadata; `owned_metadata`, source-fact borrowing and
+`same_prepared_owner` expose no graph owner. Fallible runtime preparation borrows
+the owner and completes all fallible work before cloning the root into the
+finished runtime; API refusal returns the original wrapper/receipt. The Session
+candidate recovering API returns a control-allocated recovery Box on failure,
+with the same inner owner; this carrier is not a complete construction-budget
+claim. No callback error is newly boxed.
+
+Production caller audit: Session candidate construction now borrows source facts,
+service stream classification reads the actual streamed flag, UI retains owned
+pending Playback without legacy publication and reports unsupported preparation.
+Both legacy audio publication routes and the lifecycle preparation facade refuse
+owned origin before acceptance and return their input unchanged; callback stream
+fault handling also refuses a malformed owned legacy binding. Engine preroll's
+raw getter is confined to existing legacy Session-runtime paths. Other repository
+getter occurrences are tests. Legacy getter behavior remains unchanged.
+
+`VerifiedOwnedStreamRevision` is a control-only typed verifier retaining the
+owned root plus actual CatalogLease. It validates every borrowed Arrangement and
+Session binding and compares actual root/catalog identities; mismatch returns
+both owners unchanged. It exposes restricted metadata/boolean identity or moves
+owners back on control, never a raw graph Arc. This is NOT decoded/installed-page
+readiness, domain admission, publication or native acceptance. Legacy verified
+wrappers remain supported. The native typed bridge remains gated: root/caller
+reservations, borrowed staging integration, old/new/tail receipt union, opted-in
+resident/empty-catalog domain lifecycle and preroll are still unfinished. No
+cap/default/publication policy changes or native100-track claims are made.

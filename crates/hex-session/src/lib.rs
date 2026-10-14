@@ -1289,6 +1289,22 @@ impl Session {
         )?))
     }
 
+    /// Explicit opt-in, not the service's default compilation/publication mode.
+    pub fn compile_owned_prepared_revision(
+        &self,
+        previous: Option<&hex_engine::OwnedPreparedRevision>,
+    ) -> Result<hex_engine::OwnedPreparedRevision, SessionError> {
+        let media = self.media_bank();
+        Ok(hex_engine::OwnedPreparedRevision::prepare_media_bank(
+            self.project(),
+            &media.resident,
+            &media.sources,
+            media.generation,
+            self.sine_table(),
+            previous,
+        )?)
+    }
+
     fn media_bank(&self) -> MediaBank {
         let sources = self
             .media
@@ -1340,16 +1356,12 @@ fn prepare_media_revision(
     sine_table: Arc<hex_engine::SineTable>,
     previous: Option<&hex_engine::PreparedSessionInventory>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
-    match media.generation {
-        Some(generation) => hex_engine::PreparedRevision::prepare_with_prepared_audio_sources(
-            project,
-            &media.sources,
-            generation,
-            sine_table,
-            previous,
-        ),
-        None => {
-            hex_engine::PreparedRevision::prepare(project, &media.resident, sine_table, previous)
-        }
-    }
+    hex_engine::PreparedRevision::prepare_media_bank(
+        project,
+        &media.resident,
+        &media.sources,
+        media.generation,
+        sine_table,
+        previous,
+    )
 }

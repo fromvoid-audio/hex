@@ -27,6 +27,12 @@ fn revision_for_stream(
     metadata: &StreamedSourceMetadata,
     session_only: bool,
 ) -> Arc<hex_engine::PreparedRevision> {
+    Arc::new(revision_value_for_stream(metadata, session_only))
+}
+fn revision_value_for_stream(
+    metadata: &StreamedSourceMetadata,
+    session_only: bool,
+) -> hex_engine::PreparedRevision {
     let mut editor = Editor::new(Project::new(metadata.project_rate()).unwrap(), 4).unwrap();
     let Created::Imported { track, asset, clip } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -67,16 +73,14 @@ fn revision_for_stream(
         asset,
         hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(metadata.clone())),
     )]);
-    Arc::new(
-        hex_engine::PreparedRevision::prepare_with_prepared_audio_sources(
-            editor.project(),
-            &bank,
-            metadata.key().generation(),
-            Arc::new(hex_engine::SineTable::new()),
-            None,
-        )
-        .unwrap(),
+    hex_engine::PreparedRevision::prepare_with_prepared_audio_sources(
+        editor.project(),
+        &bank,
+        metadata.key().generation(),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
     )
+    .unwrap()
 }
 
 static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
@@ -1301,4 +1305,81 @@ fn capacity_report_counts_reserved_storage_shared_kernels_and_pool_once() {
         report.retained_bytes().unwrap(),
         report.construction_peak_bound_bytes().unwrap()
     );
+}
+
+#[test]
+fn owned_verifier_recovers_pair_and_uses_actual_root_catalog_identity() {
+    let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let reader = VerifiedWavReader::open(wav.path(), reader_limits(4096)).unwrap();
+    let asset = asset_id(4096, 48_000);
+    let metadata = StreamedSourceMetadata::new(
+        StreamSourceKey::new(41, asset),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let runtime = StreamRuntime::new(
+        StreamConfig::with_pool_pages(3),
+        vec![SourceDefinition::new(
+            wav.path().to_path_buf(),
+            metadata.clone(),
+            reader_limits(4096),
+        )],
+    )
+    .unwrap();
+    let (mut control, pages) = runtime.split().ok().unwrap();
+    control.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let root = revision_value_for_stream(&metadata, false).into_owned_shared();
+    let playback = hex_engine::playback::Playback::try_from_owned_prepared_with_session(
+        root.clone_on_control(),
+    )
+    .ok()
+    .unwrap();
+    let independent = hex_engine::playback::Playback::try_from_owned_prepared_with_session(
+        revision_value_for_stream(&metadata, false).into_owned_shared(),
+    )
+    .ok()
+    .unwrap();
+    let verified =
+        hex_stream::VerifiedOwnedStreamRevision::new(root, control.catalog_lease().unwrap())
+            .unwrap();
+    assert!(verified.matches_playback(&playback));
+    assert!(!verified.matches_playback(&independent));
+    assert_eq!(verified.metadata().streamed_sources().count(), 2);
+    let (root, catalog) = verified.into_parts();
+    assert!(playback.same_prepared_owner(&root));
+    let wrong = StreamedSourceMetadata::new(
+        metadata.key(),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        [0xff; 32],
+    )
+    .unwrap();
+    let wrong_root = revision_value_for_stream(&wrong, false).into_owned_shared();
+    let wrong_playback = hex_engine::playback::Playback::try_from_owned_prepared_with_session(
+        wrong_root.clone_on_control(),
+    )
+    .ok()
+    .unwrap();
+    let failure = hex_stream::VerifiedOwnedStreamRevision::new(wrong_root, catalog)
+        .err()
+        .unwrap();
+    assert_eq!(failure.source(), wrong.key());
+    let (returned, catalog) = failure.into_parts();
+    assert!(wrong_playback.same_prepared_owner(&returned));
+    drop(catalog);
+    drop(returned);
+    drop(root);
+    drop(playback);
+    drop(independent);
+    drop(wrong_playback);
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
 }

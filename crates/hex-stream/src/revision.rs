@@ -102,3 +102,69 @@ impl fmt::Display for StreamRevisionMismatch {
 }
 
 impl std::error::Error for StreamRevisionMismatch {}
+
+/// Sealed engine root/catalog pairing for the opt-in owned metadata path.
+/// This is control verification only, not page readiness or native admission.
+/// No raw graph owner, implicit Clone, or callback-final reclamation is exposed.
+pub struct VerifiedOwnedStreamRevision {
+    revision: hex_engine::OwnedPreparedRevision,
+    catalog: CatalogLease,
+}
+pub struct OwnedStreamRevisionMismatch {
+    revision: hex_engine::OwnedPreparedRevision,
+    catalog: CatalogLease,
+    source: StreamSourceKey,
+}
+impl VerifiedOwnedStreamRevision {
+    pub fn new(
+        revision: hex_engine::OwnedPreparedRevision,
+        catalog: CatalogLease,
+    ) -> Result<Self, OwnedStreamRevisionMismatch> {
+        let missing = revision
+            .metadata()
+            .streamed_sources()
+            .find(|source| !catalog.covers_source(source))
+            .map(|source| source.key());
+        if let Some(source) = missing {
+            return Err(OwnedStreamRevisionMismatch {
+                revision,
+                catalog,
+                source,
+            });
+        }
+        Ok(Self { revision, catalog })
+    }
+    pub fn metadata(&self) -> hex_engine::OwnedPreparedRevisionView<'_> {
+        self.revision.metadata()
+    }
+    pub fn matches_playback(&self, playback: &hex_engine::playback::Playback) -> bool {
+        playback.same_prepared_owner(&self.revision)
+    }
+    pub fn same_catalog(&self, other: &Self) -> bool {
+        self.catalog.same_catalog(&other.catalog)
+    }
+    pub fn into_parts(self) -> (hex_engine::OwnedPreparedRevision, CatalogLease) {
+        (self.revision, self.catalog)
+    }
+}
+impl OwnedStreamRevisionMismatch {
+    pub fn source(&self) -> StreamSourceKey {
+        self.source
+    }
+    pub fn into_parts(self) -> (hex_engine::OwnedPreparedRevision, CatalogLease) {
+        (self.revision, self.catalog)
+    }
+}
+impl fmt::Debug for VerifiedOwnedStreamRevision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VerifiedOwnedStreamRevision")
+            .finish_non_exhaustive()
+    }
+}
+impl fmt::Debug for OwnedStreamRevisionMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedStreamRevisionMismatch")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}

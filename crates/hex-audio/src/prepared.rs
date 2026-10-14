@@ -1044,17 +1044,20 @@ impl Control {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        let reason = if self.closing.load(Acquire) {
-            Some("playback is shutting down")
-        } else if playback.sample_rate() != self.rate {
-            Some("playback rate differs from device")
-        } else if playback.contains_streamed_sources() {
-            Some("streamed playback requires a native media page endpoint")
-        } else if self.revision == u64::MAX {
-            Some("playback revision exhausted")
-        } else {
-            None
-        };
+        let reason =
+            if playback.prepared_origin() == hex_engine::playback::PreparedOrigin::OwnedMetadata {
+                Some("owned playback requires the typed publication bridge")
+            } else if self.closing.load(Acquire) {
+                Some("playback is shutting down")
+            } else if playback.sample_rate() != self.rate {
+                Some("playback rate differs from device")
+            } else if playback.contains_streamed_sources() {
+                Some("streamed playback requires a native media page endpoint")
+            } else if self.revision == u64::MAX {
+                Some("playback revision exhausted")
+            } else {
+                None
+            };
         if let Some(reason) = reason {
             return Err(PublishError { reason, playback });
         }

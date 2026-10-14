@@ -1116,3 +1116,125 @@ fn facade_pending_cancel_wins_catalog_result_and_stale_token_cannot_cancel_repla
     }
     assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
 }
+
+#[test]
+fn owned_origin_refuses_legacy_facades_without_losing_original_input() {
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "owned".into(),
+        })
+        .unwrap();
+    let owner = hex_engine::PreparedRevision::prepare(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .unwrap()
+    .into_owned_shared();
+    let alias = owner.clone_on_control();
+    let playback = Playback::try_from_owned_prepared_with_session(owner)
+        .ok()
+        .unwrap();
+    let (mut input, _file) = facade_input(108);
+    input.playback = playback;
+    let identity = (
+        input.paths.as_ptr(),
+        input.paths.capacity(),
+        input.paths[0].1.as_os_str().as_encoded_bytes().as_ptr(),
+        input.paths[0].1.capacity(),
+    );
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let refusal = root.begin_preparation(input, 48_000).err().unwrap();
+    assert_eq!(
+        refusal.reason,
+        "owned playback requires the typed publication bridge"
+    );
+    assert_eq!(
+        (
+            refusal.input.paths.as_ptr(),
+            refusal.input.paths.capacity(),
+            refusal.input.paths[0]
+                .1
+                .as_os_str()
+                .as_encoded_bytes()
+                .as_ptr(),
+            refusal.input.paths[0].1.capacity()
+        ),
+        identity
+    );
+    assert!(refusal.input.playback.same_prepared_owner(&alias));
+    let error = control.publish(refusal.input.playback).err().unwrap();
+    assert_eq!(
+        error.reason,
+        "owned playback requires the typed publication bridge"
+    );
+    assert!(error.playback.same_prepared_owner(&alias));
+    let mut frames = [[9.0; 2]; 64];
+    callback.render(&mut frames).unwrap();
+    assert_eq!(control.status.applied_revision.load(Relaxed), 0);
+    drop(error);
+    drop(control);
+    drop(callback);
+    for _ in 0..4 {
+        root.tick(true);
+    }
+    assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn owned_borrowed_resident_render_and_identity_queries_allocate_and_free_nothing() {
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Imported { asset, .. } = editor
+        .execute(hex_project::Command::ImportPreparedAudioTrack {
+            name: "resident".into(),
+            path: "resident.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 512,
+            playback_frames: 512,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.25, -0.25]; 512]).unwrap(),
+    )]);
+    let owner = hex_engine::PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .unwrap()
+    .into_owned_shared();
+    let alias = owner.clone_on_control();
+    let mut playback = Playback::try_from_owned_prepared_with_session(owner)
+        .ok()
+        .unwrap();
+    playback.apply(hex_engine::playback::PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 128];
+    let allocations = allocation_counter::measure(|| {
+        assert!(playback.same_prepared_owner(&alias));
+        assert_eq!(playback.owned_metadata().unwrap().sample_rate(), 48_000);
+        playback.render(&mut output).unwrap();
+    });
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+    // Headless borrowed rendering evidence, not native publication/readiness.
+}

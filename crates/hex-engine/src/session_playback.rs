@@ -304,7 +304,7 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     device_metering: bool,
-    revision: Arc<PreparedRevision>,
+    revision: crate::owned_shared::OwnedShared<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
     historical_floor: Option<BeatTime>,
@@ -595,6 +595,20 @@ impl SessionPlayback {
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_borrowed_with_policy(
+            &crate::owned_shared::OwnedShared::untracked(revision),
+            linear_arrangement_export,
+        )
+    }
+    pub(crate) fn new_for_owned(
+        revision: &crate::owned_shared::OwnedShared<PreparedRevision>,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_borrowed_with_policy(revision, false)
+    }
+    fn new_borrowed_with_policy(
+        revision: &crate::owned_shared::OwnedShared<PreparedRevision>,
+        linear_arrangement_export: bool,
+    ) -> Result<Self, SessionPlaybackError> {
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -823,7 +837,7 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             device_metering: false,
-            revision,
+            revision: revision.clone_on_control(),
             periodic_tempo,
             anchor: None,
             historical_floor: None,

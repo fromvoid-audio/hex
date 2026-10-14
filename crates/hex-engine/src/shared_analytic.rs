@@ -208,15 +208,15 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
-    pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
+        crate::owned_shared::OwnedShared::new_owned(Self::default())
     }
 
     pub(crate) fn prepare(
         project: &Project,
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
-    ) -> Result<Arc<Self>, Invalid> {
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
         let mut owners = Vec::new();
         owners
             .try_reserve_exact(project.tracks().len())
@@ -304,7 +304,7 @@ impl SharedAnalyticContextTable {
             ));
         }
         ids.sort_unstable_by_key(|(id, _)| *id);
-        Ok(Arc::new(Self {
+        Ok(crate::owned_shared::OwnedShared::new_owned(Self {
             owners,
             ids,
             payload_bytes,
@@ -609,11 +609,12 @@ mod owned_storage_tests {
     use crate::storage_report::{Report, StorageReportError, owned_tests::Sink};
     #[test]
     fn context_table_spare_handle_and_index_buffers_exclude_headers_and_provider_total() {
-        let table = Arc::new(SharedAnalyticContextTable {
-            owners: Vec::with_capacity(13),
-            ids: Vec::with_capacity(17),
-            payload_bytes: 12345,
-        });
+        let table =
+            crate::owned_shared::OwnedShared::untracked(Arc::new(SharedAnalyticContextTable {
+                owners: Vec::with_capacity(13),
+                ids: Vec::with_capacity(17),
+                payload_bytes: 12345,
+            }));
         let strong = Arc::strong_count(&table);
         let mut sink = Sink::new(8);
         let mut report = Report::new(&mut sink);

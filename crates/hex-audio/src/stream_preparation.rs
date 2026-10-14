@@ -376,6 +376,9 @@ fn incomplete(report: &PreparationReport) -> bool {
         )
 }
 fn validate(input: &CandidateInput, rate: u32, device_epoch: u64) -> Result<(), &'static str> {
+    if input.playback.prepared_origin() == hex_engine::playback::PreparedOrigin::OwnedMetadata {
+        return Err("owned playback requires the typed publication bridge");
+    }
     if input.identity.format_version != 1
         || input.identity.project_generation == 0
         || device_epoch == 0

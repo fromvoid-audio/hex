@@ -38,6 +38,13 @@ impl StreamingCallback {
         }
     }
     fn check_worker_failure(&mut self, publication: &Publication) -> Result<(), Invalid> {
+        if publication.playback.prepared_origin()
+            == hex_engine::playback::PreparedOrigin::OwnedMetadata
+        {
+            return Err(Invalid(
+                "owned playback requires the typed publication bridge",
+            ));
+        }
         let binding = publication.stream_source.as_ref().expect("stream binding");
         let batch = self
             .batch

@@ -1,8 +1,18 @@
 use super::*;
 use crate::{Clip, ClipMetadata, PreparedRevision, Project, RendererRuntime, Track};
 impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
-    pub(crate) fn project(&mut self, project: &'a Arc<Project>) -> Result<(), StorageReportError> {
-        let owner = self.arc(project, "arrangement")?;
+    pub(crate) fn owned_project(
+        &mut self,
+        project: &'a crate::owned_shared::OwnedShared<Project>,
+    ) -> Result<(), StorageReportError> {
+        let owner = self.owned_arc(project, "arrangement")?;
+        self.project_fields(project, owner)
+    }
+    fn project_fields(
+        &mut self,
+        project: &'a Project,
+        owner: StorageOwner<'a>,
+    ) -> Result<(), StorageReportError> {
         let Project {
             sample_rate: _,
             tracks,
@@ -13,7 +23,7 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             audible_end_frame: _,
             has_streamed_sources: _,
             shared_contexts,
-        } = project.as_ref();
+        } = project;
         self.vec(owner, "arrangement.tracks", [0; 2], tracks)?;
         self.vec(owner, "arrangement.returns", [0; 2], return_buses)?;
         return_feed_plan.visit_storage(self, owner)?;
@@ -54,6 +64,28 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         } = track;
         self.vec(owner, "track.clips", [index, 0], clips)?;
         self.vec(owner, "track.sends", [index, 0], sends)?;
+        if let Some(envelope) = gain_envelope {
+            envelope.visit_owned_storage(self, owner, index)?;
+        }
+        if let Some(instrument) = instrument {
+            let crate::InstrumentTrack {
+                spans,
+                nodes,
+                root: _,
+                timeline_end: _,
+                bank,
+                shared_contexts,
+                mutable: _,
+                max_active_voices: _,
+            } = instrument;
+            self.vec(owner, "track.instrument_spans", [index, 0], spans)?;
+            self.vec(owner, "track.instrument_nodes", [index, 0], nodes)?;
+            self.owned_arc(bank, "arrangement_note_bank")?;
+            let bank_owner =
+                StorageOwner::Shared(SharedOwnerRef::new(bank.arc(), "arrangement_note_bank"));
+            bank.visit_owned_storage(self, bank_owner)?;
+            self.context_table(shared_contexts, "arrangement_instrument_contexts")?;
+        }
         if gain_envelope.is_some() {
             self.unknown(
                 owner,
@@ -134,11 +166,11 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         }
         Ok(())
     }
-    pub(crate) fn revision(
+    pub(crate) fn owned_revision(
         &mut self,
-        revision: &'a Arc<PreparedRevision>,
+        revision: &'a crate::owned_shared::OwnedShared<PreparedRevision>,
     ) -> Result<(), StorageReportError> {
-        let owner = self.arc(revision, "prepared_revision")?;
+        let owner = self.owned_arc(revision, "prepared_revision")?;
         // Private nested metadata is not assumed to have zero storage.
         self.unknown(
             owner,
@@ -146,8 +178,8 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
             UnknownStorageReason::NestedOwnerContract,
         )?;
         revision.visit_owned_storage(self, owner)?;
-        self.project(revision.arrangement())?;
-        let session_owner = self.arc(revision.session(), "session_inventory")?;
+        self.owned_project(revision.arrangement_owner())?;
+        let session_owner = self.owned_arc(revision.session_owner(), "session_inventory")?;
         self.unknown(
             session_owner,
             "session_inventory",
@@ -156,9 +188,30 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
         revision
             .session()
             .visit_source_templates_and_tempo(self, session_owner)?;
-        self.arc(revision.midi_preview(), "midi_preview")?;
+        self.owned_arc(revision.preview_owner(), "midi_preview")?;
         revision.midi_preview().visit_owned_storage(self)?;
         Ok(())
+    }
+    pub(crate) fn owned_arc<T: 'static + ?Sized>(
+        &mut self,
+        value: &'a crate::owned_shared::OwnedShared<T>,
+        category: &'static str,
+    ) -> Result<StorageOwner<'a>, StorageReportError> {
+        let Some((payload, overhead)) = value.parts() else {
+            return self.arc(value.arc(), category);
+        };
+        let owner = StorageOwner::Shared(SharedOwnerRef::new(value.arc(), category));
+        self.data(owner, "arc.pointee", [0; 2], 1, payload)?;
+        self.item(owner, "arc.owner_overhead", [0; 2], StorageCharge::OwnerOverheadDeclared {
+            bytes: overhead, assumption: "Rust1.94.0-4a4ef493-native-official-std-owned-constructor-requested-layout-v1",
+        })?;
+        // Constructor layout does not establish old/new/tail retirement union.
+        self.unknown(
+            owner,
+            "arc.retirement_receipt",
+            UnknownStorageReason::RetirementReceipt,
+        )?;
+        Ok(owner)
     }
     pub(crate) fn opaque_arc<T: 'static + ?Sized>(
         &mut self,
@@ -170,10 +223,12 @@ impl<'a, V: PlaybackStorageVisitor<'a>> Report<'a, '_, V> {
     }
     pub(crate) fn context_table(
         &mut self,
-        table: &'a Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        table: &'a crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
         category: &'static str,
     ) -> Result<(), StorageReportError> {
-        let owner = self.arc(table, category)?;
+        let owner = self.owned_arc(table, category)?;
         table.visit_owned_storage(self, owner)
     }
     pub(crate) fn chain(

@@ -51,7 +51,10 @@ pub use readiness_manifest::{
     ManifestRefusal, PageExtent, ReadinessEpochs, ReadinessRefusal, ReadinessStamp,
     WantedPageManifest,
 };
-pub use revision::{StreamRevisionMismatch, VerifiedStreamRevision};
+pub use revision::{
+    OwnedStreamRevisionMismatch, StreamRevisionMismatch, VerifiedOwnedStreamRevision,
+    VerifiedStreamRevision,
+};
 pub use runtime::{
     CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
     StreamPairMismatch, StreamRuntime,

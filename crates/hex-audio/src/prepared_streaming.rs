@@ -171,6 +171,13 @@ impl Control {
         if self.closing.load(Acquire) || self.revision == u64::MAX {
             return Err(error("stream publication unavailable", request));
         }
+        if request.playback.prepared_origin() == hex_engine::playback::PreparedOrigin::OwnedMetadata
+        {
+            return Err(error(
+                "owned playback requires the typed publication bridge",
+                request,
+            ));
+        }
         if request.playback.sample_rate() != self.rate
             || !request
                 .playback

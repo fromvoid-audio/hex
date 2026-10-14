@@ -53,6 +53,7 @@ pub enum UnknownStorageReason {
     NestedOwnerContract,
     OpaqueProvider,
     WeakOwnerBookkeeping,
+    RetirementReceipt,
 }
 /// Names/indices identify a container inside an owner, never an allocation
 /// address. Dedup shared allocations independently using their owner refs.

@@ -77,8 +77,9 @@ pub struct PreparedMidiInstrumentTemplate {
     max_span_hits: usize,
     max_query_visits: usize,
     max_period_windows: usize,
-    bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-    shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+    shared_contexts:
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
     release_frames: u64,
     event_source: bool,
 }
@@ -565,7 +566,7 @@ impl PreparedMidiInstrumentTemplate {
     /// caller owns a bank scoped to this track, state and sample rate.
     pub(crate) fn prepare_with_bank(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
     ) -> Result<Self, MidiTemplateError> {
         Self::prepare_with_bank_and_contexts(
             source,
@@ -576,8 +577,10 @@ impl PreparedMidiInstrumentTemplate {
 
     pub(crate) fn prepare_with_bank_and_contexts(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, MidiTemplateError> {
         Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false, None)
     }
@@ -606,8 +609,10 @@ impl PreparedMidiInstrumentTemplate {
 
     fn prepare_with_bank_mode(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
         event_release_frames: Option<u64>,
         event_source: bool,
         mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
@@ -751,7 +756,9 @@ impl PreparedMidiInstrumentTemplate {
         self.max_active_voices
     }
 
-    pub(crate) fn note_bank(&self) -> &std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank> {
+    pub(crate) fn note_bank(
+        &self,
+    ) -> &crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank> {
         &self.bank
     }
 
@@ -1491,7 +1498,7 @@ impl PreparedMidiInstrumentTemplate {
             [0; 2],
             repeat_nodes,
         )?;
-        let bank_owner = report.arc(bank, "midi_note_bank")?;
+        let bank_owner = report.owned_arc(bank, "midi_note_bank")?;
         bank.visit_owned_storage(report, bank_owner)?;
         report.context_table(shared_contexts, "instrument_template_contexts")
     }

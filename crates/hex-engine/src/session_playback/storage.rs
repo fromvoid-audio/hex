@@ -60,7 +60,7 @@ impl SessionPlayback {
             candidate_admission_open: _,
         } = self;
         let owner = StorageOwner::Exclusive;
-        report.revision(revision)?;
+        report.owned_revision(revision)?;
         report.vec(owner, "session.routes", [0; 2], routes)?;
         report.vec(owner, "session.route_scratch", [0; 2], route_scratch)?;
         report.vec(owner, "session.device_chains", [0; 2], device_chains)?;
