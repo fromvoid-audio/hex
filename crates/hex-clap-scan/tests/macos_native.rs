@@ -50,13 +50,19 @@ fn run(
     ignored: bool,
 ) -> (bool, serde_json::Value) {
     let root = root();
+    let enrolled = hex_clap_scan::receipt_macos::OperatorRoot::open(&root)
+        .expect("exclusive enrolled sealed root required before any test execution");
     let binary = if gain.is_some() {
         env!("CARGO_BIN_EXE_hex-clap-offline")
     } else {
         env!("CARGO_BIN_EXE_hex-clap-scan")
     };
     let mut cmd = if ignored {
-        let mut c = Command::new(root.join("launch-ignored"));
+        let mut c = Command::new(
+            enrolled
+                .image("launch-ignored", true)
+                .expect("enrolled original launcher"),
+        );
         c.arg(binary);
         c
     } else {

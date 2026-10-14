@@ -18,7 +18,9 @@ def main():
     p.add_argument('--sdk',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--llvm-notice',type=Path,required=True);p.add_argument('--apple-sdk-notice',type=Path,required=True)
     p.add_argument('--llvm-origin',required=True);p.add_argument('--apple-sdk-origin',required=True)
+    p.add_argument('--exclusive-artifact-custody',action='store_true',help='operator attests sole custody during build and every later run; not hostile same-UID protection')
     a=p.parse_args()
+    if not a.exclusive_artifact_custody:raise SystemExit('Exclusive ORIGINAL artifact custody prerequisite not attested')
     if platform.system()!='Darwin' or platform.machine()!='arm64':raise SystemExit('Actual arm64 Mac required; no translated/foreign admission')
     if query(['git','status','--porcelain'],REPO):raise SystemExit('Exact clean committed source required')
     tree=query(['git','rev-parse','HEAD^{tree}'],REPO)
@@ -44,7 +46,7 @@ def main():
     if len(modes['NAMES'])!=13 or len(modes['OFFLINE'])!=12:raise SystemExit('Original mode inventory changed')
     out.mkdir(parents=True,mode=0o700)
     if out.stat().st_mode&0o022:raise SystemExit('Operator artifact root must not be group/other writable')
-    commands=[];closure={};modules=[];helpers={};runtimes={}
+    commands=[{'operation':'operator-custody-attestation','contract':'exclusive-original-readonly-v1','scope':'advisory-readonly-seal; no executed-byte binding or hostile same-UID protection'}];closure={};modules=[];helpers={};runtimes={}
     def build(source,binary,flags):
         target=out/binary;dep=out/(binary+'.d')
         cmd=[str(clang),'-std=c++17','-O2','-Wall','-Wextra','-Werror','-arch','arm64','-isysroot',str(sysroot),'-I'+str(sdk/'include'),'-MD','-MF',str(dep),str(NATIVE/source),'-o',str(target)]+flags
@@ -91,6 +93,12 @@ def main():
              'compiler_sha256':sha(clang),'apple_sdk_path':str(sysroot),'apple_sdk_version':query(['xcrun','--sdk','macosx','--show-sdk-version']),
              'build_commands_sha256':sha(commands_file),'build_closure':closure,'notices':retained,'helpers':helpers,'modules':modules,'runtimes':runtimes}
     file=out/'controlled-darwin.json';file.write_text(json.dumps(receipt,indent=2)+'\n')
+    # Fail-closed read-only seal for this cooperative exclusive-custody contract.
+    # An owner can chmod/replace it; this is not adversarial executed-byte binding.
+    for path in out.iterdir():
+        if not path.is_file() or path.is_symlink():raise SystemExit('Flat original artifact seal refused')
+        path.chmod(0o500 if path.name in helpers else 0o400)
+    out.chmod(0o500)
     print('Operator artifact root:',out);print('Receipt SHA256:',sha(file));print('Source tree:',tree)
     print('Rust tools remain closed until operator build-time root/receipt/tree enrollment; no module was loaded.')
 if __name__=='__main__':main()

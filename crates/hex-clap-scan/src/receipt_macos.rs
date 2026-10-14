@@ -11,6 +11,17 @@ use std::{
 };
 pub const PROFILE: &str = "trusted-original-never-fork-v1";
 pub const PLATFORM: &str = "macos-arm64";
+/// Operator assertion; advisory modes cannot establish hostile same-UID exclusion.
+pub const EXCLUSIVE_CUSTODY: &str = "exclusive-original-readonly-v1";
+fn require_custody(build: Option<&str>, run: Option<&str>) -> Result<(), String> {
+    if build != Some(EXCLUSIVE_CUSTODY) || run != Some(EXCLUSIVE_CUSTODY) {
+        return Err(
+            "exclusive original artifact custody must be attested at tool build and each run"
+                .into(),
+        );
+    }
+    Ok(())
+}
 pub const DESCRIPTOR_NAMES: [&str; 12] = [
     "good",
     "init-fail",
@@ -214,6 +225,8 @@ pub struct OperatorRoot {
 }
 impl OperatorRoot {
     pub fn open(root: &Path) -> Result<Self, String> {
+        let run = std::env::var("HEX_CLAP_DARWIN_CUSTODY").ok();
+        require_custody(option_env!("HEX_CLAP_DARWIN_CUSTODY"), run.as_deref())?;
         let path = option_env!("HEX_CLAP_DARWIN_ROOT").ok_or("Mac tool not operator-enrolled")?;
         let digest = option_env!("HEX_CLAP_DARWIN_RECEIPT_SHA256")
             .ok_or("Mac receipt not enrolled at tool build")?;
@@ -249,6 +262,7 @@ impl OperatorRoot {
             return Err("operator root/source binding refused".into());
         }
         validate_owner(root, receipt.owner_uid, true)?;
+        validate_readonly_seal(root, receipt.owner_uid)?;
         validate_owner(&p, receipt.owner_uid, false)?;
         let commands = controlled_path(root, "build-commands.json")?;
         validate_owner(&commands, receipt.owner_uid, false)?;
@@ -324,7 +338,7 @@ fn validate_owner(path: &Path, uid: u32, directory: bool) -> Result<(), String> 
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::symlink_metadata(path).map_err(|_| "operator ownership unavailable")?;
     if m.uid() != uid
-        || m.mode() & 0o022 != 0
+        || m.mode() & 0o222 != 0
         || (directory && !m.is_dir())
         || (!directory && !m.is_file())
     {
@@ -332,6 +346,18 @@ fn validate_owner(path: &Path, uid: u32, directory: bool) -> Result<(), String> 
     }
     Ok(())
 }
+fn validate_readonly_seal(root: &Path, uid: u32) -> Result<(), String> {
+    let entries = std::fs::read_dir(root).map_err(|_| "sealed artifact root unavailable")?;
+    for (index, entry) in entries.enumerate() {
+        if index >= 256 {
+            return Err("sealed artifact file capacity refused".into());
+        }
+        let path = entry.map_err(|_| "sealed artifact listing failed")?.path();
+        validate_owner(&path, uid, false)?;
+    }
+    Ok(())
+}
+
 #[cfg(not(unix))]
 fn validate_owner(_: &Path, _: u32, _: bool) -> Result<(), String> {
     Err("operator-owned Unix fixture root required".into())
@@ -385,6 +411,18 @@ mod tests {
                 uuid: "1".repeat(32),
             }],
         }
+    }
+    #[test]
+    fn missing_or_mismatched_custody_refuses_before_root_or_child() {
+        for (build, run) in [
+            (None, None),
+            (Some(EXCLUSIVE_CUSTODY), None),
+            (None, Some(EXCLUSIVE_CUSTODY)),
+            (Some(EXCLUSIVE_CUSTODY), Some("shared")),
+        ] {
+            assert!(require_custody(build, run).is_err());
+        }
+        assert!(require_custody(Some(EXCLUSIVE_CUSTODY), Some(EXCLUSIVE_CUSTODY)).is_ok());
     }
     #[test]
     fn runtime_is_identifiers_not_stubs_or_cache_hash() {
@@ -540,22 +578,88 @@ mod tests {
         let bytes = serde_json::to_vec(&r).unwrap();
         let p = root.join("controlled-darwin.json");
         std::fs::write(&p, &bytes).unwrap();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            std::fs::set_permissions(
+                entry.unwrap().path(),
+                std::fs::Permissions::from_mode(0o400),
+            )
+            .unwrap();
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
         let open = || OperatorRoot::open_enrolled(&root, &root, &hash(&bytes), &r.source_tree);
         assert!(open().is_ok());
         assert!(
             OperatorRoot::open_enrolled(&root, &root, &"b".repeat(64), &r.source_tree).is_err()
         );
         assert!(OperatorRoot::open_enrolled(&root, &root, &hash(&bytes), &"b".repeat(40)).is_err());
+        std::fs::set_permissions(
+            root.join("build-commands.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         std::fs::write(root.join("build-commands.json"), b"[1]").unwrap();
+        std::fs::set_permissions(
+            root.join("build-commands.json"),
+            std::fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
         assert!(open().is_err());
+        std::fs::set_permissions(
+            root.join("build-commands.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         std::fs::write(root.join("build-commands.json"), b"[]").unwrap();
+        std::fs::set_permissions(
+            root.join("build-commands.json"),
+            std::fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
         assert!(open().is_err());
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(open().is_err());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(open().is_ok());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let notice = root.join("notice-clap.txt");
         std::fs::remove_file(&notice).unwrap();
         symlink(root.join("notice-apple-sdk.txt"), &notice).unwrap();
         assert!(open().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn advisory_readonly_and_pre_post_hashes_do_not_bind_transient_consumer_bytes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // Artificial original byte canary only: no exec, dlopen, native module,
+        // race timing, third party, credential path or global policy change.
+        let root = std::env::temp_dir().join(format!("hex-custody-canary-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let p = root.join("original-canary");
+        let original = b"original controlled canary A";
+        let replacement = b"original controlled canary B";
+        std::fs::write(&p, original).unwrap();
+        let uid = std::fs::metadata(&root).unwrap().uid();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        validate_owner(&root, uid, true).unwrap();
+        validate_readonly_seal(&root, uid).unwrap();
+        let before = hash(&file_bytes(&p, 1024).unwrap());
+        // Same owner can undo advisory modes: this violates exclusive custody.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(validate_readonly_seal(&root, uid).is_err());
+        std::fs::write(&p, replacement).unwrap();
+        let consumed = file_bytes(&p, 1024).unwrap();
+        std::fs::write(&p, original).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o400)).unwrap();
+        validate_readonly_seal(&root, uid).unwrap();
+        let after = hash(&file_bytes(&p, 1024).unwrap());
+        assert_eq!(before, after);
+        assert_ne!(hash(&consumed), before);
+        assert_eq!(consumed, replacement);
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

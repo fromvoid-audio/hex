@@ -325,3 +325,35 @@ retained), broader extension/bus negotiation, production state recovery and
 project/editor integration, realtime ownership/deadlines and #28 routing/latency
 contracts. This source portability unit is not optimized Mac packaging/signing,
 CoreAudio, listening/reference, native interaction, full hosting or release proof.
+
+
+### exclusive original artifact custody prerequisite
+
+Mac build requires `--exclusive-artifact-custody`: the operator asserts sole
+custody of the original artifact directory during construction and every later
+attempt. The builder seals its flat output files/root read-only after recording
+provenance. Rust tools require `HEX_CLAP_DARWIN_CUSTODY=exclusive-original-readonly-v1`
+at compilation and each invocation, as well as the existing root/receipt/tree
+enrollment. Missing/mismatched attestation, a writable root/file, a symlink,
+nonregular entry or more than256 artifact files refuses before child launch.
+Native tests validate enrollment/seal and original launcher identity before even
+using the inherited-auto-reap launcher. If exclusive custody cannot be maintained,
+do not attest or execute; keep native admission closed. Requests live outside the
+sealed artifact root. Rebuild into a fresh root to change any enrolled artifact.
+
+Read-only modes and an operator declaration are advisory prerequisites, not an
+OS-enforced immutable mount, lock against a hostile owner, or cryptographic
+binding of checked bytes to exec/dlopen. The owner can chmod or replace and
+restore paths. A deterministic no-execution original-byte canary demonstrates
+that pre/post hashes can match while an intervening path read consumes different
+bytes. It deliberately violates custody and does not claim an attack-resistant
+loader. Foreign admission requires a separately reviewed supported validated-byte
+to-load binding and OS containment; current third-party admission remains refused.
+
+Notice inputs still require actual complete applicable terms and audited origins,
+not arbitrary short bytes or an unrelated LLVM section. The512KiB input guard is
+unchanged. Receipt hashes protect supplied notice bytes; completeness and source
+PDF/extraction/section applicability remain an operator audit. Compiler depfiles
+record source/header closure; retained otool reports and loaded-image UUIDs do not
+establish full hashed linker/tool/SDK-stub closure. This unresolved provenance
+limit must not be described as complete link closure or loaded-image hashes.

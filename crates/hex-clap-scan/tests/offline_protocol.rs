@@ -26,26 +26,38 @@ fn blob(b: &mut Vec<u8>, v: &[u8]) {
     u(b, v.len() as u64, 4);
     b.extend(v);
 }
-fn packet() -> Vec<u8> {
+struct PacketFixture {
+    bytes: Vec<u8>,
+    reject_offsets: Vec<usize>,
+    pcm_start: usize,
+}
+fn packet_for(platform: &str) -> PacketFixture {
     let mut p = vec![];
+    let mut reject_offsets = vec![0, 8, 12, 14];
     u(&mut p, 1, 2);
     u(&mut p, 7, 8);
-    for s in [SDK, hex_clap_scan::platform(), PLUGIN_ID] {
-        blob(&mut p, s.as_bytes());
+    for text in [SDK, platform, PLUGIN_ID] {
+        reject_offsets.extend([12 + p.len(), 16 + p.len()]);
+        blob(&mut p, text.as_bytes());
     }
-    u(&mut p, 48000, 4);
-    u(&mut p, 0, 8);
-    u(&mut p, 4, 8);
-    for v in [0, 0, 2, 2, 0, 0, 1, GAIN_ID, 32] {
-        u(&mut p, u64::from(v), 4);
+    for (value, width) in [(48000, 4), (0, 8), (4, 8)] {
+        reject_offsets.push(12 + p.len());
+        u(&mut p, value, width);
     }
-    for v in [0.0_f64, 2.0, 1.0] {
-        u(&mut p, v.to_bits(), 8);
+    for value in [0, 0, 2, 2, 0, 0, 1, GAIN_ID, 32] {
+        reject_offsets.push(12 + p.len());
+        u(&mut p, u64::from(value), 4);
+    }
+    for value in [0.0_f64, 2.0, 1.0] {
+        reject_offsets.push(12 + p.len());
+        u(&mut p, value.to_bits(), 8);
     }
     blob(&mut p, b"gain");
+    reject_offsets.push(12 + p.len());
     u(&mut p, 4, 4);
-    for v in [1.0_f32, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0] {
-        u(&mut p, u64::from(v.to_bits()), 4);
+    let pcm_start = 12 + p.len();
+    for value in [1.0_f32, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0] {
+        u(&mut p, u64::from(value.to_bits()), 4);
     }
     blob(&mut p, &[0; 32]);
     u(&mut p, 1, 4);
@@ -53,11 +65,19 @@ fn packet() -> Vec<u8> {
     u(&mut p, 0, 4);
     u(&mut p, 1, 4);
     u(&mut p, 1, 4);
-    let mut b = b"HCOFFR01".to_vec();
-    u(&mut b, p.len() as u64, 4);
-    b.extend(p);
-    b
+    let mut bytes = b"HCOFFR01".to_vec();
+    u(&mut bytes, p.len() as u64, 4);
+    bytes.extend(p);
+    PacketFixture {
+        bytes,
+        reject_offsets,
+        pcm_start,
+    }
 }
+fn packet() -> Vec<u8> {
+    packet_for(hex_clap_scan::platform()).bytes
+}
+
 #[test]
 fn owned_response_and_every_truncation_refusal() {
     let b = packet();
@@ -73,23 +93,49 @@ fn owned_response_and_every_truncation_refusal() {
 }
 #[test]
 fn response_identity_clock_capability_pcm_status_refuse() {
-    let b = packet();
-    for at in [
-        0, 8, 12, 14, 26, 74, 92, 130, 134, 142, 150, 154, 158, 162, 166, 170, 174, 178, 182, 190,
-        198,
-    ] {
+    let fixture = packet_for(hex_clap_scan::platform());
+    let b = fixture.bytes;
+    assert!(decode(&b, &request()).is_ok());
+    for at in fixture.reject_offsets {
         let mut bad = b.clone();
         bad[at] ^= 0xff;
         assert!(decode(&bad, &request()).is_err(), "offset {at}");
     }
-    let mut nonfinite = b.clone();
-    nonfinite[209..213].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
-    assert!(decode(&nonfinite, &request()).is_err());
+    for sample in 0..8 {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bad = b.clone();
+            let at = fixture.pcm_start + sample * 4;
+            bad[at..at + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+            assert_eq!(
+                decode(&bad, &request()).unwrap_err(),
+                "non-finite processed PCM refused"
+            );
+        }
+    }
     let mut bad = b;
     let n = bad.len();
     bad[n - 4..].copy_from_slice(&0u32.to_le_bytes());
     assert!(decode(&bad, &request()).is_err());
 }
+#[test]
+fn platform_tag_lengths_do_not_move_the_negative_control_out_of_pcm() {
+    for platform in ["linux-x86_64", "macos-arm64"] {
+        let fixture = packet_for(platform);
+        assert_eq!(
+            &fixture.bytes[fixture.pcm_start..fixture.pcm_start + 4],
+            &1f32.to_le_bytes()
+        );
+        assert_eq!(
+            &fixture.bytes[fixture.pcm_start + 16..fixture.pcm_start + 20],
+            &(-1f32).to_le_bytes()
+        );
+    }
+    assert_eq!(
+        packet_for("linux-x86_64").pcm_start,
+        packet_for("macos-arm64").pcm_start + 1
+    );
+}
+
 #[test]
 fn request_plain_order_boundaries_coincident_and_nonfinite() {
     let mut r = request();
