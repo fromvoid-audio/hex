@@ -61,6 +61,23 @@ impl NativeCallbackOwner {
     ) -> Option<crate::prepared::ClaimedGraphReturn> {
         self.callback.take_held_claimed_on_control()
     }
+    pub(crate) fn peek_tracked_on_control(
+        &self,
+    ) -> Option<(
+        &crate::prepared::Publication,
+        crate::prepared::ControlTrackedLocation,
+    )> {
+        self.callback.peek_tracked_on_control()
+    }
+    pub(crate) fn take_tracked_on_control(
+        &mut self,
+        location: crate::prepared::ControlTrackedLocation,
+    ) -> Option<crate::prepared::GraphReturn> {
+        self.callback.take_tracked_on_control(location)
+    }
+    pub(crate) fn callback_fault_latched(&self) -> bool {
+        self.fault_latched
+    }
     pub(crate) fn status(&self) -> &Status {
         self.callback.native_status()
     }

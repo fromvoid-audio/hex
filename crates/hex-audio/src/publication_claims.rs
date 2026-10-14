@@ -57,6 +57,13 @@ impl PublicationClaims {
     }
 }
 impl PublicationAnchors {
+    pub fn matches_tracked_owner(
+        &self,
+        owner: &hex_engine::storage_report::OwnerTrackedPlayback,
+    ) -> bool {
+        owner.matches_anchors(&self.claims) && self.verified.matches_tracked_owner(owner)
+    }
+
     pub fn matches_owner(&self, owner: &hex_engine::storage_report::ClaimedPlaybackOwner) -> bool {
         self.claims.matches_owner(owner) && self.verified.matches_claimed_owner(owner)
     }

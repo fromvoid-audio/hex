@@ -146,6 +146,12 @@ impl VerifiedOwnedStreamRevision {
     pub fn matches_claims(&self, claims: &hex_engine::storage_report::PlaybackClaims) -> bool {
         claims.same_prepared_owner(&self.revision)
     }
+    pub fn matches_tracked_owner(
+        &self,
+        owner: &hex_engine::storage_report::OwnerTrackedPlayback,
+    ) -> bool {
+        owner.same_prepared_owner(&self.revision)
+    }
     pub fn matches_claimed_owner(
         &self,
         owner: &hex_engine::storage_report::ClaimedPlaybackOwner,

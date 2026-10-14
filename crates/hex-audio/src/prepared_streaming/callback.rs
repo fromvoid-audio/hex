@@ -40,6 +40,7 @@ impl StreamingCallback {
     fn check_worker_failure(&mut self, publication: &Publication) -> Result<(), Invalid> {
         if publication.playback.prepared_origin()
             == hex_engine::playback::PreparedOrigin::OwnedMetadata
+            && publication.tracked_claim.is_none()
         {
             return Err(Invalid(
                 "owned playback requires the typed publication bridge",
@@ -54,11 +55,17 @@ impl StreamingCallback {
             .domain_slot(binding.domain)
             .ok_or(Invalid("stream domain unavailable"))?;
         if self.failures[index].is_none() {
-            if let Some(source) = publication
-                .playback
-                .prepared_revision()
-                .and_then(|revision| revision.streamed_sources().next())
-            {
+            let source = if let Some(owner) = publication.playback.tracked.as_ref() {
+                owner
+                    .metadata()
+                    .and_then(|view| view.streamed_sources().next())
+            } else {
+                publication
+                    .playback
+                    .prepared_revision()
+                    .and_then(|revision| revision.streamed_sources().next())
+            };
+            if let Some(source) = source {
                 let mut failure = [hex_stream::StreamFailure {
                     key: source.key(),
                     page_index: 0,

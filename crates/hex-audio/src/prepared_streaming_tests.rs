@@ -472,6 +472,7 @@ fn same_actual_catalog_reuses_endpoint_but_project_context_change_refuses() {
                     hex_engine::Project::new(48_000, Vec::new()).unwrap(),
                 ))
                 .into(),
+                tracked_claim: None,
             }))
             .ok()
             .unwrap();

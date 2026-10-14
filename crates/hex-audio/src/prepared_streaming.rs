@@ -46,7 +46,7 @@ impl std::fmt::Debug for StreamPublishError {
     }
 }
 
-pub(super) struct StreamBinding {
+pub(crate) struct StreamBinding {
     pub(super) domain: hex_stream::DomainId,
     pub(super) catalog: CatalogLease,
     pub(super) admission: Option<hex_stream::DomainAdmission>,
@@ -289,6 +289,7 @@ impl Control {
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback).into(),
+            tracked_claim: None,
             stream_source: Some(StreamBinding {
                 domain,
                 catalog,
@@ -432,7 +433,10 @@ impl StreamBridgeControl {
         for _ in 0..RETIRED {
             // Claimed returns require persistent, exact-pair disposal custody.
             // Legacy/headless reclamation never upgrades or drops this owner.
-            if matches!(retired.peek(), Ok(GraphReturn::Claimed(_))) {
+            if matches!(
+                retired.peek(),
+                Ok(GraphReturn::Claimed(_) | GraphReturn::Tracked(_))
+            ) {
                 break;
             }
             let Ok(mut publication) = retired.pop() else {

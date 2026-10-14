@@ -31,10 +31,32 @@ pub struct ClaimAssociation {
     slot: usize,
     incarnation: u64,
 }
+/// Callback scalar association only; never owns/constructs a claim or root.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClaimStamp {
+    root: u64,
+    slot: usize,
+    incarnation: u64,
+}
+impl ClaimStamp {
+    pub(crate) fn same_root(self, other: Self) -> bool {
+        self.root == other.root
+    }
+}
+impl ClaimAssociation {
+    pub(crate) fn stamp(&self) -> ClaimStamp {
+        ClaimStamp {
+            root: self.root,
+            slot: self.slot,
+            incarnation: self.incarnation,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClaimUnionCapacityReport {
     pub slots: usize,
     pub record_capacity: usize,
+    pub archive_capacity: usize,
     pub bytes: usize,
     pub prepared_bytes: Option<usize>,
     pub construction_bytes: Option<usize>,
@@ -60,6 +82,14 @@ struct Slot {
     facts: Facts,
     disposal: Disposal,
     disposal_proof: Option<hex_engine::storage_report::RuntimeDisposed>,
+    tracked_disposed: Option<hex_engine::storage_report::OwnerGroupsDisposed>,
+    returned_stream: Option<crate::prepared::StreamBinding>,
+    returned_cancellation: Option<std::sync::Arc<crate::prepared::FreshRuntimeCancellation>>,
+    installation: Option<crate::prepared::CallbackInstallation>,
+    final_transfer: Option<(
+        crate::prepared::CallbackFinalTransfer,
+        hex_engine::storage_report::OwnerTransferManifest,
+    )>,
     #[cfg(test)]
     probe: Option<Box<Probe>>,
 }
@@ -76,6 +106,11 @@ impl Slot {
             facts: Facts::default(),
             disposal: Disposal::None,
             disposal_proof: None,
+            tracked_disposed: None,
+            returned_stream: None,
+            returned_cancellation: None,
+            installation: None,
+            final_transfer: None,
             #[cfg(test)]
             probe: None,
         }
@@ -140,6 +175,7 @@ pub(crate) struct ClaimUnionSlots {
     root: u64,
     slots: Vec<Slot>,
     records: Vec<Record>,
+    archives: Vec<Option<hex_engine::storage_report::OwnerGroupArchive>>,
     reservation: ClaimReservation,
     report: ClaimUnionCapacityReport,
     #[cfg(test)]
@@ -165,6 +201,10 @@ impl ClaimUnionSlots {
     pub(crate) fn new(reservation: ClaimReservation) -> Result<Self, ClaimSlotError> {
         let mut slots = Vec::new();
         let mut records = Vec::new();
+        let mut archives = Vec::new();
+        archives
+            .try_reserve_exact(reservation.items)
+            .map_err(|_| ClaimSlotError::Allocation)?;
         slots
             .try_reserve_exact(reservation.items)
             .map_err(|_| ClaimSlotError::Allocation)?;
@@ -180,6 +220,14 @@ impl ClaimUnionSlots {
                     .checked_mul(std::mem::size_of::<Record>())
                     .and_then(|r| n.checked_add(r))
             })
+            .and_then(|n| {
+                archives
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<
+                        Option<hex_engine::storage_report::OwnerGroupArchive>,
+                    >())
+                    .and_then(|b| n.checked_add(b))
+            })
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .ok_or(ClaimSlotError::Overflow)?;
         let prepared = bytes
@@ -194,10 +242,12 @@ impl ClaimUnionSlots {
             return Err(ClaimSlotError::ReservationExceeded);
         }
         slots.resize_with(reservation.items, Slot::vacant);
+        archives.resize_with(reservation.items, || None);
         let root = next_root(&NEXT_ROOT)?;
         let report = ClaimUnionCapacityReport {
             slots: slots.capacity(),
             record_capacity: records.capacity(),
+            archive_capacity: archives.capacity(),
             bytes,
             prepared_bytes: Some(prepared),
             construction_bytes: Some(construction),
@@ -206,6 +256,7 @@ impl ClaimUnionSlots {
             root,
             slots,
             records,
+            archives,
             reservation,
             report,
             #[cfg(test)]
@@ -569,6 +620,145 @@ impl ClaimUnionSlots {
         s.phase = Phase::Staged;
         Ok((owner, a))
     }
+
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn install_tracked_incomplete_for_test(
+        &mut self,
+        owner: &hex_engine::storage_report::OwnerTrackedPlayback,
+        archive: hex_engine::storage_report::OwnerGroupArchive,
+        anchors: PublicationAnchors,
+    ) -> ClaimAssociation {
+        assert!(owner.is_incomplete_fixture() && anchors.claims.is_incomplete_fixture());
+        assert!(anchors.matches_tracked_owner(owner) && archive.matches_tracked_owner(owner));
+        let a = self.install_incomplete_pair_for_test(anchors);
+        self.archives[a.slot] = Some(archive);
+        a
+    }
+    pub(crate) fn tracked_anchors(
+        &self,
+        a: &ClaimAssociation,
+    ) -> Result<&hex_engine::storage_report::AnchoredPlaybackClaims, ClaimSlotError> {
+        self.slot(a)?
+            .anchors
+            .as_ref()
+            .map(|a| &a.claims)
+            .ok_or(ClaimSlotError::Incomplete)
+    }
+    pub(crate) fn preflight_tracked_return(
+        &self,
+        a: &ClaimAssociation,
+        identity: ClaimIdentity,
+        revision: u64,
+        context_generation: u64,
+        pair_matches: bool,
+        installation: Option<&crate::prepared::CallbackInstallation>,
+        transfer: Option<(
+            &crate::prepared::CallbackFinalTransfer,
+            &hex_engine::storage_report::OwnerTransferManifest,
+        )>,
+    ) -> Result<(), ClaimSlotError> {
+        let s = self.slot(a)?;
+        if s.phase != Phase::Accepted
+            || s.disposal != Disposal::None
+            || s.facts.custody_returned
+            || s.installation.is_some()
+            || s.final_transfer.is_some()
+            || s.returned_stream.is_some()
+            || s.returned_cancellation.is_some()
+        {
+            return Err(ClaimSlotError::Busy);
+        }
+        if !pair_matches || s.identity != Some(identity) || self.archives[a.slot].is_none() {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        if installation.is_some_and(|fact| !fact.matches(a, identity, revision, context_generation))
+            || transfer.is_some_and(|(fact, manifest)| !fact.matches(a, manifest))
+        {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        Ok(())
+    }
+    pub(crate) fn retain_tracked_return_facts(
+        &mut self,
+        a: &ClaimAssociation,
+        installation: Option<crate::prepared::CallbackInstallation>,
+        transfer: Option<(
+            crate::prepared::CallbackFinalTransfer,
+            hex_engine::storage_report::OwnerTransferManifest,
+        )>,
+    ) {
+        // Preflight under the SAME exclusive cleanup transaction established
+        // this vacant exact slot; only fixed moves follow, never another pop.
+        let s = &mut self.slots[a.slot];
+        s.installation = installation;
+        s.final_transfer = transfer;
+        s.facts.custody_returned = true;
+        s.disposal = Disposal::Owned;
+    }
+    pub(crate) fn ingest_tracked_disposal(
+        &mut self,
+        a: &ClaimAssociation,
+        proof: &hex_engine::storage_report::OwnerGroupsDisposed,
+    ) -> Result<(), ClaimSlotError> {
+        let s = self.slot(a)?;
+        if s.phase != Phase::Accepted
+            || s.disposal != Disposal::Owned
+            || !s.facts.custody_returned
+            || s.identity != Some(proof.identity())
+        {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        if s.facts.incomplete
+            || s.anchors.as_ref().is_none_or(|anchors| {
+                anchors.claims.is_incomplete_fixture() != proof.is_incomplete_fixture()
+            })
+        {
+            return Err(ClaimSlotError::Incomplete);
+        }
+        proof
+            .record_disposal_archive_cells_on_control(&mut self.archives)
+            .map_err(|_| ClaimSlotError::Incomplete)?;
+        self.slots[a.slot].disposal = Disposal::Complete;
+        // INCOMPLETE/Unknown, installation/final transfer and catalog authority
+        // are independent. No role bit, slot or charge is released by ingestion.
+        Ok(())
+    }
+    pub(crate) fn retain_tracked_return_metadata(
+        &mut self,
+        a: &ClaimAssociation,
+        source: Option<crate::prepared::StreamBinding>,
+        cancellation: Option<std::sync::Arc<crate::prepared::FreshRuntimeCancellation>>,
+    ) {
+        let s = &mut self.slots[a.slot];
+        // Exact borrowed preflight reserved these empty destinations. Neither
+        // source nor cancellation can be dropped by a callback/control unwind.
+        s.returned_stream = source;
+        s.returned_cancellation = cancellation;
+    }
+    pub(crate) fn retain_tracked_disposal_proof(
+        &mut self,
+        a: &ClaimAssociation,
+        proof: hex_engine::storage_report::OwnerGroupsDisposed,
+    ) -> Result<
+        (),
+        (
+            ClaimSlotError,
+            hex_engine::storage_report::OwnerGroupsDisposed,
+        ),
+    > {
+        let s = match self.slot_mut(a) {
+            Ok(s) => s,
+            Err(error) => return Err((error, proof)),
+        };
+        if s.disposal != Disposal::Complete
+            || s.identity != Some(proof.identity())
+            || s.tracked_disposed.is_some()
+        {
+            return Err((ClaimSlotError::PairMismatch, proof));
+        }
+        s.tracked_disposed = Some(proof);
+        Ok(())
+    }
     pub(crate) fn accepted(&mut self, a: &ClaimAssociation) -> Result<(), ClaimSlotError> {
         let s = self.slot_mut(a)?;
         if s.phase != Phase::Staged {
@@ -840,6 +1030,8 @@ mod tests {
             slots.report.bytes,
             slots.slots.capacity() * std::mem::size_of::<Slot>()
                 + slots.records.capacity() * std::mem::size_of::<Record>()
+                + slots.archives.capacity()
+                    * std::mem::size_of::<Option<hex_engine::storage_report::OwnerGroupArchive>>()
                 + std::mem::size_of::<ClaimUnionSlots>()
         );
         assert!(matches!(

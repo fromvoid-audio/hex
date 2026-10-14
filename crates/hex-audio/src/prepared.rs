@@ -21,6 +21,7 @@ use std::sync::{
 use std::time::Instant;
 #[path = "prepared_streaming.rs"]
 mod streaming;
+pub(crate) use streaming::StreamBinding;
 pub(crate) use streaming::{
     NativeCleanupPermit, NativeStreamRoot, channel_with_streaming_and_spectrum,
 };
@@ -198,7 +199,7 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
-struct Publication {
+pub(crate) struct Publication {
     stream_source: Option<streaming::StreamBinding>,
     revision: u64,
     /// UI/control project context this compiled playback belongs to. This is
@@ -207,34 +208,81 @@ struct Publication {
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: PublicationPlayback,
+    tracked_claim: Option<TrackedPublicationClaims>,
+}
+// Sole native fact producers live in Callback::begin_block. Queue admission,
+// output ACK, silence and commands cannot construct either private fact.
+struct TrackedPublicationClaims {
+    association: crate::publication_claims::ClaimAssociation,
+    installed: Option<CallbackInstallation>,
+    final_transfer: Option<CallbackFinalTransfer>,
+}
+pub(crate) struct CallbackInstallation {
+    association: crate::publication_claims::slots::ClaimStamp,
+    runtime: hex_engine::storage_report::ClaimIdentity,
+    revision: u64,
+    context_generation: u64,
+}
+pub(crate) struct CallbackFinalTransfer {
+    predecessor: crate::publication_claims::slots::ClaimStamp,
+    runtime: hex_engine::storage_report::ClaimIdentity,
+    successor: crate::publication_claims::slots::ClaimStamp,
+    successor_runtime: hex_engine::storage_report::ClaimIdentity,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum ControlTrackedLocation {
+    Held,
+    Deferred,
+    Active,
+    Queued,
+}
+impl CallbackInstallation {
+    pub(crate) fn matches(
+        &self,
+        association: &crate::publication_claims::ClaimAssociation,
+        runtime: hex_engine::storage_report::ClaimIdentity,
+        revision: u64,
+        context_generation: u64,
+    ) -> bool {
+        self.association == association.stamp()
+            && self.runtime == runtime
+            && self.revision == revision
+            && self.context_generation == context_generation
+    }
+}
+impl CallbackFinalTransfer {
+    pub(crate) fn matches(
+        &self,
+        association: &crate::publication_claims::ClaimAssociation,
+        manifest: &hex_engine::storage_report::OwnerTransferManifest,
+    ) -> bool {
+        self.predecessor == association.stamp()
+            && self.runtime == manifest.predecessor()
+            && self.successor_runtime == manifest.successor()
+            && self.successor.same_root(self.predecessor)
+            && self.successor != self.predecessor
+    }
 }
 
 // Both slots belong to the persistent publication, never a handoff stack local.
+#[path = "prepared_owner.rs"]
+mod publication_owner;
 struct PublicationPlayback {
     live: Option<Box<Playback>>,
     retired: Option<hex_engine::playback::RetiredPlayback>,
+    tracked: Option<hex_engine::storage_report::OwnerTrackedPlayback>,
+    tracked_retired: Option<hex_engine::storage_report::RetiredOwnerTrackedPlayback>,
+    manifest: Option<hex_engine::storage_report::OwnerTransferManifest>,
 }
 impl From<Box<Playback>> for PublicationPlayback {
     fn from(playback: Box<Playback>) -> Self {
         Self {
             live: Some(playback),
             retired: None,
+            tracked: None,
+            tracked_retired: None,
+            manifest: None,
         }
-    }
-}
-impl std::ops::Deref for PublicationPlayback {
-    type Target = Playback;
-    fn deref(&self) -> &Playback {
-        self.live
-            .as_deref()
-            .expect("retired publication is not renderable")
-    }
-}
-impl std::ops::DerefMut for PublicationPlayback {
-    fn deref_mut(&mut self) -> &mut Playback {
-        self.live
-            .as_deref_mut()
-            .expect("retired publication is not renderable")
     }
 }
 impl PublicationPlayback {
@@ -246,6 +294,9 @@ impl PublicationPlayback {
 }
 impl Publication {
     fn into_return(mut self) -> GraphReturn {
+        if self.tracked_claim.is_some() {
+            return GraphReturn::Tracked(self); // whole persistent envelope, no owner split
+        }
         if let Some(playback) = self.playback.retired.take() {
             GraphReturn::Retired(RetiredPublication {
                 stream_source: self.stream_source,
@@ -261,7 +312,7 @@ impl Publication {
     }
 }
 
-struct RetiredPublication {
+pub(crate) struct RetiredPublication {
     stream_source: Option<streaming::StreamBinding>,
     _revision: u64,
     _control_context_generation: u64,
@@ -282,15 +333,18 @@ impl From<ClaimedGraphReturn> for GraphReturn {
         Self::Claimed(value)
     }
 }
-enum GraphReturn {
+pub(crate) enum GraphReturn {
     Live(Publication),
     Retired(RetiredPublication),
     Claimed(ClaimedGraphReturn),
+    Tracked(Publication),
 }
 impl GraphReturn {
     fn stream_source_mut(&mut self) -> Option<&mut streaming::StreamBinding> {
         match self {
-            Self::Live(publication) => publication.stream_source.as_mut(),
+            Self::Live(publication) | Self::Tracked(publication) => {
+                publication.stream_source.as_mut()
+            }
             Self::Retired(publication) => publication.stream_source.as_mut(),
             Self::Claimed(publication) => publication.stream_source.as_mut(),
         }
@@ -332,7 +386,7 @@ pub enum FreshRuntimeCancellationResult {
 /// A per-publication decision cell binds a full revision to its own atomic
 /// state. The immutable key and CAS live in the same allocation, so there is
 /// no split key/state ABA window and no truncated-revision encoding.
-struct FreshRuntimeCancellation {
+pub(crate) struct FreshRuntimeCancellation {
     revision: u64,
     decision: AtomicU32,
 }
@@ -1113,6 +1167,7 @@ impl Control {
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback).into(),
+            tracked_claim: None,
         };
         if let Err(PushError::Full(publication)) = self.publications.push(publication) {
             self.publication_pending.store(false, Release);
@@ -1252,6 +1307,12 @@ impl Control {
             let Some(retired) = self.retired.as_mut() else {
                 break;
             };
+            if matches!(
+                retired.peek(),
+                Ok(GraphReturn::Claimed(_) | GraphReturn::Tracked(_))
+            ) {
+                break; // sealed origins require their persistent matching control custodian
+            }
             let Ok(publication) = retired.pop() else {
                 break;
             };
@@ -1293,6 +1354,65 @@ impl Callback {
             }
         }
     }
+    pub(crate) fn peek_tracked_on_control(&self) -> Option<(&Publication, ControlTrackedLocation)> {
+        if let Some(GraphReturn::Tracked(publication)) = self.held_retirement.as_ref() {
+            return Some((publication, ControlTrackedLocation::Held));
+        }
+        if let Some(publication) = self.deferred.as_ref().filter(|p| p.tracked_claim.is_some()) {
+            return Some((publication, ControlTrackedLocation::Deferred));
+        }
+        if let Some(publication) = self.active.as_ref().filter(|p| p.tracked_claim.is_some()) {
+            return Some((publication, ControlTrackedLocation::Active));
+        }
+        self.publications
+            .peek()
+            .ok()
+            .filter(|p| p.tracked_claim.is_some())
+            .map(|p| (p, ControlTrackedLocation::Queued))
+    }
+    pub(crate) fn take_tracked_on_control(
+        &mut self,
+        location: ControlTrackedLocation,
+    ) -> Option<GraphReturn> {
+        match location {
+            ControlTrackedLocation::Held => {
+                if !matches!(self.held_retirement.as_ref(), Some(GraphReturn::Tracked(_))) {
+                    return None;
+                }
+                self.held_retirement.take()
+            }
+            ControlTrackedLocation::Deferred => {
+                if !self
+                    .deferred
+                    .as_ref()
+                    .is_some_and(|p| p.tracked_claim.is_some())
+                {
+                    return None;
+                }
+                self.deferred.take().map(Publication::into_return)
+            }
+            ControlTrackedLocation::Active => {
+                if !self
+                    .active
+                    .as_ref()
+                    .is_some_and(|p| p.tracked_claim.is_some())
+                {
+                    return None;
+                }
+                self.active.take().map(Publication::into_return)
+            }
+            ControlTrackedLocation::Queued => {
+                if !self
+                    .publications
+                    .peek()
+                    .is_ok_and(|p| p.tracked_claim.is_some())
+                {
+                    return None;
+                }
+                self.publications.pop().ok().map(Publication::into_return)
+            }
+        }
+    }
     pub(crate) fn native_status(&self) -> &Status {
         &self.status
     }
@@ -1310,6 +1430,30 @@ impl Callback {
         }
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
+    fn tracked_destinations_ready(candidate: &Publication, previous: Option<&Publication>) -> bool {
+        match candidate.tracked_claim.as_ref() {
+            None => previous.is_none_or(|old| old.tracked_claim.is_none()),
+            Some(claim) => {
+                if claim.installed.is_some()
+                    || claim.final_transfer.is_some()
+                    || candidate.playback.tracked.is_none()
+                    || candidate.playback.tracked_retired.is_some()
+                    || candidate.playback.manifest.is_some()
+                {
+                    return false;
+                }
+                previous.is_none_or(|old| {
+                    old.tracked_claim.as_ref().is_some_and(|claim| {
+                        claim.installed.is_some()
+                            && claim.final_transfer.is_none()
+                            && old.playback.tracked.is_some()
+                            && old.playback.tracked_retired.is_none()
+                            && old.playback.manifest.is_none()
+                    })
+                })
+            }
+        }
+    }
     pub fn begin_block(&mut self) {
         if let Some(streaming) = self.streaming.as_mut() {
             streaming.pump_returns();
@@ -1391,7 +1535,11 @@ impl Callback {
             }
             return;
         }
+        let destinations_ready = self.publications.peek().is_ok_and(|candidate| {
+            Self::tracked_destinations_ready(candidate, self.active.as_ref())
+        });
         if self.deferred.is_none()
+            && destinations_ready
             && (self.active.is_none() || !self.retired.is_full())
             && let Ok(publication) = self.publications.pop()
         {
@@ -1501,6 +1649,10 @@ impl Callback {
                     previous.playback.sample_rate(),
                 )
             });
+            if !Self::tracked_destinations_ready(next, self.active.as_ref()) {
+                self.consume_commands();
+                return;
+            }
             let mut retiring_candidate_consumed = false;
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
@@ -1515,17 +1667,33 @@ impl Callback {
             ) {
                 None
             } else {
-                if next.stream_source.is_some() {
+                if next.stream_source.is_some() || next.tracked_claim.is_some() {
                     self.active.as_mut().map(|previous| {
                         #[cfg(test)]
                         if self.test_retiring_panic_after_commit == Some(false) {
                             panic!("injected retiring preflight unwind");
                         }
-                        let result = match next.playback.try_inherit_and_retire_previous_in_place(
-                            &mut previous.playback.live,
-                            &mut previous.playback.retired,
-                        ) {
-                            Ok(()) => Ok(()),
+                        let result = match next
+                            .playback
+                            .try_inherit_and_retire_previous_in_place(&mut previous.playback)
+                        {
+                            Ok(()) => {
+                                if let (Some(old_claim), Some(next_claim), Some(manifest)) = (
+                                    previous.tracked_claim.as_mut(),
+                                    next.tracked_claim.as_ref(),
+                                    previous.playback.manifest.as_ref(),
+                                ) {
+                                    // Engine commit permanently retired the exact predecessor
+                                    // and fixed the immutable manifest in its persistent envelope.
+                                    old_claim.final_transfer = Some(CallbackFinalTransfer {
+                                        predecessor: old_claim.association.stamp(),
+                                        runtime: manifest.predecessor(),
+                                        successor: next_claim.association.stamp(),
+                                        successor_runtime: manifest.successor(),
+                                    });
+                                }
+                                Ok(())
+                            }
                             Err(failure) => {
                                 retiring_candidate_consumed = failure.candidate_consumed;
                                 Err(failure.error)
@@ -1651,6 +1819,21 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.applied_revision.store(revision, Release);
+                    if let Some(active) = self.active.as_mut()
+                        && let Some(claim) = active.tracked_claim.as_mut()
+                    {
+                        // Actual successful callback installation, distinct from
+                        // queue acceptance and from final host-buffer output ACK.
+                        claim.installed = Some(CallbackInstallation {
+                            association: claim.association.stamp(),
+                            runtime: active
+                                .playback
+                                .tracked_identity()
+                                .expect("sealed tracked owner"),
+                            revision: active.revision,
+                            context_generation: active.control_context_generation,
+                        });
+                    }
                     self.publication_pending.store(false, Release);
                 }
             }
@@ -3985,6 +4168,7 @@ mod tests {
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 playback: Box::new(graph().0).into(),
+                tracked_claim: None,
             })
             .unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
@@ -4322,6 +4506,7 @@ mod tests {
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0).into(),
+                    tracked_claim: None,
                 }))
                 .unwrap();
         }
@@ -4633,6 +4818,7 @@ mod tests {
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback).into(),
+            tracked_claim: None,
         }));
         assert!(weak_revision.upgrade().is_some());
         callback.begin_block();
@@ -4747,6 +4933,7 @@ mod tests {
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback).into(),
+                        tracked_claim: None,
                     }))
                     .is_ok()
             );
@@ -4821,6 +5008,7 @@ mod tests {
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback).into(),
+                        tracked_claim: None,
                     }))
                     .is_ok()
             );
@@ -4834,6 +5022,7 @@ mod tests {
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held).into(),
+            tracked_claim: None,
         }));
         let mut last_ticket = 0;
         for _ in 0..COMMANDS {
@@ -4981,6 +5170,7 @@ mod tests {
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(queued).into(),
+                    tracked_claim: None,
                 })
                 .is_ok()
         );

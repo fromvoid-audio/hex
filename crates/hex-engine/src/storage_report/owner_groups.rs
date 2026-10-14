@@ -1,6 +1,8 @@
 //! Opt-in owning-member custody. This is not publication/admission authority.
 use super::{AnchoredPlaybackClaims, ClaimIdentity, ClaimReservation, ClaimedPlaybackOwner};
 use std::{fmt, mem::size_of, sync::Arc};
+#[path = "owner_groups_native.rs"]
+mod native_forwarding;
 #[cfg(all(test, feature = "instrument-test-support"))]
 #[path = "owner_groups_tests.rs"]
 mod tests;
@@ -732,15 +734,39 @@ impl OwnerGroupsDisposed {
         &self,
         archives: &mut [&mut OwnerGroupArchive],
     ) -> Result<(), OwnerGroupError> {
+        self.preflight_fanout(archives.iter().map(|archive| &**archive))?;
+        for archive in archives.iter_mut() {
+            archive.commit_disposal(self);
+        }
+        Ok(())
+    }
+    /// Same atomic fanout over the caller's already-reserved control archive
+    /// cells. Vacant cells are ignored. No temporary reference Vec, ownership
+    /// extraction, registry or callback access is introduced.
+    pub fn record_disposal_archive_cells_on_control(
+        &self,
+        archives: &mut [Option<OwnerGroupArchive>],
+    ) -> Result<(), OwnerGroupError> {
+        self.preflight_fanout(archives.iter().flatten())?;
+        for archive in archives.iter_mut().flatten() {
+            archive.commit_disposal(self);
+        }
+        Ok(())
+    }
+    fn preflight_fanout<'a>(
+        &self,
+        archives: impl Iterator<Item = &'a OwnerGroupArchive> + Clone,
+    ) -> Result<(), OwnerGroupError> {
         if !archives
-            .iter()
+            .clone()
             .any(|archive| archive.runtime == self.identity())
         {
             return Err(OwnerGroupError::PairMismatch);
         }
-        for (index, archive) in archives.iter().enumerate() {
-            if archives[..index]
-                .iter()
+        for (index, archive) in archives.clone().enumerate() {
+            if archives
+                .clone()
+                .take(index)
                 .any(|earlier| earlier.runtime == archive.runtime)
             {
                 return Err(OwnerGroupError::InvalidTransfer);
@@ -749,13 +775,13 @@ impl OwnerGroupsDisposed {
         for member in &self.book.members {
             if let Some(group) = &member.group
                 && !archives
-                    .iter()
+                    .clone()
                     .any(|archive| archive.runtime == group.0.runtime)
             {
                 return Err(OwnerGroupError::PairMismatch);
             }
         }
-        for archive in archives.iter() {
+        for archive in archives.clone() {
             let affected = archive.runtime == self.identity()
                 || self.book.members.iter().any(|member| {
                     member
@@ -766,9 +792,6 @@ impl OwnerGroupsDisposed {
             if affected {
                 archive.preflight_disposal(self)?;
             }
-        }
-        for archive in archives.iter_mut() {
-            archive.commit_disposal(self);
         }
         Ok(())
     }

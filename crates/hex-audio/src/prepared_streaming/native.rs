@@ -37,6 +37,9 @@ struct ReturnedGraphTeardown {
     extraction_incarnation: u64,
     envelope: Option<GraphReturn>,
     owner: Option<hex_engine::storage_report::ControlPlaybackTeardown>,
+    tracked_publication: Option<Publication>,
+    tracked_owner: Option<hex_engine::storage_report::OwnerTrackedTeardown>,
+    tracked_proof: Option<hex_engine::storage_report::OwnerGroupsDisposed>,
     association: Option<crate::publication_claims::ClaimAssociation>,
     stream_source: Option<StreamBinding>,
     cancellation: Option<Arc<FreshRuntimeCancellation>>,
@@ -51,6 +54,9 @@ impl ReturnedGraphTeardown {
             extraction_incarnation,
             envelope: Some(returned),
             owner: None,
+            tracked_publication: None,
+            tracked_owner: None,
+            tracked_proof: None,
             association: None,
             stream_source: None,
             cancellation: None,
@@ -64,6 +70,22 @@ impl ReturnedGraphTeardown {
             return false;
         };
         match envelope {
+            GraphReturn::Tracked(publication) => {
+                self.tracked_publication = Some(publication); // persistent BEFORE splitting
+                let publication = self
+                    .tracked_publication
+                    .as_mut()
+                    .expect("staged tracked envelope");
+                if let Some(owner) = publication.playback.tracked.take() {
+                    self.tracked_owner = Some(owner.into_control_teardown());
+                } else if let Some(owner) = publication.playback.tracked_retired.take() {
+                    self.tracked_owner = Some(owner.into_control_teardown());
+                } else {
+                    self.incomplete = true;
+                    return false;
+                }
+                true
+            }
             GraphReturn::Claimed(ClaimedGraphReturn {
                 owner,
                 association,
@@ -83,12 +105,113 @@ impl ReturnedGraphTeardown {
             }
         }
     }
+    fn preflight_tracked(
+        publication: &Publication,
+        slots: &crate::publication_claims::slots::ClaimUnionSlots,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        let claim = publication
+            .tracked_claim
+            .as_ref()
+            .ok_or(crate::publication_claims::ClaimSlotError::PairMismatch)?;
+        let identity = publication
+            .playback
+            .tracked_identity()
+            .ok_or(crate::publication_claims::ClaimSlotError::PairMismatch)?;
+        let anchors = slots.tracked_anchors(&claim.association)?;
+        if claim.final_transfer.is_some() != publication.playback.manifest.is_some() {
+            return Err(crate::publication_claims::ClaimSlotError::PairMismatch);
+        }
+        slots.preflight_tracked_return(
+            &claim.association,
+            identity,
+            publication.revision,
+            publication.control_context_generation,
+            publication.playback.tracked_matches_anchors(anchors),
+            claim.installed.as_ref(),
+            claim
+                .final_transfer
+                .as_ref()
+                .zip(publication.playback.manifest.as_ref()),
+        )
+    }
+    fn commit_tracked_facts(
+        &mut self,
+        slots: &mut crate::publication_claims::slots::ClaimUnionSlots,
+    ) {
+        if let Some(publication) = self.tracked_publication.as_mut()
+            && let Some(claim) = publication.tracked_claim.as_mut()
+        {
+            let transfer = claim
+                .final_transfer
+                .take()
+                .zip(publication.playback.manifest.take());
+            slots.retain_tracked_return_facts(&claim.association, claim.installed.take(), transfer);
+            slots.retain_tracked_return_metadata(
+                &claim.association,
+                publication.stream_source.take(),
+                publication.fresh_runtime_cancellation.take(),
+            );
+        }
+    }
     fn dispose(&mut self, slots: &mut crate::publication_claims::slots::ClaimUnionSlots) -> bool {
         if self.incomplete {
             return false;
         }
         if self.complete {
             return true;
+        }
+        if self.tracked_publication.is_some() {
+            let (Some(publication), Some(owner)) = (
+                self.tracked_publication.as_mut(),
+                self.tracked_owner.as_mut(),
+            ) else {
+                self.incomplete = true;
+                return false;
+            };
+            let Some(claim) = publication.tracked_claim.as_ref() else {
+                self.incomplete = true;
+                return false;
+            };
+            if self.tracked_proof.is_none() {
+                match owner.dispose_on_control() {
+                    Ok(proof) => self.tracked_proof = Some(proof),
+                    Err(_) => {
+                        self.incomplete = true;
+                        slots.disposal_incomplete(&claim.association);
+                        return false;
+                    }
+                }
+            }
+            match slots.ingest_tracked_disposal(
+                &claim.association,
+                self.tracked_proof
+                    .as_ref()
+                    .expect("successful actual disposal"),
+            ) {
+                Ok(()) => {
+                    let proof = self
+                        .tracked_proof
+                        .take()
+                        .expect("persistent normal disposal proof");
+                    match slots.retain_tracked_disposal_proof(&claim.association, proof) {
+                        Ok(()) => {
+                            self.complete = true;
+                            return true;
+                        }
+                        Err((_, proof)) => {
+                            self.tracked_proof = Some(proof);
+                            self.incomplete = true;
+                            slots.disposal_incomplete(&claim.association);
+                            return false;
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.incomplete = true;
+                    slots.disposal_incomplete(&claim.association);
+                    return false;
+                }
+            }
         }
         let (Some(owner), Some(association)) = (self.owner.as_mut(), self.association.as_ref())
         else {
@@ -135,6 +258,48 @@ impl NativeCleanupPermit<'_> {
         &mut self,
         data: &mut crate::native_callback_owner::NativeCallbackOwner,
     ) -> Result<(), hex_stream::MediaCleanupPhase> {
+        if let Some((publication, location)) = data.peek_tracked_on_control() {
+            if self._custody.graph_teardown.is_some() {
+                return Err(hex_stream::MediaCleanupPhase::Pending);
+            }
+            let mut root = self.root.lock();
+            let Some(bridge) = root.bridge.as_mut() else {
+                return Err(hex_stream::MediaCleanupPhase::Pending);
+            };
+            if !Arc::ptr_eq(&bridge.tag, &self.root.inner.tag) {
+                return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+            }
+            let Some(next) = self._custody.incarnation.checked_add(1) else {
+                return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+            };
+            let root_tag = Arc::clone(&bridge.tag); // control preflight only
+            let slots = bridge
+                .claim_union
+                .as_mut()
+                .ok_or(hex_stream::MediaCleanupPhase::Pending)?;
+            ReturnedGraphTeardown::preflight_tracked(publication, slots)
+                .map_err(|_| hex_stream::MediaCleanupPhase::Pending)?;
+            if data.callback_fault_latched() {
+                if let Some(claim) = publication.tracked_claim.as_ref() {
+                    slots
+                        .fault(&claim.association, true)
+                        .map_err(|_| hex_stream::MediaCleanupPhase::FailedIncomplete)?;
+                }
+            }
+            let Some(returned) = data.take_tracked_on_control(location) else {
+                return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+            };
+            self._custody.graph_teardown =
+                Some(ReturnedGraphTeardown::stage(returned, root_tag, next));
+            self._custody.incarnation = next;
+            if let Some(teardown) = self._custody.graph_teardown.as_mut() {
+                if !teardown.split() {
+                    return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+                }
+                teardown.commit_tracked_facts(slots);
+            }
+            return Err(hex_stream::MediaCleanupPhase::Pending); // persist capsule; retry terminal disposal only after control work
+        }
         let Some((owner, a, stream_bound)) = data.held_claimed_on_control() else {
             return Ok(());
         };
@@ -675,6 +840,12 @@ impl CleanupCapsule {
                     return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
                 }
             }
+            if graph_teardown
+                .as_ref()
+                .is_some_and(|teardown| teardown.complete && teardown.tracked_publication.is_some())
+            {
+                drop(graph_teardown.take());
+            }
             self.bridge.claim_union_closed |= closing;
             if let Some(slots) = self.bridge.claim_union.as_mut() {
                 if closing {
@@ -696,6 +867,35 @@ impl CleanupCapsule {
             }
             if let Some(returns) = self.returns.as_mut() {
                 let _ = self.bridge.reclaim_receiver(returns, false);
+                if let Ok(GraphReturn::Tracked(publication)) = returns.peek() {
+                    if graph_teardown.is_some() {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    }
+                    let Some(slots) = self.bridge.claim_union.as_mut() else {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    };
+                    if ReturnedGraphTeardown::preflight_tracked(publication, slots).is_err() {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    }
+                    let root_tag = Arc::clone(&self.bridge.tag); // control preflight only
+                    let Ok(returned) = returns.pop() else {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    };
+                    *graph_teardown = Some(ReturnedGraphTeardown::stage(
+                        returned,
+                        root_tag,
+                        extraction_incarnation,
+                    ));
+                    if let Some(teardown) = graph_teardown.as_mut() {
+                        if !teardown.split() {
+                            return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                        }
+                        teardown.commit_tracked_facts(slots); // fixed moves; same borrowed preflight
+                        if !teardown.dispose(slots) {
+                            return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                        }
+                    }
+                }
                 if let Ok(GraphReturn::Claimed(returned)) = returns.peek() {
                     // Stream-domain association transfer is not enabled. Keep
                     // any stream-bound claimed envelope intact until that exact
@@ -1301,6 +1501,171 @@ mod claimed_disposal_tests {
                 decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
             })),
         }
+    }
+    fn tracked_publication(
+        root: &NativeStreamRoot,
+        stream: &hex_stream::StreamControl,
+        revision: hex_engine::OwnedPreparedRevision,
+        number: u64,
+    ) -> Publication {
+        let verifier_root = revision.clone_on_control();
+        let (mut owner, anchors) = incomplete_owned_pair_for_test(revision).ok().unwrap();
+        owner.prepare_owner_groups_for_test().unwrap();
+        let reservation = ClaimReservation {
+            items: 32_768,
+            anchors: 16,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            other_retained_bytes: 0,
+            other_construction_bytes: 0,
+        };
+        let (owner, archive, report) = owner
+            .try_acquire_owner_groups_on_control(&anchors, reservation)
+            .ok()
+            .unwrap();
+        assert!(report.incomplete_source);
+        let verified = hex_stream::VerifiedOwnedStreamRevision::new(
+            verifier_root,
+            stream.catalog_lease().unwrap(),
+        )
+        .unwrap();
+        let association = root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .claim_union
+            .as_mut()
+            .unwrap()
+            .install_tracked_incomplete_for_test(
+                &owner,
+                archive,
+                PublicationAnchors {
+                    claims: anchors,
+                    verified,
+                },
+            );
+        Publication {
+            stream_source: None,
+            revision: number,
+            control_context_generation: 0,
+            policy: PublicationPolicy::InheritRuntime,
+            fresh_runtime_cancellation: None,
+            playback: PublicationPlayback::from_tracked(owner),
+            tracked_claim: Some(TrackedPublicationClaims {
+                association,
+                installed: None,
+                final_transfer: None,
+            }),
+        }
+    }
+    #[test]
+    fn tracked_queue_acceptance_is_not_installation_and_pressure_keeps_owner() {
+        let (mut control, mut callback, root, stream, pages) = setup();
+        let publication = tracked_publication(&root, &stream, prepared(), 901);
+        assert!(
+            publication
+                .tracked_claim
+                .as_ref()
+                .unwrap()
+                .installed
+                .is_none()
+        );
+        control.publications.push(publication).ok().unwrap();
+        callback.begin_block();
+        let active = callback.active.as_ref().unwrap();
+        assert!(
+            active
+                .tracked_claim
+                .as_ref()
+                .unwrap()
+                .installed
+                .as_ref()
+                .unwrap()
+                .matches(
+                    &active.tracked_claim.as_ref().unwrap().association,
+                    active.playback.tracked_identity().unwrap(),
+                    901,
+                    0
+                )
+        );
+        assert!(
+            active
+                .tracked_claim
+                .as_ref()
+                .unwrap()
+                .final_transfer
+                .is_none()
+        );
+        // No final host buffer was rendered/committed by begin_block.
+        let queued = tracked_publication(&root, &stream, prepared(), 902);
+        control.publications.push(queued).ok().unwrap();
+        // An occupied final-fact destination must refuse before queue pop.
+        callback
+            .active
+            .as_mut()
+            .unwrap()
+            .tracked_claim
+            .as_mut()
+            .unwrap()
+            .installed = None;
+        callback.begin_block();
+        assert!(callback.publications.peek().is_ok());
+        assert_eq!(callback.active.as_ref().unwrap().revision, 901);
+        drop(callback);
+        drop(control);
+        drop(root);
+        assert!(stream.shutdown(pages).unwrap().accounting_complete);
+    }
+    #[test]
+    fn actual_tracked_install_handoff_return_and_disposal_keep_claims_incomplete() {
+        let (mut control, mut callback, root, stream, pages) = setup();
+        let revision = prepared();
+        control
+            .publications
+            .push(tracked_publication(
+                &root,
+                &stream,
+                revision.clone_on_control(),
+                901,
+            ))
+            .ok()
+            .unwrap();
+        callback.begin_block();
+        control
+            .publications
+            .push(tracked_publication(&root, &stream, revision, 902))
+            .ok()
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(callback.active.as_ref().unwrap().revision, 902);
+        {
+            let mut state = root.lock();
+            let bridge = state.bridge.as_mut().unwrap();
+            let returned = bridge.native_retired.as_mut().unwrap().peek().unwrap();
+            let GraphReturn::Tracked(publication) = returned else {
+                panic!("sealed return");
+            };
+            let claim = publication.tracked_claim.as_ref().unwrap();
+            assert!(claim.installed.is_some());
+            assert!(claim.final_transfer.as_ref().unwrap().matches(
+                &claim.association,
+                publication.playback.manifest.as_ref().unwrap()
+            ));
+            assert!(publication.playback.tracked.is_none());
+            assert!(publication.playback.tracked_retired.is_some());
+        }
+        assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        // Actual owner disposal and archive ingestion never upgrade fixture
+        // reports or establish role/catalog/aggregate admission authority.
+        assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        let refusal = stream.shutdown(pages).err().unwrap();
+        assert!(matches!(refusal, hex_stream::ShutdownError::Busy(_)));
+        let (stream, pages) = refusal.into_parts().unwrap();
+        drop(callback);
+        drop(control);
+        drop(root);
+        assert!(stream.shutdown(pages).unwrap().accounting_complete);
     }
     fn drain_fixture(root: &NativeStreamRoot) {
         loop {
