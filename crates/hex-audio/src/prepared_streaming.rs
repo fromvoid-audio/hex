@@ -432,27 +432,20 @@ impl StreamBridgeControl {
             claims
                 .advance_retired_claims_on_control(&mut self.reaper, &mut self.cleanup_successors);
         }
+        self.poll_cleanup_successors();
+    }
+    fn poll_cleanup_successors(&mut self) {
         for cell in &mut self.cleanup_successors {
             let Some(successor) = cell.as_mut() else {
                 continue;
             };
-            if self
+            let dependencies_remaining = self
                 .claim_union
                 .as_ref()
-                .is_some_and(|claims| claims.has_cleanup_dependents(successor.domain))
-            {
-                continue;
+                .is_some_and(|claims| claims.has_cleanup_dependents(successor.domain));
+            if successor.poll_on_control(&mut self.reaper, dependencies_remaining) {
+                *cell = None;
             }
-            if let Some(receipt) = successor.receipt.take() {
-                match self.reaper.consume_catalog_cleanup_receipt(receipt) {
-                    Ok(_) => {}
-                    Err((_, receipt)) => {
-                        successor.receipt = Some(receipt);
-                        continue;
-                    }
-                }
-            }
-            *cell = None;
         }
     }
     fn reclaim_receiver(
@@ -524,26 +517,16 @@ impl StreamBridgeControl {
             // custody outside the ordinary root mutex. Headless is exclusive.
             let _ = self.reaper.advance_catalog_coverage_on_control(id);
             let _ = self.reaper.try_reap_domain(id);
+            // Capture/consume real cleanup responsibility even after the last
+            // claim already completed while this domain was still live.
+            self.poll_cleanup_successors();
             if self
                 .claim_union
                 .as_ref()
                 .is_some_and(|claims| claims.has_cleanup_dependents(id))
+                && consume_reports
             {
-                if let Some(successor) = self
-                    .cleanup_successors
-                    .iter_mut()
-                    .flatten()
-                    .find(|s| s.domain == id)
-                {
-                    if successor.receipt.is_none() {
-                        if let Ok(receipt) = self.reaper.stable_catalog_cleanup_receipt(id) {
-                            successor.receipt = Some(receipt);
-                        }
-                    }
-                }
-                if consume_reports {
-                    return None;
-                }
+                return None;
             }
             if consume_reports {
                 let report = self.reaper.take_reclaimed_report(id)?;
@@ -802,6 +785,136 @@ impl StreamBridgeControl {
         match self.claim_union.as_mut() {
             Some(slots) => slots.take_ready(token),
             None => Err((crate::publication_claims::ClaimSlotError::Busy, token)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cleanup_successor_tests {
+    use super::*;
+    use crate::publication_claims::slots::CleanupSuccessor;
+    use std::time::Duration;
+
+    fn domain_input(id: hex_stream::DomainId) -> hex_stream::MediaDomainInput {
+        let mut runtime =
+            hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
+                .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (control, pages) = runtime.split().ok().unwrap();
+        let endpoint =
+            hex_stream::VerifiedPageEndpoint::new(pages, control.catalog_lease().unwrap()).unwrap();
+        hex_stream::MediaDomainInput {
+            id,
+            control,
+            endpoint: hex_stream::PageReadiness::new(endpoint, 3).unwrap(),
+            retained_leases: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn actual_successor_custody_survives_zero_dependents_until_later_shutdown_and_report_reuse() {
+        for shutdown_before_last_binding in [false, true] {
+            let (control, mut callback, mut bridge) =
+                channel_with_streaming(48_000, 41, 4).unwrap();
+            let id = hex_stream::DomainId::new(1).unwrap();
+            let admission = bridge.reaper.reserve_domain(domain_input(id)).ok().unwrap();
+            bridge
+                .reaper
+                .configure_catalog_custody(id, 3, usize::MAX)
+                .unwrap();
+            // Actual sealed catalog bindings are the dependency-custody API
+            // harness. They confer NO complete claim admission, graph install,
+            // RuntimeDisposed, owner-group closure or native publication proof.
+            let mut bindings = Vec::new();
+            for _ in 0..2 {
+                let lease = bridge.reaper.catalog_lease(id).unwrap();
+                let reservation = bridge.reaper.reserve_catalog_coverage(id, &lease).unwrap();
+                let binding = reservation.binding_on_control();
+                let pending = bridge
+                    .reaper
+                    .commit_catalog_coverage(reservation, lease)
+                    .ok()
+                    .unwrap();
+                bridge.reaper.advance_catalog_coverage_on_control(id);
+                let ack = bridge.reaper.catalog_coverage_ack(pending).ok().unwrap();
+                bridge
+                    .reaper
+                    .consume_catalog_coverage_ack(ack)
+                    .ok()
+                    .unwrap();
+                bindings.push(binding);
+            }
+            assert!(bindings[0].same_responsibility(&bindings[1]));
+            bridge.cleanup_successors[0] = Some(CleanupSuccessor {
+                domain: id,
+                receipt: None,
+            });
+            if !shutdown_before_last_binding {
+                // Claim/binding lifetimes may end while catalog remains live.
+                // The real production zero-dependency polling path must retain
+                // its cell even though no private receipt exists yet.
+                bindings.clear();
+                bridge.poll_cleanup_successors();
+                assert!(
+                    bridge.cleanup_successors[0]
+                        .as_ref()
+                        .unwrap()
+                        .receipt
+                        .is_none()
+                );
+                bridge.poll_cleanup_successors();
+                assert!(bridge.cleanup_successors[0].is_some());
+                assert!(bridge.reaper.take_reclaimed_report(id).is_none());
+            }
+            let mut batch = callback.streaming.as_mut().unwrap().batch.take().unwrap();
+            batch.install_domain(admission).ok().unwrap();
+            assert_eq!(
+                batch.try_return_domain(id),
+                hex_stream::DomainReturnStatus::Accepted
+            );
+            while bridge.reaper.poll_one().unwrap() != hex_stream::DomainPoll::Empty {}
+            let actual = match bridge.reaper.try_reap_domain(id) {
+                hex_stream::DomainCleanupProgress::Finished(report) => report,
+                _ => panic!("actual worker shutdown required"),
+            };
+            assert!(actual.successful_report().is_some());
+            assert!(bridge.reaper.take_reclaimed_report(id).is_none());
+            if shutdown_before_last_binding {
+                let successor = bridge.cleanup_successors[0].as_mut().unwrap();
+                assert!(!successor.poll_on_control(&mut bridge.reaper, !bindings.is_empty()));
+                let receipt = successor.receipt.as_ref().unwrap();
+                assert_eq!(receipt.report(), actual);
+                for binding in &bindings {
+                    assert!(
+                        bridge
+                            .reaper
+                            .validate_current_catalog_cleanup(binding, receipt)
+                            .is_ok()
+                    );
+                }
+                bindings.pop();
+                assert!(!successor.poll_on_control(&mut bridge.reaper, !bindings.is_empty()));
+                assert!(bridge.reaper.take_reclaimed_report(id).is_none());
+                assert!(successor.receipt.is_some());
+                bindings.clear();
+            }
+            // Capture is independent of graph count. Only actual successful
+            // shutdown + zero remaining barriers permits consumption/clear.
+            bridge.poll_cleanup_successors();
+            assert!(bridge.cleanup_successors[0].is_none());
+            assert_eq!(bridge.reaper.take_reclaimed_report(id), Some(actual));
+            assert!(bridge.reaper.take_reclaimed_report(id).is_none());
+            // Real reservation reuse, not a synthetic slot-counter assertion.
+            let replacement = bridge.reaper.reserve_domain(domain_input(id)).ok().unwrap();
+            bridge.reaper.recover_uninstalled(replacement).ok().unwrap();
+            assert!(matches!(
+                bridge.reaper.try_reap_domain(id),
+                hex_stream::DomainCleanupProgress::Finished(_)
+            ));
+            assert!(bridge.reaper.take_reclaimed_report(id).is_some());
+            drop(callback);
+            drop(control);
+            drop(bridge);
         }
     }
 }

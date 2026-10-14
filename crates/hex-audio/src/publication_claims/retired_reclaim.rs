@@ -10,6 +10,36 @@ pub(crate) struct CleanupSuccessor {
     pub(crate) domain: hex_stream::DomainId,
     pub(crate) receipt: Option<hex_stream::CatalogCustodyReceipt>,
 }
+impl CleanupSuccessor {
+    /// Physical receipt capture is independent of graph dependency count. A
+    /// zero-dependency LIVE domain still owns its stable coverage obligation.
+    /// Return true only after actual successful shutdown AND all dependency
+    /// barriers (including reclaim-pending destruction) have resolved.
+    pub(crate) fn poll_on_control(
+        &mut self,
+        reaper: &mut hex_stream::MediaDomainReaper,
+        dependencies_remaining: bool,
+    ) -> bool {
+        if self.receipt.is_none() {
+            if let Ok(receipt) = reaper.stable_catalog_cleanup_receipt(self.domain) {
+                self.receipt = Some(receipt);
+            }
+        }
+        if dependencies_remaining {
+            return false;
+        }
+        let Some(receipt) = self.receipt.take() else {
+            return false;
+        };
+        match reaper.consume_catalog_cleanup_receipt(receipt) {
+            Ok(_) => true,
+            Err((_, receipt)) => {
+                self.receipt = Some(receipt);
+                false
+            }
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DependencyPhase {
     Registered,

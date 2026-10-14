@@ -34,7 +34,7 @@ pub use streaming::{
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
-const RETIRED: usize = 2;
+pub(crate) const RETIRED: usize = 2;
 const ROUTE_READER_ATTEMPTS: usize = 3;
 const MAX_TRACKS: usize = MAX_SESSION_ROUTE_TRACKS;
 /// Fixed number of route entries accepted by `Status::session_routes`.
