@@ -666,7 +666,20 @@ fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
     warm(&mut baseline);
     let mut actual = [[0.0; 2]; 8];
     let mut expected = actual;
-    candidate.render(&mut actual).unwrap();
+    let mut observed = actual;
+    let mut observations = 0;
+    candidate
+        .render_with_post_node_and_main_observers(
+            &mut actual,
+            None,
+            Some(&mut |frames: &[Frame]| {
+                observations += 1;
+                observed.copy_from_slice(frames);
+            }),
+        )
+        .unwrap();
+    assert_eq!(observations, 1);
+    assert_eq!(observed, actual);
     baseline.render(&mut expected).unwrap();
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         let tail_active = index < 4;

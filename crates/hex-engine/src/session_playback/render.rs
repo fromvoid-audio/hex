@@ -103,6 +103,40 @@ impl SessionPlayback {
         self.render_internal(output, Some(pages), observer, None)
     }
 
+    /// Observe stereo Main after the existing full render/master/commit path.
+    /// Device observations may be speculative during rendering; Main is called
+    /// once only after success. Neither is an accepted native callback window.
+    /// The caller owns final output validation and must not publish early.
+    pub fn render_with_post_node_and_main_observers(
+        &mut self,
+        output: &mut [Frame],
+        post_node: Option<&mut crate::PostNodeObserver<'_>>,
+        main: Option<&mut crate::MainOutputObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_post_node_observer(output, post_node)?;
+        if let Some(main) = main {
+            main(output);
+        }
+        Ok(())
+    }
+
+    /// Borrowed-page counterpart. No second pass, persistent observer state or
+    /// callback-window/identity/rollback guarantee is introduced. Real-time
+    /// observers must not allocate, block, panic or retain their sample borrow.
+    pub fn render_with_pages_post_node_and_main_observers<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        post_node: Option<&mut crate::PostNodeObserver<'_>>,
+        main: Option<&mut crate::MainOutputObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_pages_and_post_node_observer(output, pages, post_node)?;
+        if let Some(main) = main {
+            main(output);
+        }
+        Ok(())
+    }
+
     fn render_internal<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],

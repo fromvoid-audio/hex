@@ -59,6 +59,13 @@ impl PostNodeIdentity {
 pub use hex_lattice::DeviceMeter;
 pub use native_device_view::DEVICE_OUTPUT_GAIN;
 
+/// Borrowed stereo Main after master gain from a successful engine render.
+/// This is candidate telemetry, not accepted hardware output. Callers must
+/// validate their final output/window before publication. Do not allocate,
+/// block, panic or retain the sample borrow in a real-time observer.
+/// Paused/empty successful renders may supply silence/an empty slice.
+pub type MainOutputObserver<'observer> = dyn for<'frames> FnMut(&'frames [Frame]) + 'observer;
+
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
@@ -2565,6 +2572,36 @@ impl<'a> Renderer<'a> {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.runtime
             .render_without_pages(self.project, &mut self.position, self.playing, output)
+    }
+
+    /// Observe the same completed render once, without another source pass.
+    /// No observation occurs on error; observer failure/panic has no rollback
+    /// guarantee because the existing render has already completed.
+    pub fn render_with_main_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut MainOutputObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        self.render(output)?;
+        if let Some(observer) = observer {
+            observer(output);
+        }
+        Ok(())
+    }
+
+    /// Streamed counterpart; retains the existing source-local miss policy.
+    /// The sample borrow is never retained and no telemetry storage is added.
+    pub fn render_with_pages_and_main_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut MainOutputObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        self.render_with_pages(output, pages)?;
+        if let Some(observer) = observer {
+            observer(output);
+        }
+        Ok(())
     }
 
     /// Render with a borrowed page view. Missing streamed pages contribute
