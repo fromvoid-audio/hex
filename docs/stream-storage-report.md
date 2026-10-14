@@ -507,3 +507,47 @@ Do not reconstruct a partially destroyed Box or invent cleanup/role completion.
 This further ownership contract is escalated before implementation. Full claim
 admission/disposal-role proofs remain refused, with no callback publication,
 provider expansion, preroll, native100-track or hardware performance claim.
+
+## partial persistent native retirement execution
+
+The preceding checkpoint's actual-owner negative control remains as historical
+failure evidence. The existing lifecycle worker now keeps one persistent
+Retirement execution slot. It borrows that slot across unwind catches rather
+than capturing its sole owner. Occupied execution/quarantine stops consumption
+of another queued retirement; reconciliation never replaces retained custody.
+This adds no executor, registry, queue or device capacity. Inline execution,
+control-root anchor and cleanup-permit storage are included in native additional
+storage reporting, not represented as allocator/RSS or complete admission.
+
+The coupled terminal boxes occupy separate persistent fields. Before either
+box is destroyed, NativeCallbackOwner's original first panic allocation moves
+into a third field. Its destructor cannot run while callback destruction
+unwinds. The original callback payload and the first teardown-unwind payload
+have separate records. Each stream/box/payload enters disposal-pending BEFORE
+its owner is taken; completion is recorded only after destruction returns.
+A panic leaves an irreversible incomplete tombstone, remaining owners, actual
+payload records, media root and exclusive lease retained. No Box reconstruction,
+payload overwrite, repeated destruction or cleanup success is inferred.
+
+The idle cleanup permit stays outside the borrowed catch and remains held until
+failure is durably recorded and the ordinary root is latched incomplete. Stream
+destruction is also inside this borrowed boundary: successful pause proves the
+stop prerequisite, not destructor completion. Root cleanup runs only after the
+permit ends, outside the ordinary mutex. An already-faulted retirement does not
+retry destructive work. This does not grant a force-stop policy, backend drop
+thread guarantee or hard-real-time bound.
+
+Tests inject failures on the actual data/error boxed-owner destructors and
+original callback payload, observe original owner identities and control thread,
+retain the real exclusive lease/root across failure, and assert no repeat or
+payload replacement. A separate generic stream-destructor test exercises the
+pending tombstone and a bounded queue model exercises occupied-slot pressure;
+neither claims real CoreAudio failure behavior. Test-only destructor probes add
+no production callback work. The original naked terminal-disposal negative
+control still demonstrates why local owning tuple/catch custody is insufficient.
+
+This correction remains partial source evidence. Physical terminal disposal is
+not inherited graph-role retirement or a claim-release receipt. Complete claim
+admission, authoritative disposal/final-transfer proofs, publication wiring,
+preroll and sustained native100-track/mixed-rate/edit/seek/launch/fault acceptance
+remain unfinished. No Unknown, cap or provider declaration is weakened.

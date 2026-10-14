@@ -18,6 +18,8 @@ pub(crate) struct NativeCallbackOwner {
     callback: Callback,
     first_panic: Option<Box<dyn Any + Send>>,
     fault_latched: bool,
+    #[cfg(test)]
+    disposal_probe: Option<Box<dyn FnMut() + Send>>,
 }
 impl NativeCallbackOwner {
     pub(crate) fn new(callback: Callback) -> Self {
@@ -25,7 +27,25 @@ impl NativeCallbackOwner {
             callback,
             first_panic: None,
             fault_latched: false,
+            #[cfg(test)]
+            disposal_probe: None,
         }
+    }
+    /// Control retirement only: detach before callback destruction so an
+    /// independent payload destructor cannot run during its unwinding cleanup.
+    /// Moves the same allocation; no clone/allocation or callback operation.
+    pub(crate) fn take_retained_panic_on_control(&mut self) -> Option<Box<dyn Any + Send>> {
+        self.first_panic.take()
+    }
+    #[cfg(test)]
+    pub(crate) fn retained_panic_identity(&self) -> Option<usize> {
+        self.first_panic
+            .as_ref()
+            .map(|p| p.as_ref() as *const dyn Any as *const () as usize)
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_disposal(&mut self, probe: impl FnMut() + Send + 'static) {
+        self.disposal_probe = Some(Box::new(probe));
     }
     pub(crate) fn status(&self) -> &Status {
         self.callback.native_status()
@@ -50,12 +70,36 @@ impl NativeCallbackOwner {
 /// Separate CPAL error closure owner: no Status Arc escapes the two guards.
 pub(crate) struct ErrorCallbackOwner {
     status: Arc<Status>,
+    #[cfg(test)]
+    disposal_probe: Option<Box<dyn FnMut() + Send>>,
 }
 impl ErrorCallbackOwner {
+    #[cfg(test)]
+    pub(crate) fn observe_disposal(&mut self, probe: impl FnMut() + Send + 'static) {
+        self.disposal_probe = Some(Box::new(probe));
+    }
     pub(crate) fn report(&self) {
         self.status
             .device_fault
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+// Test instrumentation runs on the actual boxed owner, not a substitute
+// retirement model. Production has no hook or added destructor behavior.
+#[cfg(test)]
+impl Drop for NativeCallbackOwner {
+    fn drop(&mut self) {
+        if let Some(probe) = self.disposal_probe.as_mut() {
+            probe();
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for ErrorCallbackOwner {
+    fn drop(&mut self) {
+        if let Some(probe) = self.disposal_probe.as_mut() {
+            probe();
+        }
     }
 }
 /// Both backend closures must finish finalrelease before either owner is taken.
@@ -73,7 +117,11 @@ pub(crate) fn reserve_native(
     NativeTerminals,
 ) {
     let (data_guard, data) = reserve(Box::new(NativeCallbackOwner::new(callback)));
-    let (error_guard, errors) = reserve(Box::new(ErrorCallbackOwner { status }));
+    let (error_guard, errors) = reserve(Box::new(ErrorCallbackOwner {
+        status,
+        #[cfg(test)]
+        disposal_probe: None,
+    }));
     (data_guard, error_guard, NativeTerminals { data, errors })
 }
 impl NativeTerminals {
@@ -180,7 +228,8 @@ pub(crate) fn additional_storage_bytes() -> Option<usize> {
         .checked_sub(std::mem::size_of::<Callback>())?
         .checked_add(carrier::<NativeCallbackOwner>()?)?
         .checked_add(std::mem::size_of::<ErrorCallbackOwner>())?
-        .checked_add(carrier::<ErrorCallbackOwner>()?)
+        .checked_add(carrier::<ErrorCallbackOwner>()?)?
+        .checked_add(crate::lifecycle::retirement_execution_storage_bytes()?)
 }
 
 #[cfg(test)]

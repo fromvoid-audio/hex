@@ -36,6 +36,13 @@ struct CleanupCapsule {
 }
 pub(crate) struct NativeCleanupPermit<'a> {
     _custody: std::sync::MutexGuard<'a, CleanupCustody>,
+    root: &'a NativeStreamRoot,
+}
+impl NativeCleanupPermit<'_> {
+    pub(crate) fn fail_retirement_on_control(&mut self) {
+        self._custody.faulted = true;
+        self.root.latch_cleanup_fault(&self._custody);
+    }
 }
 impl NativeStreamRoot {
     fn preparation_storage_bytes() -> Option<usize> {
@@ -179,6 +186,9 @@ impl NativeStreamRoot {
     }
     pub(crate) fn catalog_lease(&self, id: hex_stream::DomainId) -> Option<CatalogLease> {
         let root = self.inner.ordinary.try_lock().ok()?;
+        if root.closing || root.faulted {
+            return None;
+        }
         let bridge = root.bridge.as_ref()?;
         if bridge
             .return_requests
@@ -286,6 +296,9 @@ impl NativeStreamRoot {
         ))
     }
     /// Holds only control custody, never the ordinary mutex during owner disposal.
+    pub(crate) fn cleanup_permit_storage_bytes() -> usize {
+        std::mem::size_of::<Option<NativeCleanupPermit<'static>>>()
+    }
     pub(crate) fn cleanup_permit(
         &self,
     ) -> Result<NativeCleanupPermit<'_>, hex_stream::MediaCleanupPhase> {
@@ -317,7 +330,10 @@ impl NativeStreamRoot {
                 return Err(hex_stream::MediaCleanupPhase::Pending);
             }
         }
-        Ok(NativeCleanupPermit { _custody: custody })
+        Ok(NativeCleanupPermit {
+            _custody: custody,
+            root: self,
+        })
     }
     pub(crate) fn tick(&self, final_retirement: bool) -> hex_stream::MediaCleanupPhase {
         self.cleanup_transaction(final_retirement, false).0
@@ -326,6 +342,16 @@ impl NativeStreamRoot {
         &self,
     ) -> Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)> {
         self.cleanup_transaction(false, true).1
+    }
+    /// Actual lifecycle teardown uncertainty; no completion/retirement receipt.
+    pub(crate) fn fail_retirement_on_control(&self) {
+        let mut custody = self
+            .inner
+            .cleanup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        custody.faulted = true;
+        self.latch_cleanup_fault(&custody);
     }
     fn latch_cleanup_fault(&self, custody: &CleanupCustody) {
         let reports = custody

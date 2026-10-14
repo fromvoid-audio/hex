@@ -1,7 +1,7 @@
 //! Bounded output lifecycle worker for stream retirement and recovery opens.
 //! Stream pause/disposal and replacement device creation never run on realtime.
 use crate::device::PreparedOutput;
-use crate::native_callback_owner::NativeTerminals;
+use crate::native_callback_owner::{ErrorCallbackOwner, NativeCallbackOwner, NativeTerminals};
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -37,23 +37,19 @@ pub(crate) fn register_stream_root(root: crate::prepared::NativeStreamRoot) {
     );
     *active = Some(root);
 }
-fn tick_stream_root() {
+fn tick_stream_root(execution: &mut RetirementExecution) {
     // Retry only existing bounded retirement custody, outside its mutex.
-    let retirement = {
+    if execution.is_none() {
         let mut pending = QUARANTINE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.as_ref().is_some_and(|value| {
             !value.failed_incomplete && value.retry_at.is_none_or(|at| Instant::now() >= at)
         }) {
-            pending.take()
-        } else {
-            None
+            *execution = pending.take(); // persistent worker destination before work
         }
-    };
-    if let Some(retirement) = retirement {
-        retire_prepared_output(retirement);
     }
+    retire_prepared_output(execution);
 
     let root = ACTIVE_STREAM_ROOT
         .lock()
@@ -102,6 +98,34 @@ struct Retirement {
     stop_proved: bool,
     failed_incomplete: bool,
     retry_at: Option<Instant>,
+    disposal: TerminalDisposal,
+    first_execution_panic: Option<Box<dyn std::any::Any + Send>>,
+    stream_disposal: DisposalState,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DisposalState {
+    #[default]
+    Unreceived,
+    Received,
+    Pending,
+    Complete,
+}
+#[derive(Default)]
+struct TerminalDisposal {
+    data: Option<Box<NativeCallbackOwner>>,
+    errors: Option<Box<ErrorCallbackOwner>>,
+    retained_payload: Option<Box<dyn std::any::Any + Send>>,
+    data_state: DisposalState,
+    errors_state: DisposalState,
+    payload_state: DisposalState,
+}
+// The sole execution slot lives in the existing lifecycle loop, never in the
+// unwinding closure. No additional queue/thread/registry or UI-owned request.
+type RetirementExecution = Option<Retirement>;
+pub(crate) fn retirement_execution_storage_bytes() -> Option<usize> {
+    std::mem::size_of::<RetirementExecution>()
+        .checked_add(std::mem::size_of::<Option<crate::prepared::NativeStreamRoot>>())?
+        .checked_add(crate::prepared::NativeStreamRoot::cleanup_permit_storage_bytes())
 }
 
 pub(crate) struct StreamOwner {
@@ -136,6 +160,9 @@ impl StreamOwner {
                 stop_proved: false,
                 failed_incomplete: false,
                 retry_at: None,
+                disposal: TerminalDisposal::default(),
+                first_execution_panic: None,
+                stream_disposal: DisposalState::Received,
             }),
         }
     }
@@ -157,6 +184,9 @@ impl StreamOwner {
                 stop_proved: false,
                 failed_incomplete: false,
                 retry_at: None,
+                disposal: TerminalDisposal::default(),
+                first_execution_panic: None,
+                stream_disposal: DisposalState::Unreceived,
             }),
         }
     }
@@ -172,6 +202,7 @@ impl StreamOwner {
             .as_mut()
             .expect("unretired construction custody");
         retirement.stream = Some(stream);
+        retirement.stream_disposal = DisposalState::Received;
     }
     pub(crate) fn play_prepared_stream(&self) -> Result<(), cpal::PlayStreamError> {
         self.retirement
@@ -457,22 +488,26 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, String>>,
-    retire: impl FnMut(R),
+    mut retire: impl FnMut(R),
 ) {
     run_lifecycle_with_tick(
         receiver,
         is_occupied,
         |rate, _extent| try_open(rate),
-        retire,
-        || {},
+        |slot| {
+            if let Some(value) = slot.take() {
+                retire(value);
+            }
+        },
+        |_| {},
     )
 }
 fn run_lifecycle_with_tick<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>, Option<usize>) -> Option<Result<T, String>>,
-    mut retire: impl FnMut(R),
-    mut tick: impl FnMut(),
+    mut retire: impl FnMut(&mut Option<R>),
+    mut tick: impl FnMut(&mut Option<R>),
 ) {
     enum Phase {
         Queued,
@@ -483,8 +518,9 @@ fn run_lifecycle_with_tick<T: Send + 'static, R: Send + 'static>(
         phase: Phase,
     }
     let mut active: Option<Active<T>> = None;
+    let mut retirement: Option<R> = None;
     loop {
-        tick();
+        tick(&mut retirement);
         if let Some(current) = active.as_mut() {
             match current.phase {
                 Phase::Queued if current.request.canceled.load(Acquire) => {
@@ -527,8 +563,17 @@ fn run_lifecycle_with_tick<T: Send + 'static, R: Send + 'static>(
             }
         }
 
+        // Do not consume another queue owner while execution remains occupied.
+        // Accepted messages retain their original storage in the existing ring.
+        if retirement.is_some() {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
         match receiver.recv_timeout(Duration::from_millis(5)) {
-            Ok(LifecycleMessage::Retire(value)) => retire(value),
+            Ok(LifecycleMessage::Retire(value)) => {
+                retirement = Some(value); // vacant preflight above, no replacement
+                retire(&mut retirement);
+            }
             Ok(LifecycleMessage::Open(request)) => {
                 if active.is_none() {
                     active = Some(Active {
@@ -579,117 +624,230 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
         .map_err(Clone::clone)
 }
 
-fn retire_prepared_output(retirement: Retirement) {
-    let mut retirement = retirement;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetirementProgress {
+    Pending,
+    Complete,
+    FailedIncomplete,
+}
+fn retire_prepared_output(execution: &mut RetirementExecution) {
+    let Some(retirement) = execution.as_ref() else {
+        return;
+    };
+    if retirement.failed_incomplete || retirement.first_execution_panic.is_some() {
+        reconcile_retirement(execution);
+        return;
+    }
+    let disposal_root = retirement.media_root.clone(); // preflight control anchor
+    if let Some(root) = disposal_root.as_ref() {
+        root.cancel_all_preparation();
+    }
+    let mut permit = match disposal_root.as_ref() {
+        Some(root) => match root.cleanup_permit() {
+            Ok(permit) => Some(permit),
+            Err(phase) => {
+                if let Some(retirement) = execution.as_mut() {
+                    retirement.failed_incomplete |=
+                        phase == hex_stream::MediaCleanupPhase::FailedIncomplete;
+                }
+                reconcile_retirement(execution);
+                return;
+            }
+        },
+        None => None,
+    };
+    // The permit lives OUTSIDE unwind. Each owner/payload lives in separate
+    // persistent fields; failure is recorded/latches root before permit release.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match execution.as_mut() {
+            Some(retirement) => retirement_dispose(retirement),
+            None => RetirementProgress::FailedIncomplete,
+        }));
+    let progress = match result {
+        Ok(progress) => progress,
+        Err(payload) => {
+            if let Some(retirement) = execution.as_mut() {
+                retirement.first_execution_panic = Some(payload); // None preflight, no overwrite
+                retirement.failed_incomplete = true;
+            }
+            RetirementProgress::FailedIncomplete
+        }
+    };
+    if progress == RetirementProgress::FailedIncomplete {
+        if let Some(retirement) = execution.as_mut() {
+            retirement.failed_incomplete = true;
+        }
+        if let Some(permit) = permit.as_mut() {
+            permit.fail_retirement_on_control();
+        }
+    }
+    drop(permit); // root/payload failure is durable before releasing custody
+    if progress != RetirementProgress::Complete {
+        if let Some(retirement) = execution.as_mut() {
+            retirement.retry_at = Some(Instant::now() + Duration::from_millis(250));
+        }
+        reconcile_retirement(execution);
+        return;
+    }
+    // Root cleanup needs its own custody lock, after the disposal permit ended.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match execution.as_mut() {
+            Some(retirement) => retirement_finish(retirement),
+            None => RetirementProgress::FailedIncomplete,
+        }));
+    match result {
+        Ok(RetirementProgress::Complete) => {
+            drop(execution.take());
+        }
+        Ok(progress) => {
+            if let Some(retirement) = execution.as_mut() {
+                retirement.failed_incomplete |= progress == RetirementProgress::FailedIncomplete;
+                retirement.retry_at = Some(Instant::now() + Duration::from_millis(250));
+                if retirement.failed_incomplete {
+                    if let Some(root) = retirement.media_root.as_ref() {
+                        root.fail_retirement_on_control();
+                    }
+                }
+            }
+            reconcile_retirement(execution);
+        }
+        Err(payload) => {
+            if let Some(retirement) = execution.as_mut() {
+                retirement.first_execution_panic = Some(payload); // first phase succeeded, destination still None
+                retirement.failed_incomplete = true;
+                if let Some(root) = retirement.media_root.as_ref() {
+                    root.fail_retirement_on_control();
+                }
+            }
+            reconcile_retirement(execution);
+        }
+    }
+}
+
+fn reconcile_retirement(execution: &mut RetirementExecution) {
+    let mut pending = QUARANTINE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.is_none() {
+        *pending = execution.take();
+    }
+    // Pressure retains the existing quarantine AND worker slot. No overwrite,
+    // owner drop or repeated destructor; the runner stops popping more messages.
+}
+fn retirement_dispose(retirement: &mut Retirement) -> RetirementProgress {
     if let Some(root) = retirement.media_root.as_ref() {
         root.cancel_all_preparation();
     }
-    if retirement.terminal.is_some() {
+    if retirement.terminal.is_some() || retirement.disposal.data_state != DisposalState::Unreceived
+    {
         match native_quiescence(
             &mut retirement.stream,
             retirement.backend_exposed,
             &mut retirement.stop_proved,
+            &mut retirement.stream_disposal,
             |stream| stream.pause().is_ok(),
         ) {
-            NativeQuiescence::Pending => {
-                retain_pending(retirement);
-                return;
-            }
-            NativeQuiescence::Unknown => {
-                retirement.failed_incomplete = true;
-                retain_pending(retirement);
-                return;
-            }
+            NativeQuiescence::Pending => return RetirementProgress::Pending,
+            NativeQuiescence::Unknown => return RetirementProgress::FailedIncomplete,
             NativeQuiescence::Proved => {}
         }
-        // Cleanup-custody -> ordinary-state lock order. The permit releases
-        // ordinary state before terminal carrier/callback destruction. Neither
-        // backend guard nor callback rendering ever acquires this mutex.
-        let disposal_root = retirement.media_root.clone(); // control preflight anchor, never callback
-        let disposal_permit = match disposal_root.as_ref() {
-            Some(root) => match root.cleanup_permit() {
-                Ok(permit) => Some(permit),
-                Err(phase) => {
-                    retirement.failed_incomplete |=
-                        phase == hex_stream::MediaCleanupPhase::FailedIncomplete;
-                    retain_pending(retirement);
-                    return;
-                }
-            },
-            None => None,
-        };
-        let terminal = retirement
-            .terminal
-            .as_mut()
-            .expect("retained terminal custody");
-        let Some(owner) = terminal.try_take() else {
-            drop(disposal_permit);
-            retain_pending(retirement);
-            return;
-        };
-        // No root mutex is held: Callback::drop itself returns media into it.
-        drop(owner);
-        drop(disposal_permit);
-        retirement.terminal = None;
+        let disposal = &mut retirement.disposal;
+        if disposal.data_state == DisposalState::Unreceived {
+            if disposal.data.is_some()
+                || disposal.errors.is_some()
+                || disposal.retained_payload.is_some()
+            {
+                return RetirementProgress::FailedIncomplete;
+            }
+            let Some(terminal) = retirement.terminal.as_mut() else {
+                return RetirementProgress::FailedIncomplete;
+            };
+            let Some((mut data, errors)) = terminal.try_take() else {
+                return RetirementProgress::Pending;
+            };
+            // Both owners and detached original panic allocation move into the
+            // persistent slot before any destructor. No fallible operation here.
+            disposal.retained_payload = data.take_retained_panic_on_control();
+            disposal.data = Some(data);
+            disposal.errors = Some(errors);
+            disposal.data_state = DisposalState::Received;
+            disposal.errors_state = DisposalState::Received;
+            disposal.payload_state = DisposalState::Received;
+        }
+        if disposal.data_state == DisposalState::Received {
+            if disposal.data.is_none() {
+                return RetirementProgress::FailedIncomplete;
+            }
+            disposal.data_state = DisposalState::Pending;
+            drop(disposal.data.take());
+            disposal.data_state = DisposalState::Complete;
+        }
+        if disposal.data_state != DisposalState::Complete {
+            return RetirementProgress::FailedIncomplete;
+        }
+        if disposal.errors_state == DisposalState::Received {
+            if disposal.errors.is_none() {
+                return RetirementProgress::FailedIncomplete;
+            }
+            disposal.errors_state = DisposalState::Pending;
+            drop(disposal.errors.take());
+            disposal.errors_state = DisposalState::Complete;
+        }
+        if disposal.errors_state != DisposalState::Complete {
+            return RetirementProgress::FailedIncomplete;
+        }
+        if disposal.payload_state == DisposalState::Received {
+            // Payload is independent of callback/error owners. A panic cannot
+            // run their destructors again or drop another retained payload.
+            disposal.payload_state = DisposalState::Pending;
+            drop(disposal.retained_payload.take());
+            disposal.payload_state = DisposalState::Complete;
+        }
+        if disposal.payload_state != DisposalState::Complete {
+            return RetirementProgress::FailedIncomplete;
+        }
+        retirement.terminal = None; // cells consumed, no owner/payload remains
+    } else {
+        if retirement
+            .stream
+            .as_ref()
+            .is_some_and(|stream| stream.pause().is_err())
+        {
+            return RetirementProgress::Pending;
+        }
+        retirement.stop_proved = true;
+        if retirement.stream_disposal == DisposalState::Pending {
+            return RetirementProgress::FailedIncomplete;
+        }
+        retirement.stream_disposal = DisposalState::Pending;
+        drop(retirement.stream.take());
+        retirement.stream_disposal = DisposalState::Complete;
     }
-    while retirement
-        .stream
-        .as_ref()
-        .is_some_and(|stream| stream.pause().is_err())
-    {
-        thread::sleep(Duration::from_millis(250));
-    }
-    // Only successful pause allows closure disposal and its terminal transfer.
-    drop(retirement.stream.take());
+    RetirementProgress::Complete
+}
+fn retirement_finish(retirement: &mut Retirement) -> RetirementProgress {
     if let Some(root) = retirement.media_root.as_ref() {
-        loop {
-            match root.tick(true) {
-                hex_stream::MediaCleanupPhase::Complete => break,
-                hex_stream::MediaCleanupPhase::FailedIncomplete => {
-                    // Retain actual roots and the exclusive device lease; no
-                    // unknown buffer count or failed join is called complete.
-                    retirement.failed_incomplete = true;
-                    retain_pending(retirement);
-                    return;
-                }
-                hex_stream::MediaCleanupPhase::Pending => thread::sleep(Duration::from_millis(250)),
+        match root.tick(true) {
+            hex_stream::MediaCleanupPhase::Complete => {}
+            hex_stream::MediaCleanupPhase::Pending => return RetirementProgress::Pending,
+            hex_stream::MediaCleanupPhase::FailedIncomplete => {
+                return RetirementProgress::FailedIncomplete;
             }
         }
-        *ACTIVE_STREAM_ROOT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let active = {
+            ACTIVE_STREAM_ROOT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        };
+        drop(active); // outside global/ordinary state mutexes
     }
-    if retirement.stop_proved {
-        if let Some(reaper) = retirement.spectrum_reaper.take()
-            && reaper.shutdown_and_join().is_err()
-        {
-            retirement.failed_incomplete = true;
-            retain_pending(retirement);
-            return;
+    if let Some(reaper) = retirement.spectrum_reaper.take() {
+        if reaper.shutdown_and_join().is_err() {
+            return RetirementProgress::FailedIncomplete;
         }
-        // Only observed stop/terminal/media/spectrum completion releases lease.
-        drop(retirement);
-        return;
     }
-    let Retirement {
-        stream: _,
-        media_root: _,
-        spectrum_reaper,
-        _lease,
-        ..
-    } = retirement;
-    if retire_after_callback_stops(
-        (),
-        spectrum_reaper,
-        _lease,
-        drop,
-        |reaper| reaper.shutdown_and_join(),
-        drop,
-    )
-    .is_err()
-    {
-        eprintln!("hex audio spectrum worker failed during output retirement");
-    }
+    RetirementProgress::Complete
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -702,8 +860,19 @@ fn native_quiescence<S>(
     stream: &mut Option<S>,
     exposed: bool,
     proved: &mut bool,
+    disposal: &mut DisposalState,
     pause: impl FnOnce(&S) -> bool,
 ) -> NativeQuiescence {
+    if *disposal == DisposalState::Pending {
+        return NativeQuiescence::Unknown;
+    }
+    if *disposal == DisposalState::Complete {
+        return if *proved && stream.is_none() {
+            NativeQuiescence::Proved
+        } else {
+            NativeQuiescence::Unknown
+        };
+    }
     if !*proved {
         if let Some(stream) = stream.as_ref() {
             if !pause(stream) {
@@ -717,20 +886,13 @@ fn native_quiescence<S>(
             return NativeQuiescence::Unknown;
         }
     }
+    *disposal = DisposalState::Pending;
     drop(stream.take());
+    *disposal = DisposalState::Complete;
     NativeQuiescence::Proved
 }
 
-fn retain_pending(mut retirement: Retirement) {
-    retirement.retry_at = Some(Instant::now() + Duration::from_millis(250));
-    let mut pending = QUARANTINE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The one exclusive Lease covers live/construction/retirement phases.
-    // No caller can create a second Retirement while this custody is retained.
-    *pending = Some(retirement);
-}
-
+#[cfg(test)]
 fn retire_after_callback_stops<S, R, L, E>(
     stream: S,
     reaper: Option<R>,
@@ -1031,29 +1193,32 @@ mod terminal_custody_tests {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut stream = Some(Handle(Arc::clone(&drops)));
         let mut proved = false;
+        let mut disposal = DisposalState::Unreceived;
         // Play failure still retains a real handle; failed pause never drops it.
         assert_eq!(
-            native_quiescence(&mut stream, true, &mut proved, |_| false),
+            native_quiescence(&mut stream, true, &mut proved, &mut disposal, |_| false),
             NativeQuiescence::Pending
         );
         assert!(stream.is_some());
         assert_eq!(drops.load(Acquire), 0);
         assert_eq!(
-            native_quiescence(&mut stream, true, &mut proved, |_| true),
+            native_quiescence(&mut stream, true, &mut proved, &mut disposal, |_| true),
             NativeQuiescence::Proved
         );
         assert!(stream.is_none());
         assert_eq!(drops.load(Acquire), 1);
         let mut unexposed: Option<Handle> = None;
         let mut proved = false;
+        let mut disposal = DisposalState::Unreceived;
         assert_eq!(
-            native_quiescence(&mut unexposed, false, &mut proved, |_| true),
+            native_quiescence(&mut unexposed, false, &mut proved, &mut disposal, |_| true),
             NativeQuiescence::Proved
         );
         let mut unknown: Option<Handle> = None;
         let mut proved = false;
+        let mut disposal = DisposalState::Unreceived;
         assert_eq!(
-            native_quiescence(&mut unknown, true, &mut proved, |_| true),
+            native_quiescence(&mut unknown, true, &mut proved, &mut disposal, |_| true),
             NativeQuiescence::Unknown
         );
         assert!(!proved);
@@ -1087,5 +1252,301 @@ mod terminal_custody_tests {
         }
         assert!(!OCCUPIED.load(Acquire));
         assert!(QUARANTINE.lock().unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod retirement_execution_tests {
+    use super::*;
+    use crate::native_callback_owner::reserve_native;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Payload {
+        panic_on_drop: Arc<AtomicBool>,
+        drops: Arc<AtomicUsize>,
+        dropped_on: Arc<Mutex<Vec<thread::ThreadId>>>,
+    }
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Acquire);
+            self.dropped_on.lock().unwrap().push(thread::current().id());
+            if self.panic_on_drop.load(Acquire) {
+                panic!("retained callback payload destructor");
+            }
+        }
+    }
+
+    #[test]
+    fn actual_coupled_owners_and_original_payload_survive_each_teardown_failure() {
+        let _serialized = super::tests::LEASE_TEST.lock().unwrap();
+        // 0 normal, 1 data owner panic, 2 error owner panic, 3 original
+        // payload panic. These are actual boxed native owners/real lease/root.
+        for failure in 0..4 {
+            assert!(QUARANTINE.lock().unwrap().is_none());
+            let lease = Lease::try_acquire().unwrap();
+            let (mut control, mut callback, bridge) =
+                crate::prepared::channel_with_streaming(48_000, 27, 4).unwrap();
+            let root =
+                crate::prepared::NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+            let (mut data, mut errors, terminal) =
+                reserve_native(callback, Arc::clone(&control.status));
+            let data_id = data.owner_mut() as *mut NativeCallbackOwner as usize;
+            let error_id = errors.owner_mut() as *mut ErrorCallbackOwner as usize;
+            let observations = Arc::new(Mutex::new(Vec::new()));
+            let data_observations = Arc::clone(&observations);
+            let data_root = root.clone();
+            data.owner_mut().observe_disposal(move || {
+                assert!(data_root.phase().is_some()); // ordinary mutex is not held
+                assert_eq!(
+                    data_root.cleanup_permit().err(),
+                    Some(hex_stream::MediaCleanupPhase::Pending)
+                );
+                data_observations
+                    .lock()
+                    .unwrap()
+                    .push((data_id, thread::current().id()));
+                if failure == 1 {
+                    panic!("actual data owner destructor");
+                }
+            });
+            let error_observations = Arc::clone(&observations);
+            let error_root = root.clone();
+            errors.owner_mut().observe_disposal(move || {
+                assert!(error_root.phase().is_some()); // ordinary mutex is not held
+                assert_eq!(
+                    error_root.cleanup_permit().err(),
+                    Some(hex_stream::MediaCleanupPhase::Pending)
+                );
+                error_observations
+                    .lock()
+                    .unwrap()
+                    .push((error_id, thread::current().id()));
+                if failure == 2 {
+                    panic!("actual error owner destructor");
+                }
+            });
+            let panic_on_drop = Arc::new(AtomicBool::new(failure != 0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let payload_threads = Arc::new(Mutex::new(Vec::new()));
+            let original = Payload {
+                panic_on_drop: Arc::clone(&panic_on_drop),
+                drops: Arc::clone(&drops),
+                dropped_on: Arc::clone(&payload_threads),
+            };
+            assert!(
+                data.owner_mut()
+                    .run(|_| std::panic::panic_any(original))
+                    .is_err()
+            );
+            let expected_original_id = data.owner_mut().retained_panic_identity();
+            assert!(expected_original_id.is_some());
+            // Backend release cannot dispose boxed owners or the original payload.
+            thread::spawn(move || {
+                drop(data);
+                drop(errors);
+            })
+            .join()
+            .unwrap();
+            assert_eq!(drops.load(Acquire), 0);
+            let mut owner =
+                StreamOwner::prepared_custody(lease, None, Some(root.clone()), terminal);
+            let mut execution = owner.retirement.take();
+            drop(owner);
+            drop(control);
+            let control_thread = thread::current().id();
+            retire_prepared_output(&mut execution);
+            assert!(execution.is_none());
+            let mut retained = QUARANTINE.lock().unwrap().take();
+            if failure == 0 {
+                assert!(retained.is_none());
+                assert!(!OCCUPIED.load(Acquire));
+                assert_eq!(drops.load(Acquire), 1);
+                assert_eq!(*payload_threads.lock().unwrap(), [control_thread]);
+                assert_eq!(
+                    *observations.lock().unwrap(),
+                    [(data_id, control_thread), (error_id, control_thread)]
+                );
+                continue;
+            }
+            let retirement = retained.as_ref().unwrap();
+            assert!(OCCUPIED.load(Acquire));
+            assert!(retirement.failed_incomplete);
+            assert!(retirement.stop_proved);
+            assert_eq!(retirement.stream_disposal, DisposalState::Complete);
+            assert!(retirement.first_execution_panic.is_some());
+            assert_eq!(
+                root.tick(true),
+                hex_stream::MediaCleanupPhase::FailedIncomplete
+            );
+            assert_eq!(
+                root.cleanup_permit().err(),
+                Some(hex_stream::MediaCleanupPhase::FailedIncomplete)
+            );
+            assert_eq!(
+                retirement.disposal.data_state,
+                if failure == 1 {
+                    DisposalState::Pending
+                } else {
+                    DisposalState::Complete
+                }
+            );
+            assert_eq!(
+                retirement.disposal.errors_state,
+                if failure == 1 {
+                    DisposalState::Received
+                } else if failure == 2 {
+                    DisposalState::Pending
+                } else {
+                    DisposalState::Complete
+                }
+            );
+            assert_eq!(
+                retirement.disposal.payload_state,
+                if failure == 3 {
+                    DisposalState::Pending
+                } else {
+                    DisposalState::Received
+                }
+            );
+            assert_eq!(drops.load(Acquire), usize::from(failure == 3));
+            let original_id = retirement
+                .disposal
+                .retained_payload
+                .as_ref()
+                .map(|p| p.as_ref() as *const dyn std::any::Any as *const () as usize);
+            assert_eq!(
+                original_id,
+                if failure == 3 {
+                    None
+                } else {
+                    expected_original_id
+                }
+            );
+            assert_eq!(
+                *payload_threads.lock().unwrap(),
+                if failure == 3 {
+                    vec![control_thread]
+                } else {
+                    vec![]
+                }
+            );
+            let teardown_id = retirement
+                .first_execution_panic
+                .as_ref()
+                .map(|p| p.as_ref() as *const dyn std::any::Any as *const () as usize);
+            let observations_before = observations.lock().unwrap().clone();
+            // Faulted reconciliation does not execute any remaining destructor,
+            // reattempt the destroyed Box or overwrite either panic allocation.
+            retire_prepared_output(&mut retained);
+            assert!(retained.is_none());
+            let mut retained = QUARANTINE.lock().unwrap().take().unwrap();
+            assert_eq!(
+                retained
+                    .disposal
+                    .retained_payload
+                    .as_ref()
+                    .map(|p| p.as_ref() as *const dyn std::any::Any as *const () as usize),
+                original_id
+            );
+            assert_eq!(
+                retained
+                    .first_execution_panic
+                    .as_ref()
+                    .map(|p| p.as_ref() as *const dyn std::any::Any as *const () as usize),
+                teardown_id
+            );
+            assert_eq!(*observations.lock().unwrap(), observations_before);
+            assert!(Lease::try_acquire().is_none());
+            // Explicit test-fixture disarm/disposal, NOT production recovery:
+            // incomplete state is never relabelled complete or retried.
+            panic_on_drop.store(false, Release);
+            if let Some(errors) = retained.disposal.errors.as_mut() {
+                errors.observe_disposal(|| {});
+            }
+            drop(retained);
+            assert!(!OCCUPIED.load(Acquire));
+        }
+    }
+
+    #[test]
+    fn persistent_execution_pressure_keeps_queued_owner_until_slot_is_vacant() {
+        // Queue/slot model: no second native Lease or hardware is fabricated.
+        struct Owner(usize, Arc<Mutex<Vec<(usize, thread::ThreadId)>>>);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .push((self.0, thread::current().id()));
+            }
+        }
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), Owner>>(2);
+        sender
+            .send(LifecycleMessage::Retire(Owner(1, Arc::clone(&drops))))
+            .unwrap();
+        sender
+            .send(LifecycleMessage::Retire(Owner(2, Arc::clone(&drops))))
+            .unwrap();
+        drop(sender);
+        let retired = Arc::clone(&observations);
+        let tick_drops = Arc::clone(&drops);
+        let worker = thread::spawn(move || {
+            let mut attempts = 0;
+            run_lifecycle_with_tick(
+                receiver,
+                || false,
+                |_, _| None,
+                |slot| retired.lock().unwrap().push(slot.as_ref().unwrap().0),
+                |slot| {
+                    if let Some(owner) = slot.as_ref() {
+                        if owner.0 == 1 {
+                            attempts += 1;
+                            assert!(tick_drops.lock().unwrap().is_empty());
+                            if attempts < 3 {
+                                return;
+                            }
+                        }
+                        drop(slot.take()); // exclusive model control disposal
+                    }
+                },
+            );
+            thread::current().id()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(*observations.lock().unwrap(), [1, 2]);
+        assert_eq!(*drops.lock().unwrap(), [(1, worker), (2, worker)]);
+        assert_ne!(worker, thread::current().id());
+    }
+
+    #[test]
+    fn pause_success_does_not_complete_panicking_stream_disposal_or_retry_it() {
+        struct Stream(Arc<AtomicUsize>);
+        impl Drop for Stream {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Acquire);
+                panic!("stream destructor");
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut stream = Some(Stream(Arc::clone(&drops)));
+        let mut proved = false;
+        let mut phase = DisposalState::Received;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native_quiescence(&mut stream, true, &mut proved, &mut phase, |_| true)
+        }));
+        assert!(failure.is_err());
+        assert!(proved);
+        assert!(stream.is_none());
+        assert_eq!(phase, DisposalState::Pending);
+        assert_eq!(
+            native_quiescence(&mut stream, true, &mut proved, &mut phase, |_| panic!(
+                "no retry"
+            )),
+            NativeQuiescence::Unknown
+        );
+        assert_eq!(drops.load(Acquire), 1);
     }
 }
