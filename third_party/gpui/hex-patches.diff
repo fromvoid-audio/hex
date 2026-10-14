@@ -80,7 +80,7 @@
 +
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
-@@ -9,0 +10,2 @@
+@@ -8,0 +9,2 @@
 +mod accessibility;
 +pub use accessibility::*;
 --- a/src/interactive.rs

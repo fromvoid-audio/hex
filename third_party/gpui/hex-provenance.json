@@ -197,7 +197,7 @@
   "patched_files": {
     "src/app/test_context.rs": "7184ffa989b1837739dc05bf204c1d90e08ed42deed2883c8ec379bea1f0bd6f",
     "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
-    "src/gpui.rs": "ee99b9899c6ba3c41df00f8712795b87fb0ffc930cdf7c87cd1e58450f69700a",
+    "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
     "src/interactive.rs": "b6a5bd6781253d81ea82699e8604a8d9556d239d58f3e1c3e0c15ec6ef5b9b1f",
     "src/platform/linux/platform.rs": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba",
     "src/platform/linux/wayland/client.rs": "68e8c74cb35231f09206463a44a3a0795e90265315bc91c9f64c2f3b34e7f140",
