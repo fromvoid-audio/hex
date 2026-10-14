@@ -434,6 +434,24 @@ pub struct Status {
     route_slots: Box<[AtomicRouteSlot]>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static STATUS_DISPOSAL: std::cell::Cell<Option<(usize, std::thread::ThreadId)>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+impl Drop for Status {
+    fn drop(&mut self) {
+        STATUS_DISPOSAL.set(Some((
+            self as *const Self as usize,
+            std::thread::current().id(),
+        )));
+    }
+}
+#[cfg(test)]
+pub(crate) fn take_status_disposal() -> Option<(usize, std::thread::ThreadId)> {
+    STATUS_DISPOSAL.take()
+}
+
 impl Default for Status {
     fn default() -> Self {
         let route_slots = (0..MAX_TRACKS)
@@ -1209,6 +1227,9 @@ impl Control {
 }
 
 impl Callback {
+    pub(crate) fn native_status(&self) -> &Status {
+        &self.status
+    }
     fn return_deferred(&mut self) {
         if let Some(publication) = self.deferred.take() {
             self.return_graph(publication);

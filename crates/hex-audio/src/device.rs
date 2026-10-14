@@ -4,7 +4,7 @@ use crate::spectrum_worker::{
 };
 use crate::{
     lifecycle,
-    native_callback_owner::{self, Guard, NativeCallbackOwner},
+    native_callback_owner::{self, ErrorCallbackOwner, Guard, NativeCallbackOwner},
     prepared,
 };
 use cpal::{
@@ -121,9 +121,8 @@ impl PreparedOutput {
                 return Err(error.to_string());
             }
         };
-        let status = control.status.clone();
-        let (guard, terminal) =
-            native_callback_owner::reserve(Box::new(NativeCallbackOwner::new(callback)));
+        let (guard, errors, terminal) =
+            native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
         let mut stream_owner = lifecycle::StreamOwner::prepared_custody(
             lease,
             spectrum_reaper,
@@ -132,11 +131,11 @@ impl PreparedOutput {
         );
         stream_owner.expose_prepared_backend();
         let stream = if sample_format == cpal::SampleFormat::F32 {
-            build::<f32>(&device, &config, guard, status)
+            build::<f32>(&device, &config, guard, errors)
         } else if sample_format == cpal::SampleFormat::I16 {
-            build::<i16>(&device, &config, guard, status)
+            build::<i16>(&device, &config, guard, errors)
         } else {
-            build::<u16>(&device, &config, guard, status)
+            build::<u16>(&device, &config, guard, errors)
         }
         .map_err(|error| error.to_string())?;
         stream_owner.install_prepared_stream(stream);
@@ -223,14 +222,13 @@ fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     mut guard: Guard<NativeCallbackOwner>,
-    status: Arc<prepared::Status>,
+    mut errors: Guard<ErrorCallbackOwner>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     f32: FromSample<T>,
 {
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
-    let errors = status.clone();
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
@@ -249,7 +247,7 @@ where
             data[complete..].fill(T::from_sample(0.0));
             for chunk in data[..complete].chunks_mut(channels * block.len()) {
                 let frames = chunk.len() / channels;
-                let block_start_frame = status.position.load(Relaxed);
+                let block_start_frame = guard.owner_mut().status().position.load(Relaxed);
                 render_guarded_chunk(
                     &mut guard,
                     chunk,
@@ -264,6 +262,7 @@ where
                     }
                 }
             }
+            let status = guard.owner_mut().status();
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);
             let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -274,7 +273,7 @@ where
             }
         },
         move |_| {
-            errors.device_fault.store(true, Relaxed);
+            errors.owner_mut().report();
         },
         None,
     )
@@ -417,7 +416,7 @@ where
 mod tests {
     use super::{CHUNK_PANIC_AFTER_ACK, render_guarded_chunk};
     use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};
-    use crate::native_callback_owner::{self, NativeCallbackOwner};
+    use crate::native_callback_owner;
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
     use hex_engine::{
@@ -824,8 +823,8 @@ mod tests {
                     velocity: 100,
                 })
                 .unwrap();
-            let (mut guard, mut terminal) =
-                native_callback_owner::reserve(Box::new(NativeCallbackOwner::new(callback)));
+            let (mut guard, errors, mut terminal) =
+                native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
             assert!(
                 guard
                     .owner_mut()
@@ -870,6 +869,8 @@ mod tests {
             );
             drop(control);
             std::thread::spawn(move || drop(guard)).join().unwrap();
+            assert!(terminal.try_take().is_none());
+            std::thread::spawn(move || drop(errors)).join().unwrap();
             drop(terminal.try_take().unwrap());
         }
     }

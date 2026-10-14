@@ -1,7 +1,7 @@
 //! Bounded output lifecycle worker for stream retirement and recovery opens.
 //! Stream pause/disposal and replacement device creation never run on realtime.
 use crate::device::PreparedOutput;
-use crate::native_callback_owner::{NativeCallbackOwner, Terminal};
+use crate::native_callback_owner::NativeTerminals;
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -97,7 +97,7 @@ struct Retirement {
     media_root: Option<crate::prepared::NativeStreamRoot>,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
-    terminal: Option<Terminal<NativeCallbackOwner>>,
+    terminal: Option<NativeTerminals>,
     backend_exposed: bool,
     stop_proved: bool,
     failed_incomplete: bool,
@@ -144,7 +144,7 @@ impl StreamOwner {
         lease: Lease,
         spectrum_reaper: Option<SpectrumReaper>,
         media_root: Option<crate::prepared::NativeStreamRoot>,
-        terminal: Terminal<NativeCallbackOwner>,
+        terminal: NativeTerminals,
     ) -> Self {
         Self {
             retirement: Some(Retirement {
@@ -603,10 +603,6 @@ fn retire_prepared_output(retirement: Retirement) {
             .terminal
             .as_mut()
             .expect("retained terminal custody");
-        if !terminal.received() {
-            retain_pending(retirement);
-            return;
-        }
         let Some(owner) = terminal.try_take() else {
             retain_pending(retirement);
             return;
@@ -1001,7 +997,7 @@ mod tests {
 #[cfg(test)]
 mod terminal_custody_tests {
     use super::*;
-    use crate::native_callback_owner::{NativeCallbackOwner, reserve};
+    use crate::native_callback_owner::reserve_native;
     use std::sync::atomic::AtomicUsize;
     #[test]
     fn constructor_play_pause_and_unknown_stop_paths_preserve_actual_owners() {
@@ -1046,7 +1042,7 @@ mod terminal_custody_tests {
         let _serialized = super::tests::LEASE_TEST.lock().unwrap();
         let lease = Lease::acquire().unwrap();
         let (control, callback) = crate::prepared::channel(48_000).unwrap();
-        let (guard, terminal) = reserve(Box::new(NativeCallbackOwner::new(callback)));
+        let (guard, errors, terminal) = reserve_native(callback, Arc::clone(&control.status));
         // Unexposed headless construction has no native stream to stop. This
         // tests actual service/quarantine/lease custody, not native pause.
         let owner = StreamOwner::prepared_custody(lease, None, None, terminal);
@@ -1062,6 +1058,8 @@ mod terminal_custody_tests {
         assert!(OCCUPIED.load(Acquire));
         release.send(()).unwrap();
         backend.join().unwrap();
+        assert!(OCCUPIED.load(Acquire));
+        thread::spawn(move || drop(errors)).join().unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         while OCCUPIED.load(Acquire) && Instant::now() < deadline {
             thread::yield_now();

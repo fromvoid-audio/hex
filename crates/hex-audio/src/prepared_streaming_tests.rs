@@ -368,18 +368,18 @@ fn native_root_harness_keeps_terminal_and_actual_conservation_after_callback_dis
     root.publish(&mut control, request).unwrap();
     callback.begin_block();
     assert!(root.input_bridge_storage_bytes().unwrap() > input_bridge_storage_bytes().unwrap());
-    let owner = Box::new(crate::native_callback_owner::NativeCallbackOwner::new(
-        callback,
-    ));
-    let address = owner.as_ref() as *const _ as usize;
-    let (guard, mut terminal) = crate::native_callback_owner::reserve(owner);
+    let (mut guard, errors, mut terminal) =
+        crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+    let address = guard.owner_mut() as *const _ as usize;
     drop(control);
     assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
     thread::spawn(move || drop(guard)).join().unwrap();
+    assert!(terminal.try_take().is_none());
     assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
-    let owner = terminal.try_take().unwrap();
+    thread::spawn(move || drop(errors)).join().unwrap();
+    let (owner, errors) = terminal.try_take().unwrap();
     assert_eq!(owner.as_ref() as *const _ as usize, address);
-    drop(owner); // Harness control disposal; no claim of native CPAL pause.
+    drop((owner, errors)); // Harness control disposal; no native pause claim.
     for _ in 0..4 {
         let _phase = root.tick(true);
     }
