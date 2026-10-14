@@ -61,6 +61,9 @@ impl NativeCallbackOwner {
     ) -> Option<crate::prepared::ClaimedGraphReturn> {
         self.callback.take_held_claimed_on_control()
     }
+    pub(crate) fn expose_terminal_tracked_on_control(&mut self) -> bool {
+        self.callback.expose_terminal_tracked_on_control()
+    }
     pub(crate) fn peek_tracked_on_control(
         &self,
     ) -> Option<(

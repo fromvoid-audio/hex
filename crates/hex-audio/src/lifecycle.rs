@@ -734,6 +734,56 @@ fn reconcile_retirement(execution: &mut RetirementExecution) {
     // Pressure retains the existing quarantine AND worker slot. No overwrite,
     // owner drop or repeated destructor; the runner stops popping more messages.
 }
+/// Actual persistent execution fixture; never enables production admission.
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(crate) fn tracked_retirement_execution_for_test(
+    callback: crate::prepared::Callback,
+    status: Arc<crate::prepared::Status>,
+    root: &crate::prepared::NativeStreamRoot,
+    mut inspect: impl FnMut(&NativeCallbackOwner, usize),
+) {
+    let _serialized = tests::LEASE_TEST.lock().unwrap();
+    let lease = Lease::try_acquire().unwrap();
+    let (mut data, errors, terminal) =
+        crate::native_callback_owner::reserve_native(callback, status);
+    assert!(
+        data.owner_mut()
+            .run(|_| panic!("tracked retirement callback fault"))
+            .is_err()
+    );
+    let identity = data.owner_mut() as *mut NativeCallbackOwner;
+    thread::spawn(move || {
+        drop(data);
+        drop(errors);
+    })
+    .join()
+    .unwrap();
+    let mut owner = StreamOwner::prepared_custody(lease, None, Some(root.clone()), terminal);
+    let mut execution: RetirementExecution = owner.retirement.take();
+    drop(owner);
+    let mut permit = root.cleanup_permit().unwrap();
+    for step in 0..2 {
+        let retirement = execution.as_mut().unwrap();
+        assert!(matches!(
+            retirement_dispose(retirement, Some(&mut permit)),
+            RetirementProgress::Pending
+        ));
+        assert_eq!(retirement.disposal.data_state, DisposalState::Received);
+        assert_eq!(retirement.disposal.errors_state, DisposalState::Received);
+        let retained = retirement.disposal.data.as_ref().unwrap();
+        assert_eq!(
+            retained.as_ref() as *const NativeCallbackOwner,
+            identity.cast_const()
+        );
+        assert!(retained.callback_fault_latched());
+        inspect(retained, step);
+    }
+    drop(permit);
+    // Explicit fixture teardown only. Production keeps the same execution
+    // anchored until actual cleanup authority; no success fact is fabricated.
+    drop(execution);
+}
+
 fn retirement_dispose(
     retirement: &mut Retirement,
     permit: Option<&mut crate::prepared::NativeCleanupPermit<'_>>,
@@ -779,10 +829,10 @@ fn retirement_dispose(
         }
         if disposal.data_state == DisposalState::Received {
             if let Some(data) = disposal.data.as_mut() {
-                if data.held_claimed_on_control().is_some() {
-                    let Some(permit) = permit else {
-                        return RetirementProgress::FailedIncomplete;
-                    };
+                // Every media-root callback must pass terminal extraction,
+                // including active/deferred/queued tracked owners. A legacy
+                // queue head is not evidence that later owners are untracked.
+                if let Some(permit) = permit {
                     match permit.stage_held_claimed_on_control(data) {
                         Ok(()) => {}
                         Err(hex_stream::MediaCleanupPhase::Pending) => {
@@ -790,6 +840,10 @@ fn retirement_dispose(
                         }
                         Err(_) => return RetirementProgress::FailedIncomplete,
                     }
+                } else if data.held_claimed_on_control().is_some()
+                    || data.peek_tracked_on_control().is_some()
+                {
+                    return RetirementProgress::FailedIncomplete;
                 }
             }
             if disposal.data.is_none() {

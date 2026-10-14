@@ -258,6 +258,9 @@ impl NativeCleanupPermit<'_> {
         &mut self,
         data: &mut crate::native_callback_owner::NativeCallbackOwner,
     ) -> Result<(), hex_stream::MediaCleanupPhase> {
+        if !data.expose_terminal_tracked_on_control() {
+            return Err(hex_stream::MediaCleanupPhase::Pending);
+        }
         if let Some((publication, location)) = data.peek_tracked_on_control() {
             if self._custody.graph_teardown.is_some() {
                 return Err(hex_stream::MediaCleanupPhase::Pending);
@@ -1666,6 +1669,82 @@ mod claimed_disposal_tests {
         drop(control);
         drop(root);
         assert!(stream.shutdown(pages).unwrap().accounting_complete);
+    }
+    #[test]
+    fn actual_retirement_execution_extracts_every_tracked_location_before_callback_drop() {
+        for location in 0..5 {
+            let (mut control, mut callback, root, stream, pages) = setup();
+            // A larger fixture-only queue proves a legacy head is not negative
+            // evidence. Ordinary publication capacity remains unchanged.
+            let (producer, consumer) = RingBuffer::new(3);
+            control.publications = producer;
+            callback.publications = consumer;
+            let target = tracked_publication(&root, &stream, prepared(), 910);
+            match location {
+                0 => callback.active = Some(target),
+                1 => callback.deferred = Some(target),
+                2 => {
+                    control.publications.push(target).ok().unwrap();
+                }
+                3 => callback.held_retirement = Some(target.into_return()),
+                _ => {
+                    control
+                        .publications
+                        .push(Publication {
+                            stream_source: None,
+                            revision: 909,
+                            control_context_generation: 0,
+                            policy: PublicationPolicy::InstallFreshRuntime,
+                            fresh_runtime_cancellation: None,
+                            tracked_claim: None,
+                            playback: Box::new(Playback::new(
+                                hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+                            ))
+                            .into(),
+                        })
+                        .ok()
+                        .unwrap();
+                    control.publications.push(target).ok().unwrap();
+                }
+            }
+            let companion = tracked_publication(&root, &stream, prepared(), 911);
+            let companion_identity = companion.playback.tracked_identity().unwrap();
+            control.publications.push(companion).ok().unwrap();
+            crate::lifecycle::tracked_retirement_execution_for_test(
+                callback,
+                Arc::clone(&control.status),
+                &root,
+                |data, _| {
+                    // First extraction stages target. Occupied capsule refuses
+                    // the companion without owner loss or callback destruction.
+                    let (remaining, _) = data.peek_tracked_on_control().unwrap();
+                    assert_eq!(
+                        remaining.playback.tracked_identity(),
+                        Some(companion_identity)
+                    );
+                },
+            );
+            {
+                let custody = root.inner.cleanup.lock().unwrap();
+                let teardown = custody.graph_teardown.as_ref().unwrap();
+                assert!(!teardown.complete);
+                assert!(teardown.tracked_owner.is_some());
+                assert!(teardown.tracked_proof.is_none());
+            }
+            assert_eq!(
+                root.tick(false),
+                hex_stream::MediaCleanupPhase::FailedIncomplete
+            );
+            // Actual latched panic prevents archive closure, not just release.
+            {
+                let custody = root.inner.cleanup.lock().unwrap();
+                assert!(custody.graph_teardown.as_ref().unwrap().incomplete);
+            }
+            drain_fixture(&root);
+            drop(control);
+            drop(root);
+            assert!(stream.shutdown(pages).unwrap().accounting_complete);
+        }
     }
     fn drain_fixture(root: &NativeStreamRoot) {
         loop {

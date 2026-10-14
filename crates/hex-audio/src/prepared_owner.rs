@@ -2,7 +2,7 @@
 use super::*;
 impl PublicationPlayback {
     #[cfg(all(test, feature = "allocation-probe"))]
-    fn from_tracked(owner: hex_engine::storage_report::OwnerTrackedPlayback) -> Self {
+    pub(crate) fn from_tracked(owner: hex_engine::storage_report::OwnerTrackedPlayback) -> Self {
         Self {
             live: None,
             retired: None,
@@ -11,7 +11,7 @@ impl PublicationPlayback {
             manifest: None,
         }
     }
-    fn tracked_matches_anchors(
+    pub(crate) fn tracked_matches_anchors(
         &self,
         anchors: &hex_engine::storage_report::AnchoredPlaybackClaims,
     ) -> bool {
@@ -23,13 +23,13 @@ impl PublicationPlayback {
                 .is_some_and(|owner| owner.matches_anchors(anchors))
         }
     }
-    fn tracked_identity(&self) -> Option<hex_engine::storage_report::ClaimIdentity> {
+    pub(crate) fn tracked_identity(&self) -> Option<hex_engine::storage_report::ClaimIdentity> {
         self.tracked
             .as_ref()
             .map(|owner| owner.identity())
             .or_else(|| self.tracked_retired.as_ref().map(|owner| owner.identity()))
     }
-    fn sample_rate(&self) -> u32 {
+    pub(crate) fn sample_rate(&self) -> u32 {
         if let Some(owner) = self.tracked.as_ref() {
             owner.sample_rate()
         } else {
@@ -39,7 +39,7 @@ impl PublicationPlayback {
                 .sample_rate()
         }
     }
-    fn position(&self) -> u64 {
+    pub(crate) fn position(&self) -> u64 {
         if let Some(owner) = self.tracked.as_ref() {
             owner.position()
         } else {
@@ -49,7 +49,7 @@ impl PublicationPlayback {
                 .position()
         }
     }
-    fn performance_frame(&self) -> u64 {
+    pub(crate) fn performance_frame(&self) -> u64 {
         if let Some(owner) = self.tracked.as_ref() {
             owner.performance_frame()
         } else {
@@ -59,7 +59,7 @@ impl PublicationPlayback {
                 .performance_frame()
         }
     }
-    fn playing(&self) -> bool {
+    pub(crate) fn playing(&self) -> bool {
         if let Some(owner) = self.tracked.as_ref() {
             owner.playing()
         } else {
@@ -69,7 +69,7 @@ impl PublicationPlayback {
                 .playing()
         }
     }
-    fn session_capability_status(&self) -> hex_engine::SessionCapabilityStatus {
+    pub(crate) fn session_capability_status(&self) -> hex_engine::SessionCapabilityStatus {
         if let Some(owner) = self.tracked.as_ref() {
             owner.session_capability_status()
         } else {
@@ -79,7 +79,7 @@ impl PublicationPlayback {
                 .session_capability_status()
         }
     }
-    fn session_route_state_generation(&self) -> u64 {
+    pub(crate) fn session_route_state_generation(&self) -> u64 {
         if let Some(owner) = self.tracked.as_ref() {
             owner.session_route_state_generation()
         } else {
@@ -89,7 +89,7 @@ impl PublicationPlayback {
                 .session_route_state_generation()
         }
     }
-    fn session_route_count(&self) -> usize {
+    pub(crate) fn session_route_count(&self) -> usize {
         if let Some(owner) = self.tracked.as_ref() {
             owner.session_route_count()
         } else {
@@ -99,7 +99,10 @@ impl PublicationPlayback {
                 .session_route_count()
         }
     }
-    fn session_route_status(&self, index: usize) -> Option<hex_engine::SessionRouteStatus> {
+    pub(crate) fn session_route_status(
+        &self,
+        index: usize,
+    ) -> Option<hex_engine::SessionRouteStatus> {
         if let Some(owner) = self.tracked.as_ref() {
             owner.session_route_status(index)
         } else {
@@ -109,7 +112,7 @@ impl PublicationPlayback {
                 .session_route_status(index)
         }
     }
-    fn cancel_all_processor_auditions(&mut self) {
+    pub(crate) fn cancel_all_processor_auditions(&mut self) {
         if let Some(owner) = self.tracked.as_mut() {
             owner.cancel_all_processor_auditions()
         } else {
@@ -119,7 +122,7 @@ impl PublicationPlayback {
                 .cancel_all_processor_auditions()
         }
     }
-    fn cancel_retired_processor_auditions(&mut self) {
+    pub(crate) fn cancel_retired_processor_auditions(&mut self) {
         if let Some(owner) = self.tracked.as_mut() {
             owner.cancel_retired_processor_auditions()
         } else {
@@ -129,7 +132,10 @@ impl PublicationPlayback {
                 .cancel_retired_processor_auditions()
         }
     }
-    fn cancel_processor_audition(&mut self, identity: hex_engine::PostNodeIdentity) -> bool {
+    pub(crate) fn cancel_processor_audition(
+        &mut self,
+        identity: hex_engine::PostNodeIdentity,
+    ) -> bool {
         if let Some(owner) = self.tracked.as_mut() {
             owner.cancel_processor_audition(identity)
         } else {
@@ -139,7 +145,7 @@ impl PublicationPlayback {
                 .cancel_processor_audition(identity)
         }
     }
-    fn select_processor_audition(
+    pub(crate) fn select_processor_audition(
         &mut self,
         identity: hex_engine::PostNodeIdentity,
         selection: Option<hex_engine::ProcessorAuditionSelection>,
@@ -153,7 +159,7 @@ impl PublicationPlayback {
                 .select_processor_audition(identity, selection)
         }
     }
-    fn processor_audition_is_active(
+    pub(crate) fn processor_audition_is_active(
         &mut self,
         identity: hex_engine::PostNodeIdentity,
         selection: hex_engine::ProcessorAuditionSelection,
@@ -167,7 +173,7 @@ impl PublicationPlayback {
                 .processor_audition_is_active(identity, selection)
         }
     }
-    fn transfer_processor_audition_from_release_tail(
+    pub(crate) fn transfer_processor_audition_from_release_tail(
         &mut self,
         identity: hex_engine::PostNodeIdentity,
         selection: hex_engine::ProcessorAuditionSelection,
@@ -181,7 +187,7 @@ impl PublicationPlayback {
                 .transfer_processor_audition_from_release_tail(identity, selection)
         }
     }
-    fn queue_typing_input(
+    pub(crate) fn queue_typing_input(
         &mut self,
         ticket: u64,
         action: hex_engine::typing_protocol::Action,
@@ -195,7 +201,7 @@ impl PublicationPlayback {
                 .queue_typing_input(ticket, action)
         }
     }
-    fn cut_typing_input(&mut self, through_epoch: u64) {
+    pub(crate) fn cut_typing_input(&mut self, through_epoch: u64) {
         if let Some(owner) = self.tracked.as_mut() {
             owner.cut_typing_input(through_epoch)
         } else {
@@ -205,7 +211,7 @@ impl PublicationPlayback {
                 .cut_typing_input(through_epoch)
         }
     }
-    fn typing_admission(&self) -> Option<hex_engine::live_input::TypingAdmission> {
+    pub(crate) fn typing_admission(&self) -> Option<hex_engine::live_input::TypingAdmission> {
         if let Some(owner) = self.tracked.as_ref() {
             owner.typing_admission()
         } else {
@@ -215,7 +221,7 @@ impl PublicationPlayback {
                 .typing_admission()
         }
     }
-    fn typing_cut_through_epoch(&self) -> u64 {
+    pub(crate) fn typing_cut_through_epoch(&self) -> u64 {
         if let Some(owner) = self.tracked.as_ref() {
             owner.typing_cut_through_epoch()
         } else {
@@ -225,7 +231,9 @@ impl PublicationPlayback {
                 .typing_cut_through_epoch()
         }
     }
-    fn take_typing_application(&mut self) -> Option<hex_engine::live_input::TypingApplication> {
+    pub(crate) fn take_typing_application(
+        &mut self,
+    ) -> Option<hex_engine::live_input::TypingApplication> {
         if let Some(owner) = self.tracked.as_mut() {
             owner.take_typing_application()
         } else {
@@ -235,7 +243,7 @@ impl PublicationPlayback {
                 .take_typing_application()
         }
     }
-    fn try_apply_action(
+    pub(crate) fn try_apply_action(
         &mut self,
         action: hex_engine::PlaybackAction,
     ) -> Result<(), hex_engine::PlaybackActionError> {
@@ -248,7 +256,7 @@ impl PublicationPlayback {
                 .try_apply_action(action)
         }
     }
-    fn render_with_post_node_observer(
+    pub(crate) fn render_with_post_node_observer(
         &mut self,
         output: &mut [hex_engine::Frame],
         observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
@@ -263,7 +271,7 @@ impl PublicationPlayback {
         }
     }
 
-    fn apply(&mut self, command: PlaybackCommand) {
+    pub(crate) fn apply(&mut self, command: PlaybackCommand) {
         if let Some(owner) = self.tracked.as_mut() {
             owner.apply(command);
         } else {
@@ -273,7 +281,7 @@ impl PublicationPlayback {
                 .apply(command);
         }
     }
-    fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+    pub(crate) fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if let Some(owner) = self.tracked.as_mut() {
             owner.render(output)
         } else {
@@ -283,7 +291,7 @@ impl PublicationPlayback {
                 .render(output)
         }
     }
-    fn render_with_pages_and_post_node_observer<P: hex_engine::MediaPages + ?Sized>(
+    pub(crate) fn render_with_pages_and_post_node_observer<P: hex_engine::MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
         pages: &mut P,
@@ -298,7 +306,7 @@ impl PublicationPlayback {
                 .render_with_pages_and_post_node_observer(output, pages, observer)
         }
     }
-    fn prepared_origin(&self) -> hex_engine::playback::PreparedOrigin {
+    pub(crate) fn prepared_origin(&self) -> hex_engine::playback::PreparedOrigin {
         if self.tracked.is_some() || self.tracked_retired.is_some() {
             hex_engine::playback::PreparedOrigin::OwnedMetadata
         } else {
@@ -308,11 +316,11 @@ impl PublicationPlayback {
                 .prepared_origin()
         }
     }
-    fn prepared_revision(&self) -> Option<&Arc<hex_engine::PreparedRevision>> {
+    pub(crate) fn prepared_revision(&self) -> Option<&Arc<hex_engine::PreparedRevision>> {
         // Legacy availability only; tracked origin must never be treated as unprepared.
         self.live.as_deref().and_then(Playback::prepared_revision)
     }
-    fn visit_next_stream_chunk(
+    pub(crate) fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,
         visit: &mut impl FnMut(hex_engine::StreamPageExtent) -> Result<(), Invalid>,
@@ -326,7 +334,7 @@ impl PublicationPlayback {
                 .visit_next_stream_chunk(maximum_frames, visit)
         }
     }
-    fn preview_stream_handoff(
+    pub(crate) fn preview_stream_handoff(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
@@ -341,7 +349,7 @@ impl PublicationPlayback {
             _ => Err(hex_engine::PlaybackHandoffError::ArrangementStateCannotBeCaptured),
         }
     }
-    fn try_inherit_runtime_from(
+    pub(crate) fn try_inherit_runtime_from(
         &mut self,
         previous: &mut Self,
     ) -> Result<(), hex_engine::PlaybackHandoffError> {
@@ -351,7 +359,7 @@ impl PublicationPlayback {
             _ => Err(hex_engine::PlaybackHandoffError::ArrangementStateCannotBeCaptured),
         }
     }
-    fn try_inherit_and_retire_previous_in_place(
+    pub(crate) fn try_inherit_and_retire_previous_in_place(
         &mut self,
         previous: &mut Self,
     ) -> Result<(), hex_engine::playback::BorrowedRetiringHandoffFailure> {

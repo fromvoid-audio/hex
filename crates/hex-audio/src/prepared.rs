@@ -1354,6 +1354,21 @@ impl Callback {
             }
         }
     }
+    /// Control-only queue-frontier preparation. A legacy head cannot prove that
+    /// no tracked owner follows it. Move such heads to the existing return ring
+    /// only with destination capacity, then recheck; never scan graph storage.
+    pub(crate) fn expose_terminal_tracked_on_control(&mut self) -> bool {
+        while self.peek_tracked_on_control().is_none() && self.publications.peek().is_ok() {
+            if self.held_retirement.is_some() || self.retired.is_full() {
+                return false;
+            }
+            let Ok(publication) = self.publications.pop() else {
+                return false;
+            };
+            self.return_graph(publication);
+        }
+        true
+    }
     pub(crate) fn peek_tracked_on_control(&self) -> Option<(&Publication, ControlTrackedLocation)> {
         if let Some(GraphReturn::Tracked(publication)) = self.held_retirement.as_ref() {
             return Some((publication, ControlTrackedLocation::Held));
