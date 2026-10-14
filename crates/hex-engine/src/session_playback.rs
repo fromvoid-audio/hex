@@ -18,6 +18,7 @@ use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
 mod mutable_checkpoint;
+mod owner_groups;
 mod retiring;
 mod storage;
 mod stream_demand;

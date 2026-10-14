@@ -227,7 +227,7 @@ fn active_tail_chain(
     chain
 }
 
-fn prepared_return_project(include_return: bool, master_gain: f32) -> Project {
+pub(super) fn prepared_return_project(include_return: bool, master_gain: f32) -> Project {
     prepared_return_project_with_bus(include_return, master_gain, 0.75, false)
 }
 
@@ -357,6 +357,21 @@ fn playback(project: &Project) -> SessionPlayback {
 
 fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+    chain.begin_block();
+    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.commit_block();
+    chain
+}
+#[cfg(feature = "instrument-test-support")]
+pub(super) fn active_track_chain(
+    track: hex_project::TrackId,
+    return_id: ReturnId,
+) -> NativeRuntimeChain {
+    let mut instances = processor_instances(return_id, StereoMatrix::identity());
+    for instance in &mut instances {
+        instance.owner = ProcessorChainOwner::Track(track.value());
+    }
+    let mut chain = NativeRuntimeChain::new(instances).unwrap();
     chain.begin_block();
     chain.process_block(&mut [[0.1, -0.1]]);
     chain.commit_block();
@@ -988,6 +1003,121 @@ fn active_return_tail_moves_forward_across_later_revisions() {
         assert!((actual[0] - expected[0] - matrix_frame[0] * 2.0 * scale).abs() < 1.0e-6);
         assert!((actual[1] - expected[1] - matrix_frame[1] * 2.0 * scale).abs() < 1.0e-6);
     }
+}
+
+#[cfg(feature = "instrument-test-support")]
+#[test]
+fn tracked_owner_groups_close_dormant_subset_at_returned_box_disposal_while_successor_renders() {
+    use crate::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+    let source = prepared_return_project(true, 1.0);
+    let target = prepared_return_project(false, 1.0);
+    let make = |project: &Project| {
+        incomplete_owned_pair_for_test(
+            PreparedRevision::prepare(
+                project,
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap()
+            .into_owned_shared(),
+        )
+        .ok()
+        .unwrap()
+    };
+    let reservation = ClaimReservation {
+        items: 32_768,
+        anchors: 16,
+        max_prepared_data_bytes: usize::MAX,
+        max_construction_data_bytes: usize::MAX,
+        other_retained_bytes: 0,
+        other_construction_bytes: 0,
+    };
+    let (mut a, a_anchors) = make(&source);
+    a.with_owner_groups_runtime_for_test(|runtime| {
+        runtime.prepare_retiring_contexts().unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+        let bus = &runtime.revision.arrangement().return_buses()[0];
+        let id = bus.id;
+        for slot in 0..2 {
+            runtime.return_effect_tails.slots_mut()[slot] = Some(ReturnEffectTail::new(
+                active_chain(id, StereoMatrix::identity()),
+                bus,
+            ));
+        }
+    });
+    let (a, mut a_archive, _) = a
+        .try_acquire_owner_groups_on_control(&a_anchors, reservation)
+        .unwrap();
+    let (mut b, b_anchors) = make(&target);
+    b.with_owner_groups_runtime_for_test(|runtime| runtime.prepare_retiring_contexts().unwrap());
+    let (mut b, mut b_archive, _) = b
+        .try_acquire_owner_groups_on_control(&b_anchors, reservation)
+        .unwrap();
+    let mut a = Some(a);
+    let mut returned_a = None;
+    let mut first_manifest = None;
+    b.try_inherit_and_retire_in_place(&mut a, &mut returned_a, &mut first_manifest)
+        .unwrap();
+    assert!(a.is_none());
+    assert_eq!(
+        first_manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&a_archive),
+        2
+    );
+    let a_disposed = returned_a
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    a_archive.record_disposal_on_control(&a_disposed).unwrap();
+    assert_eq!(a_archive.remaining_handle_count(), 2);
+    // Existing lawful turnover: completed owner stays in returned B, with no
+    // new tail-clearing policy. Its independent sibling continues into C.
+    b.with_owner_groups_runtime_for_test(|runtime| {
+        runtime.return_effect_tails.slots_mut()[1]
+            .as_mut()
+            .unwrap()
+            .chain
+            .reset();
+    });
+    let (mut c, c_anchors) = make(&target);
+    c.with_owner_groups_runtime_for_test(|runtime| runtime.prepare_retiring_contexts().unwrap());
+    let (mut c, c_archive, _) = c
+        .try_acquire_owner_groups_on_control(&c_anchors, reservation)
+        .unwrap();
+    let mut b = Some(b);
+    let mut returned_b = None;
+    let mut second_manifest = None;
+    c.try_inherit_and_retire_in_place(&mut b, &mut returned_b, &mut second_manifest)
+        .unwrap();
+    assert_eq!(
+        second_manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&a_archive),
+        1
+    );
+    let b_disposed = returned_b
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    a_archive.record_disposal_on_control(&b_disposed).unwrap();
+    b_archive.record_disposal_on_control(&b_disposed).unwrap();
+    assert_eq!(a_archive.remaining_handle_count(), 1);
+    assert_eq!(b_archive.remaining_handle_count(), 0);
+    let mut output = [[0.0; 2]; 1];
+    c.render(&mut output).unwrap();
+    assert!(output[0].iter().any(|sample| *sample != 0.0));
+    assert!(a_archive.report().incomplete_source);
+    assert!(c_archive.report().incomplete_source);
+    assert!(second_manifest.as_ref().unwrap().is_incomplete_fixture());
 }
 
 #[test]

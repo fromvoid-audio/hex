@@ -356,7 +356,7 @@ impl SessionPlayback {
         previous: &mut Self,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_with_transfer(previous, demand, false)
+        self.inherit_state_with_transfer(previous, demand, false, None)
     }
 
     pub(super) fn inherit_state_with_transfer(
@@ -364,6 +364,7 @@ impl SessionPlayback {
         previous: &mut Self,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         retiring: bool,
+        mut owner_groups: Option<crate::storage_report::OwnerGroupTransfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if retiring && (!self.retiring_contexts_prepared || !previous.retiring_contexts_prepared) {
             return Err(SessionPlaybackError::SharedAnalyticContext);
@@ -2397,6 +2398,13 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             let complete = self
                 .accounted_runtime_storage_bytes()
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        owner_groups
+                            .as_ref()
+                            .map_or(0, |groups| groups.extra_candidate_bytes()),
+                    )
+                })
                 .and_then(|bytes| bytes.checked_add(typing_bytes))
                 .and_then(|bytes| bytes.checked_add(tail_runtime_bytes))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
@@ -2790,6 +2798,13 @@ impl SessionPlayback {
             }
             let complete = self
                 .accounted_runtime_storage_bytes()
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        owner_groups
+                            .as_ref()
+                            .map_or(0, |groups| groups.extra_candidate_bytes()),
+                    )
+                })
                 .and_then(|bytes| bytes.checked_add(retained_bytes))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if complete > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
@@ -2981,6 +2996,63 @@ impl SessionPlayback {
                 }
             }
         }
+        // Validate independent association destinations against the EXACT
+        // already-planned owner moves. No history-copy operation enters this
+        // journal. Dormant members stay in the returned predecessor's book.
+        if let Some(groups) = owner_groups.as_mut() {
+            use crate::storage_report::OwnerLocation as L;
+            for request in &self.context_lease_plan {
+                let from = match request.source {
+                    crate::shared_analytic::ContextLeaseSource::Revision(i) => {
+                        L::RevisionContext(usize::from(i))
+                    }
+                    crate::shared_analytic::ContextLeaseSource::Retained(i) => {
+                        L::RetainedContext(usize::from(i))
+                    }
+                };
+                groups.plan(from, L::RetainedContext(usize::from(request.target)))?;
+            }
+            return_tail_plan.plan_owner_groups(groups)?;
+            for slot in 0..previous.tail_groups.len() {
+                if active_tail_groups.get(slot).copied().unwrap_or(false)
+                    && previous.tail_groups[slot].is_some()
+                {
+                    groups.plan(L::TailChain(slot), L::TailChain(slot))?;
+                    if previous
+                        .tail_mutable_instruments
+                        .get(slot)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|tail| !tail.runtime.committed_is_quiescent())
+                    {
+                        groups.plan(L::TailMutable(slot), L::TailMutable(slot))?;
+                    }
+                    if previous.tail_typing[slot]
+                        .as_ref()
+                        .is_some_and(|typing| typing.active_voices() != 0)
+                    {
+                        groups.plan(L::TailTyping(slot), L::TailTyping(slot))?;
+                    }
+                }
+            }
+            for (index, slot) in old_track_tail_slots.iter().copied().enumerate() {
+                if let Some(slot) = slot {
+                    groups.plan(L::TrackChain(index), L::TailChain(slot))?;
+                }
+            }
+            for (index, slot) in old_track_mutable_tail_slots.iter().copied().enumerate() {
+                if let Some(slot) = slot
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .is_some_and(Option::is_some)
+                {
+                    groups.plan(L::Mutable(index), L::TailMutable(slot))?;
+                }
+            }
+            if let Some(slot) = outgoing_typing_slot {
+                groups.plan(L::Typing, L::TailTyping(slot))?;
+            }
+        }
         // Stage shared-context leases before moving any owner. The Return plan
         // validates every destination below; owner moves then use only these
         // prevalidated private indices.
@@ -3003,6 +3075,9 @@ impl SessionPlayback {
         )?;
         // Both guards retain exclusive borrows. No fallible operations remain
         // after the first predecessor owner moves.
+        if let Some(groups) = owner_groups.take() {
+            groups.commit();
+        }
         if let Some(context_transfer) = context_transfer {
             context_transfer.commit();
         }

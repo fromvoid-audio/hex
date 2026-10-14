@@ -334,6 +334,57 @@ pub struct BorrowedRetiringHandoffFailure {
 }
 
 impl Playback {
+    #[cfg(all(test, feature = "instrument-test-support"))]
+    pub(crate) fn owner_groups_runtime_for_test(&mut self) -> &mut SessionPlayback {
+        self.session_runtime
+            .as_mut()
+            .expect("actual fixture Session runtime")
+    }
+    pub(crate) fn claim_candidate_consumed(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.require_fresh_candidate().is_err())
+    }
+    pub(crate) fn inherit_owner_groups(
+        &mut self,
+        previous: &mut Playback,
+        candidate_book: &mut crate::storage_report::OwnerGroupBook,
+        previous_book: &mut crate::storage_report::OwnerGroupBook,
+    ) -> Result<(), PlaybackHandoffError> {
+        match (&mut self.session_runtime, &mut previous.session_runtime) {
+            (Some(candidate), Some(old)) => candidate
+                .try_inherit_retiring_owner_groups(
+                    old,
+                    crate::storage_report::OwnerGroupTransfer::new(candidate_book, previous_book),
+                )
+                .map(|_| ())
+                .map_err(PlaybackHandoffError::Session),
+            _ => Err(PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            )),
+        }
+    }
+    pub(crate) fn visit_owner_locations_on_control(
+        &self,
+        visit: &mut impl FnMut(
+            crate::storage_report::OwnerLocation,
+            bool,
+        ) -> Result<(), crate::storage_report::OwnerGroupError>,
+    ) -> Result<(), crate::storage_report::OwnerGroupError> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(crate::storage_report::OwnerGroupError::PairMismatch)?
+            .visit_owner_locations_on_control(visit)
+    }
+    pub(crate) fn check_owner_group_runtime_bytes(
+        &self,
+        bytes: usize,
+    ) -> Result<(), crate::storage_report::OwnerGroupError> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(crate::storage_report::OwnerGroupError::PairMismatch)?
+            .check_owner_group_runtime_bytes(bytes)
+    }
     #[cfg(feature = "instrument-test-support")]
     pub(crate) fn mark_incomplete_claim_fixture(&mut self) {
         self.incomplete_claim_fixture = true;

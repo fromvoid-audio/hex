@@ -674,6 +674,179 @@ mod tests {
         assert_eq!(actual, expected);
         assert!(source.take_typing_application().unwrap().result.is_ok());
     }
+
+    #[cfg(feature = "instrument-test-support")]
+    #[test]
+    fn tracked_owner_groups_typing_copy_and_original_box_transfer_remain_independent() {
+        use crate::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "groups".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let target = crate::live_input::TypingTarget {
+            project_generation: 0,
+            project_revision: 1,
+            track,
+            device,
+        };
+        let make = |epoch| {
+            let root = crate::PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap()
+            .into_owned_shared();
+            let (mut owner, anchors) = incomplete_owned_pair_for_test(root).ok().unwrap();
+            owner.with_owner_groups_runtime_for_test(|runtime| {
+                let input = runtime
+                    .prepare_typing_input(
+                        PreparedTypingArm::prepare(editor.project(), target).unwrap(),
+                        epoch,
+                    )
+                    .unwrap();
+                assert!(runtime.install_typing_input(input).is_ok());
+                runtime.prepare_retiring_contexts().unwrap();
+            });
+            (owner, anchors)
+        };
+        let reservation = ClaimReservation {
+            items: 32_768,
+            anchors: 16,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            other_retained_bytes: 0,
+            other_construction_bytes: 0,
+        };
+        let (mut a, a_anchors) = make(1);
+        let original_typing = a.with_owner_groups_runtime_for_test(|runtime| {
+            runtime.apply(crate::SessionPlaybackCommand::Play).unwrap();
+            runtime
+                .queue_typing_input(
+                    1,
+                    Action::On {
+                        owner: target.owner().unwrap(),
+                        token: Token {
+                            epoch: 1,
+                            serial: 1,
+                        },
+                        key: 9,
+                        pitch: 69,
+                        velocity: 100,
+                    },
+                )
+                .unwrap();
+            runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+            runtime.take_typing_application().unwrap();
+            runtime.typing.as_ref().unwrap().as_ref() as *const TypingPerformance as usize
+        });
+        let (a, mut a_archive, _) = a
+            .try_acquire_owner_groups_on_control(&a_anchors, reservation)
+            .unwrap();
+        let (b, b_anchors) = make(2);
+        let (mut b, mut b_archive, _) = b
+            .try_acquire_owner_groups_on_control(&b_anchors, reservation)
+            .unwrap();
+        let mut previous = Some(a);
+        let mut retired = None;
+        let mut manifest = None;
+        b.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+            .unwrap();
+        assert!(
+            manifest
+                .as_ref()
+                .unwrap()
+                .transferred_handle_count_from(&a_archive)
+                >= 2
+        );
+        let own_b_typing = b.with_owner_groups_runtime_for_test(|runtime| {
+            assert!(
+                runtime
+                    .tail_typing
+                    .iter()
+                    .flatten()
+                    .any(
+                        |typing| typing.as_ref() as *const TypingPerformance as usize
+                            == original_typing
+                    )
+            );
+            runtime.typing.as_ref().unwrap().as_ref() as *const TypingPerformance as usize
+        });
+        let disposed_a = retired
+            .take()
+            .unwrap()
+            .into_control_teardown()
+            .dispose_on_control()
+            .unwrap();
+        a_archive.record_disposal_on_control(&disposed_a).unwrap();
+        let (c, c_anchors) = make(2);
+        let (mut c, _, _) = c
+            .try_acquire_owner_groups_on_control(&c_anchors, reservation)
+            .unwrap();
+        let mut previous = Some(b);
+        let mut next_manifest = None;
+        c.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut next_manifest)
+            .unwrap();
+        c.with_owner_groups_runtime_for_test(|runtime| {
+            assert!(
+                runtime
+                    .tail_typing
+                    .iter()
+                    .flatten()
+                    .any(
+                        |typing| typing.as_ref() as *const TypingPerformance as usize
+                            == original_typing
+                    )
+            );
+            assert_ne!(
+                runtime.typing.as_ref().unwrap().as_ref() as *const TypingPerformance as usize,
+                own_b_typing,
+                "compatible history copy retains two independent prepared Boxes"
+            );
+        });
+        assert_eq!(
+            next_manifest
+                .as_ref()
+                .unwrap()
+                .transferred_handle_count_from(&b_archive),
+            0
+        );
+        let disposed_b = retired
+            .take()
+            .unwrap()
+            .into_control_teardown()
+            .dispose_on_control()
+            .unwrap();
+        b_archive.record_disposal_on_control(&disposed_b).unwrap();
+        assert_eq!(b_archive.remaining_handle_count(), 0);
+        assert!(a_archive.remaining_handle_count() >= 2);
+        c.apply(crate::playback::PlaybackCommand::Stop);
+        c.render(&mut [[0.0; 2]; 1]).unwrap();
+        assert!(
+            a_archive.remaining_handle_count() >= 2,
+            "Stop/silence is not owner disposal"
+        );
+        let disposed_c = c.into_control_teardown().dispose_on_control().unwrap();
+        a_archive.record_disposal_on_control(&disposed_c).unwrap();
+        assert_eq!(a_archive.remaining_handle_count(), 0);
+        assert!(
+            a_archive.report().incomplete_source,
+            "nested arm/Weak ownership still Unknown"
+        );
+    }
     #[test]
     fn rearming_uses_the_original_allocator_floor_while_old_release_pool_is_retained() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();

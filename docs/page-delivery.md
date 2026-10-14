@@ -562,3 +562,50 @@ are not connected by this checkpoint; the new open request has no app menu
 activation. No native streaming readiness or full long-project acceptance is
 established here. Production constructors, old resident APIs, component ceilings
 and the two-domain bridge refusal policy remain unchanged.
+
+### owner-specific engine transfer manifests (disabled publication infrastructure)
+
+The opt-in `OwnerTrackedPlayback` consumes an exact `ClaimedPlaybackOwner` only
+when its borrowed `AnchoredPlaybackClaims` match both the actual prepared root
+and runtime. Acquisition refusal returns that identical owner and the caller's
+`ClaimReservation`, with actual partial capacity observations. Acquisition
+requires prior control prewarming: every revision-context reserve clone is a
+separate handle obligation. No legacy/raw Arc or raw Box recovery upgrades an
+existing owner to this origin. The tracked wrapper exposes leaf metadata,
+borrowed render and scalar actions, without mutable graph/owner access.
+
+Separate members cover current and tail chains, mutable pairs, typing Boxes,
+Return chains/tails and each prewarmed/retained context handle. Fixed category
+indices avoid callback graph/member searches. Existing handoff planning also
+preflights the scalar source/destination journal and checked holder incarnations;
+all checks precede predecessor owner mutation. History copies transfer no member.
+Private origin identities remain anchored by the control archive and follow each
+actual independent take/swap/replace, including onward subset transfers. Journals
+move into a vacant persistent manifest destination, never an owning callback
+Result. The sealed retired book is the immutable leftover inventory; it cannot
+render or be revived. Scalar scratch stamps from a consumed candidate refusal
+cannot strand a predecessor when a different fresh candidate retries.
+
+Actual book/journal headers and backing capacities are charged against applicable
+existing runtime checks and the explicit caller reservations. Archive storage,
+its strong root handle, the owning refusal carrier and caller-declared disjoint
+retained/construction overlap are reported separately. The original claim-owner
+header is already charged by the parent and is not duplicated. These are data
+capacity receipts, not allocator/RSS or a new whole-graph 32 MiB cap. The original
+journal reservation remains conservatively charged through its move to control
+manifest custody. This unit does not prove a complete cross-ledger union.
+
+Control teardown borrows persistent custody, records pending before destruction
+and retains its leftover book on an actual destructor panic; it never retries or
+reconstructs the destroyed Box. A normal destructor-return fact may close only
+matching left-behind members. It records original runtime disposal separately
+from descendant group closure. Duplicate/stale facts cannot decrement twice.
+ACK, Box return alone, Stop, silence and reset confer no closure. Anchors and all
+whole-predecessor claim charges remain retained: this API cannot release graph or
+catalog claims. Provider aliases, typing Weak retention and other incomplete
+reports stay Unknown; the gated real-owner test fixture remains INCOMPLETE.
+
+This is headless engine infrastructure, not enabled native admission or usable
+whole-project streaming. Stable actual-domain catalog continued coverage,
+complete aggregate owner accounting, native lifecycle/publication wiring,
+streamed preroll and actual sustained native acceptance remain outstanding.

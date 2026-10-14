@@ -1,8 +1,15 @@
 //! Bounded control admission. Not a callback visitor or allocator/RSS budget.
+#[path = "owner_groups.rs"]
+pub(crate) mod owner_groups;
 #[path = "claims_teardown.rs"]
 mod teardown;
 use super::*;
 use crate::playback::Playback;
+pub use owner_groups::{
+    OwnerGroupArchive, OwnerGroupCapacityReport, OwnerGroupError, OwnerGroupHandoffFailure,
+    OwnerGroupRefusal, OwnerGroupsDisposed, OwnerTrackedPlayback, OwnerTrackedTeardown,
+    OwnerTransferManifest, RetiredOwnerTrackedPlayback,
+};
 #[cfg(feature = "instrument-test-support")]
 pub use teardown::incomplete_owned_pair_for_test;
 pub use teardown::{ControlPlaybackTeardown, ControlTeardownError, RuntimeDisposed};

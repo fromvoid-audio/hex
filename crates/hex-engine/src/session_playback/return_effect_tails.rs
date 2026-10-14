@@ -214,6 +214,19 @@ impl ValidatedReturnEffectCommit<'_> {
 }
 
 impl ReturnEffectTailPlan {
+    pub(super) fn plan_owner_groups(
+        &self,
+        groups: &mut crate::storage_report::OwnerGroupTransfer<'_>,
+    ) -> Result<(), SessionPlaybackError> {
+        use crate::storage_report::OwnerLocation as L;
+        for (source, target) in self.carry.iter().flatten().copied() {
+            groups.plan(L::ReturnTail(source), L::ReturnTail(target))?;
+        }
+        for (source, target) in self.capture.iter().flatten().copied() {
+            groups.plan(L::ReturnChain(source), L::ReturnTail(target))?;
+        }
+        Ok(())
+    }
     pub(super) fn validated_commit<'a>(
         &'a self,
         candidate: &'a mut ReturnEffectTailBank,

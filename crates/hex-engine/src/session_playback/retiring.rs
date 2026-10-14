@@ -10,7 +10,23 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_with_transfer(previous, None, true)
+        self.inherit_state_with_transfer(previous, None, true, None)
+    }
+    pub(crate) fn try_inherit_retiring_owner_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::storage_report::OwnerGroupTransfer<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.linear_arrangement_export || previous.linear_arrangement_export {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.check_owner_group_runtime_bytes(groups.extra_candidate_bytes())
+            .map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
+        previous
+            .check_owner_group_runtime_bytes(groups.extra_previous_bytes())
+            .map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
+        self.inherit_state_with_transfer(previous, None, true, Some(groups))
     }
 
     pub(crate) fn prepare_retiring_contexts(&mut self) -> Result<(), SessionPlaybackError> {

@@ -3,6 +3,7 @@
 //! costs prevent complete admission; no Arc-header guess is supplied here.
 use std::{any::Any, fmt, sync::Arc};
 mod claims;
+pub(crate) use claims::owner_groups::{OwnerGroupBook, OwnerGroupTransfer, OwnerLocation};
 mod graph;
 #[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]
@@ -10,7 +11,10 @@ pub use claims::incomplete_owned_pair_for_test;
 pub use claims::{
     AnchoredPlaybackClaims, ClaimCapacityReport, ClaimError, ClaimIdentity, ClaimPairRefusal,
     ClaimRefusal, ClaimReservation, ClaimedPlaybackOwner, ControlPlaybackTeardown,
-    ControlTeardownError, PlaybackClaims, RuntimeDisposed,
+    ControlTeardownError, OwnerGroupArchive, OwnerGroupCapacityReport, OwnerGroupError,
+    OwnerGroupHandoffFailure, OwnerGroupRefusal, OwnerGroupsDisposed, OwnerTrackedPlayback,
+    OwnerTrackedTeardown, OwnerTransferManifest, PlaybackClaims, RetiredOwnerTrackedPlayback,
+    RuntimeDisposed,
 };
 #[cfg(test)]
 pub(crate) mod owned_tests;

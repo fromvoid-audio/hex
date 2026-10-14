@@ -10897,6 +10897,398 @@ fn retiring_context_moves_preserve_real_strong_counts_across_generations() {
     );
 }
 
+#[cfg(feature = "instrument-test-support")]
+#[test]
+fn tracked_owner_group_context_clone_obligations_and_onward_moves_preserve_actual_counts() {
+    use crate::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.shared.context");
+    let definition = ContinuityInstrumentDefinition {
+        id,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(1.0, 0, 8 << 32), id, 0);
+    let make = |project: &Project| {
+        incomplete_owned_pair_for_test(
+            PreparedRevision::prepare_with_instrument_registry(
+                project,
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                None,
+                &registry,
+            )
+            .unwrap()
+            .into_owned_shared(),
+        )
+        .ok()
+        .unwrap()
+    };
+    let reservation = ClaimReservation {
+        items: 32_768,
+        anchors: 16,
+        max_prepared_data_bytes: usize::MAX,
+        max_construction_data_bytes: usize::MAX,
+        other_retained_bytes: 0,
+        other_construction_bytes: 0,
+    };
+    let (mut a, a_anchors) = make(&base);
+    let observed = a.with_owner_groups_runtime_for_test(|runtime| {
+        let owner = runtime
+            .revision
+            .arrangement()
+            .shared_contexts()
+            .clone_owner(0)
+            .unwrap();
+        let before = Arc::strong_count(&owner);
+        runtime.prepare_retiring_contexts().unwrap();
+        assert_eq!(
+            Arc::strong_count(&owner),
+            before + 1,
+            "control prewarm creates a NEW handle obligation"
+        );
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 2]).unwrap();
+        owner
+    });
+    let (a, mut a_archive, _) = a
+        .try_acquire_owner_groups_on_control(&a_anchors, reservation)
+        .unwrap();
+    let changed = with_test_instrument(&base, id, 1);
+    let (mut b, b_anchors) = make(&changed);
+    b.prepare_owner_groups_for_test().unwrap();
+    let (mut b, _, _) = b
+        .try_acquire_owner_groups_on_control(&b_anchors, reservation)
+        .unwrap();
+    let before = Arc::strong_count(&observed);
+    let mut a = Some(a);
+    let mut retired = None;
+    let mut manifest = None;
+    b.try_inherit_and_retire_in_place(&mut a, &mut retired, &mut manifest)
+        .unwrap();
+    assert_eq!(
+        Arc::strong_count(&observed),
+        before,
+        "tracked handoff is not an Arc clone"
+    );
+    assert!(
+        manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&a_archive)
+            >= 1
+    );
+    let disposed_a = retired
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    a_archive.record_disposal_on_control(&disposed_a).unwrap();
+    assert!(a_archive.original_runtime_was_disposed());
+    assert!(a_archive.remaining_handle_count() >= 1);
+    assert_eq!(
+        a_archive.record_disposal_on_control(&disposed_a),
+        Err(crate::storage_report::OwnerGroupError::Consumed)
+    );
+    let (mut c, c_anchors) = make(&changed);
+    c.prepare_owner_groups_for_test().unwrap();
+    let (mut c, _, _) = c
+        .try_acquire_owner_groups_on_control(&c_anchors, reservation)
+        .unwrap();
+    let before = Arc::strong_count(&observed);
+    let mut b = Some(b);
+    let mut next_manifest = None;
+    c.try_inherit_and_retire_in_place(&mut b, &mut retired, &mut next_manifest)
+        .unwrap();
+    assert_eq!(Arc::strong_count(&observed), before);
+    assert!(
+        next_manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&a_archive)
+            >= 1
+    );
+    c.with_owner_groups_runtime_for_test(|runtime| {
+        assert!(
+            runtime
+                .retained_contexts
+                .iter()
+                .flatten()
+                .any(|owner| Arc::ptr_eq(owner, &observed))
+        );
+    });
+    let disposed_b = retired
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    if next_manifest
+        .as_ref()
+        .unwrap()
+        .transferred_handle_count_from(&a_archive)
+        < manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&a_archive)
+    {
+        a_archive.record_disposal_on_control(&disposed_b).unwrap();
+    }
+    assert!(a_archive.remaining_handle_count() >= 1);
+    c.render(&mut [[0.0; 2]; 1]).unwrap();
+    let disposed_c = c.into_control_teardown().dispose_on_control().unwrap();
+    a_archive.record_disposal_on_control(&disposed_c).unwrap();
+    assert_eq!(a_archive.remaining_handle_count(), 0);
+    assert!(
+        a_archive.report().incomplete_source,
+        "provider aliases remain Unknown"
+    );
+}
+
+#[cfg(feature = "instrument-test-support")]
+#[test]
+fn tracked_owner_groups_chain_moves_but_quiescent_mutable_stays_in_original_box() {
+    use crate::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let base = with_test_instrument(
+        &return_effect_tail_tests::prepared_return_project(true, 1.0),
+        id,
+        0,
+    );
+    let mut snapshot = base.snapshot();
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut snapshot.tracks[0].content {
+        for clip in midi_clips {
+            clip.notes.clear();
+        }
+    }
+    snapshot.session.cells.clear();
+    let base = Project::from_snapshot(snapshot).unwrap();
+    let make = || {
+        incomplete_owned_pair_for_test(
+            PreparedRevision::prepare_with_instrument_registry(
+                &base,
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap()
+            .into_owned_shared(),
+        )
+        .ok()
+        .unwrap()
+    };
+    let reservation = ClaimReservation {
+        items: 32_768,
+        anchors: 16,
+        max_prepared_data_bytes: usize::MAX,
+        max_construction_data_bytes: usize::MAX,
+        other_retained_bytes: 0,
+        other_construction_bytes: 0,
+    };
+    let (mut a, a_anchors) = make();
+    a.with_owner_groups_runtime_for_test(|runtime| {
+        runtime.prepare_retiring_contexts().unwrap();
+        assert!(
+            runtime.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+        runtime.device_chains[0] = return_effect_tail_tests::active_track_chain(
+            runtime.routes[0].id,
+            runtime.revision.arrangement().return_buses()[0].id,
+        );
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+    });
+    let (a, mut archive, _) = a
+        .try_acquire_owner_groups_on_control(&a_anchors, reservation)
+        .unwrap();
+    let (mut b, b_anchors) = make();
+    b.prepare_owner_groups_for_test().unwrap();
+    let (mut b, _, _) = b
+        .try_acquire_owner_groups_on_control(&b_anchors, reservation)
+        .unwrap();
+    let mut previous = Some(a);
+    let mut retired = None;
+    let mut manifest = None;
+    b.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+        .unwrap();
+    assert_eq!(
+        manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&archive),
+        1
+    );
+    b.with_owner_groups_runtime_for_test(|runtime| {
+        assert!(runtime.tail_groups.iter().any(Option::is_some));
+        assert!(runtime.tail_mutable_instruments.iter().all(Option::is_none));
+    });
+    let disposed_a = retired
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    archive.record_disposal_on_control(&disposed_a).unwrap();
+    assert_eq!(
+        archive.remaining_handle_count(),
+        1,
+        "actual left-behind mutable is closed, moved chain is not"
+    );
+    let disposed_b = b.into_control_teardown().dispose_on_control().unwrap();
+    archive.record_disposal_on_control(&disposed_b).unwrap();
+    assert_eq!(archive.remaining_handle_count(), 0);
+    assert!(archive.report().incomplete_source);
+}
+
+#[cfg(feature = "instrument-test-support")]
+#[test]
+fn tracked_owner_groups_actual_mutable_pair_and_descendant_tail_move_without_early_closure() {
+    use crate::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let source = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
+    let mut snapshot = source.snapshot();
+    snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
+    snapshot.session.cells.clear();
+    let empty = legacy_project_from_snapshot(snapshot).unwrap();
+    let make = |project: &Project| {
+        incomplete_owned_pair_for_test(
+            PreparedRevision::prepare_with_instrument_registry(
+                project,
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap()
+            .into_owned_shared(),
+        )
+        .ok()
+        .unwrap()
+    };
+    let reservation = ClaimReservation {
+        items: 32_768,
+        anchors: 16,
+        max_prepared_data_bytes: usize::MAX,
+        max_construction_data_bytes: usize::MAX,
+        other_retained_bytes: 0,
+        other_construction_bytes: 0,
+    };
+    let (mut a, a_anchors) = make(&source);
+    a.with_owner_groups_runtime_for_test(|runtime| {
+        runtime.prepare_retiring_contexts().unwrap();
+        let clip = runtime.revision.session().midi_clips()[0].id;
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 16]).unwrap();
+        assert!(
+            !runtime.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+    });
+    let (a, mut archive, _) = a
+        .try_acquire_owner_groups_on_control(&a_anchors, reservation)
+        .unwrap();
+    let (mut b, b_anchors) = make(&empty);
+    b.prepare_owner_groups_for_test().unwrap();
+    let (mut b, _, _) = b
+        .try_acquire_owner_groups_on_control(&b_anchors, reservation)
+        .unwrap();
+    let mut previous = Some(a);
+    let mut retired = None;
+    let mut manifest = None;
+    b.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+        .unwrap();
+    assert_eq!(
+        manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&archive),
+        2
+    );
+    b.with_owner_groups_runtime_for_test(|runtime| {
+        assert!(
+            runtime
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .any(|tail| !tail.runtime.committed_is_quiescent())
+        );
+    });
+    let disposed_a = retired
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    archive.record_disposal_on_control(&disposed_a).unwrap();
+    assert_eq!(archive.remaining_handle_count(), 2);
+    let (mut c, c_anchors) = make(&empty);
+    c.prepare_owner_groups_for_test().unwrap();
+    let (mut c, _, _) = c
+        .try_acquire_owner_groups_on_control(&c_anchors, reservation)
+        .unwrap();
+    let mut previous = Some(b);
+    let mut next_manifest = None;
+    c.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut next_manifest)
+        .unwrap();
+    assert_eq!(
+        next_manifest
+            .as_ref()
+            .unwrap()
+            .transferred_handle_count_from(&archive),
+        2
+    );
+    let disposed_b = retired
+        .take()
+        .unwrap()
+        .into_control_teardown()
+        .dispose_on_control()
+        .unwrap();
+    assert_eq!(
+        archive.record_disposal_on_control(&disposed_b),
+        Err(crate::storage_report::OwnerGroupError::PairMismatch),
+        "B never received closure authority for its moved descendants"
+    );
+    c.render(&mut [[0.0; 2]; 1]).unwrap();
+    assert_eq!(archive.remaining_handle_count(), 2);
+    let disposed_c = c.into_control_teardown().dispose_on_control().unwrap();
+    archive.record_disposal_on_control(&disposed_c).unwrap();
+    assert_eq!(archive.remaining_handle_count(), 0);
+    assert!(archive.report().incomplete_source);
+}
+
 #[test]
 fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
     let project = project(0.758_499_15, 0, 8 << 32);
