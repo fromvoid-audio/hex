@@ -21,7 +21,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
-            state: device.state().clone(),
+            state: device.state().clone().without_output_gain(),
             bypassed: device.bypassed(),
         }
     }
@@ -294,7 +294,7 @@ impl PreparedRevision {
         self.arrangement
             .tracks()
             .iter()
-            .any(|track| track.has_mutable_instrument() || track.has_stateful_devices())
+            .any(|track| track.has_mutable_instrument() || track.has_device_chain())
             || self.arrangement.return_buses().iter().any(|bus| {
                 bus.device_chain
                     .iter()

@@ -1,3 +1,38 @@
+## device chain pan and bottom navigator — 13 october 2026
+
+Track and return device chains now share middle-button horizontal drag panning and
+an overview in the bottom status bar. Proportional device silhouettes and a measured
+viewport focus frame support click, drag and wheel navigation; the bottom-right
+chevron opens/closes the device panel and preserves the focused return. Release
+outside the rail, Escape, owner/project changes and workspace-mode changes retire
+capture. Navigation stays out of project history. Root pointer capture protects
+typed device drafts from blur while panning and checks close admission before a
+field can lose its draft; refused finalization keeps the panel open.
+
+Focused device-panel GPUI tests pass (56 tests), including rendered card movement,
+both navigator ends, wheel input, resize clamping, return overflow, short/empty
+chains, toggle ownership and full-queue draft preservation. Final Linux cloud checks
+pass: the full UI suite (414 passed, two existing ignores), strict all-target
+UI-feature Clippy, desktop build, architecture/GPUI/style guards, format and diff
+checks. Native macOS visual and physical middle-button acceptance remain pending.
+The user's screenshot is visual reference only; no new installed-Live behavior experiment was performed.
+Pulse intake is blocked because the connected create-ticket schema cannot supply
+the server-required `request_id`; no ticket was created.
+
+## device title reordering — 13 october 2026
+
+Regular and return device titles start metadata-only drags without a floating
+preview, as requested in the follow-up. Stable insertion markers resolve left/right card halves, inter-card
+gaps and the chain tail. Return effects use canonical `MoveReturnDevice`; regular
+effects and the freely positioned instrument reuse the existing actor drop path.
+Hover does not edit, valid moves produce one revision/Undo entry, and self-drop,
+Escape/outside release and stale/pending input preserve cancellation/refusal.
+Rendered title-move tests and source guards pass; full local CI belongs to the
+focused PR. Native macOS/listening and drag autoscroll remain open. See
+[device controls](docs/device-controls.md). Pulse intake is blocked by the live
+request_id requirement omitted/stripped by the installed create_ticket schema;
+no new ticket ID is claimed.
+
 ## vector synth name — 13 october 2026
 
 Renamed the registered four-operator synth display name to `vector`; the shared
@@ -2398,3 +2433,14 @@ Architecture, GPUI patch, UI style and formatting guards pass. Full local CI
 is the remaining merge gate; native macOS click-through remains pending. Pulse issue intake is blocked: create_ticket
 requires request_id, which the exposed tool schema does not support. This entry
 records implementation evidence and does not replace Pulse planning authority.
+
+13 October 2026 — manual native device gain staging: source implements paired
+input/output sample-peak strips at every device host's right edge, manual output
+trim via shared numeric gestures, held peak hover values and schema-18 persisted
+host gain. Focused tests cover serial boundaries, transients, bypass, legacy
+unity migration, invalid gain refusal, undo and native instrument PCM/voice
+identity. Automatic matching/toggle/focus-loss/lock remains deferred. Native
+Mac visual/drag/hover/slow-attack/listening/save-reopen acceptance remains user-owned.
+Pulse issue intake is currently blocked: the live create_ticket endpoint requires
+request_id but the installed connector does not transmit that field. No ticket
+creation is claimed; the focused PR and this dated evidence retain source scope.
