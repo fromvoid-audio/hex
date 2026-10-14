@@ -1,6 +1,7 @@
 mod device;
 mod native_callback_owner;
 mod render_fault;
+pub mod stream_preparation;
 pub use device::PreparedOutput;
 pub use lifecycle::{
     RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open,

@@ -158,6 +158,69 @@ impl PreparedOutput {
             spectrum_error,
         })
     }
+    /// Root owns all async workers; returned token contains metadata only.
+    pub fn start_stream_candidate(
+        &self,
+        input: crate::stream_preparation::CandidateInput,
+    ) -> Result<
+        crate::stream_preparation::PreparationToken,
+        crate::stream_preparation::PreparationRefusal,
+    > {
+        if !self.control.accepting_stream_candidates() {
+            return Err(crate::stream_preparation::PreparationRefusal {
+                reason: "stream publication unavailable",
+                input: Box::new(input),
+            });
+        }
+        let Some(root) = self.stream_root.as_ref() else {
+            return Err(crate::stream_preparation::PreparationRefusal {
+                reason: "output has no streaming bridge",
+                input: Box::new(input),
+            });
+        };
+        root.begin_preparation(input, self.sample_rate)
+    }
+    /// Metadata-only recovery of a lost token; None can also mean lifecycle busy.
+    pub fn pending_stream_candidate(
+        &self,
+    ) -> Option<crate::stream_preparation::PreparationSnapshot> {
+        self.stream_root.as_ref()?.current_preparation_snapshot()
+    }
+    pub fn stream_candidate_snapshot(
+        &self,
+        token: crate::stream_preparation::PreparationToken,
+    ) -> Option<crate::stream_preparation::PreparationSnapshot> {
+        self.stream_root.as_ref()?.preparation_snapshot(token)
+    }
+    pub fn cancel_stream_candidate(
+        &self,
+        token: crate::stream_preparation::PreparationToken,
+    ) -> bool {
+        self.stream_root
+            .as_ref()
+            .is_some_and(|root| root.cancel_preparation(token))
+    }
+    /// Requests lifecycle disposal after the caller consumed the actual report.
+    pub fn consume_stream_candidate_outcome(
+        &self,
+        token: crate::stream_preparation::PreparationToken,
+    ) -> bool {
+        self.stream_root
+            .as_ref()
+            .is_some_and(|root| root.consume_preparation(token))
+    }
+    pub fn try_publish_stream_candidate(
+        &mut self,
+        token: crate::stream_preparation::PreparationToken,
+        current: crate::stream_preparation::CandidateIdentity,
+        timeline_epoch: u64,
+        policy: prepared::PublicationPolicy,
+    ) -> Result<Option<u64>, &'static str> {
+        self.stream_root
+            .as_ref()
+            .ok_or("output has no streaming bridge")?
+            .publish_preparation(&mut self.control, token, current, timeline_epoch, policy)
+    }
     /// Control-side actual catalog lease for same-context graph preparation.
     /// Caller releases abandoned leases; they truthfully block retirement.
     pub fn stream_catalog_lease(

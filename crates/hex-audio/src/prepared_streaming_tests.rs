@@ -8,7 +8,7 @@ use std::{
 };
 
 static FILE_ID: AtomicU64 = AtomicU64::new(1);
-struct FixtureFile(std::path::PathBuf);
+pub(super) struct FixtureFile(std::path::PathBuf);
 impl Drop for FixtureFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
@@ -642,4 +642,477 @@ fn retiring_unwind_keeps_candidate_and_predecessor_in_persistent_publications() 
         }
         assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
     }
+}
+
+pub(super) fn facade_input(id: u64) -> (crate::stream_preparation::CandidateInput, FixtureFile) {
+    use crate::stream_preparation::*;
+    let (request, file) = request(id);
+    let StreamPublicationRequest {
+        playback,
+        verified,
+        source,
+        ..
+    } = request;
+    let key = playback
+        .prepared_revision()
+        .unwrap()
+        .streamed_sources()
+        .next()
+        .unwrap()
+        .key();
+    drop(verified);
+    let StreamPublicationSource::New(input) = source else {
+        panic!("fixture owns domain");
+    };
+    let hex_stream::MediaDomainInput {
+        control,
+        endpoint,
+        retained_leases,
+        ..
+    } = *input;
+    drop(retained_leases);
+    let (pages, lease) = endpoint.into_endpoint().into_parts();
+    drop(lease);
+    assert!(
+        control
+            .shutdown_reported(pages)
+            .unwrap()
+            .successful_report()
+            .is_some()
+    );
+    let mut path = file.0.clone();
+    path.reserve(4096);
+    let mut paths = Vec::with_capacity(7);
+    paths.push((
+        key,
+        path,
+        hex_stream::VerifiedWavReaderLimits::new(
+            hex_stream::WavReaderLimits::new(1024 * 1024, 100_000, 128, 4096),
+            1024,
+        ),
+    ));
+    // Fixture-selected data reservations, never production admission defaults.
+    (
+        CandidateInput {
+            playback,
+            paths,
+            identity: CandidateIdentity {
+                format_version: 1,
+                project_generation: id,
+                editor_revision: 1,
+            },
+            limits: PreparationLimits {
+                stream: hex_stream::StreamConfig::with_pool_pages(4),
+                compact: hex_stream::CompactCopyReservations {
+                    max_copy_bytes: 1024 * 1024,
+                    max_overlap_bytes: 4 * 1024 * 1024,
+                    other_retained_bytes: 0,
+                    other_construction_bytes: 0,
+                },
+                max_construction_data_bytes: 16 * 1024 * 1024,
+                max_prepared_data_bytes: 16 * 1024 * 1024,
+                readiness_extents: 3,
+            },
+        },
+        file,
+    )
+}
+fn facade_wait(
+    root: &NativeStreamRoot,
+    token: crate::stream_preparation::PreparationToken,
+    state: crate::stream_preparation::PreparationState,
+) -> crate::stream_preparation::PreparationSnapshot {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        root.tick(false);
+        let status = root.preparation_snapshot(token).unwrap();
+        if status.state == state {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "facade {:?}, reason {:?}",
+            status.state,
+            status.reason
+        );
+        thread::yield_now();
+    }
+}
+#[test]
+fn facade_real_catalog_publish_preserves_original_paths_and_installed_buffering_contract() {
+    use crate::stream_preparation::*;
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (input, _file) = facade_input(81);
+    let identity = input.identity;
+    let addresses = (
+        input.paths.as_ptr() as usize,
+        input.paths.capacity(),
+        input.paths[0].1.as_os_str().as_encoded_bytes().as_ptr() as usize,
+        input.paths[0].1.capacity(),
+    );
+    let token = root.begin_preparation(input, 48_000).unwrap();
+    let status = facade_wait(&root, token, PreparationState::CatalogPrepared);
+    assert_eq!(root.preparation_original_addresses(token), Some(addresses));
+    assert!(status.report.construction.unwrap().worker.finalized);
+    assert!(status.report.prepared_data_bound_bytes.unwrap() >= status.report.readiness_bytes);
+    let (other, _other_file) = facade_input(82);
+    let other_ptr = other.paths.as_ptr();
+    let refusal = root.begin_preparation(other, 48_000).unwrap_err();
+    assert_eq!(refusal.input.paths.as_ptr(), other_ptr);
+    assert_eq!(refusal.reason, "stream preparation slot is occupied");
+    drop(refusal);
+    let revision = root
+        .publish_preparation(
+            &mut control,
+            token,
+            identity,
+            1,
+            PublicationPolicy::InstallFreshRuntime,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        root.preparation_snapshot(token).unwrap().published_revision,
+        Some(revision)
+    );
+    assert!(!root.cancel_preparation(token)); // Cannot revoke queued acceptance.
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    let mut output = [[9.0; 2]; 256];
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        callback.render(&mut output).unwrap();
+        if control.status.performance_frame.load(Relaxed) > 0 {
+            break;
+        }
+        assert_eq!(output, [[0.0; 2]; 256]);
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    assert!(output.iter().any(|s| *s != [0.0; 2]));
+    assert!(root.consume_preparation(token));
+    root.tick(false);
+    assert!(root.preparation_snapshot(token).is_none());
+    drop(control);
+    drop(callback);
+    for _ in 0..4 {
+        root.tick(true);
+    }
+    assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+}
+#[test]
+fn facade_stale_context_missing_file_and_capacity_refusal_recover_exact_owners() {
+    use crate::stream_preparation::*;
+    for failure in 0..4 {
+        let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+        let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+        let (mut input, file) = facade_input(90 + failure);
+        let identity = input.identity;
+        if failure == 1 {
+            std::fs::remove_file(&file.0).unwrap();
+        }
+        if failure == 2 {
+            input.limits.max_prepared_data_bytes = 1;
+        }
+        if failure == 3 {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file.0)
+                .unwrap()
+                .write_all(&[1, 2, 3, 4])
+                .unwrap();
+        }
+        let addresses = (
+            input.paths.as_ptr() as usize,
+            input.paths.capacity(),
+            input.paths[0].1.as_os_str().as_encoded_bytes().as_ptr() as usize,
+            input.paths[0].1.capacity(),
+        );
+        let token = root.begin_preparation(input, 48_000).unwrap();
+        if failure == 0 {
+            facade_wait(&root, token, PreparationState::CatalogPrepared);
+            let stale = CandidateIdentity {
+                editor_revision: identity.editor_revision + 1,
+                ..identity
+            };
+            assert_eq!(
+                root.publish_preparation(
+                    &mut control,
+                    token,
+                    stale,
+                    1,
+                    PublicationPolicy::InheritRuntime
+                ),
+                Err("stream preparation context stale")
+            );
+        }
+        let report = facade_wait(&root, token, PreparationState::Outcome).report;
+        assert_eq!(root.preparation_original_addresses(token), Some(addresses));
+        if failure == 1 || failure == 3 {
+            assert!(matches!(
+                report.construction_cleanup,
+                Some(hex_stream::ConstructionCleanup::Joined(_))
+            ));
+        } else {
+            assert!(report.shutdown.unwrap().successful_report().is_some());
+        }
+        assert_eq!(control.status.applied_revision.load(Relaxed), 0);
+        assert!(root.consume_preparation(token));
+        root.tick(false);
+        assert!(root.preparation_snapshot(token).is_none());
+        assert!(!root.cancel_preparation(token));
+        drop(control);
+        drop(callback);
+        for _ in 0..4 {
+            root.tick(true);
+        }
+        assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+    }
+}
+#[test]
+fn facade_version_and_queued_cancel_refuse_without_ownership_or_ui_work() {
+    use crate::stream_preparation::*;
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (mut input, _file) = facade_input(96);
+    input.identity.format_version = 2;
+    let ptr = input.paths.as_ptr();
+    let mut refusal = root.begin_preparation(input, 48_000).unwrap_err();
+    assert_eq!(refusal.input.paths.as_ptr(), ptr);
+    refusal.input.identity.format_version = 1;
+    let token = root.begin_preparation(*refusal.input, 48_000).unwrap();
+    let measured = allocation_counter::measure(|| assert!(root.cancel_preparation(token)));
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0)
+    );
+    let status = facade_wait(&root, token, PreparationState::Outcome);
+    assert!(status.report.construction.is_none());
+    assert!(matches!(
+        status.report.construction_cleanup,
+        Some(hex_stream::ConstructionCleanup::NotStarted {
+            allocated_pages: 0,
+            reclaimed_pages: 0
+        })
+    ));
+    assert!(root.consume_preparation(token));
+    root.tick(false);
+    drop(control);
+    drop(callback);
+    for _ in 0..4 {
+        root.tick(true);
+    }
+    assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+}
+
+#[test]
+fn facade_abandoned_output_retains_request_lease_and_status_until_both_closures_return() {
+    let _serialized = crate::lifecycle::tests::LEASE_TEST.lock().unwrap();
+    let lease = crate::lifecycle::Lease::acquire().unwrap();
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (input, _file) = facade_input(99);
+    let token = root.begin_preparation(input, 48_000).unwrap();
+    root.tick(false); // Actual pool/transport allocated and real worker started.
+    assert!(matches!(
+        root.preparation_snapshot(token).unwrap().state,
+        crate::stream_preparation::PreparationState::Constructing
+    ));
+    crate::prepared::observe_status_disposal(Arc::as_ptr(&control.status) as usize);
+    crate::lifecycle::register_stream_root(root.clone());
+    let (data, errors, terminal) =
+        crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+    let owner = crate::lifecycle::StreamOwner::prepared_custody(lease, None, Some(root), terminal);
+    drop(control);
+    drop(owner); // No ordinary root/handle survives in this test.
+    assert!(crate::lifecycle::Lease::acquire().is_err());
+    let (data_thread, measurement) = thread::spawn(move || {
+        let id = thread::current().id();
+        (id, allocation_counter::measure(|| drop(data)))
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0)
+    );
+    assert!(crate::prepared::observed_status_disposal().is_none());
+    assert!(crate::lifecycle::Lease::acquire().is_err());
+    let (error_thread, measurement) = thread::spawn(move || {
+        let id = thread::current().id();
+        (id, allocation_counter::measure(|| drop(errors)))
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0)
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let replacement = loop {
+        if let Ok(lease) = crate::lifecycle::Lease::acquire() {
+            break lease;
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    };
+    let disposed = crate::prepared::observed_status_disposal().unwrap();
+    assert_ne!(disposed, thread::current().id());
+    assert_ne!(disposed, data_thread);
+    assert_ne!(disposed, error_thread);
+    drop(replacement);
+}
+
+#[test]
+fn facade_injected_reserve_and_overflow_leave_originals_then_control_disposes_graph() {
+    use crate::stream_preparation::*;
+    for overflow in [false, true] {
+        let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+        let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+        let (mut input, _file) = facade_input(104);
+        let weak = Arc::downgrade(input.playback.prepared_revision().unwrap());
+        if overflow {
+            input.limits.compact.other_retained_bytes = usize::MAX;
+        } else {
+            fail_definition_reserve();
+        }
+        let addresses = (
+            input.paths.as_ptr() as usize,
+            input.paths.capacity(),
+            input.paths[0].1.as_os_str().as_encoded_bytes().as_ptr() as usize,
+            input.paths[0].1.capacity(),
+        );
+        let token = root.begin_preparation(input, 48_000).unwrap();
+        let snapshot = facade_wait(&root, token, PreparationState::Outcome);
+        assert!(snapshot.report.construction.is_none());
+        assert_eq!(root.preparation_original_addresses(token), Some(addresses));
+        assert_eq!(weak.strong_count(), 2);
+        let measured = allocation_counter::measure(|| assert!(root.consume_preparation(token)));
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(weak.strong_count(), 2); // UI's metadata operation drops nothing.
+        let measured = allocation_counter::measure(|| {
+            root.tick(false);
+        });
+        assert!(measured.bytes_current < 0);
+        assert_eq!(weak.strong_count(), 0);
+        drop(control);
+        drop(callback);
+        for _ in 0..4 {
+            root.tick(true);
+        }
+        assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+    }
+}
+#[test]
+fn facade_pending_publication_and_legacy_id_collision_keep_candidate_retryable() {
+    use crate::stream_preparation::*;
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (existing, _first_file) = request(1);
+    root.publish(&mut control, existing).unwrap();
+    let (input, _file) = facade_input(106);
+    let identity = input.identity;
+    let token = root.begin_preparation(input, 48_000).unwrap();
+    facade_wait(&root, token, PreparationState::CatalogPrepared);
+    assert_eq!(
+        root.publish_preparation(
+            &mut control,
+            token,
+            identity,
+            1,
+            PublicationPolicy::InstallFreshRuntime
+        ),
+        Err("playback publication already pending")
+    );
+    assert_eq!(
+        root.preparation_snapshot(token).unwrap().state,
+        PreparationState::CatalogPrepared
+    );
+    callback.begin_block();
+    assert!(
+        root.publish_preparation(
+            &mut control,
+            token,
+            identity,
+            1,
+            PublicationPolicy::InstallFreshRuntime
+        )
+        .unwrap()
+        .is_some()
+    );
+    callback.begin_block();
+    assert!(root.consume_preparation(token));
+    root.tick(false);
+    drop(control);
+    drop(callback);
+    for _ in 0..5 {
+        root.tick(true);
+    }
+    assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+}
+
+#[test]
+fn facade_pending_cancel_wins_catalog_result_and_stale_token_cannot_cancel_replacement() {
+    use crate::stream_preparation::*;
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (input, _file) = facade_input(107);
+    let identity = input.identity;
+    let token = root.begin_preparation(input, 48_000).unwrap();
+    root.tick(false);
+    // Let the real small worker queue verification, but do not poll/finish it.
+    thread::sleep(Duration::from_millis(20));
+    assert!(root.cancel_preparation(token));
+    let outcome = facade_wait(&root, token, PreparationState::Outcome);
+    assert!(matches!(
+        outcome.report.construction_cleanup,
+        Some(hex_stream::ConstructionCleanup::Joined(_))
+    ));
+    assert_eq!(
+        root.publish_preparation(
+            &mut control,
+            token,
+            identity,
+            1,
+            PublicationPolicy::InheritRuntime
+        ),
+        Err("stream preparation cancelled")
+    );
+    assert!(root.consume_preparation(token));
+    root.tick(false);
+    let (input, _next_file) = facade_input(107);
+    let next = root.begin_preparation(input, 48_000).unwrap();
+    assert_ne!(next, token);
+    assert!(!root.cancel_preparation(token));
+    assert_eq!(root.current_preparation_snapshot().unwrap().token, next);
+    assert!(root.cancel_preparation(next));
+    facade_wait(&root, next, PreparationState::Outcome);
+    assert!(root.consume_preparation(next));
+    root.tick(false);
+    drop(control);
+    drop(callback);
+    for _ in 0..4 {
+        root.tick(true);
+    }
+    assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
 }

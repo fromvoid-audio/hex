@@ -435,12 +435,30 @@ pub struct Status {
 }
 
 #[cfg(test)]
+static STATUS_WANTED_ADDRESS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static STATUS_WANTED_DISPOSAL: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) fn observe_status_disposal(address: usize) {
+    *STATUS_WANTED_DISPOSAL.lock().unwrap() = None;
+    STATUS_WANTED_ADDRESS.store(address, Release);
+}
+#[cfg(test)]
+pub(crate) fn observed_status_disposal() -> Option<std::thread::ThreadId> {
+    *STATUS_WANTED_DISPOSAL.lock().unwrap()
+}
+#[cfg(test)]
 thread_local! {
     static STATUS_DISPOSAL: std::cell::Cell<Option<(usize, std::thread::ThreadId)>> = const { std::cell::Cell::new(None) };
 }
 #[cfg(test)]
 impl Drop for Status {
     fn drop(&mut self) {
+        if STATUS_WANTED_ADDRESS.load(Acquire) == self as *const Self as usize {
+            *STATUS_WANTED_DISPOSAL.lock().unwrap() = Some(std::thread::current().id());
+        }
         STATUS_DISPOSAL.set(Some((
             self as *const Self as usize,
             std::thread::current().id(),
@@ -989,6 +1007,9 @@ impl SpectrumStage {
 }
 
 impl Control {
+    pub(crate) fn accepting_stream_candidates(&self) -> bool {
+        !self.closing.load(Acquire) && self.revision != u64::MAX
+    }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
     /// invalid route snapshot so callers can retry before preparing a graph.

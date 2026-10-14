@@ -581,6 +581,9 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Reti
 
 fn retire_prepared_output(retirement: Retirement) {
     let mut retirement = retirement;
+    if let Some(root) = retirement.media_root.as_ref() {
+        root.cancel_all_preparation();
+    }
     if retirement.terminal.is_some() {
         match native_quiescence(
             &mut retirement.stream,
@@ -737,8 +740,8 @@ fn retire_when_stopped<T>(value: T, mut pause: impl FnMut(&T) -> bool, mut retry
 }
 
 #[cfg(test)]
-mod tests {
-    pub(super) static LEASE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) mod tests {
+    pub(crate) static LEASE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use super::*;
     use std::sync::atomic::Ordering::{Acquire, Release};
     use std::time::Instant;
