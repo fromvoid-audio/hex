@@ -47,6 +47,20 @@ impl NativeCallbackOwner {
     pub(crate) fn observe_disposal(&mut self, probe: impl FnMut() + Send + 'static) {
         self.disposal_probe = Some(Box::new(probe));
     }
+    pub(crate) fn held_claimed_on_control(
+        &self,
+    ) -> Option<(
+        &hex_engine::storage_report::ClaimedPlaybackOwner,
+        &crate::publication_claims::ClaimAssociation,
+        bool,
+    )> {
+        self.callback.held_claimed_on_control()
+    }
+    pub(crate) fn take_held_claimed_on_control(
+        &mut self,
+    ) -> Option<crate::prepared::ClaimedGraphReturn> {
+        self.callback.take_held_claimed_on_control()
+    }
     pub(crate) fn status(&self) -> &Status {
         self.callback.native_status()
     }

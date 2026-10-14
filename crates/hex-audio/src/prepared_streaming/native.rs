@@ -26,8 +26,100 @@ struct CleanupCustody {
     capsule: Option<CleanupCapsule>,
     faulted: bool,
     first_panic: Option<Box<dyn std::any::Any + Send>>,
+    graph_teardown: Option<ReturnedGraphTeardown>,
     #[cfg(test)]
     before_work: Option<Box<dyn FnMut() + Send>>,
+}
+// Preallocated inline in the existing cleanup custodian before construction.
+// Entire envelope is persistent before splitting; metadata never rides unwind.
+struct ReturnedGraphTeardown {
+    root_tag: Arc<()>,
+    extraction_incarnation: u64,
+    envelope: Option<GraphReturn>,
+    owner: Option<hex_engine::storage_report::ControlPlaybackTeardown>,
+    association: Option<crate::publication_claims::ClaimAssociation>,
+    stream_source: Option<StreamBinding>,
+    cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    proof: Option<hex_engine::storage_report::RuntimeDisposed>,
+    complete: bool,
+    incomplete: bool,
+}
+impl ReturnedGraphTeardown {
+    fn stage(returned: GraphReturn, root_tag: Arc<()>, extraction_incarnation: u64) -> Self {
+        Self {
+            root_tag,
+            extraction_incarnation,
+            envelope: Some(returned),
+            owner: None,
+            association: None,
+            stream_source: None,
+            cancellation: None,
+            proof: None,
+            complete: false,
+            incomplete: false,
+        }
+    }
+    fn split(&mut self) -> bool {
+        let Some(envelope) = self.envelope.take() else {
+            return false;
+        };
+        match envelope {
+            GraphReturn::Claimed(ClaimedGraphReturn {
+                owner,
+                association,
+                stream_source,
+                cancellation,
+            }) => {
+                self.owner = Some(owner.into_control_teardown());
+                self.association = Some(association);
+                self.stream_source = stream_source;
+                self.cancellation = cancellation;
+                true
+            }
+            other => {
+                self.envelope = Some(other);
+                self.incomplete = true;
+                false
+            }
+        }
+    }
+    fn dispose(&mut self, slots: &mut crate::publication_claims::slots::ClaimUnionSlots) -> bool {
+        if self.incomplete {
+            return false;
+        }
+        if self.complete {
+            return true;
+        }
+        let (Some(owner), Some(association)) = (self.owner.as_mut(), self.association.as_ref())
+        else {
+            self.incomplete = true;
+            return false;
+        };
+        match owner.dispose_on_control() {
+            Ok(proof) => self.proof = Some(proof),
+            Err(_) => {
+                self.incomplete = true;
+                slots.disposal_incomplete(association);
+                return false;
+            }
+        }
+        let Some(proof) = self.proof.take() else {
+            self.incomplete = true;
+            return false;
+        };
+        match slots.disposed(association, proof) {
+            Ok(()) => {
+                self.complete = true;
+                true
+            }
+            Err((_, proof)) => {
+                self.proof = Some(proof);
+                self.incomplete = true;
+                slots.disposal_incomplete(association);
+                false
+            }
+        }
+    }
 }
 struct CleanupCapsule {
     bridge: StreamBridgeControl,
@@ -39,6 +131,51 @@ pub(crate) struct NativeCleanupPermit<'a> {
     root: &'a NativeStreamRoot,
 }
 impl NativeCleanupPermit<'_> {
+    pub(crate) fn stage_held_claimed_on_control(
+        &mut self,
+        data: &mut crate::native_callback_owner::NativeCallbackOwner,
+    ) -> Result<(), hex_stream::MediaCleanupPhase> {
+        let Some((owner, a, stream_bound)) = data.held_claimed_on_control() else {
+            return Ok(());
+        };
+        if self._custody.graph_teardown.is_some() || stream_bound {
+            return Err(hex_stream::MediaCleanupPhase::Pending);
+        }
+        let mut root = self.root.lock();
+        let Some(bridge) = root.bridge.as_mut() else {
+            return Err(hex_stream::MediaCleanupPhase::Pending);
+        };
+        if !Arc::ptr_eq(&bridge.tag, &self.root.inner.tag) {
+            return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+        }
+        let Some(next) = self._custody.incarnation.checked_add(1) else {
+            return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+        };
+        let root_tag = Arc::clone(&bridge.tag); // control preflight anchor
+        let slots = bridge
+            .claim_union
+            .as_mut()
+            .ok_or(hex_stream::MediaCleanupPhase::Pending)?;
+        let permit = slots
+            .preflight_returned_disposal(a, owner)
+            .map_err(|_| hex_stream::MediaCleanupPhase::Pending)?;
+        let Some(returned) = data.take_held_claimed_on_control() else {
+            return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+        };
+        self._custody.graph_teardown = Some(ReturnedGraphTeardown::stage(
+            returned.into(),
+            root_tag,
+            next,
+        ));
+        self._custody.incarnation = next;
+        if let Some(teardown) = self._custody.graph_teardown.as_mut() {
+            if !teardown.split() {
+                return Err(hex_stream::MediaCleanupPhase::FailedIncomplete);
+            }
+        }
+        permit.commit(); // all owning destinations validated before the move
+        Ok(()) // no graph destructor while ordinary state is locked
+    }
     pub(crate) fn fail_retirement_on_control(&mut self) {
         self._custody.faulted = true;
         self.root.latch_cleanup_fault(&self._custody);
@@ -430,8 +567,20 @@ impl NativeStreamRoot {
             if let Some(hook) = custody.before_work.as_mut() {
                 hook();
             }
-            match custody.capsule.as_mut() {
-                Some(capsule) => capsule.run(closing, final_retirement, report_only),
+            let CleanupCustody {
+                capsule,
+                graph_teardown,
+                incarnation,
+                ..
+            } = &mut *custody;
+            match capsule.as_mut() {
+                Some(capsule) => capsule.run(
+                    closing,
+                    final_retirement,
+                    report_only,
+                    graph_teardown,
+                    *incarnation,
+                ),
                 None => (Phase::FailedIncomplete, None),
             }
         }));
@@ -504,12 +653,28 @@ impl CleanupCapsule {
         closing: bool,
         final_retirement: bool,
         report_only: bool,
+        graph_teardown: &mut Option<ReturnedGraphTeardown>,
+        extraction_incarnation: u64,
     ) -> (
         hex_stream::MediaCleanupPhase,
         Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>,
     ) {
         let mut report = None;
         if !report_only {
+            if let Some(teardown) = graph_teardown.as_mut() {
+                if !Arc::ptr_eq(&teardown.root_tag, &self.bridge.tag)
+                    || teardown.extraction_incarnation > extraction_incarnation
+                {
+                    teardown.incomplete = true;
+                    return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                }
+                let Some(slots) = self.bridge.claim_union.as_mut() else {
+                    return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                };
+                if !teardown.dispose(slots) {
+                    return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                }
+            }
             self.bridge.claim_union_closed |= closing;
             if let Some(slots) = self.bridge.claim_union.as_mut() {
                 if closing {
@@ -531,6 +696,52 @@ impl CleanupCapsule {
             }
             if let Some(returns) = self.returns.as_mut() {
                 let _ = self.bridge.reclaim_receiver(returns, false);
+                if let Ok(GraphReturn::Claimed(returned)) = returns.peek() {
+                    // Stream-domain association transfer is not enabled. Keep
+                    // any stream-bound claimed envelope intact until that exact
+                    // catalog/domain proof is available; never infer it here.
+                    if returned.stream_source.is_some() {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    }
+                    if graph_teardown.is_some() {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    }
+                    let Some(slots) = self.bridge.claim_union.as_mut() else {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    };
+                    // Actual root-slot-runtime pairing AND vacant destination
+                    // before pop. Sole consumer cannot change the peeked item.
+                    let permit = match slots
+                        .preflight_returned_disposal(&returned.association, &returned.owner)
+                    {
+                        Ok(permit) => permit,
+                        Err(_) => return (hex_stream::MediaCleanupPhase::Pending, None),
+                    };
+                    let root_tag = Arc::clone(&self.bridge.tag); // control preflight anchor
+                    let Ok(returned) = returns.pop() else {
+                        return (hex_stream::MediaCleanupPhase::Pending, None);
+                    };
+                    *graph_teardown = Some(ReturnedGraphTeardown::stage(
+                        returned,
+                        root_tag,
+                        extraction_incarnation,
+                    ));
+                    if let Some(teardown) = graph_teardown.as_mut() {
+                        if !teardown.split() {
+                            return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                        }
+                        permit.commit(); // borrowed validated slot, infallible
+                        if !Arc::ptr_eq(&teardown.root_tag, &self.bridge.tag)
+                            || teardown.extraction_incarnation != extraction_incarnation
+                        {
+                            teardown.incomplete = true;
+                            return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                        }
+                        if !teardown.dispose(slots) {
+                            return (hex_stream::MediaCleanupPhase::FailedIncomplete, None);
+                        }
+                    }
+                }
             }
         }
         if report_only || (final_retirement && self.bridge.native_callback_ended) {
@@ -1001,5 +1212,483 @@ mod terminal_disposal_negative_control {
         root.tick(true);
         // Only headless fixture cleanup; this does not establish safe production
         // Retirement/lease unwind or native device reopen.
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod claimed_disposal_tests {
+    use super::*;
+    use crate::publication_claims::PublicationAnchors;
+    use hex_engine::storage_report::{ClaimReservation, incomplete_owned_pair_for_test};
+    use std::{
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering::Relaxed},
+        },
+        time::Duration,
+    };
+
+    fn prepared() -> hex_engine::OwnedPreparedRevision {
+        hex_engine::PreparedRevision::prepare(
+            &hex_project::Project::new(48_000).unwrap(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap()
+        .into_owned_shared()
+    }
+    fn setup() -> (
+        Control,
+        Callback,
+        NativeStreamRoot,
+        hex_stream::StreamControl,
+        hex_stream::StreamCallbackPages,
+    ) {
+        let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 91, 4).unwrap();
+        let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+        root.lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .reserve_claim_storage_on_control(ClaimReservation {
+                items: 8,
+                anchors: 32,
+                max_prepared_data_bytes: usize::MAX,
+                max_construction_data_bytes: usize::MAX,
+                other_retained_bytes: 0,
+                other_construction_bytes: 0,
+            })
+            .unwrap();
+        let mut runtime =
+            hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
+                .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        let (stream, pages) = runtime.split().ok().unwrap();
+        (control, callback, root, stream, pages)
+    }
+    fn returned(
+        root: &NativeStreamRoot,
+        stream: &hex_stream::StreamControl,
+        revision: hex_engine::OwnedPreparedRevision,
+    ) -> ClaimedGraphReturn {
+        let verifier_root = revision.clone_on_control();
+        let (owner, anchors) = incomplete_owned_pair_for_test(revision).ok().unwrap();
+        assert!(owner.is_incomplete_fixture());
+        let verified = hex_stream::VerifiedOwnedStreamRevision::new(
+            verifier_root,
+            stream.catalog_lease().unwrap(),
+        )
+        .unwrap();
+        let a = root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .claim_union
+            .as_mut()
+            .unwrap()
+            .install_incomplete_pair_for_test(PublicationAnchors {
+                claims: anchors,
+                verified,
+            });
+        ClaimedGraphReturn {
+            owner,
+            association: a,
+            stream_source: None,
+            cancellation: Some(Arc::new(FreshRuntimeCancellation {
+                revision: 901,
+                decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
+            })),
+        }
+    }
+    fn drain_fixture(root: &NativeStreamRoot) {
+        loop {
+            let popped = root
+                .lock()
+                .bridge
+                .as_mut()
+                .and_then(|b| b.native_retired.as_mut())
+                .and_then(|q| q.pop().ok());
+            let Some(owner) = popped else { break };
+            drop(owner); // explicit fixture cleanup, outside ordinary mutex
+        }
+    }
+    #[test]
+    fn actual_box_queue_disposal_proof_stays_incomplete_and_consumes_only_once() {
+        let (control, mut callback, root, stream, pages) = setup();
+        let mut returned = returned(&root, &stream, prepared());
+        let identity = returned.owner.identity();
+        let cancellation = Arc::clone(returned.cancellation.as_ref().unwrap());
+        let cancellation_count = Arc::strong_count(&cancellation);
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let probe = Arc::clone(&drops);
+        let weak = Arc::downgrade(&root.inner);
+        returned.owner.observe_disposal_for_test(move |address| {
+            let root = weak.upgrade().unwrap();
+            assert!(root.ordinary.try_lock().is_ok());
+            assert!(root.cleanup.try_lock().is_err()); // borrowed persistent custodian
+            probe
+                .lock()
+                .unwrap()
+                .push((address, std::thread::current().id()));
+        });
+        callback.return_owner(returned.into());
+        assert!(callback.held_retirement.is_none());
+        assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        let control_thread = std::thread::current().id();
+        assert_eq!(drops.lock().unwrap().len(), 1);
+        assert_eq!(drops.lock().unwrap()[0].1, control_thread);
+        {
+            let mut custody = root.inner.cleanup.lock().unwrap();
+            let teardown = custody.graph_teardown.as_mut().unwrap();
+            assert!(teardown.complete);
+            assert!(!teardown.incomplete);
+            assert!(Arc::ptr_eq(
+                teardown.cancellation.as_ref().unwrap(),
+                &cancellation
+            ));
+            assert_eq!(Arc::strong_count(&cancellation), cancellation_count);
+            assert_eq!(teardown.owner.as_ref().unwrap().identity(), identity);
+            assert!(matches!(
+                teardown.owner.as_mut().unwrap().dispose_on_control(),
+                Err(hex_engine::storage_report::ControlTeardownError::Consumed)
+            ));
+            let a = teardown.association.as_ref().unwrap();
+            let state = root.lock();
+            let slots = state.bridge.as_ref().unwrap().claim_union.as_ref().unwrap();
+            assert_eq!(
+                slots.disposal_fixture_snapshot(a),
+                (true, true, false, true)
+            );
+        }
+        root.tick(false);
+        assert_eq!(drops.lock().unwrap().len(), 1);
+        let refusal = stream.shutdown(pages).err().unwrap();
+        assert!(matches!(refusal, hex_stream::ShutdownError::Busy(_)));
+        let (stream, pages) = refusal.into_parts().unwrap(); // anchors still own actual lease
+        drop(callback);
+        drop(control);
+        drop(root);
+        let report = stream.shutdown(pages).unwrap();
+        assert_eq!(report.page_buffers, 4);
+        assert!(report.worker_joined && report.accounting_complete);
+    }
+    #[test]
+    fn actual_box_destructor_panic_retains_anchors_payload_and_never_retries() {
+        let (control, mut callback, root, stream, pages) = setup();
+        let mut returned = returned(&root, &stream, prepared());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&drops);
+        let weak = Arc::downgrade(&root.inner);
+        returned.owner.observe_disposal_for_test(move |_| {
+            assert!(weak.upgrade().unwrap().ordinary.try_lock().is_ok());
+            observed.fetch_add(1, Relaxed);
+            panic!("actual sealed-owner disposal probe");
+        });
+        callback.return_owner(returned.into());
+        assert_eq!(
+            root.tick(false),
+            hex_stream::MediaCleanupPhase::FailedIncomplete
+        );
+        assert_eq!(drops.load(Relaxed), 1);
+        {
+            let mut custody = root.inner.cleanup.lock().unwrap();
+            let CleanupCustody {
+                graph_teardown,
+                capsule,
+                ..
+            } = &mut *custody;
+            let teardown = graph_teardown.as_mut().unwrap();
+            assert!(teardown.incomplete);
+            assert!(matches!(
+                teardown.owner.as_mut().unwrap().dispose_on_control(),
+                Err(hex_engine::storage_report::ControlTeardownError::Incomplete)
+            ));
+            let a = teardown.association.as_ref().unwrap();
+            let capsule = capsule.as_ref().unwrap();
+            assert_eq!(
+                capsule
+                    .bridge
+                    .claim_union
+                    .as_ref()
+                    .unwrap()
+                    .disposal_fixture_snapshot(a),
+                (false, true, false, false)
+            );
+        }
+        assert_eq!(
+            root.tick(true),
+            hex_stream::MediaCleanupPhase::FailedIncomplete
+        );
+        assert_eq!(drops.load(Relaxed), 1);
+        drop(callback);
+        drop(control);
+        drop(root);
+        let report = stream.shutdown(pages).unwrap(); // fixture disposal, not production recovery
+        assert_eq!(report.page_buffers, 4);
+        assert!(report.worker_joined && report.accounting_complete);
+    }
+    #[test]
+    fn twin_runtime_mismatch_never_pops_actual_owner_and_pressure_preserves_held_return() {
+        let (control, mut callback, root, stream, pages) = setup();
+        let revision = prepared();
+        let twin = revision.clone_on_control();
+        let mut wrong = returned(&root, &stream, revision);
+        let (other_owner, other_anchors) = incomplete_owned_pair_for_test(twin).ok().unwrap();
+        assert_ne!(wrong.owner.identity(), other_owner.identity());
+        let original = std::mem::replace(&mut wrong.owner, other_owner);
+        let identity = wrong.owner.identity();
+        callback.return_owner(wrong.into());
+        assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        assert!(root.inner.cleanup.lock().unwrap().graph_teardown.is_none());
+        {
+            let state = root.lock();
+            let q = state
+                .bridge
+                .as_ref()
+                .unwrap()
+                .native_retired
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(q.peek(), Ok(GraphReturn::Claimed(r)) if r.owner.identity() == identity)
+            );
+        }
+        drain_fixture(&root);
+        drop(original);
+        drop(other_anchors);
+        // Three actual sealed owners through the existing capacity-two ring and
+        // held return. No synthetic receipt or increased return/domain capacity.
+        for _ in 0..3 {
+            let r = returned(&root, &stream, prepared());
+            let measure = allocation_counter::measure(|| callback.return_owner(r.into()));
+            assert_eq!(
+                (
+                    measure.count_total,
+                    measure.bytes_total,
+                    measure.count_current,
+                    measure.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        let positive = allocation_counter::measure(|| {
+            std::hint::black_box(Vec::<u8>::with_capacity(4096));
+        });
+        assert!(positive.count_total > 0 && positive.bytes_total >= 4096);
+        let held = match callback.held_retirement.as_ref().unwrap() {
+            GraphReturn::Claimed(r) => r.owner.identity(),
+            _ => panic!("typed held return"),
+        };
+        root.tick(false); // first owner occupies the single persistent capsule
+        callback.begin_block(); // return held owner into the newly available cell
+        assert!(callback.held_retirement.is_none());
+        root.tick(false); // occupied capsule: no next claimed pop
+        {
+            let state = root.lock();
+            let q = state
+                .bridge
+                .as_ref()
+                .unwrap()
+                .native_retired
+                .as_ref()
+                .unwrap();
+            assert_eq!(q.slots(), 2);
+        }
+        // Actual held owner survives; inspect after moving queue entries outside lock.
+        let first = root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .native_retired
+            .as_mut()
+            .unwrap()
+            .pop()
+            .unwrap();
+        let second = root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .native_retired
+            .as_mut()
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(matches!(&second, GraphReturn::Claimed(r) if r.owner.identity() == held));
+        drop(first);
+        drop(second);
+        assert!(
+            root.lock()
+                .bridge
+                .as_ref()
+                .unwrap()
+                .claim_union
+                .as_ref()
+                .unwrap()
+                .phase()
+                != hex_stream::MediaCleanupPhase::Complete
+        );
+        // No completed role or graph release was synthesized by fixture acceptance.
+        assert_ne!(root.tick(true), hex_stream::MediaCleanupPhase::Complete);
+        drop(callback);
+        drop(control);
+        drop(root);
+        stream.shutdown(pages).unwrap();
+    }
+    #[test]
+    fn actual_disposal_proof_cannot_cross_roots_or_substitute_for_returned_custody() {
+        let (control, callback, root, stream, pages) = setup();
+        let (other_control, other_callback, other_root, other_stream, other_pages) = setup();
+        let foreign = returned(&other_root, &other_stream, prepared());
+        let target = returned(&root, &stream, prepared());
+        let foreign_identity = foreign.owner.identity();
+        let mut capsule = foreign.owner.into_control_teardown();
+        let proof = capsule.dispose_on_control().unwrap();
+        assert!(proof.is_incomplete_fixture());
+        let (error, proof) = root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .claim_union
+            .as_mut()
+            .unwrap()
+            .disposed(&foreign.association, proof)
+            .err()
+            .unwrap();
+        assert_eq!(error, crate::publication_claims::ClaimSlotError::Stale);
+        assert_eq!(proof.identity(), foreign_identity);
+        let (error, proof) = other_root
+            .lock()
+            .bridge
+            .as_mut()
+            .unwrap()
+            .claim_union
+            .as_mut()
+            .unwrap()
+            .disposed(&foreign.association, proof)
+            .err()
+            .unwrap();
+        assert_eq!(error, crate::publication_claims::ClaimSlotError::Busy);
+        assert_eq!(proof.identity(), foreign_identity); // original fact recovered
+        assert_eq!(
+            root.lock()
+                .bridge
+                .as_ref()
+                .unwrap()
+                .claim_union
+                .as_ref()
+                .unwrap()
+                .disposal_fixture_snapshot(&target.association),
+            (false, true, false, false)
+        );
+        assert_eq!(
+            other_root
+                .lock()
+                .bridge
+                .as_ref()
+                .unwrap()
+                .claim_union
+                .as_ref()
+                .unwrap()
+                .disposal_fixture_snapshot(&foreign.association),
+            (false, true, false, false)
+        );
+        let _unused_fact = proof; // scalar fact cannot release any owner/charge
+        drop(capsule);
+        drop(target);
+        drop(callback);
+        drop(control);
+        drop(root);
+        let report = stream.shutdown(pages).unwrap();
+        assert!(report.accounting_complete && report.worker_joined);
+        drop(other_callback);
+        drop(other_control);
+        drop(other_root);
+        let report = other_stream.shutdown(other_pages).unwrap();
+        assert!(report.accounting_complete && report.worker_joined);
+    }
+    #[test]
+    fn actual_native_terminal_stages_held_claim_before_callback_destruction() {
+        let (control, mut callback, root, stream, pages) = setup();
+        let mut r = returned(&root, &stream, prepared());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&drops);
+        let weak = Arc::downgrade(&root.inner);
+        r.owner.observe_disposal_for_test(move |_| {
+            assert!(weak.upgrade().unwrap().ordinary.try_lock().is_ok());
+            count.fetch_add(1, Relaxed);
+        });
+        callback.held_retirement = Some(r.into()); // exact persistent held owner
+        let (data, errors, mut terminals) =
+            crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+        std::thread::spawn(move || {
+            drop(data);
+            drop(errors);
+        })
+        .join()
+        .unwrap();
+        let (mut data, errors) = terminals.try_take().unwrap();
+        let mut permit = root.cleanup_permit().unwrap();
+        permit.stage_held_claimed_on_control(&mut data).unwrap();
+        assert!(data.held_claimed_on_control().is_none());
+        assert_eq!(drops.load(Relaxed), 0);
+        drop(data);
+        drop(errors); // actual boxed callback; graph stays in capsule
+        assert_eq!(drops.load(Relaxed), 0);
+        drop(permit);
+        assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        assert_eq!(drops.load(Relaxed), 1);
+        let custody = root.inner.cleanup.lock().unwrap();
+        assert!(custody.graph_teardown.as_ref().unwrap().complete);
+        drop(custody);
+        drop(control);
+        drop(root);
+        let report = stream.shutdown(pages).unwrap();
+        assert!(report.accounting_complete && report.worker_joined);
+    }
+    #[test]
+    fn occupied_capsule_refuses_terminal_transfer_without_losing_held_actual_owner() {
+        let (control, mut callback, root, stream, pages) = setup();
+        callback.return_owner(returned(&root, &stream, prepared()).into());
+        root.tick(false); // actual first owner disposed; anchors/capsule occupied
+        let r = returned(&root, &stream, prepared());
+        let identity = r.owner.identity();
+        callback.held_retirement = Some(r.into());
+        let (data, errors, mut terminals) =
+            crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+        drop(data);
+        drop(errors);
+        let (mut data, errors) = terminals.try_take().unwrap();
+        let mut permit = root.cleanup_permit().unwrap();
+        assert_eq!(
+            permit.stage_held_claimed_on_control(&mut data),
+            Err(hex_stream::MediaCleanupPhase::Pending)
+        );
+        assert_eq!(
+            data.held_claimed_on_control().unwrap().0.identity(),
+            identity
+        );
+        assert_eq!(
+            permit.stage_held_claimed_on_control(&mut data),
+            Err(hex_stream::MediaCleanupPhase::Pending)
+        );
+        assert_eq!(
+            data.held_claimed_on_control().unwrap().0.identity(),
+            identity
+        );
+        // Explicit fixture recovery, not production disposal/role completion.
+        let held = data.take_held_claimed_on_control().unwrap();
+        drop(permit);
+        drop(held);
+        drop(data);
+        drop(errors);
+        drop(control);
+        drop(root);
+        let report = stream.shutdown(pages).unwrap();
+        assert!(report.accounting_complete && report.worker_joined);
     }
 }

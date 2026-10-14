@@ -54,6 +54,8 @@ struct Slot {
     catalog_reservation: Option<hex_stream::CatalogCustodyReservation>,
     returned: Option<ClaimedPlaybackOwner>,
     facts: Facts,
+    disposal: Disposal,
+    disposal_proof: Option<hex_engine::storage_report::RuntimeDisposed>,
     #[cfg(test)]
     probe: Option<Box<Probe>>,
 }
@@ -67,9 +69,28 @@ impl Slot {
             catalog_reservation: None,
             returned: None,
             facts: Facts::default(),
+            disposal: Disposal::None,
+            disposal_proof: None,
             #[cfg(test)]
             probe: None,
         }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Disposal {
+    None,
+    Owned,
+    Complete,
+    Incomplete,
+}
+/// Borrowed actual slot destination, validated before the queue owner moves.
+pub(crate) struct ReturnedDisposalPermit<'a> {
+    slot: &'a mut Slot,
+}
+impl ReturnedDisposalPermit<'_> {
+    pub(crate) fn commit(self) {
+        self.slot.facts.custody_returned = true;
+        self.slot.disposal = Disposal::Owned;
     }
 }
 #[derive(Default)]
@@ -190,6 +211,35 @@ impl ClaimUnionSlots {
     pub(crate) fn observe_drop(&mut self, observer: Box<dyn FnOnce() + Send>) {
         self.drop_observer = Some(observer);
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn install_incomplete_pair_for_test(
+        &mut self,
+        anchors: PublicationAnchors,
+    ) -> ClaimAssociation {
+        assert!(anchors.claims.is_incomplete_fixture());
+        assert!(anchors.claims.report().graph_data_bytes.is_none());
+        let a = self.reserve_storage().unwrap();
+        let s = &mut self.slots[a.slot];
+        s.identity = Some(anchors.claims.identity());
+        s.anchors = Some(anchors);
+        s.phase = Phase::Accepted; // protocol fixture ONLY, not report admission
+        a
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn disposal_fixture_snapshot(
+        &self,
+        a: &ClaimAssociation,
+    ) -> (bool, bool, bool, bool) {
+        let s = self.slot(a).unwrap();
+        (
+            s.disposal == Disposal::Complete,
+            s.anchors.is_some(),
+            s.facts.ready(),
+            s.disposal_proof
+                .as_ref()
+                .is_some_and(|p| p.is_incomplete_fixture()),
+        )
+    }
     pub(crate) fn report(&self) -> ClaimUnionCapacityReport {
         self.report
     }
@@ -292,6 +342,9 @@ impl ClaimUnionSlots {
     // Conservative complete-scope refusal remains in force. Scalar scratch is
     // preallocated; no borrowed addresses survive a preflight or root mutation.
     fn preflight(&mut self, input: &PublicationClaims) -> Result<(), ClaimSlotError> {
+        if input.claims.is_incomplete_fixture() {
+            return Err(ClaimSlotError::Incomplete);
+        }
         self.records.clear();
         let mut prepared = self
             .report
@@ -464,6 +517,62 @@ impl ClaimUnionSlots {
         }
         s.phase = Phase::Accepted;
         Ok(())
+    }
+    pub(crate) fn preflight_returned_disposal<'a>(
+        &'a mut self,
+        a: &ClaimAssociation,
+        owner: &ClaimedPlaybackOwner,
+    ) -> Result<ReturnedDisposalPermit<'a>, ClaimSlotError> {
+        let s = self.slot_mut(a)?;
+        if s.phase != Phase::Accepted
+            || s.disposal != Disposal::None
+            || s.returned.is_some()
+            || s.facts.custody_returned
+        {
+            return Err(ClaimSlotError::Busy);
+        }
+        if s.identity != Some(owner.identity())
+            || s.anchors
+                .as_ref()
+                .is_none_or(|anchors| !anchors.matches_owner(owner))
+        {
+            return Err(ClaimSlotError::PairMismatch);
+        }
+        Ok(ReturnedDisposalPermit { slot: s })
+    }
+    pub(crate) fn disposed(
+        &mut self,
+        a: &ClaimAssociation,
+        proof: hex_engine::storage_report::RuntimeDisposed,
+    ) -> Result<(), (ClaimSlotError, hex_engine::storage_report::RuntimeDisposed)> {
+        let s = match self.slot_mut(a) {
+            Ok(s) => s,
+            Err(e) => return Err((e, proof)),
+        };
+        if s.phase != Phase::Accepted
+            || s.disposal != Disposal::Owned
+            || !s.facts.custody_returned
+            || s.disposal_proof.is_some()
+        {
+            return Err((ClaimSlotError::Busy, proof));
+        }
+        if s.identity != Some(proof.identity())
+            || s.anchors
+                .as_ref()
+                .is_none_or(|a| a.claims.is_incomplete_fixture() != proof.is_incomplete_fixture())
+        {
+            return Err((ClaimSlotError::PairMismatch, proof));
+        }
+        s.disposal_proof = Some(proof);
+        s.disposal = Disposal::Complete;
+        // No role/catalog/quiescence bit, charge or occupied slot is released.
+        Ok(())
+    }
+    pub(crate) fn disposal_incomplete(&mut self, a: &ClaimAssociation) {
+        if let Ok(s) = self.slot_mut(a) {
+            s.disposal = Disposal::Incomplete;
+            s.facts.incomplete = true;
+        }
     }
     pub(crate) fn returned(
         &mut self,

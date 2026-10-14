@@ -4,9 +4,13 @@
 use std::{any::Any, fmt, sync::Arc};
 mod claims;
 mod graph;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use claims::incomplete_owned_pair_for_test;
 pub use claims::{
     AnchoredPlaybackClaims, ClaimCapacityReport, ClaimError, ClaimIdentity, ClaimPairRefusal,
-    ClaimRefusal, ClaimReservation, ClaimedPlaybackOwner, PlaybackClaims,
+    ClaimRefusal, ClaimReservation, ClaimedPlaybackOwner, ControlPlaybackTeardown,
+    ControlTeardownError, PlaybackClaims, RuntimeDisposed,
 };
 #[cfg(test)]
 pub(crate) mod owned_tests;

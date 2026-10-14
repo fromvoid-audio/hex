@@ -21,7 +21,9 @@ use std::sync::{
 use std::time::Instant;
 #[path = "prepared_streaming.rs"]
 mod streaming;
-pub(crate) use streaming::{NativeStreamRoot, channel_with_streaming_and_spectrum};
+pub(crate) use streaming::{
+    NativeCleanupPermit, NativeStreamRoot, channel_with_streaming_and_spectrum,
+};
 pub use streaming::{
     StreamBridgeControl, StreamPublicationRequest, StreamPublicationSource, StreamPublishError,
     StreamingContext, channel_with_streaming,
@@ -268,15 +270,29 @@ struct RetiredPublication {
     _playback: hex_engine::playback::RetiredPlayback,
 }
 
+// Private owning return envelope: no upgrade from legacy raw publications.
+pub(crate) struct ClaimedGraphReturn {
+    owner: hex_engine::storage_report::ClaimedPlaybackOwner,
+    association: crate::publication_claims::ClaimAssociation,
+    stream_source: Option<streaming::StreamBinding>,
+    cancellation: Option<Arc<FreshRuntimeCancellation>>,
+}
+impl From<ClaimedGraphReturn> for GraphReturn {
+    fn from(value: ClaimedGraphReturn) -> Self {
+        Self::Claimed(value)
+    }
+}
 enum GraphReturn {
     Live(Publication),
     Retired(RetiredPublication),
+    Claimed(ClaimedGraphReturn),
 }
 impl GraphReturn {
     fn stream_source_mut(&mut self) -> Option<&mut streaming::StreamBinding> {
         match self {
             Self::Live(publication) => publication.stream_source.as_mut(),
             Self::Retired(publication) => publication.stream_source.as_mut(),
+            Self::Claimed(publication) => publication.stream_source.as_mut(),
         }
     }
 }
@@ -1253,6 +1269,30 @@ impl Control {
 }
 
 impl Callback {
+    pub(crate) fn held_claimed_on_control(
+        &self,
+    ) -> Option<(
+        &hex_engine::storage_report::ClaimedPlaybackOwner,
+        &crate::publication_claims::ClaimAssociation,
+        bool,
+    )> {
+        match self.held_retirement.as_ref()? {
+            GraphReturn::Claimed(r) => Some((&r.owner, &r.association, r.stream_source.is_some())),
+            _ => None,
+        }
+    }
+    pub(crate) fn take_held_claimed_on_control(&mut self) -> Option<ClaimedGraphReturn> {
+        if !matches!(self.held_retirement.as_ref(), Some(GraphReturn::Claimed(_))) {
+            return None;
+        }
+        match self.held_retirement.take() {
+            Some(GraphReturn::Claimed(r)) => Some(r),
+            other => {
+                self.held_retirement = other;
+                None
+            }
+        }
+    }
     pub(crate) fn native_status(&self) -> &Status {
         &self.status
     }

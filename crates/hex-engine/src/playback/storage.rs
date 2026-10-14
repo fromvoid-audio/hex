@@ -12,6 +12,8 @@ impl Playback {
         sink: &mut impl PlaybackStorageVisitor<'a>,
     ) -> Result<PlaybackStorageSummary, StorageReportError> {
         let Self {
+            #[cfg(feature = "instrument-test-support")]
+            incomplete_claim_fixture,
             project,
             prepared_revision,
             session_runtime,
@@ -46,6 +48,14 @@ impl Playback {
                 std::mem::size_of::<RendererRuntime>(),
             )?;
             report.renderer(runtime)?;
+        }
+        #[cfg(feature = "instrument-test-support")]
+        if *incomplete_claim_fixture {
+            report.unknown(
+                StorageOwner::Exclusive,
+                "fixture.incomplete",
+                crate::storage_report::UnknownStorageReason::NestedOwnerContract,
+            )?;
         }
         Ok(report.finish())
     }

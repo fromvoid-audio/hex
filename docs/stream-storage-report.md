@@ -551,3 +551,58 @@ not inherited graph-role retirement or a claim-release receipt. Complete claim
 admission, authoritative disposal/final-transfer proofs, publication wiring,
 preroll and sustained native100-track/mixed-rate/edit/seek/launch/fault acceptance
 remain unfinished. No Unknown, cap or provider declaration is weakened.
+
+## partial sealed returned-runtime disposal
+
+The private GraphReturn::Claimed envelope carries an actual sealed engine owner
+and move-only association, separate from stream/cancellation metadata. Legacy
+Publication and RetiredPlayback are never upgraded. Existing normal/held return
+storage is reused. A sole-consumer peek validates the actual claim-root/slot
+incarnation, exact runtime pair and vacant persistent destination before pop.
+Stream-bound claimed envelopes remain queued/refused until their domain/catalog
+association transfer is proved; this unit accepts no new streamed publisher.
+
+CleanupCustody reserves one inline ReturnedGraphTeardown capsule before native
+construction. It anchors the actual native root tag and checked extraction
+incarnation. The complete envelope enters persistent custody before its owner
+and metadata split without allocation, cloning or destruction. The capsule and
+claim-slot/proof field sizes are included in their existing size/capacity reports.
+The exact original Box is consumed by ControlPlaybackTeardown only on control,
+outside ordinary state locks, through a borrowed unwind catch. Pending precedes
+take; only a normal complete owner destructor return mints RuntimeDisposed.
+Panic retains the first actual payload and an irreversible incomplete tombstone.
+No owner reconstruction, repeated destruction or synthetic role fact.
+
+A claimed held return also moves into this same capsule under the existing idle
+retirement permit BEFORE the native callback Box is destroyed. Occupied custody
+refuses the transfer and retains the native callback/held owner for retry; there
+is no additional return ring or domain exemption. Later control cleanup disposes
+the staged graph outside ordinary locks. The terminal guards/quiescence contract
+and first-native-panic separation are preserved.
+
+Disposal proof ingestion requires accepted returned custody, actual pair/root/
+slot incarnation and a vacant proof destination. It is consumed once. Proof
+alone sets no inherited-role, catalog or quiescence fact and frees no anchors,
+charges or claim slot. Root identity, cached graph/catalog charges and catalog
+reservation remain retained through Busy, missing/stale evidence and panic.
+Physical runtime disposal is not final-transfer/association closure.
+
+The hidden actual-owner fixture and destructor probe exist ONLY under the
+already opt-in instrument-test-support feature (audio allocation-probe selects
+it); ordinary dependency features are unchanged. The fixture consumes actual
+OwnedPreparedRevision and builds real runtime/anchor owners, but its ledger and
+origin remain explicitly incomplete. A private feature-gated Playback marker
+also forces Unknown after raw control recovery, so normal report admission can
+never mistake the fixture for complete. Origin propagates through sealed owners,
+anchors, teardown and proof. Tests use actual Box identities, queue/held custody,
+control-thread/lock observations, destructor failure and no-repeat, stale-root
+proof refusal, retained real catalog leases/Busy shutdown and actual successful
+pool conservation after explicit fixture disposal. Return moves observe zero
+allocation/free with an allocating positive control. No forged admission, role
+or cleanup receipt is supplied by this fixture.
+
+This remains disconnected admission infrastructure, not a whole24/native result.
+No role producer, exhaustive moved-owner/fanout associations, catalog dependency
+release, claimed render/retiring forwarding, production publication enable or
+preroll is implemented. Continuous-edit liveness requires those actual association
+closures; no whole-successor dependency or silence-based early clearing is added.

@@ -430,6 +430,11 @@ impl StreamBridgeControl {
     ) -> Result<[Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; RETIRED], Invalid>
     {
         for _ in 0..RETIRED {
+            // Claimed returns require persistent, exact-pair disposal custody.
+            // Legacy/headless reclamation never upgrades or drops this owner.
+            if matches!(retired.peek(), Ok(GraphReturn::Claimed(_))) {
+                break;
+            }
             let Ok(mut publication) = retired.pop() else {
                 break;
             };
@@ -523,7 +528,7 @@ mod tests;
 
 #[path = "prepared_streaming/native.rs"]
 mod native;
-pub(crate) use native::NativeStreamRoot;
+pub(crate) use native::{NativeCleanupPermit, NativeStreamRoot};
 
 impl StreamBridgeControl {
     /// Control-only opt-in fixed storage reservation, NOT admission/publication.

@@ -1,6 +1,11 @@
 //! Bounded control admission. Not a callback visitor or allocator/RSS budget.
+#[path = "claims_teardown.rs"]
+mod teardown;
 use super::*;
 use crate::playback::Playback;
+#[cfg(feature = "instrument-test-support")]
+pub use teardown::incomplete_owned_pair_for_test;
+pub use teardown::{ControlPlaybackTeardown, ControlTeardownError, RuntimeDisposed};
 
 /// Opt-in caller reservations, not project/track/global-memory policy.
 #[derive(Clone, Copy, Debug)]
@@ -300,8 +305,14 @@ pub struct PlaybackClaims {
     ledger: Ledger,
     report: ClaimCapacityReport,
     identity: ClaimIdentity,
+    fixture_incomplete: bool,
 }
 impl PlaybackClaims {
+    /// Test-origin pairs never confer successful admission, including after disposal.
+    pub fn is_incomplete_fixture(&self) -> bool {
+        self.fixture_incomplete
+    }
+
     pub fn try_prepare_on_control(
         mut playback: Box<Playback>,
         reservation: ClaimReservation,
@@ -319,6 +330,7 @@ impl PlaybackClaims {
                 ledger,
                 report,
                 identity,
+                fixture_incomplete: false,
             }),
             Err(reason) => {
                 report.refusal_carrier_bytes = Some(std::mem::size_of::<ClaimRefusal>());
@@ -463,13 +475,21 @@ impl PlaybackClaims {
             ledger,
             report,
             identity,
+            fixture_incomplete,
         } = self;
         Ok((
-            ClaimedPlaybackOwner { playback, identity },
+            ClaimedPlaybackOwner {
+                playback,
+                identity,
+                fixture_incomplete,
+                #[cfg(feature = "instrument-test-support")]
+                disposal_probe: None,
+            },
             AnchoredPlaybackClaims {
                 ledger,
                 report,
                 identity,
+                fixture_incomplete,
             },
         ))
     }
@@ -519,8 +539,16 @@ pub struct ClaimIdentity(u64);
 pub struct ClaimedPlaybackOwner {
     playback: Box<Playback>,
     identity: ClaimIdentity,
+    fixture_incomplete: bool,
+    #[cfg(feature = "instrument-test-support")]
+    disposal_probe: Option<Box<teardown::DisposalProbe>>,
 }
 impl ClaimedPlaybackOwner {
+    /// Test-origin pairs never confer successful admission, including after disposal.
+    pub fn is_incomplete_fixture(&self) -> bool {
+        self.fixture_incomplete
+    }
+
     pub fn metadata(&self) -> Option<crate::OwnedPreparedRevisionView<'_>> {
         self.playback.owned_metadata()
     }
@@ -537,6 +565,7 @@ pub struct AnchoredPlaybackClaims {
     ledger: Ledger,
     report: ClaimCapacityReport,
     identity: ClaimIdentity,
+    fixture_incomplete: bool,
 }
 pub struct ClaimPairRefusal {
     pub owner: ClaimedPlaybackOwner,
@@ -548,6 +577,11 @@ impl fmt::Debug for ClaimPairRefusal {
     }
 }
 impl AnchoredPlaybackClaims {
+    /// Test-origin pairs never confer successful admission, including after disposal.
+    pub fn is_incomplete_fixture(&self) -> bool {
+        self.fixture_incomplete
+    }
+
     pub fn archived_item_on_control(&self, index: usize) -> Option<StorageItem<'_>> {
         self.ledger.item(index)
     }
@@ -564,7 +598,8 @@ impl AnchoredPlaybackClaims {
         self.ledger.anchors.len()
     }
     pub fn matches_owner(&self, owner: &ClaimedPlaybackOwner) -> bool {
-        self.identity == owner.identity
+        self.fixture_incomplete == owner.fixture_incomplete
+            && self.identity == owner.identity
             && owner.playback.claim_runtime_identity() == Some(self.identity.0)
             && owner.playback.claim_prepared_owner().is_some_and(|root| {
                 self.ledger.anchors.iter().any(|anchor| {
@@ -584,17 +619,24 @@ impl AnchoredPlaybackClaims {
                 anchors: self,
             }));
         }
-        let ClaimedPlaybackOwner { playback, identity } = owner;
+        let ClaimedPlaybackOwner {
+            playback,
+            identity,
+            fixture_incomplete,
+            ..
+        } = owner;
         let Self {
             ledger,
             report,
             identity: _,
+            fixture_incomplete: _,
         } = self;
         Ok(PlaybackClaims {
             playback,
             ledger,
             report,
             identity,
+            fixture_incomplete,
         })
     }
     /// Archived immutable items only. Root containers stay anchored throughout
@@ -841,6 +883,7 @@ mod tests {
             ledger,
             identity,
             report: ClaimCapacityReport::default(),
+            fixture_incomplete: true,
         }
     }
     #[test]

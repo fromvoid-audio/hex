@@ -274,6 +274,8 @@ pub enum PreparedOrigin {
     OwnedMetadata,
 }
 pub struct Playback {
+    #[cfg(feature = "instrument-test-support")]
+    incomplete_claim_fixture: bool,
     project: crate::owned_shared::OwnedShared<Project>,
     prepared_revision: Option<crate::owned_shared::OwnedShared<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
@@ -332,6 +334,10 @@ pub struct BorrowedRetiringHandoffFailure {
 }
 
 impl Playback {
+    #[cfg(feature = "instrument-test-support")]
+    pub(crate) fn mark_incomplete_claim_fixture(&mut self) {
+        self.incomplete_claim_fixture = true;
+    }
     pub(crate) fn claim_runtime_identity(&self) -> Option<u64> {
         self.session_runtime
             .as_ref()
@@ -447,6 +453,8 @@ impl Playback {
             session_runtime: None,
             linear_runtime,
             session_unavailable: None,
+            #[cfg(feature = "instrument-test-support")]
+            incomplete_claim_fixture: false,
             position: 0,
             performance_frame: 0,
             performance_clock_exhausted: false,
@@ -522,6 +530,8 @@ impl Playback {
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
+            #[cfg(feature = "instrument-test-support")]
+            incomplete_claim_fixture: false,
             position,
             performance_frame,
             performance_clock_exhausted: false,
@@ -570,6 +580,8 @@ impl Playback {
             session_runtime,
             linear_runtime,
             session_unavailable,
+            #[cfg(feature = "instrument-test-support")]
+            incomplete_claim_fixture: false,
             position: 0,
             performance_frame: 0,
             performance_clock_exhausted: false,

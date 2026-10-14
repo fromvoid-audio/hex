@@ -660,7 +660,7 @@ fn retire_prepared_output(execution: &mut RetirementExecution) {
     // persistent fields; failure is recorded/latches root before permit release.
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match execution.as_mut() {
-            Some(retirement) => retirement_dispose(retirement),
+            Some(retirement) => retirement_dispose(retirement, permit.as_mut()),
             None => RetirementProgress::FailedIncomplete,
         }));
     let progress = match result {
@@ -734,7 +734,10 @@ fn reconcile_retirement(execution: &mut RetirementExecution) {
     // Pressure retains the existing quarantine AND worker slot. No overwrite,
     // owner drop or repeated destructor; the runner stops popping more messages.
 }
-fn retirement_dispose(retirement: &mut Retirement) -> RetirementProgress {
+fn retirement_dispose(
+    retirement: &mut Retirement,
+    permit: Option<&mut crate::prepared::NativeCleanupPermit<'_>>,
+) -> RetirementProgress {
     if let Some(root) = retirement.media_root.as_ref() {
         root.cancel_all_preparation();
     }
@@ -775,6 +778,20 @@ fn retirement_dispose(retirement: &mut Retirement) -> RetirementProgress {
             disposal.payload_state = DisposalState::Received;
         }
         if disposal.data_state == DisposalState::Received {
+            if let Some(data) = disposal.data.as_mut() {
+                if data.held_claimed_on_control().is_some() {
+                    let Some(permit) = permit else {
+                        return RetirementProgress::FailedIncomplete;
+                    };
+                    match permit.stage_held_claimed_on_control(data) {
+                        Ok(()) => {}
+                        Err(hex_stream::MediaCleanupPhase::Pending) => {
+                            return RetirementProgress::Pending;
+                        }
+                        Err(_) => return RetirementProgress::FailedIncomplete,
+                    }
+                }
+            }
             if disposal.data.is_none() {
                 return RetirementProgress::FailedIncomplete;
             }
