@@ -1,5 +1,7 @@
 // ORIGINAL controlled CLAP offline child; no third-party admission or realtime path.
 #include "offline_host.hpp"
+#include "platform_identity.hpp"
+#include "macos_runtime.hpp"
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/note-ports.h>
 #include <clap/ext/render.h>
@@ -82,15 +84,26 @@ static clap_event_param_value_t value(uint32_t offset,double gain)  {
 }
 #include "delay_attempt.hpp"
 int main(int argc,char** argv)  {
+#if defined(__APPLE__) && defined(__aarch64__)
+  if(argc==2&&!std::strcmp(argv[1],"--runtime-identity")) {
+    try {std::puts(HexMacRuntime::snapshot().c_str());return 0;}catch(const std::exception& e){std::fprintf(stderr,"runtime identity: %s\n",e.what());return 2;}
+  }
+#endif
   rlimit core  {
     0,0
   };
   setrlimit(RLIMIT_CORE,&core);
   try  {
     check(argc==3,"arguments");
+#if defined(__APPLE__) && defined(__aarch64__)
+    const auto runtime_before=HexMacRuntime::snapshot();
+#endif
     uint64_t expected=std::stoull(argv[2]);
     uint8_t header[12];
     io(header,12,false);
+#if defined(__APPLE__) && defined(__aarch64__)
+    check(!std::memcmp(header,"HCOFFQ01",8),"Mac supports trusted gain v1 only; MIDI/delay refused");
+#endif
     if(!std::memcmp(header,"HCOFFQ03",8))return delay_attempt(header,argv,expected);
     const bool midi=!std::memcmp(header,"HCOFFQ02",8);
     check(midi||!std::memcmp(header,"HCOFFQ01",8),"request magic");
@@ -316,7 +329,7 @@ int main(int argc,char** argv)  {
     w.u(midi?2:1,2);
     w.u(request,8);
     w.text("195b42a004144fab0b3cf95e9c067187d15365b7");
-    w.text("linux-x86_64");
+    w.text(HexFixturePlatform::name);
     w.text(expected_id);
     w.u(rate,4);
     w.u(start_frame,8);
@@ -374,7 +387,11 @@ int main(int argc,char** argv)  {
     packet.raw(midi?"HCOFFR02":"HCOFFR01",8);
     packet.u(w.b.size(),4);
     packet.raw(w.b.data(),w.b.size());
+#if defined(__APPLE__) && defined(__aarch64__)
+    auto wrapped=HexMacRuntime::envelope(packet.b,runtime_before);io(wrapped.data(),wrapped.size(),true);
+#else
     io(packet.b.data(),packet.b.size(),true);
+#endif
     return 0;
   }catch(const std::exception& e)  {
     std::fprintf(stderr,"controlled offline refusal: %s\n",e.what());

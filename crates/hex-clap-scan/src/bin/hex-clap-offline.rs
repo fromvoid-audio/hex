@@ -169,10 +169,17 @@ fn main() {
         std::process::exit(2);
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn main() {
+    macos_cli::gain();
+}
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+#[path = "../macos_cli.rs"]
+mod macos_cli;
+#[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
 fn main() {
     eprintln!(
-        "controlled offline fixture supports Linux x86_64 only; native Mac/platform processing unverified"
+        "controlled offline fixture requires linux x86_64 or enrolled original arm64 mac; native mac acceptance pending"
     );
     std::process::exit(2);
 }

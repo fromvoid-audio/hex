@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 #include <set>
+#include "platform_identity.hpp"
+#include "macos_runtime.hpp"
 static constexpr size_t maximum=1024*1024;
 static void check(bool value,const char* error) {
   if(!value)throw std::runtime_error(error);
@@ -79,6 +81,11 @@ static void write_all(const std::vector<uint8_t>& bytes) {
   }
 }
 int main(int argc,char** argv) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  if(argc==2&&!std::strcmp(argv[1],"--runtime-identity")) {
+    try {std::puts(HexMacRuntime::snapshot().c_str());return 0;}catch(const std::exception& e){std::fprintf(stderr,"runtime identity: %s\n",e.what());return 2;}
+  }
+#endif
   if(argc!=3)return 2;
   rlimit core {};
   if(setrlimit(RLIMIT_CORE,&core)!=0)return 2;
@@ -86,6 +93,9 @@ int main(int argc,char** argv) {
     char* end=nullptr;
     auto request=std::strtoull(argv[2],&end,10);
     check(request&&end&&!*end,"request identity");
+#if defined(__APPLE__) && defined(__aarch64__)
+    const auto runtime_before=HexMacRuntime::snapshot();
+#endif
     Module module;
     module.load(argv[1]);
     auto factory=static_cast<const clap_plugin_factory_t*>(module.entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
@@ -96,7 +106,7 @@ int main(int argc,char** argv) {
     w.number(1,2);
     w.number(request,8);
     w.text("195b42a004144fab0b3cf95e9c067187d15365b7",41);
-    w.text("linux-x86_64",32);
+    w.text(HexFixturePlatform::name,32);
     w.number(module.entry->clap_version.major,4);
     w.number(module.entry->clap_version.minor,4);
     w.number(module.entry->clap_version.revision,4);
@@ -131,7 +141,11 @@ int main(int argc,char** argv) {
     packet.raw("HCLSCAN1",8);
     packet.number(w.bytes.size(),4);
     packet.raw(w.bytes.data(),w.bytes.size());
+#if defined(__APPLE__) && defined(__aarch64__)
+    write_all(HexMacRuntime::envelope(packet.bytes,runtime_before));
+#else
     write_all(packet.bytes);
+#endif
     return 0;
   }catch(const std::exception& e) {
     std::fprintf(stderr,"clap probe: %s\n",e.what());

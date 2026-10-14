@@ -15,7 +15,7 @@ fn payload(id: &str, name: &[u8], features: &[&[u8]], copies: u32) -> Vec<u8> {
     number(&mut p, 1, 2);
     number(&mut p, 7, 8);
     text(&mut p, SDK.as_bytes());
-    text(&mut p, b"linux-x86_64");
+    text(&mut p, hex_clap_scan::platform().as_bytes());
     for n in [1, 2, 10, copies] {
         number(&mut p, n as u64, 4);
     }

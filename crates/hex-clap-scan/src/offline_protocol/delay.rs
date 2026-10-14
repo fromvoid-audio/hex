@@ -333,7 +333,7 @@ mod tests {
         let mut w = Writer::default();
         w.u16(3);
         w.u64(req.request);
-        for s in [SDK, "linux-x86_64", DELAY_PLUGIN_ID] {
+        for s in [SDK, crate::platform(), DELAY_PLUGIN_ID] {
             w.blob(s.as_bytes());
         }
         w.u32(48000);

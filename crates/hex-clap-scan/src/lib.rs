@@ -7,6 +7,8 @@ use std::{
     io::Read,
     path::{Component, Path},
 };
+pub mod macho_identity;
+pub mod receipt_macos;
 pub const SDK: &str = "195b42a004144fab0b3cf95e9c067187d15365b7";
 pub const MAX_PACKET: usize = 1024 * 1024;
 pub const MAX_BINARY: u64 = 16 * 1024 * 1024;
@@ -70,6 +72,14 @@ pub fn source_hash() -> String {
             "probe.cpp",
             include_bytes!("../native/probe.cpp").as_slice(),
         ),
+        (
+            "platform_identity.hpp",
+            include_bytes!("../native/platform_identity.hpp").as_slice(),
+        ),
+        (
+            "macos_runtime.hpp",
+            include_bytes!("../native/macos_runtime.hpp").as_slice(),
+        ),
     ] {
         h.update(name);
         h.update([0]);
@@ -113,6 +123,8 @@ fn hex_digest(value: &str) -> bool {
 pub fn platform() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "linux-x86_64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64"
     } else {
         "unsupported"
     }
@@ -125,7 +137,7 @@ impl Receipt {
         Ok(receipt)
     }
     pub fn validate(&self) -> Result<(), String> {
-        if platform() == "unsupported"
+        if platform() != "linux-x86_64"
             || self.version != 1
             || self.scope != "original-controlled-clap-fixtures"
             || self.platform != platform()

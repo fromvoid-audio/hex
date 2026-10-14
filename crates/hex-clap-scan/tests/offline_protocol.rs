@@ -30,7 +30,7 @@ fn packet() -> Vec<u8> {
     let mut p = vec![];
     u(&mut p, 1, 2);
     u(&mut p, 7, 8);
-    for s in [SDK, "linux-x86_64", PLUGIN_ID] {
+    for s in [SDK, hex_clap_scan::platform(), PLUGIN_ID] {
         blob(&mut p, s.as_bytes());
     }
     u(&mut p, 48000, 4);
@@ -215,7 +215,7 @@ fn midi_packet() -> Vec<u8> {
     let mut p = vec![];
     u(&mut p, 2, 2);
     u(&mut p, 7, 8);
-    for text in [SDK, "linux-x86_64", MIDI_PLUGIN_ID] {
+    for text in [SDK, hex_clap_scan::platform(), MIDI_PLUGIN_ID] {
         blob(&mut p, text.as_bytes());
     }
     u(&mut p, 48000, 4);

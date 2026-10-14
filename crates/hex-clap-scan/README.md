@@ -254,3 +254,74 @@ in its pinned closure and source digest, preserving SDK/system notices. Legacy
 version1/2/scanner regressions remain required. Full20 hosting and full28 graph
 latency compensation remain unfinished; macOS/native realtime/editor/reference
 acceptance and packaging/signing are unverified.
+
+## controlled arm64 Mac portability unit (native verification pending)
+
+The Mac entry points admit only descriptor12 and legacy gain11 original modes,
+excluding `descendant` and `process-descendant`. MIDI, delay, foreign/installed
+modules, translated architectures and other profiles are refused before launch.
+Linux schema1/ELF behavior and all three existing profiles remain separate.
+
+The operator builds a new private canonical artifact directory outside source and
+SDK with `native/build_macos.py`. This builder requires actual arm64 Darwin, clean
+committed Hex source, the exact already-fetched MIT CLAP pin, explicit compiler/
+SDK notice files and their audited origins. It builds26 C++17/O2 artifacts with
+Apple clang/warnings-as-errors, audits escaped depfiles against the native, pinned
+CLAP, selected Apple SDK and selected toolchain roots, and retains command logs,
+image inspection, source/compiler/header/notice hashes. Only helpers' non-loading
+`--runtime-identity` modes execute during the build. No fixture module is loaded
+by the builder; no signing, provisioning, sandbox or resource policy is installed.
+Missing closure, runtime UUID or notice evidence refuses the build.
+
+`controlled-darwin.json` is strict schema2. Rust tools are independently enrolled
+at build time with `HEX_CLAP_DARWIN_ROOT`, `HEX_CLAP_DARWIN_RECEIPT_SHA256`, and
+`HEX_CLAP_DARWIN_SOURCE_TREE`. They refuse an unenrolled or different runtime root,
+receipt bytes/source/build audit changes, symlinks, different UID ownership,
+group/other writable root/files, unknown modes, wrong image roles, and non-thin
+arm64 Mach-O. The root/operator build is the trust anchor; neither an arbitrary
+caller hash nor filename authenticates foreign code. Same-UID operator compromise
+is outside this controlled fixture contract. This is not an OS containment policy.
+
+The native Mac envelope contains actual OS release and ordered loaded system
+image LC_UUID identifiers, taken before module load and after worker join,
+destroy/deinit/unload. Runtime identity must match the enrolled helper's baseline
+and remain identical through the attempt. UUIDs are identifiers, not dylib content
+hashes; SDK `.tbd` hashes belong only to the build closure. `shared_cache_uuid` is
+explicitly null: this unit does not invent a cache identity from public APIs.
+Enumeration occurs only in these original, non-concurrent-loader phases. A
+missing identity, extra image or incomplete unload refuses success. Actual dyld
+behavior, availability and native warnings-as-errors remain a Mac acceptance gate.
+
+Mac supervision owns exactly one direct never-fork child. Safe signal registration
+repairs inherited auto-reap; observation with NOWAIT retains PID ownership, actual
+`Child::wait` reaps, and PGID is checked while the PID is reserved before TERM/KILL.
+Deadline/cancel/crash/IPC or cleanup failure discards the whole result. Cleanup
+failure retains the owned lease and drives actual wait; OS-stuck cleanup has no
+promised finite completion. `descendant_policy` explicitly says not applicable to
+audited original never-fork fixtures. No process observation, group emptiness or
+Linux subreaper result proves Mac descendant cleanup. Hostile/descendant-producing
+admission remains closed pending a separately decided OS containment/lifecycle
+boundary. No filesystem, network, memory, CPU, App Sandbox or XPC claim follows.
+
+Mac descriptor invocation is `hex-clap-scan <enrolled-root> <original-name>
+[deadline-ms] [previous-report.json]`. Mac gain invocation is `hex-clap-offline
+<enrolled-root> <original-gain-name> <gain-input.json> [deadline-ms]`. Gain input
+wraps the unchanged version1 request as `{ "request": ..., "state_owner": null }`.
+Continuation uses the returned owned state and `state_owner`, bound to profile,
+platform, module/helper/source hashes, sample rate and exact next frame before
+child launch. Invalid gain/residual/tail/version/clock state refuses. No successful
+PCM/state/owner escapes a failed request; packets are removed from public reports.
+
+On actual Mac, run `cargo test -p hex-clap-scan --test macos_native --locked --
+--ignored --test-threads=1` with the same enrollment variables used for tool build.
+Eight tests cover descriptor inventory/refusals, independent gain PCM/partition/
+state/sleep/tail oracles, late whole-result discard, cancellation, and inherited
+auto-reap followed by actual direct wait. They are explicitly ignored in default
+CI and refuse Linux execution. Linux direct-child canaries exercise shared Unix
+mechanics only; they do not prove Darwin ABI, dyld, native process or Mac behavior.
+
+Full20 still requires third-party containment (actual Linux UID-map refusal is
+retained), broader extension/bus negotiation, production state recovery and
+project/editor integration, realtime ownership/deadlines and #28 routing/latency
+contracts. This source portability unit is not optimized Mac packaging/signing,
+CoreAudio, listening/reference, native interaction, full hosting or release proof.

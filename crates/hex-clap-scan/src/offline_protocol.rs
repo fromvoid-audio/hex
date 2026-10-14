@@ -178,7 +178,7 @@ fn decode_record(
     let tail = r.u32()?;
     // This protocol is explicitly the original zero-latency stereo fixture profile.
     if sdk != SDK
-        || platform != "linux-x86_64"
+        || platform != crate::platform()
         || plugin_id != expected_id
         || sample_rate != request.sample_rate
         || start_frame != request.start_frame
@@ -428,6 +428,14 @@ pub fn source_hash() -> String {
         (
             "delay_fixture.cpp",
             include_bytes!("../native/delay_fixture.cpp").as_slice(),
+        ),
+        (
+            "platform_identity.hpp",
+            include_bytes!("../native/platform_identity.hpp").as_slice(),
+        ),
+        (
+            "macos_runtime.hpp",
+            include_bytes!("../native/macos_runtime.hpp").as_slice(),
         ),
     ] {
         h.update(name);

@@ -11,7 +11,7 @@ DELAY=['delay-0','delay-1','delay-16','delay-31','delay-32','delay-inactive-call
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def source_digest():
  h=hashlib.sha256()
- for name in ['fixture.cpp','probe.cpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
+ for name in ['fixture.cpp','probe.cpp','platform_identity.hpp','macos_runtime.hpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
  return h.hexdigest()
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--sdk',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);a=parser.parse_args()
@@ -65,7 +65,7 @@ def main():
  r={'version':1,'scope':'original-controlled-clap-fixtures','platform':'linux-x86_64','sdk':PIN,'native_source_sha256':source_digest(),'helper_sha256':sha(out/'hex-clap-probe'),'launcher_sha256':sha(out/'launch-ignored'),'modules':modules,'compiler':subprocess.check_output(['c++','--version'],text=True).splitlines()[0],'toolchain_sha256':sha(Path(shutil.which('c++')).resolve()),'runtime_closure':runtime,'runtime_notices':notices,'build_closure':closure,'licenses':{'clap':{'sha256':sha(license_path),'text':license_text}}}
  p=out/'controlled-clap-fixtures.json';p.write_text(json.dumps(r,indent=2)+'\n');
  h=hashlib.sha256()
- for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp','midi_fixture.cpp','delay_attempt.hpp','delay_wire.hpp','delay_fixture.cpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
+ for name in ['offline.cpp','offline_host.hpp','offline_wire.hpp','processing_fixture.cpp','midi_fixture.cpp','delay_attempt.hpp','delay_wire.hpp','delay_fixture.cpp','platform_identity.hpp','macos_runtime.hpp']:h.update(name.encode()+b'\0'+(NATIVE/name).read_bytes()+b'\0')
  offline={'version':1,'scope':'original-controlled-offline-fixtures','scanner_receipt_sha256':sha(p),'source_sha256':h.hexdigest(),'helper_sha256':sha(out/'hex-clap-offline-helper'),'modules':offline_modules}
  (out/'controlled-offline.json').write_text(json.dumps(offline,indent=2)+'\n');(out/'build-commands.json').write_text(json.dumps(commands,indent=2)+'\n');print('Controlled receipt:',p);print('SHA256:',sha(p));print('Artifacts:',len(artifacts),'headers:',len(closure),'runtime libraries:',len(runtime))
 if __name__=='__main__':main()

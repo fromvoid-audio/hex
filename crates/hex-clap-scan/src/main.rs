@@ -161,10 +161,16 @@ fn main() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn main() {
+    macos_cli::scan();
+}
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+mod macos_cli;
+#[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
 fn main() {
     eprintln!(
-        "controlled scanner currently supports Linux x86_64 only; native Mac/platform acceptance unverified"
+        "controlled scanner requires linux x86_64 or enrolled original arm64 mac; native mac acceptance pending"
     );
     std::process::exit(2);
 }
