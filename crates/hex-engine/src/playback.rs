@@ -332,6 +332,15 @@ pub struct BorrowedRetiringHandoffFailure {
 }
 
 impl Playback {
+    pub(crate) fn claim_runtime_identity(&self) -> Option<u64> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.claim_runtime_identity())
+    }
+    pub(crate) fn claim_prepared_owner(&self) -> Option<&Arc<PreparedRevision>> {
+        self.prepared_revision.as_ref().map(|owner| owner.arc())
+    }
+
     /// Opt-in retiring handoff with owners borrowed from persistent callback
     /// storage. A preflight unwind cannot destroy either slot. On success the
     /// predecessor moves directly into the already-vacant opaque retirement

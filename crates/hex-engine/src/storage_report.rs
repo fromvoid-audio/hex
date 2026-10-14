@@ -4,7 +4,10 @@
 use std::{any::Any, fmt, sync::Arc};
 mod claims;
 mod graph;
-pub use claims::{ClaimCapacityReport, ClaimError, ClaimRefusal, ClaimReservation, PlaybackClaims};
+pub use claims::{
+    AnchoredPlaybackClaims, ClaimCapacityReport, ClaimError, ClaimIdentity, ClaimPairRefusal,
+    ClaimRefusal, ClaimReservation, ClaimedPlaybackOwner, PlaybackClaims,
+};
 #[cfg(test)]
 pub(crate) mod owned_tests;
 #[cfg(test)]

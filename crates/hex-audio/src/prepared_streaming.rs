@@ -58,6 +58,9 @@ pub(super) struct StreamBinding {
 pub struct StreamBridgeControl {
     tag: Arc<()>,
     device_epoch: u64,
+    pub(super) claim_union: Option<Box<crate::publication_claims::slots::ClaimUnionSlots>>,
+    pub(super) claim_union_enabled: bool,
+    pub(super) claim_union_closed: bool,
     reaper: hex_stream::MediaDomainReaper,
     terminal: hex_stream::TerminalBatchSender,
     return_failure: Option<hex_stream::MediaReturnFailure>,
@@ -133,6 +136,9 @@ pub(crate) fn channel_with_streaming_and_spectrum(
             reaper,
             terminal,
             return_failure: None,
+            claim_union: None,
+            claim_union_enabled: false,
+            claim_union_closed: false,
             native_retired: None,
             native_reports: [None; RETIRED],
             native_callback_ended: false,
@@ -333,6 +339,14 @@ mod callback;
 
 impl StreamBridgeControl {
     pub fn cleanup_phase(&self) -> hex_stream::MediaCleanupPhase {
+        if self.claim_union_enabled {
+            match self.claim_union.as_ref().map(|slots| slots.phase()) {
+                Some(hex_stream::MediaCleanupPhase::Complete) => {}
+                Some(phase) => return phase,
+                None => return hex_stream::MediaCleanupPhase::Pending,
+            }
+        }
+
         if self.return_failure.is_some()
             || self.native_failed_batch.is_some()
             || self.native_failed_admissions.iter().any(Option::is_some)
@@ -366,6 +380,11 @@ impl StreamBridgeControl {
             self.demand_capacities[1].bytes()?,
             std::mem::size_of::<[AtomicU64; RETIRED]>(),
             root,
+            if self.claim_union_enabled {
+                self.claim_union.as_ref()?.report().bytes
+            } else {
+                0
+            },
         ]
         .into_iter()
         .try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
@@ -505,3 +524,157 @@ mod tests;
 #[path = "prepared_streaming/native.rs"]
 mod native;
 pub(crate) use native::NativeStreamRoot;
+
+impl StreamBridgeControl {
+    /// Control-only opt-in fixed storage reservation, NOT admission/publication.
+    /// Legacy constructors reserve no claim slots. Fatal Box OOM/abort is excluded.
+    pub fn reserve_claim_storage_on_control(
+        &mut self,
+        reservation: hex_engine::storage_report::ClaimReservation,
+    ) -> Result<
+        crate::publication_claims::ClaimUnionCapacityReport,
+        crate::publication_claims::ClaimSlotError,
+    > {
+        if self.claim_union_enabled || self.claim_union_closed {
+            return Err(crate::publication_claims::ClaimSlotError::Busy);
+        }
+        let slots = crate::publication_claims::slots::ClaimUnionSlots::new(reservation)?;
+        let report = slots.report();
+        self.claim_union = Some(Box::new(slots));
+        self.claim_union_enabled = true;
+        Ok(report)
+    }
+    pub fn reserve_claim_placeholder_on_control(
+        &mut self,
+    ) -> Result<
+        crate::publication_claims::ClaimAssociation,
+        crate::publication_claims::ClaimSlotError,
+    > {
+        if self.claim_union_closed {
+            return Err(crate::publication_claims::ClaimSlotError::Busy);
+        }
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .reserve_storage()
+    }
+    pub fn preflight_claim_publication_on_control(
+        &mut self,
+        input: &crate::publication_claims::PublicationClaims,
+    ) -> Result<
+        crate::publication_claims::ClaimAssociation,
+        crate::publication_claims::ClaimSlotError,
+    > {
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .reserve(input)
+    }
+    pub fn rollback_claim_placeholder_on_control(
+        &mut self,
+        token: crate::publication_claims::ClaimAssociation,
+    ) -> Result<
+        (),
+        (
+            crate::publication_claims::ClaimSlotError,
+            crate::publication_claims::ClaimAssociation,
+        ),
+    > {
+        match self.claim_union.as_mut() {
+            Some(slots) => slots.rollback_reserved(token),
+            None => Err((crate::publication_claims::ClaimSlotError::Busy, token)),
+        }
+    }
+    pub fn stage_claim_parts_on_control(
+        &mut self,
+        token: crate::publication_claims::ClaimAssociation,
+        owner: hex_engine::storage_report::ClaimedPlaybackOwner,
+        anchors: crate::publication_claims::PublicationAnchors,
+    ) -> Result<
+        (
+            hex_engine::storage_report::ClaimedPlaybackOwner,
+            crate::publication_claims::ClaimAssociation,
+        ),
+        Box<crate::publication_claims::ClaimStageRefusal>,
+    > {
+        match self.claim_union.as_mut() {
+            Some(slots) => slots.stage(token, owner, anchors),
+            None => Err(Box::new(crate::publication_claims::ClaimStageRefusal {
+                reason: crate::publication_claims::ClaimSlotError::Busy,
+                association: token,
+                owner,
+                anchors,
+            })),
+        }
+    }
+    pub fn note_claim_queue_acceptance_on_control(
+        &mut self,
+        token: &crate::publication_claims::ClaimAssociation,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .accepted(token)
+    }
+    pub fn retain_returned_claim_owner_on_control(
+        &mut self,
+        token: crate::publication_claims::ClaimAssociation,
+        owner: hex_engine::storage_report::ClaimedPlaybackOwner,
+    ) -> Result<
+        crate::publication_claims::ClaimAssociation,
+        Box<crate::publication_claims::ClaimReturnedOwnerRefusal>,
+    > {
+        match self.claim_union.as_mut() {
+            Some(slots) => slots.returned(token, owner),
+            None => Err(Box::new(
+                crate::publication_claims::ClaimReturnedOwnerRefusal {
+                    reason: crate::publication_claims::ClaimSlotError::Busy,
+                    association: token,
+                    owner,
+                },
+            )),
+        }
+    }
+    pub fn observe_claim_receipt_on_control(
+        &mut self,
+        receipt: crate::publication_claims::ClaimReceipt,
+    ) -> Result<
+        (),
+        (
+            crate::publication_claims::ClaimSlotError,
+            crate::publication_claims::ClaimReceipt,
+        ),
+    > {
+        match self.claim_union.as_mut() {
+            Some(slots) => slots.receipt(receipt),
+            None => Err((crate::publication_claims::ClaimSlotError::Busy, receipt)),
+        }
+    }
+    pub fn quarantine_claim_on_control(
+        &mut self,
+        token: &crate::publication_claims::ClaimAssociation,
+        incomplete: bool,
+    ) -> Result<(), crate::publication_claims::ClaimSlotError> {
+        self.claim_union
+            .as_mut()
+            .ok_or(crate::publication_claims::ClaimSlotError::Busy)?
+            .fault(token, incomplete)
+    }
+    /// Owning result must be consumed/dropped after leaving the media-root lock.
+    /// Missing real receipt producers keep reclamation refused in this unit.
+    pub fn take_claim_reclamation_on_control(
+        &mut self,
+        token: crate::publication_claims::ClaimAssociation,
+    ) -> Result<
+        crate::publication_claims::ClaimReclamation,
+        (
+            crate::publication_claims::ClaimSlotError,
+            crate::publication_claims::ClaimAssociation,
+        ),
+    > {
+        match self.claim_union.as_mut() {
+            Some(slots) => slots.take_ready(token),
+            None => Err((crate::publication_claims::ClaimSlotError::Busy, token)),
+        }
+    }
+}

@@ -367,3 +367,48 @@ and private element size only when entries are actually empty; nonempty
 zero-DSP chains still refuse opaque owner completeness. Existing numeric bank,
 context, runtime, stream and N2 domain policies are unchanged. Root publication,
 retirement receipt wiring, preroll and full native acceptance remain incomplete.
+
+## sealed split and bounded lifecycle storage
+
+The consuming claim split returns `ClaimedPlaybackOwner` and immutable
+`AnchoredPlaybackClaims`. Both have private constructors; the owner exposes no
+raw Box, Deref, mutable Playback borrow or replacement path. Reunion compares the
+existing unique checked Session runtime identity AND actual prepared-root owner.
+Two runtimes sharing a prepared root cannot reattach each other's claim half.
+The original Box allocation survives split/reunion/refusal. Successful splitting
+allocates/clones nothing; owning control refusal carriers use explicit fatal
+OOM/abort exclusions. The maximum inline split metadata is charged before moves.
+Archived item access borrows the actual anchored receipts, not active runtime.
+
+The opt-in audio root reserves fixed slot and scalar-record Vec capacities from
+caller item reservations, reports actual capacities and checked byte arithmetic,
+and retains them in the existing bridge/lifecycle root. No default graph cap or
+global owner registry is added. A private checked process-local root identity
+allocator holds only one AtomicU64; root identity plus checked slot incarnation
+rejects stale/recreated-root associations. Association/receipt constructors are
+private; tokens are move-only scalars and hold no graph/catalog owner.
+
+Fixed storage reservation is NOT admission. Full union/catalog/association
+accounting remains Incomplete and refuses before owners/path moves; current
+Unknown reports are never admitted. In particular, the retained verifier's
+CatalogLease can itself cause Busy shutdown. Before callback wiring, control
+must define actual lease release (while retaining graph charges) and/or proved
+coverage by a surviving same-catalog slot, followed by truthful cleanup.
+Preliminary graph projection is not a complete/deduplicated union admission.
+
+The closed receipt predicate requires returned custody, completion of all five
+inherited-owner families, accounted catalog cleanup and required quiescence;
+incomplete conservation stays retained. ACK, silence, voice completion, Pause,
+Stop, Seek and predecessor Box return do not clear charges. No real callback
+retirement producer is installed here. Protocol-model tests exercise missing,
+duplicate/stale facts and allocation/drop pressure; they do not prove native
+receipt production. Actual transfers, including dormant owners and the
+ValidatedContextTransfer association preflight/commit, remain to be wired.
+
+Lifecycle tick takes the claim manager outside the actual media-root mutex;
+enabled-but-absent is Busy and cannot be cleared by a concurrent tick. Only empty
+or unstaged/no-owner storage may be disposed during close; occupied/incomplete
+slots retain custody. The actual-root test observes control-thread disposal
+outside that mutex. The existing native publisher still refuses owned origin;
+sealed render/handoff delegation is the next engine seam, not public raw mutable
+access. No typed production publication, preroll or whole24/native claim exists.

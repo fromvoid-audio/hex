@@ -137,6 +137,7 @@ impl NativeStreamRoot {
     pub(crate) fn cancel_all_preparation(&self) {
         let mut root = self.lock();
         root.closing = true;
+        root.bridge.claim_union_closed = true;
         if let Some(slot) = root.preparation.as_mut() {
             slot.close();
         }
@@ -226,11 +227,29 @@ impl NativeStreamRoot {
     pub(crate) fn tick(&self, final_retirement: bool) -> hex_stream::MediaCleanupPhase {
         // Request join/graph/Status destruction must occur OUTSIDE root mutex.
         // None is a busy marker while lifecycle exclusively owns the fixed slot.
-        let (slot, closing) = {
+        let (slot, mut claim_union, closing) = {
             let mut root = self.lock();
             root.closing |= final_retirement;
-            (root.preparation.take(), root.closing)
+            root.bridge.claim_union_closed |= final_retirement;
+            (
+                root.preparation.take(),
+                root.bridge.claim_union.take(),
+                root.closing,
+            )
         };
+        // Claim storage/owners are handled outside the root mutex. An enabled
+        // None remains a busy marker; a concurrent tick must not clear/overwrite it.
+        if let Some(mut slots) = claim_union.take() {
+            if closing {
+                slots.close_unstaged();
+            }
+            if final_retirement && slots.phase() == hex_stream::MediaCleanupPhase::Complete {
+                drop(slots); // empty fixed storage, control outside mutex
+                self.lock().bridge.claim_union_enabled = false;
+            } else {
+                self.lock().bridge.claim_union = Some(slots);
+            }
+        }
         let preparation_phase = if let Some(mut slot) = slot {
             slot.tick(closing);
             let phase = slot.phase();
@@ -398,5 +417,81 @@ mod preparation_race_tests {
         drop(callback);
         root.tick(true);
         assert_eq!(root.phase(), Some(hex_stream::MediaCleanupPhase::Complete));
+    }
+}
+
+#[cfg(test)]
+mod claim_storage_tests {
+    use super::*;
+    #[test]
+    fn actual_root_busy_take_and_control_disposal_outside_media_mutex() {
+        use crate::publication_claims::ClaimSlotError;
+        use std::sync::{Arc, Mutex};
+        let (mut control, mut callback, mut bridge) = channel_with_streaming(48_000, 9, 4).unwrap();
+        let reservation = hex_engine::storage_report::ClaimReservation {
+            items: 2,
+            anchors: 4,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            other_retained_bytes: 0,
+            other_construction_bytes: 0,
+        };
+        let report = bridge
+            .reserve_claim_storage_on_control(reservation)
+            .unwrap();
+        assert!(report.slots >= 2);
+        let before = bridge.input_bridge_storage_bytes().unwrap();
+        assert!(before >= report.bytes);
+        let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+        let observed = Arc::new(Mutex::new(None));
+        let weak = Arc::downgrade(&root.inner);
+        let result = Arc::clone(&observed);
+        root.lock()
+            .bridge
+            .claim_union
+            .as_mut()
+            .unwrap()
+            .observe_drop(Box::new(move || {
+                let actual = weak.upgrade().unwrap();
+                *result.lock().unwrap() =
+                    Some((std::thread::current().id(), actual.try_lock().is_ok()));
+            }));
+        let token = root
+            .lock()
+            .bridge
+            .reserve_claim_placeholder_on_control()
+            .unwrap();
+        assert!(
+            root.phase()
+                .is_some_and(|p| p == hex_stream::MediaCleanupPhase::Pending)
+        );
+        let held = root.lock().bridge.claim_union.take().unwrap();
+        let _ = root.tick(true); // concurrent-style busy marker cannot clear/recreate root
+        assert!(root.lock().bridge.claim_union_enabled);
+        assert!(root.lock().bridge.claim_union.is_none());
+        assert!(observed.lock().unwrap().is_none());
+        root.lock().bridge.claim_union = Some(held);
+        let _ = root.tick(true); // only unstaged/no-owner reservation may be cancelled
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some((std::thread::current().id(), true))
+        );
+        assert!(!root.lock().bridge.claim_union_enabled);
+        assert!(root.lock().bridge.claim_union_closed);
+        assert!(matches!(
+            root.lock()
+                .bridge
+                .reserve_claim_storage_on_control(reservation),
+            Err(ClaimSlotError::Busy)
+        ));
+        assert!(matches!(
+            root.lock()
+                .bridge
+                .rollback_claim_placeholder_on_control(token),
+            Err((ClaimSlotError::Busy, _))
+        ));
+        drop(control);
+        drop(callback);
+        let _ = root.tick(true);
     }
 }

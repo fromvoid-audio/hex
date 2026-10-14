@@ -258,6 +258,32 @@ impl Ledger {
         }
         Ok(bytes)
     }
+    fn item(&self, index: usize) -> Option<StorageItem<'_>> {
+        let item = self.items.get(index)?;
+        let owner = item.anchor.map_or(StorageOwner::Exclusive, |i| {
+            StorageOwner::Shared(self.anchors[i].owner())
+        });
+        let charge = match item.charge {
+            Charge::Data {
+                capacity,
+                element_bytes,
+                bytes,
+            } => StorageCharge::MeasuredData {
+                capacity,
+                element_bytes,
+                bytes,
+            },
+            Charge::Provider(bytes) => StorageCharge::ProviderDeclared { bytes },
+            Charge::Overhead { bytes, assumption } => {
+                StorageCharge::OwnerOverheadDeclared { bytes, assumption }
+            }
+        };
+        Some(StorageItem {
+            owner,
+            location: item.location,
+            charge,
+        })
+    }
     fn bytes(&self) -> Result<usize, ClaimError> {
         self.items.iter().try_fold(0_usize, |n, i| {
             n.checked_add(i.charge.bytes()).ok_or(ClaimError::Overflow)
@@ -273,6 +299,7 @@ pub struct PlaybackClaims {
     playback: Box<Playback>,
     ledger: Ledger,
     report: ClaimCapacityReport,
+    identity: ClaimIdentity,
 }
 impl PlaybackClaims {
     pub fn try_prepare_on_control(
@@ -280,12 +307,18 @@ impl PlaybackClaims {
         reservation: ClaimReservation,
     ) -> Result<Self, Box<ClaimRefusal>> {
         let mut report = ClaimCapacityReport::default();
-        let result = Self::prepare(&mut playback, reservation, &mut report);
+        let identity = playback.claim_runtime_identity().map(ClaimIdentity);
+        let result = match identity {
+            Some(identity) => Self::prepare(&mut playback, reservation, &mut report)
+                .map(|ledger| (ledger, identity)),
+            None => Err(ClaimError::UntrackedRoot),
+        };
         match result {
-            Ok(ledger) => Ok(Self {
+            Ok((ledger, identity)) => Ok(Self {
                 playback,
                 ledger,
                 report,
+                identity,
             }),
             Err(reason) => {
                 report.refusal_carrier_bytes = Some(std::mem::size_of::<ClaimRefusal>());
@@ -316,7 +349,11 @@ impl PlaybackClaims {
         let reserved = reserve(&mut ledger.items, reservation.items, 1)
             .and_then(|()| reserve(&mut ledger.anchors, reservation.anchors, 2))
             .and_then(|()| reserve(&mut scratch.items, reservation.items, 3));
-        report.inline_claim_bytes = std::mem::size_of::<Self>();
+        report.inline_claim_bytes = std::mem::size_of::<Self>().max(
+            std::mem::size_of::<ClaimedPlaybackOwner>()
+                .checked_add(std::mem::size_of::<AnchoredPlaybackClaims>())
+                .ok_or(ClaimError::Overflow)?,
+        );
         report.item_capacity = ledger.items.capacity();
         report.anchor_capacity = ledger.anchors.capacity();
         report.scratch_capacity = scratch.items.capacity();
@@ -389,6 +426,53 @@ impl PlaybackClaims {
         }
         Ok(ledger)
     }
+    pub fn archived_item_on_control(&self, index: usize) -> Option<StorageItem<'_>> {
+        self.ledger.item(index)
+    }
+    pub fn item_count(&self) -> usize {
+        self.ledger.items.len()
+    }
+    pub fn identity_on_control(&self) -> ClaimIdentity {
+        self.identity
+    }
+    /// Successful split allocates/clones nothing. Refusal boxes the unchanged
+    /// control owner (fatal OOM/abort excluded); no raw Box escapes. Halves have private
+    /// constructors; only reunion can recover the exact original Box on control.
+    /// ```compile_fail
+    /// fn raw(owner: hex_engine::storage_report::ClaimedPlaybackOwner) {
+    ///     let _ = owner.playback;
+    /// }
+    /// ```
+    pub fn split_on_control(
+        self,
+    ) -> Result<(ClaimedPlaybackOwner, AnchoredPlaybackClaims), Box<Self>> {
+        if self.playback.claim_runtime_identity() != Some(self.identity.0)
+            || !self.playback.claim_prepared_owner().is_some_and(|root| {
+                self.ledger
+                    .anchors
+                    .iter()
+                    .any(|a| matches!(a, Anchor::Revision(actual) if Arc::ptr_eq(actual, root)))
+            })
+        {
+            let mut returned = self;
+            returned.report.refusal_carrier_bytes = Some(std::mem::size_of::<Self>());
+            return Err(Box::new(returned));
+        }
+        let Self {
+            playback,
+            ledger,
+            report,
+            identity,
+        } = self;
+        Ok((
+            ClaimedPlaybackOwner { playback, identity },
+            AnchoredPlaybackClaims {
+                ledger,
+                report,
+                identity,
+            },
+        ))
+    }
     pub fn report(&self) -> ClaimCapacityReport {
         self.report
     }
@@ -422,6 +506,129 @@ impl PlaybackClaims {
     /// ledger can release final owners. No publication authority is conferred.
     pub fn into_playback_on_control(self) -> Box<Playback> {
         self.playback
+    }
+}
+
+/// Non-owning identity, minted only from the existing checked Session runtime
+/// counter. Equality is bookkeeping, never an admission/retirement receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaimIdentity(u64);
+/// Sealed exact original Box. No Clone, Deref, mutable/raw accessor, raw Box
+/// extraction or public constructor permits replacement/reboxing/reattachment.
+/// Native rendering delegation remains a separate, currently refused boundary.
+pub struct ClaimedPlaybackOwner {
+    playback: Box<Playback>,
+    identity: ClaimIdentity,
+}
+impl ClaimedPlaybackOwner {
+    pub fn metadata(&self) -> Option<crate::OwnedPreparedRevisionView<'_>> {
+        self.playback.owned_metadata()
+    }
+    pub fn identity(&self) -> ClaimIdentity {
+        self.identity
+    }
+    pub fn same_prepared_owner(&self, other: &crate::OwnedPreparedRevision) -> bool {
+        self.playback.same_prepared_owner(other)
+    }
+}
+/// Immutable archived claims. May be retained on control while the sealed owner
+/// moves. No mutable/runtime traversal or public raw Arc is exposed.
+pub struct AnchoredPlaybackClaims {
+    ledger: Ledger,
+    report: ClaimCapacityReport,
+    identity: ClaimIdentity,
+}
+pub struct ClaimPairRefusal {
+    pub owner: ClaimedPlaybackOwner,
+    pub anchors: AnchoredPlaybackClaims,
+}
+impl fmt::Debug for ClaimPairRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClaimPairRefusal(original opaque owners retained)")
+    }
+}
+impl AnchoredPlaybackClaims {
+    pub fn archived_item_on_control(&self, index: usize) -> Option<StorageItem<'_>> {
+        self.ledger.item(index)
+    }
+    pub fn identity(&self) -> ClaimIdentity {
+        self.identity
+    }
+    pub fn report(&self) -> ClaimCapacityReport {
+        self.report
+    }
+    pub fn item_count(&self) -> usize {
+        self.ledger.items.len()
+    }
+    pub fn anchor_count(&self) -> usize {
+        self.ledger.anchors.len()
+    }
+    pub fn matches_owner(&self, owner: &ClaimedPlaybackOwner) -> bool {
+        self.identity == owner.identity
+            && owner.playback.claim_runtime_identity() == Some(self.identity.0)
+            && owner.playback.claim_prepared_owner().is_some_and(|root| {
+                self.ledger.anchors.iter().any(|anchor| {
+                    matches!(anchor, Anchor::Revision(actual) if Arc::ptr_eq(actual, root))
+                })
+            })
+    }
+    /// Unpublished control recovery only. An accepted owner remains under native
+    /// custody; no queued cancellation/reclamation authority is implied here.
+    pub fn reunite_on_control(
+        self,
+        owner: ClaimedPlaybackOwner,
+    ) -> Result<PlaybackClaims, Box<ClaimPairRefusal>> {
+        if !self.matches_owner(&owner) {
+            return Err(Box::new(ClaimPairRefusal {
+                owner,
+                anchors: self,
+            }));
+        }
+        let ClaimedPlaybackOwner { playback, identity } = owner;
+        let Self {
+            ledger,
+            report,
+            identity: _,
+        } = self;
+        Ok(PlaybackClaims {
+            playback,
+            ledger,
+            report,
+            identity,
+        })
+    }
+    /// Archived immutable items only. Root containers stay anchored throughout
+    /// the borrow; identities cannot outlive them. Control scratch is caller-owned.
+    pub fn visit_on_control<'a>(
+        &'a self,
+        sink: &mut impl PlaybackStorageVisitor<'a>,
+    ) -> Result<(), StorageReportError> {
+        for item in &self.ledger.items {
+            let owner = item.anchor.map_or(StorageOwner::Exclusive, |i| {
+                StorageOwner::Shared(self.ledger.anchors[i].owner())
+            });
+            let charge = match item.charge {
+                Charge::Data {
+                    capacity,
+                    element_bytes,
+                    bytes,
+                } => StorageCharge::MeasuredData {
+                    capacity,
+                    element_bytes,
+                    bytes,
+                },
+                Charge::Provider(bytes) => StorageCharge::ProviderDeclared { bytes },
+                Charge::Overhead { bytes, assumption } => {
+                    StorageCharge::OwnerOverheadDeclared { bytes, assumption }
+                }
+            };
+            sink.visit(StorageItem {
+                owner,
+                location: item.location,
+                charge,
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -619,6 +826,71 @@ mod tests {
         );
         assert!(ledger.anchors.is_empty());
         assert_eq!(Arc::strong_count(&root), count);
+    }
+    // Pairing primitive fixture only: normal report admission remains Unknown.
+    fn sealed_fixture(playback: Box<Playback>) -> PlaybackClaims {
+        let identity = ClaimIdentity(playback.claim_runtime_identity().unwrap());
+        let ledger = Ledger {
+            items: Vec::new(),
+            anchors: vec![Anchor::Revision(Arc::clone(
+                playback.claim_prepared_owner().unwrap(),
+            ))],
+        };
+        PlaybackClaims {
+            playback,
+            ledger,
+            identity,
+            report: ClaimCapacityReport::default(),
+        }
+    }
+    #[test]
+    fn sealed_split_exact_box_same_prepared_twin_refusal_and_no_clone() {
+        let (playback, root) = owned_playback();
+        let twin = Box::new(
+            Playback::try_from_owned_prepared_with_session(root.clone_on_control())
+                .ok()
+                .unwrap(),
+        );
+        let pointer = playback.as_ref() as *const Playback;
+        let twin_pointer = twin.as_ref() as *const Playback;
+        let first = sealed_fixture(playback);
+        let second = sealed_fixture(twin);
+        assert_ne!(first.identity, second.identity);
+        let strong = Arc::strong_count(root.owner.arc());
+        crate::owned_shared::reset_clone_count();
+        let (first_owner, first_anchors) = first.split_on_control().ok().unwrap();
+        let (second_owner, second_anchors) = second.split_on_control().ok().unwrap();
+        assert!(first_anchors.matches_owner(&first_owner));
+        assert!(!first_anchors.matches_owner(&second_owner));
+        let refusal = first_anchors
+            .reunite_on_control(second_owner)
+            .err()
+            .unwrap();
+        assert_eq!(
+            refusal.owner.playback.as_ref() as *const Playback,
+            twin_pointer
+        );
+        assert_eq!(Arc::strong_count(root.owner.arc()), strong);
+        let first = refusal
+            .anchors
+            .reunite_on_control(first_owner)
+            .ok()
+            .unwrap();
+        let second = second_anchors
+            .reunite_on_control(refusal.owner)
+            .ok()
+            .unwrap();
+        assert_eq!(first.playback.as_ref() as *const Playback, pointer);
+        assert_eq!(second.playback.as_ref() as *const Playback, twin_pointer);
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        let positive = root.clone_on_control();
+        assert_eq!(crate::owned_shared::clone_count(), 1);
+        drop(positive);
+        let mut corrupt = first;
+        corrupt.identity = second.identity;
+        let returned = corrupt.split_on_control().err().unwrap();
+        assert_eq!(returned.playback.as_ref() as *const Playback, pointer);
+        assert_eq!(Arc::strong_count(root.owner.arc()), strong);
     }
     #[test]
     fn unknown_original_box_owner_and_partial_reservations_are_recovered() {

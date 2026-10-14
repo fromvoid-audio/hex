@@ -376,6 +376,10 @@ impl fmt::Debug for SessionPlayback {
 }
 
 impl SessionPlayback {
+    pub(crate) fn claim_runtime_identity(&self) -> u64 {
+        self.capture_runtime
+    }
+
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
         self.device_metering = enabled;
         for chain in self

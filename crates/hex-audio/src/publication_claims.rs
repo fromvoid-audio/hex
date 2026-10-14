@@ -29,3 +29,43 @@ impl PublicationClaims {
         (self.claims, self.verified)
     }
 }
+
+/// Archived graph/catalog owners. The sealed runtime owner may move separately;
+/// this half remains in bounded control/lifecycle custody. No native receipt.
+pub struct PublicationAnchors {
+    pub(crate) claims: hex_engine::storage_report::AnchoredPlaybackClaims,
+    pub(crate) verified: VerifiedOwnedStreamRevision,
+}
+impl PublicationClaims {
+    pub fn split_on_control(
+        self,
+    ) -> Result<
+        (
+            hex_engine::storage_report::ClaimedPlaybackOwner,
+            PublicationAnchors,
+        ),
+        Box<Self>,
+    > {
+        let Self { claims, verified } = self;
+        match claims.split_on_control() {
+            Ok((owner, claims)) => Ok((owner, PublicationAnchors { claims, verified })),
+            Err(claims) => Err(Box::new(Self {
+                claims: *claims,
+                verified,
+            })),
+        }
+    }
+}
+impl PublicationAnchors {
+    pub fn matches_owner(&self, owner: &hex_engine::storage_report::ClaimedPlaybackOwner) -> bool {
+        self.claims.matches_owner(owner) && self.verified.matches_claimed_owner(owner)
+    }
+}
+
+#[path = "publication_claims/slots.rs"]
+pub(crate) mod slots;
+
+pub use slots::{
+    ClaimAssociation, ClaimReceipt, ClaimReclamation, ClaimReturnedOwnerRefusal, ClaimSlotError,
+    ClaimStageRefusal, ClaimUnionCapacityReport, Fact as ClaimFactKind,
+};
