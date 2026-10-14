@@ -51,6 +51,7 @@ fn finish(
             };
             std::thread::sleep(Duration::from_millis(20));
         }
+        output.cleanup = lease.cleanup();
         return Err(Box::new((
             "cleanup completed after retained failure".into(),
             output,

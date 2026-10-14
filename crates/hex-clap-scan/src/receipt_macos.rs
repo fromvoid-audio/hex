@@ -71,7 +71,10 @@ impl RuntimeIdentity {
         for i in &self.images {
             if i.path.len() > 1024
                 || !(i.path.starts_with("/usr/lib/") || i.path.starts_with("/System/Library/"))
-                || i.path.contains('\0')
+                || !i.path.bytes().all(|b| (32..127).contains(&b))
+                || Path::new(&i.path)
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
                 || !paths.insert(&i.path)
                 || i.uuid.len() != 32
                 || !i
@@ -394,6 +397,9 @@ mod tests {
         assert!(r.validate().is_err());
         let mut r = runtime();
         r.images[0].path = "/tmp/foreign.dylib".into();
+        assert!(r.validate().is_err());
+        let mut r = runtime();
+        r.images[0].path = "/usr/lib/../../tmp/foreign.dylib".into();
         assert!(r.validate().is_err());
         let mut r = runtime();
         r.images.push(r.images[0].clone());
