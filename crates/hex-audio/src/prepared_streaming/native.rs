@@ -121,19 +121,20 @@ impl ReturnedGraphTeardown {
         if claim.final_transfer.is_some() != publication.playback.manifest.is_some() {
             return Err(crate::publication_claims::ClaimSlotError::PairMismatch);
         }
-        slots.preflight_tracked_return(
-            &claim.association,
+        slots.preflight_tracked_return(crate::publication_claims::slots::TrackedReturnPreflight {
+            association: &claim.association,
             identity,
-            publication.revision,
-            publication.control_context_generation,
-            publication.playback.tracked_matches_anchors(anchors),
-            claim.installed.as_ref(),
-            claim
+            revision: publication.revision,
+            context_generation: publication.control_context_generation,
+            pair_matches: publication.playback.tracked_matches_anchors(anchors),
+            installation: claim.installed.as_ref(),
+            transfer: claim
                 .final_transfer
                 .as_ref()
                 .zip(publication.playback.manifest.as_ref()),
-        )
+        })
     }
+
     fn commit_tracked_facts(
         &mut self,
         slots: &mut crate::publication_claims::slots::ClaimUnionSlots,
@@ -189,17 +190,14 @@ impl ReturnedGraphTeardown {
                     .expect("successful actual disposal"),
             ) {
                 Ok(()) => {
-                    let proof = self
-                        .tracked_proof
-                        .take()
-                        .expect("persistent normal disposal proof");
-                    match slots.retain_tracked_disposal_proof(&claim.association, proof) {
+                    match slots
+                        .retain_tracked_disposal_proof(&claim.association, &mut self.tracked_proof)
+                    {
                         Ok(()) => {
                             self.complete = true;
                             return true;
                         }
-                        Err((_, proof)) => {
-                            self.tracked_proof = Some(proof);
+                        Err(_) => {
                             self.incomplete = true;
                             slots.disposal_incomplete(&claim.association);
                             return false;
@@ -258,6 +256,11 @@ impl NativeCleanupPermit<'_> {
         &mut self,
         data: &mut crate::native_callback_owner::NativeCallbackOwner,
     ) -> Result<(), hex_stream::MediaCleanupPhase> {
+        // Existing held custody has precedence over the publication frontier.
+        // Otherwise an old claimed owner can block the very branch that moves it.
+        if data.held_claimed_on_control().is_some() {
+            self.stage_old_held_claimed_on_control(data)?;
+        }
         if !data.expose_terminal_tracked_on_control() {
             return Err(hex_stream::MediaCleanupPhase::Pending);
         }
@@ -303,6 +306,12 @@ impl NativeCleanupPermit<'_> {
             }
             return Err(hex_stream::MediaCleanupPhase::Pending); // persist capsule; retry terminal disposal only after control work
         }
+        Ok(())
+    }
+    fn stage_old_held_claimed_on_control(
+        &mut self,
+        data: &mut crate::native_callback_owner::NativeCallbackOwner,
+    ) -> Result<(), hex_stream::MediaCleanupPhase> {
         let Some((owner, a, stream_bound)) = data.held_claimed_on_control() else {
             return Ok(());
         };
@@ -1723,6 +1732,7 @@ mod claimed_disposal_tests {
                         Some(companion_identity)
                     );
                 },
+                |_| {},
             );
             {
                 let custody = root.inner.cleanup.lock().unwrap();
@@ -1739,6 +1749,93 @@ mod claimed_disposal_tests {
             {
                 let custody = root.inner.cleanup.lock().unwrap();
                 assert!(custody.graph_teardown.as_ref().unwrap().incomplete);
+            }
+            drain_fixture(&root);
+            drop(control);
+            drop(root);
+            assert!(stream.shutdown(pages).unwrap().accounting_complete);
+        }
+    }
+    #[test]
+    fn actual_retirement_execution_progresses_held_frontiers_after_return_pressure() {
+        for old_claimed in [false, true] {
+            let (mut control, mut callback, root, stream, pages) = setup();
+            let legacy = |number| Publication {
+                stream_source: None,
+                revision: number,
+                control_context_generation: 0,
+                policy: PublicationPolicy::InstallFreshRuntime,
+                fresh_runtime_cancellation: None,
+                tracked_claim: None,
+                playback: Box::new(Playback::new(
+                    hex_engine::Project::new(48_000, Vec::new()).unwrap(),
+                ))
+                .into(),
+            };
+            if old_claimed {
+                callback.held_retirement = Some(returned(&root, &stream, prepared()).into());
+            } else {
+                for number in 1..=RETIRED {
+                    callback
+                        .retired
+                        .push(legacy(number as u64).into_return())
+                        .ok()
+                        .unwrap();
+                }
+                callback.held_retirement = Some(legacy(900).into_return());
+            }
+            let queued = tracked_publication(&root, &stream, prepared(), 920);
+            let queued_identity = queued.playback.tracked_identity();
+            control.publications.push(queued).ok().unwrap();
+            crate::lifecycle::tracked_retirement_execution_for_test(
+                callback,
+                Arc::clone(&control.status),
+                &root,
+                |data, step| {
+                    if old_claimed {
+                        // Existing claimed custody is staged first despite a
+                        // queued tracked owner. Capsule pressure keeps queue intact.
+                        assert!(data.held_claimed_on_control().is_none());
+                        assert_eq!(
+                            data.peek_tracked_on_control()
+                                .unwrap()
+                                .0
+                                .playback
+                                .tracked_identity(),
+                            queued_identity
+                        );
+                    } else if step == 0 {
+                        // Full normal ring: exact queued owner remains untouched.
+                        assert_eq!(
+                            data.peek_tracked_on_control()
+                                .unwrap()
+                                .0
+                                .playback
+                                .tracked_identity(),
+                            queued_identity
+                        );
+                    } else {
+                        // After capacity returns, legacy held owner is handed to
+                        // normal returns and queued tracked custody is staged.
+                        assert!(data.peek_tracked_on_control().is_none());
+                    }
+                },
+                |step| {
+                    if step == 0 && !old_claimed {
+                        drain_fixture(&root);
+                    }
+                },
+            );
+            {
+                let custody = root.inner.cleanup.lock().unwrap();
+                let teardown = custody.graph_teardown.as_ref().unwrap();
+                if old_claimed {
+                    assert!(teardown.owner.is_some());
+                    assert!(teardown.tracked_owner.is_none());
+                } else {
+                    assert!(teardown.tracked_owner.is_some());
+                }
+                assert!(!teardown.complete);
             }
             drain_fixture(&root);
             drop(control);

@@ -1358,6 +1358,17 @@ impl Callback {
     /// no tracked owner follows it. Move such heads to the existing return ring
     /// only with destination capacity, then recheck; never scan graph storage.
     pub(crate) fn expose_terminal_tracked_on_control(&mut self) -> bool {
+        if matches!(
+            self.held_retirement.as_ref(),
+            Some(GraphReturn::Live(_) | GraphReturn::Retired(_))
+        ) {
+            if self.retired.is_full() {
+                return false;
+            }
+            if let Some(held) = self.held_retirement.take() {
+                self.return_owner(held);
+            }
+        }
         while self.peek_tracked_on_control().is_none() && self.publications.peek().is_ok() {
             if self.held_retirement.is_some() || self.retired.is_full() {
                 return false;
@@ -1397,20 +1408,20 @@ impl Callback {
                 self.held_retirement.take()
             }
             ControlTrackedLocation::Deferred => {
-                if !self
+                if self
                     .deferred
                     .as_ref()
-                    .is_some_and(|p| p.tracked_claim.is_some())
+                    .is_none_or(|p| p.tracked_claim.is_none())
                 {
                     return None;
                 }
                 self.deferred.take().map(Publication::into_return)
             }
             ControlTrackedLocation::Active => {
-                if !self
+                if self
                     .active
                     .as_ref()
-                    .is_some_and(|p| p.tracked_claim.is_some())
+                    .is_none_or(|p| p.tracked_claim.is_none())
                 {
                     return None;
                 }

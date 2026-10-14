@@ -3,6 +3,20 @@ use super::*;
 use hex_engine::storage_report::{ClaimIdentity, ClaimReservation, ClaimedPlaybackOwner};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Borrowed exact-return validation package; never consumes any owner or fact.
+pub(crate) struct TrackedReturnPreflight<'a> {
+    pub(crate) association: &'a ClaimAssociation,
+    pub(crate) identity: ClaimIdentity,
+    pub(crate) revision: u64,
+    pub(crate) context_generation: u64,
+    pub(crate) pair_matches: bool,
+    pub(crate) installation: Option<&'a crate::prepared::CallbackInstallation>,
+    pub(crate) transfer: Option<(
+        &'a crate::prepared::CallbackFinalTransfer,
+        &'a hex_engine::storage_report::OwnerTransferManifest,
+    )>,
+}
+
 // Identity allocator only: no owners/rows/global custodian registry. Never reset.
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 fn next_root(counter: &AtomicU64) -> Result<u64, ClaimSlotError> {
@@ -646,17 +660,17 @@ impl ClaimUnionSlots {
     }
     pub(crate) fn preflight_tracked_return(
         &self,
-        a: &ClaimAssociation,
-        identity: ClaimIdentity,
-        revision: u64,
-        context_generation: u64,
-        pair_matches: bool,
-        installation: Option<&crate::prepared::CallbackInstallation>,
-        transfer: Option<(
-            &crate::prepared::CallbackFinalTransfer,
-            &hex_engine::storage_report::OwnerTransferManifest,
-        )>,
+        input: TrackedReturnPreflight<'_>,
     ) -> Result<(), ClaimSlotError> {
+        let TrackedReturnPreflight {
+            association: a,
+            identity,
+            revision,
+            context_generation,
+            pair_matches,
+            installation,
+            transfer,
+        } = input;
         let s = self.slot(a)?;
         if s.phase != Phase::Accepted
             || s.disposal != Disposal::None
@@ -738,25 +752,20 @@ impl ClaimUnionSlots {
     pub(crate) fn retain_tracked_disposal_proof(
         &mut self,
         a: &ClaimAssociation,
-        proof: hex_engine::storage_report::OwnerGroupsDisposed,
-    ) -> Result<
-        (),
-        (
-            ClaimSlotError,
-            hex_engine::storage_report::OwnerGroupsDisposed,
-        ),
-    > {
-        let s = match self.slot_mut(a) {
-            Ok(s) => s,
-            Err(error) => return Err((error, proof)),
-        };
+        proof: &mut Option<hex_engine::storage_report::OwnerGroupsDisposed>,
+    ) -> Result<(), ClaimSlotError> {
+        // Borrow persistent custody through all refusal decisions. The large
+        // move-only proof remains in the original slot on error, without boxing.
+        let s = self.slot_mut(a)?;
         if s.disposal != Disposal::Complete
-            || s.identity != Some(proof.identity())
+            || proof
+                .as_ref()
+                .is_none_or(|proof| s.identity != Some(proof.identity()))
             || s.tracked_disposed.is_some()
         {
-            return Err((ClaimSlotError::PairMismatch, proof));
+            return Err(ClaimSlotError::PairMismatch);
         }
-        s.tracked_disposed = Some(proof);
+        s.tracked_disposed = proof.take();
         Ok(())
     }
     pub(crate) fn accepted(&mut self, a: &ClaimAssociation) -> Result<(), ClaimSlotError> {

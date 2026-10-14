@@ -741,6 +741,7 @@ pub(crate) fn tracked_retirement_execution_for_test(
     status: Arc<crate::prepared::Status>,
     root: &crate::prepared::NativeStreamRoot,
     mut inspect: impl FnMut(&NativeCallbackOwner, usize),
+    mut between: impl FnMut(usize),
 ) {
     let _serialized = tests::LEASE_TEST.lock().unwrap();
     let lease = Lease::try_acquire().unwrap();
@@ -777,6 +778,7 @@ pub(crate) fn tracked_retirement_execution_for_test(
         );
         assert!(retained.callback_fault_latched());
         inspect(retained, step);
+        between(step);
     }
     drop(permit);
     // Explicit fixture teardown only. Production keeps the same execution
