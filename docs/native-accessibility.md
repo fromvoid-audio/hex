@@ -26,38 +26,42 @@ ownership and pending/gesture barriers. Widget-local draft/drag and an immediate
 submitted AX transaction also refuse another edit. Press/set/step uses ordinary
 control events, existing worker preparation and history; focus alone does not edit.
 A queued action is not an accepted canonical edit. Pending/refused values are not
-published as acknowledged values. Value-change notifications require an actual
-acknowledged revision/value change; local draft status is separate.
+published as acknowledged values. A future native value-change notification must require an actual acknowledged
+revision/value change; local draft status is separate.
 
-## AppKit lifetime and threads
+## native backend blocker and required next contract
 
-A `GPUISemanticControl` subclasses `NSAccessibilityElement`. Each native object
-owns only a boxed weak window token and stable ID; cached objects also have weak
-control-owner leases. Visual unmount retains native identity while the real
-control exists. Owner removal expires the lease; window teardown permanently
-revokes dispatch before releasing controls and native objects. External retained
-native objects subsequently report unavailable and refuse actions. No strong
-native/widget/window cycle is introduced.
+The first AppKit candidate is quarantined and is **not included** in this source
+checkpoint. Its off-UI queries upgraded a weak token to the full MacWindowState.
+Concurrent closure could make an AX query the final strong owner and destroy
+GPUI/GPU state off the UI thread. Linux source/CI passes do not validate that
+ownership path. The candidate patch is preserved in the worker's evidence; do not
+restore it without resolving this blocker and native verification.
 
-Native queries read complete published owned snapshots under a short native-state
-lock. Screen frames are calculated on the UI thread during publication; queries
-never render/mount, call project workers/audio or synchronously dispatch to UI.
-Notifications occur after publication and after releasing the state lock, so nested
-queries can inspect the coherent snapshot. Names, roles, values and bounds are
-actual metadata/layout, not debug selectors or tooltips.
+The next backend must use a separate data-only, Send+Sync semantic snapshot whose
+last drop cannot destroy any GPUI/window/renderer/input-handler state. Native
+objects hold revocable weak references only to that data and actual-owner leases.
+Queries read owned scalar/text/frame data without rendering, mounting, project or
+audio calls, or synchronous UI dispatch. Off-UI queries must never upgrade the
+full MacWindowState or retain a GPUI host NSView. UI-only parent lookup and action
+dispatch need an opaque generation token and a UI-owned weak registry; only typed
+requests/data cross threads. Teardown revokes the token and detaches dispatch
+before GPUI release; retained native objects then become unavailable.
 
-Actions enter a64-request bounded native queue; only owned typed requests and a
-weak token cross threads. A main-queue trampoline releases the state lock before
-calling GPUI, checks current revision/availability, and GPUI/widget/owner guards
-revalidate again. Teardown prevents a running trampoline from restoring dispatch.
-Queue overflow refuses; no callback/audio wait or unbounded main-thread drain.
+The proposed native queue remains bounded to64requests, with main-thread owner,
+revision, payload and availability revalidation, never a canonical-success claim
+at enqueue. Object release/notifications must occur outside snapshot locks.
+Actual AppKit role/value/action selectors, parent lifetime, concurrent queries,
+closure and native exposure still require the primary's exact-source Mac gate.
+No native class, native query/action hook or native notification is enabled by
+this checkpoint. PlatformWindow's publication/action hooks are currently unwired.
 
 ## coverage and remaining native acceptance
 
-This checkpoint exposes mounted NumericControl/Toggle/Selector device-panel
-controls, with slider/checkbox/popup semantics and existing validated actions.
-Unmounted controls have no fabricated frame and cannot be edited through stale
-native references. A complete offscreen logical navigation/scroll-to-mount path
+This checkpoint builds mounted NumericControl/Toggle/Selector device-panel
+semantic descriptors and validates source-level actions through existing controls.
+It does not yet expose those controls to the OS accessibility tree.
+Unmounted controls have no fabricated frame and stale source requests refuse. A complete offscreen logical navigation/scroll-to-mount path
 is not implemented; the explicit refusal remains an accessibility coverage gap.
 Other specialized controls/graphs, complete context hierarchy and physical-input/
 accepted-Main telemetry remain separate work. This does not complete ticket29.

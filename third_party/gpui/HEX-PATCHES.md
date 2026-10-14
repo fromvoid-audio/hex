@@ -63,8 +63,9 @@ paint from focus state that has not reached the screen. Test-support only; no
 production rendering or native graphics behavior changes.
 
 14 October accessibility extension (ticket29/PR188): safe bounded semantic
-snapshots/actions, cached prepaint integration and a native NSAccessibilityElement
-backend. The reviewed file list and added accessibility.rs are explicitly hashed;
+snapshots/actions and cached prepaint integration. The first native AppKit
+candidate is quarantined for an off-UI final-owner hazard; no native AX backend
+is enabled at this checkpoint. The reviewed file list and added accessibility.rs are explicitly hashed;
 all original baseline hashes, license and prior input/cursor deltas remain.
 See docs/native-accessibility.md in the Hex repository for owner/revision,
 revocation, asynchronous dispatch, offscreen refusal and native acceptance limits.
