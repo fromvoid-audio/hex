@@ -45,6 +45,29 @@ impl CurrentCatalogCoverage<'_> {
         self.key.same(&binding.0)
     }
 }
+/// Borrowed final cleanup responsibility. The receipt stays in private control
+/// custody while this exclusive reaper borrow prevents report/record reuse.
+/// This is catalog authority only, never a runtime or owner-group assertion.
+/// ```compile_fail
+/// fn consume_while_borrowed(
+///     reaper: &mut hex_stream::MediaDomainReaper,
+///     binding: &hex_stream::CatalogCoverageBinding,
+///     receipt: hex_stream::CatalogCustodyReceipt,
+/// ) {
+///     let permit = reaper.validate_current_catalog_cleanup(binding, &receipt).unwrap();
+///     reaper.consume_catalog_cleanup_receipt(receipt).ok();
+///     assert!(permit.matches_binding(binding));
+/// }
+/// ```
+pub struct CurrentCatalogCleanup<'a> {
+    _reaper: &'a mut MediaDomainReaper,
+    key: &'a Key,
+}
+impl CurrentCatalogCleanup<'_> {
+    pub fn matches_binding(&self, binding: &CatalogCoverageBinding) -> bool {
+        self.key.same(&binding.0)
+    }
+}
 /// Control-only identity anchor for audio's private claim association binding.
 /// No public scalar factory, catalog clone or graph retirement assertion.
 pub struct CatalogCoverageBinding(Key);
@@ -112,6 +135,15 @@ impl CatalogCoverageReservation {
     }
 }
 impl CatalogCoverageBinding {
+    /// Actual stable-record identity, independent of departing source record.
+    /// No scalar/content identity or graph retirement assertion is exposed.
+    pub fn same_responsibility(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.seal, &other.0.seal)
+            && self.0.domain == other.0.domain
+            && self.0.incarnation == other.0.incarnation
+            && self.0.target == other.0.target
+            && self.0.target_nonce == other.0.target_nonce
+    }
     pub fn matches_ack(&self, ack: &CatalogCoverageAck) -> bool {
         self.0.same(&ack.0)
     }
@@ -120,6 +152,52 @@ impl CatalogCoverageBinding {
     }
 }
 impl MediaDomainReaper {
+    /// Match the ORIGINAL stable coverage record, not merely a successful
+    /// report or current catalog content. Retain this borrow through consumption.
+    pub fn validate_current_catalog_cleanup<'a>(
+        &'a mut self,
+        binding: &'a CatalogCoverageBinding,
+        receipt: &CatalogCustodyReceipt,
+    ) -> Result<CurrentCatalogCleanup<'a>, CatalogCustodyError> {
+        let key = &binding.0;
+        let r = &receipt.reservation;
+        if !Arc::ptr_eq(&self.seal, &key.seal)
+            || !Arc::ptr_eq(&key.seal, &r.seal)
+            || key.domain != r.index
+            || key.incarnation != r.incarnation
+            || key.target != r.record
+            || key.target_nonce != r.nonce
+        {
+            return Err(CatalogCustodyError::Stale);
+        }
+        let slot = self
+            .slots
+            .get(key.domain)
+            .filter(|s| !s.vacant && s.incarnation == key.incarnation)
+            .ok_or(CatalogCustodyError::Stale)?;
+        if slot.terminal_error.is_some()
+            || slot.custody.failed()
+            || slot.report != Some(receipt.report)
+            || receipt.report.successful_report().is_none()
+        {
+            return Err(CatalogCustodyError::Incomplete);
+        }
+        if slot.custody.coverage != Some((key.target, key.target_nonce))
+            || !slot
+                .custody
+                .records
+                .get(key.target)
+                .is_some_and(|r| r.nonce == key.target_nonce && r.state == RecordState::Committed)
+            || slot
+                .custody
+                .leases
+                .get(slot.custody.records[key.target].lease_cell)
+                .is_none_or(Option::is_some)
+        {
+            return Err(CatalogCustodyError::Stale);
+        }
+        Ok(CurrentCatalogCleanup { _reaper: self, key })
+    }
     /// Validate CURRENT physical custody rather than the historical source
     /// transition. Source record reuse is allowed; the stable target and actual
     /// domain incarnation may not have retired or been replaced. No allocation

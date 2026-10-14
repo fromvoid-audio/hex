@@ -237,6 +237,13 @@ pub(crate) enum ControlTrackedLocation {
     Queued,
 }
 impl CallbackInstallation {
+    pub(crate) fn matches_runtime(
+        &self,
+        association: &crate::publication_claims::ClaimAssociation,
+        runtime: hex_engine::storage_report::ClaimIdentity,
+    ) -> bool {
+        self.association == association.stamp() && self.runtime == runtime
+    }
     pub(crate) fn matches(
         &self,
         association: &crate::publication_claims::ClaimAssociation,

@@ -529,3 +529,64 @@ fn borrowed_current_cover_validation_allocates_frees_and_clones_no_catalog_owner
     assert_eq!(positive.count_total, 1);
     assert_eq!(positive.bytes_total, 8);
 }
+
+#[test]
+fn final_cleanup_permit_requires_original_stable_record_and_private_receipt() {
+    let (mut batch, mut terminal, mut reaper, admission) = setup(3);
+    let id = DomainId::new(1).unwrap();
+    let mut bindings = Vec::new();
+    for _ in 0..2 {
+        let lease = reaper.catalog_lease(id).unwrap();
+        let reservation = reaper.reserve_catalog_coverage(id, &lease).unwrap();
+        let binding = reservation.binding_on_control();
+        let pending = reaper
+            .commit_catalog_coverage(reservation, lease)
+            .ok()
+            .unwrap();
+        reaper.advance_catalog_coverage_on_control(id);
+        let ack = reaper.catalog_coverage_ack(pending).ok().unwrap();
+        reaper.consume_catalog_coverage_ack(ack).ok().unwrap();
+        bindings.push(binding);
+    }
+    assert!(bindings[0].same_responsibility(&bindings[1]));
+    batch.install_domain(admission).ok().unwrap();
+    terminal.try_return_stopped_batch(batch).ok().unwrap();
+    while reaper.poll_one().unwrap() != DomainPoll::Empty {}
+    let actual = match reaper.try_reap_domain(id) {
+        DomainCleanupProgress::Finished(report) => report,
+        _ => panic!("actual successful shutdown required"),
+    };
+    let receipt = reaper.stable_catalog_cleanup_receipt(id).unwrap();
+    assert_eq!(receipt.report(), actual);
+    for binding in &bindings {
+        let permit = reaper
+            .validate_current_catalog_cleanup(binding, &receipt)
+            .unwrap();
+        assert!(permit.matches_binding(binding));
+    }
+    assert!(reaper.take_reclaimed_report(id).is_none());
+    // Retiring one departing binding cannot consume another's shared authority.
+    drop(bindings.remove(0));
+    assert!(
+        reaper
+            .validate_current_catalog_cleanup(&bindings[0], &receipt)
+            .is_ok()
+    );
+    bindings[0].0.target_nonce += 1; // exact stale-record negative control
+    assert!(matches!(
+        reaper.validate_current_catalog_cleanup(&bindings[0], &receipt),
+        Err(CatalogCustodyError::Stale)
+    ));
+    bindings[0].0.target_nonce -= 1;
+    let (_, _, mut unrelated, _) = setup(3);
+    assert!(matches!(
+        unrelated.validate_current_catalog_cleanup(&bindings[0], &receipt),
+        Err(CatalogCustodyError::Stale)
+    ));
+    assert!(reaper.take_reclaimed_report(id).is_none());
+    assert_eq!(
+        reaper.consume_catalog_cleanup_receipt(receipt).ok(),
+        Some(actual)
+    );
+    assert_eq!(reaper.take_reclaimed_report(id), Some(actual));
+}

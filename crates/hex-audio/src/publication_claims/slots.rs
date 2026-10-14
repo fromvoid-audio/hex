@@ -17,6 +17,10 @@ pub(crate) struct TrackedReturnPreflight<'a> {
     )>,
 }
 
+#[path = "retired_reclaim.rs"]
+mod retired_reclaim;
+pub(crate) use retired_reclaim::CleanupSuccessor;
+
 // Identity allocator only: no owners/rows/global custodian registry. Never reset.
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 fn next_root(counter: &AtomicU64) -> Result<u64, ClaimSlotError> {
@@ -71,6 +75,7 @@ pub struct ClaimUnionCapacityReport {
     pub slots: usize,
     pub record_capacity: usize,
     pub archive_capacity: usize,
+    pub dependency_capacity: usize,
     pub bytes: usize,
     pub prepared_bytes: Option<usize>,
     pub construction_bytes: Option<usize>,
@@ -88,6 +93,8 @@ struct Slot {
     identity: Option<ClaimIdentity>,
     anchors: Option<PublicationAnchors>,
     catalog_reservation: Option<hex_stream::CatalogCustodyReservation>,
+    coverage_domain: Option<hex_stream::DomainId>,
+    reclaim: retired_reclaim::ReclaimCapsule,
     coverage_reservation: Option<(
         hex_stream::CatalogCoverageReservation,
         hex_stream::CatalogCoverageBinding,
@@ -115,6 +122,8 @@ impl Slot {
             identity: None,
             anchors: None,
             catalog_reservation: None,
+            coverage_domain: None,
+            reclaim: retired_reclaim::ReclaimCapsule::default(),
             coverage_reservation: None,
             returned: None,
             facts: Facts::default(),
@@ -190,6 +199,7 @@ pub(crate) struct ClaimUnionSlots {
     slots: Vec<Slot>,
     records: Vec<Record>,
     archives: Vec<Option<hex_engine::storage_report::OwnerGroupArchive>>,
+    dependencies: Vec<Option<retired_reclaim::Dependency>>,
     reservation: ClaimReservation,
     report: ClaimUnionCapacityReport,
     #[cfg(test)]
@@ -216,6 +226,10 @@ impl ClaimUnionSlots {
         let mut slots = Vec::new();
         let mut records = Vec::new();
         let mut archives = Vec::new();
+        let mut dependencies = Vec::new();
+        dependencies
+            .try_reserve_exact(reservation.items)
+            .map_err(|_| ClaimSlotError::Allocation)?;
         archives
             .try_reserve_exact(reservation.items)
             .map_err(|_| ClaimSlotError::Allocation)?;
@@ -242,6 +256,12 @@ impl ClaimUnionSlots {
                     >())
                     .and_then(|b| n.checked_add(b))
             })
+            .and_then(|n| {
+                dependencies
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Option<retired_reclaim::Dependency>>())
+                    .and_then(|b| n.checked_add(b))
+            })
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .ok_or(ClaimSlotError::Overflow)?;
         let prepared = bytes
@@ -257,11 +277,13 @@ impl ClaimUnionSlots {
         }
         slots.resize_with(reservation.items, Slot::vacant);
         archives.resize_with(reservation.items, || None);
+        dependencies.resize_with(reservation.items, || None);
         let root = next_root(&NEXT_ROOT)?;
         let report = ClaimUnionCapacityReport {
             slots: slots.capacity(),
             record_capacity: records.capacity(),
             archive_capacity: archives.capacity(),
+            dependency_capacity: dependencies.capacity(),
             bytes,
             prepared_bytes: Some(prepared),
             construction_bytes: Some(construction),
@@ -271,6 +293,7 @@ impl ClaimUnionSlots {
             slots,
             records,
             archives,
+            dependencies,
             reservation,
             report,
             #[cfg(test)]
@@ -309,6 +332,10 @@ impl ClaimUnionSlots {
                 .as_ref()
                 .is_some_and(|p| p.is_incomplete_fixture()),
         )
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn dependent_count_for_test(&self) -> usize {
+        self.dependencies.iter().flatten().count()
     }
     pub(crate) fn report(&self) -> ClaimUnionCapacityReport {
         self.report
@@ -567,6 +594,7 @@ impl ClaimUnionSlots {
             .reserve_verified_catalog_coverage(domain, &input.verified)
             .map_err(|_| ClaimSlotError::Incomplete)?;
         let binding = reservation.binding_on_control();
+        self.slots[association.slot].coverage_domain = Some(domain);
         self.slots[association.slot].coverage_reservation = Some((reservation, binding));
         Ok(())
     }
@@ -1041,6 +1069,8 @@ mod tests {
                 + slots.records.capacity() * std::mem::size_of::<Record>()
                 + slots.archives.capacity()
                     * std::mem::size_of::<Option<hex_engine::storage_report::OwnerGroupArchive>>()
+                + slots.dependencies.capacity()
+                    * std::mem::size_of::<Option<retired_reclaim::Dependency>>()
                 + std::mem::size_of::<ClaimUnionSlots>()
         );
         assert!(matches!(

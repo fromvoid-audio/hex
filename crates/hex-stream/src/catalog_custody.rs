@@ -5,7 +5,8 @@ mod coverage;
 pub use coverage::{
     CatalogCoverageAck, CatalogCoverageBinding, CatalogCoverageCovered, CatalogCoveragePending,
     CatalogCoverageProgress, CatalogCoverageRefusal, CatalogCoverageReservation,
-    CatalogCoverageStorageReport, CurrentCatalogCoverage, VerifiedCoverageRefusal,
+    CatalogCoverageStorageReport, CurrentCatalogCleanup, CurrentCatalogCoverage,
+    VerifiedCoverageRefusal,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

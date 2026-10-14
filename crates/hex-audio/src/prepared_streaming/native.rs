@@ -959,6 +959,14 @@ impl CleanupCapsule {
         if report_only || (final_retirement && self.bridge.native_callback_ended) {
             for index in 0..RETIRED {
                 if let Some((id, actual)) = self.bridge.native_reports[index] {
+                    if self
+                        .bridge
+                        .claim_union
+                        .as_ref()
+                        .is_some_and(|claims| claims.has_cleanup_dependents(id))
+                    {
+                        continue;
+                    }
                     if self.bridge.reaper.take_reclaimed_report(id).is_some() {
                         self.bridge.native_reports[index] = None;
                         self.bridge.domain_contexts[index] = None;
@@ -1671,6 +1679,19 @@ mod claimed_disposal_tests {
         // Actual owner disposal and archive ingestion never upgrade fixture
         // reports or establish role/catalog/aggregate admission authority.
         assert_eq!(root.tick(false), hex_stream::MediaCleanupPhase::Pending);
+        {
+            let state = root.lock();
+            let bridge = state.bridge.as_ref().unwrap();
+            assert_eq!(
+                bridge
+                    .claim_union
+                    .as_ref()
+                    .unwrap()
+                    .dependent_count_for_test(),
+                0
+            );
+            assert!(bridge.cleanup_successors.iter().all(Option::is_none));
+        }
         let refusal = stream.shutdown(pages).err().unwrap();
         assert!(matches!(refusal, hex_stream::ShutdownError::Busy(_)));
         let (stream, pages) = refusal.into_parts().unwrap();

@@ -66,6 +66,7 @@ pub struct StreamBridgeControl {
     return_failure: Option<hex_stream::MediaReturnFailure>,
     native_retired: Option<Consumer<GraphReturn>>,
     native_reports: [Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; RETIRED],
+    cleanup_successors: [Option<crate::publication_claims::slots::CleanupSuccessor>; RETIRED],
     native_callback_ended: bool,
     native_failed_admissions: [Option<hex_stream::DomainAdmission>; RETIRED],
     native_failed_batch: Option<Box<hex_stream::CallbackDomainBatch>>,
@@ -141,6 +142,7 @@ pub(crate) fn channel_with_streaming_and_spectrum(
             claim_union_closed: false,
             native_retired: None,
             native_reports: [None; RETIRED],
+            cleanup_successors: std::array::from_fn(|_| None),
             native_callback_ended: false,
             native_failed_admissions: std::array::from_fn(|_| None),
             native_failed_batch: None,
@@ -424,12 +426,42 @@ impl StreamBridgeControl {
             .ok_or(Invalid("stream return receiver is lifecycle-owned"))?;
         self.reclaim_receiver(retired, true)
     }
+    /// Exclusive control/extracted cleanup only, outside ordinary root lock.
+    fn advance_claim_reclamation(&mut self) {
+        if let Some(claims) = self.claim_union.as_mut() {
+            claims
+                .advance_retired_claims_on_control(&mut self.reaper, &mut self.cleanup_successors);
+        }
+        for cell in &mut self.cleanup_successors {
+            let Some(successor) = cell.as_mut() else {
+                continue;
+            };
+            if self
+                .claim_union
+                .as_ref()
+                .is_some_and(|claims| claims.has_cleanup_dependents(successor.domain))
+            {
+                continue;
+            }
+            if let Some(receipt) = successor.receipt.take() {
+                match self.reaper.consume_catalog_cleanup_receipt(receipt) {
+                    Ok(_) => {}
+                    Err((_, receipt)) => {
+                        successor.receipt = Some(receipt);
+                        continue;
+                    }
+                }
+            }
+            *cell = None;
+        }
+    }
     fn reclaim_receiver(
         &mut self,
         retired: &mut Consumer<GraphReturn>,
         consume_reports: bool,
     ) -> Result<[Option<(hex_stream::DomainId, hex_stream::ReportedShutdown)>; RETIRED], Invalid>
     {
+        self.advance_claim_reclamation();
         for _ in 0..RETIRED {
             // Claimed returns require persistent, exact-pair disposal custody.
             // Legacy/headless reclamation never upgrades or drops this owner.
@@ -492,6 +524,27 @@ impl StreamBridgeControl {
             // custody outside the ordinary root mutex. Headless is exclusive.
             let _ = self.reaper.advance_catalog_coverage_on_control(id);
             let _ = self.reaper.try_reap_domain(id);
+            if self
+                .claim_union
+                .as_ref()
+                .is_some_and(|claims| claims.has_cleanup_dependents(id))
+            {
+                if let Some(successor) = self
+                    .cleanup_successors
+                    .iter_mut()
+                    .flatten()
+                    .find(|s| s.domain == id)
+                {
+                    if successor.receipt.is_none() {
+                        if let Ok(receipt) = self.reaper.stable_catalog_cleanup_receipt(id) {
+                            successor.receipt = Some(receipt);
+                        }
+                    }
+                }
+                if consume_reports {
+                    return None;
+                }
+            }
             if consume_reports {
                 let report = self.reaper.take_reclaimed_report(id)?;
                 self.return_requests[index].store(0, Release);
