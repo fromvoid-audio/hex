@@ -383,6 +383,10 @@ impl SessionPlayback {
                     } else {
                         track.apply_ordered_prefix(render_output);
                     }
+                    track.apply_instrument_input_gain(render_output);
+                    if self.device_metering {
+                        track.instrument_meter.observe_input(render_output);
+                    }
                     for release in &self.release_scratch[first_release..release_cursor] {
                         if release.tail_group.is_none() {
                             render_release_raw(
@@ -394,9 +398,6 @@ impl SessionPlayback {
                                 render_output,
                             )?;
                         }
-                    }
-                    if self.device_metering {
-                        track.instrument_meter.observe_input(render_output);
                     }
                     render_route_source_chunk(
                         RouteSourceContext {

@@ -546,7 +546,7 @@ fn compile_effect_devices(
             .then(prepared)
             .map_err(|error| Invalid(error.0))?;
         if !device.bypassed() {
-            let gain = migrated.output_gain_linear();
+            let gain = migrated.output_gain_linear() * migrated.input_gain_linear();
             let trim = hex_lattice::StereoMatrix::new([[gain, 0.0], [0.0, gain]])
                 .map_err(|error| Invalid(error.0))?;
             admission_matrix = admission_matrix

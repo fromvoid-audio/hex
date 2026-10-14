@@ -219,7 +219,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
-                if descriptor.id.value() == u32::MAX {
+                if descriptor.id.value() >= u32::MAX - 1 {
                     return Err(DeviceContractError::InvalidDescriptor);
                 }
                 if definition.descriptors()[..parameter_index]
@@ -263,6 +263,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
         self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
 
@@ -277,6 +278,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
@@ -286,6 +288,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
 
@@ -299,6 +302,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_instrument(&current, sample_rate)
     }
