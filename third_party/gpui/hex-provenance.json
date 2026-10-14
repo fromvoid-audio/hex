@@ -205,7 +205,7 @@
     "src/platform/linux/x11/client.rs": "2ac7094d4b403d0b1928027481c82e456bdbed1c8aab9cdd97c72acd2fb64fd2",
     "src/platform/mac/events.rs": "6fdef5679c740bdbfe31ae3eedae0011263b66631c059947deddfa938373b158",
     "src/platform/mac/platform.rs": "4c978369276c3f29fd98af67f438338858ff27ad797a17a288f50548ec28fe76",
-    "src/platform/mac/window.rs": "bfa7a4214f2b3e24ba353497a0d9c7b059df8ad367e70f0b3fafd5cc86fadc6f",
+    "src/platform/mac/window.rs": "b6d3e539f5d37244b11826dbca03470a86b90690faf7554a0836bf115dbfb8fc",
     "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",

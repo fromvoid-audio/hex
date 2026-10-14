@@ -348,18 +348,20 @@
 +                hide_native_window_controls: titlebar
 +                    .as_ref()
 +                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
-@@ -941,0 +999,10 @@
+@@ -934,0 +992,6 @@
++        // Revoke all AX dispatch/snapshots before releasing any GPUI input owner.
 +        this.accessibility_closed = true;
 +        this.accessibility_callback.take();
 +        this.accessibility_nodes.clear();
 +        this.accessibility_frames.clear();
 +        this.accessibility_actions.clear();
+@@ -941,0 +1005,5 @@
 +        for (_, _, element) in this.accessibility_elements.drain(..) {
 +            unsafe {
 +                let _: () = msg_send![element, release];
 +            }
 +        }
-@@ -1386,0 +1454,143 @@
+@@ -1386,0 +1455,143 @@
 +    fn publish_accessibility(&self, nodes: Vec<crate::AccessibilityNode>, refused: bool) {
 +        let mut state = self.0.lock();
 +        if state.accessibility_closed {
@@ -503,7 +505,7 @@
 +        self.0.lock().accessibility_callback = Some(callback);
 +    }
 +
-@@ -2647,0 +2858,460 @@
+@@ -2647,0 +2859,464 @@
 +
 +// Each Objective-C object owns exactly one boxed weak window reference and stable ID.
 +// No native object owns a widget, App reference, or strong window reference.
@@ -912,13 +914,17 @@
 +            crate::AccessibilityValue::Choice { options, .. } => {
 +                let string: BOOL = msg_send![value, isKindOfClass: class!(NSString)];
 +                if string == YES {
-+                    let ptr = NSString::UTF8String(value);
-+                    if !ptr.is_null() {
-+                        let text = CStr::from_ptr(ptr).to_string_lossy();
++                    // Foundation's bounded UTF-8 copy refuses oversized external values.
++                    // NSUTF8StringEncoding is4 (the existing platform binding uses the same value).
++                    let mut bytes = [0_i8; crate::MAX_ACCESSIBILITY_TEXT_BYTES + 1];
++                    let copied: BOOL = msg_send![value, getCString: bytes.as_mut_ptr() maxLength: bytes.len() encoding: 4 as NSUInteger];
++                    if copied == YES
++                        && let Ok(text) = CStr::from_ptr(bytes.as_ptr()).to_str()
++                    {
 +                        let mut indices = options
 +                            .iter()
 +                            .enumerate()
-+                            .filter(|(_, option)| option.as_ref() == text.as_ref());
++                            .filter(|(_, option)| option.as_ref() == text);
 +                        if let Some((index, _)) = indices.next() {
 +                            if indices.next().is_none() {
 +                                semantic_action(this, crate::AccessibilityAction::Choose(index));

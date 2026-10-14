@@ -989,6 +989,12 @@ impl MacWindow {
 impl Drop for MacWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
+        // Revoke all AX dispatch/snapshots before releasing any GPUI input owner.
+        this.accessibility_closed = true;
+        this.accessibility_callback.take();
+        this.accessibility_nodes.clear();
+        this.accessibility_frames.clear();
+        this.accessibility_actions.clear();
         this.renderer.destroy();
         let window = this.native_window;
         this.display_link.take();
@@ -996,11 +1002,6 @@ impl Drop for MacWindow {
             this.native_window.setDelegate_(nil);
         }
         this.input_handler.take();
-        this.accessibility_closed = true;
-        this.accessibility_callback.take();
-        this.accessibility_nodes.clear();
-        this.accessibility_frames.clear();
-        this.accessibility_actions.clear();
         for (_, _, element) in this.accessibility_elements.drain(..) {
             unsafe {
                 let _: () = msg_send![element, release];
@@ -3263,13 +3264,17 @@ extern "C" fn accessibility_set_value(this: &Object, _: Sel, value: id) {
             crate::AccessibilityValue::Choice { options, .. } => {
                 let string: BOOL = msg_send![value, isKindOfClass: class!(NSString)];
                 if string == YES {
-                    let ptr = NSString::UTF8String(value);
-                    if !ptr.is_null() {
-                        let text = CStr::from_ptr(ptr).to_string_lossy();
+                    // Foundation's bounded UTF-8 copy refuses oversized external values.
+                    // NSUTF8StringEncoding is4 (the existing platform binding uses the same value).
+                    let mut bytes = [0_i8; crate::MAX_ACCESSIBILITY_TEXT_BYTES + 1];
+                    let copied: BOOL = msg_send![value, getCString: bytes.as_mut_ptr() maxLength: bytes.len() encoding: 4 as NSUInteger];
+                    if copied == YES
+                        && let Ok(text) = CStr::from_ptr(bytes.as_ptr()).to_str()
+                    {
                         let mut indices = options
                             .iter()
                             .enumerate()
-                            .filter(|(_, option)| option.as_ref() == text.as_ref());
+                            .filter(|(_, option)| option.as_ref() == text);
                         if let Some((index, _)) = indices.next() {
                             if indices.next().is_none() {
                                 semantic_action(this, crate::AccessibilityAction::Choose(index));
