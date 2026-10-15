@@ -502,8 +502,9 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    fn constructor_supported() -> bool {
+    fn constructor_supported(test: &str) -> bool {
         if crate::pcm_arc::native_layout_known() {
+            eprintln!("hex preparation evidence: {test}; branch=supported-constructor");
             return true;
         }
         let frames = vec![[0.0; 2]; 8];
@@ -513,6 +514,9 @@ mod tests {
             .unwrap();
         assert_eq!(refusal.reason, AudioStorageError::UnsupportedConstructor);
         assert_eq!(refusal.frames.as_ptr(), pointer);
+        eprintln!(
+            "hex preparation evidence: {test}; branch=unsupported-refusal; original-owner=preserved"
+        );
         false
     }
     fn fixture(clips: usize) -> (hex_project::Project, OwnedAudioInputs) {
@@ -575,7 +579,7 @@ mod tests {
     }
     #[test]
     fn every_late_alias_failure_recovers_exact_original_bank_and_live_caller_tokens() {
-        if !constructor_supported() {
+        if !constructor_supported("every_late_alias_failure") {
             return;
         }
         for after in 0..3 {
@@ -603,10 +607,13 @@ mod tests {
             assert!(bank.source_view(&alias).is_ok());
             assert!(custody.recover_on_control(&token).is_none());
         }
+        eprintln!(
+            "hex preparation evidence: every_late_alias_failure; supported-controls=completed; aliases=3"
+        );
     }
     #[test]
     fn capacity_and_generation_refusals_preserve_original_owner_and_tokens() {
-        if !constructor_supported() {
+        if !constructor_supported("capacity_and_generation_refusal") {
             return;
         }
         let (project, mut bank) = fixture(2);
@@ -630,10 +637,13 @@ mod tests {
         assert_eq!(refusal.reason, AudioStorageError::SourceMismatch);
         assert_eq!(refusal.inputs.sources.as_ptr(), pointer);
         assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
+        eprintln!(
+            "hex preparation evidence: capacity_and_generation_refusal; supported-controls=completed"
+        );
     }
     #[test]
     fn construction_panic_retains_bank_partial_aliases_and_first_payload_without_retry() {
-        if !constructor_supported() {
+        if !constructor_supported("construction_panic_retention") {
             return;
         }
         let (project, bank) = fixture(3);
@@ -655,10 +665,13 @@ mod tests {
             custody.first_panic.as_ref().unwrap().as_ref()
         ));
         assert_eq!(custody.installed_source_bindings(), 2);
+        eprintln!(
+            "hex preparation evidence: construction_panic_retention; supported-controls=completed"
+        );
     }
     #[test]
     fn actual_slot_destructor_panic_tombstone_retains_remaining_alias_and_bank() {
-        if !constructor_supported() {
+        if !constructor_supported("actual_slot_destructor_panic") {
             return;
         }
         let (project, bank) = fixture(2);
@@ -684,5 +697,8 @@ mod tests {
         custody.cleanup_on_control();
         assert_eq!(count.load(Ordering::Relaxed), 1);
         assert!(custody.recover_on_control(&token).is_none());
+        eprintln!(
+            "hex preparation evidence: actual_slot_destructor_panic; supported-controls=completed; destructor-count=1"
+        );
     }
 }

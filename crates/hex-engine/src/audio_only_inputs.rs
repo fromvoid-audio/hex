@@ -433,6 +433,18 @@ mod tests {
             alias: token.alias,
         }
     }
+    fn constructor_supported(test: &str) -> bool {
+        if crate::pcm_arc::native_layout_known() {
+            eprintln!("hex audio bank evidence: {test}; branch=supported-constructor");
+            return true;
+        }
+        let refusal = OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]])
+            .err()
+            .unwrap();
+        assert_eq!(refusal.reason, AudioStorageError::UnsupportedConstructor);
+        eprintln!("hex audio bank evidence: {test}; branch=unsupported-refusal");
+        false
+    }
     #[test]
     fn original_frame_owners_survive_numerical_and_unsupported_origin_refusal() {
         for (rate, sample, gate, expected) in [
@@ -459,8 +471,7 @@ mod tests {
     }
     #[test]
     fn aliases_are_bank_owned_tokens_refuse_wrong_stale_duplicate_and_overflow() {
-        if !crate::pcm_arc::native_layout_known() {
-            assert!(OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]]).is_err());
+        if !constructor_supported("bank_aliases") {
             return;
         }
         let ids = ids();
@@ -499,11 +510,11 @@ mod tests {
         ));
         assert_eq!(bank.owning_handle_count(), before);
         assert!(bank.source_view(&original).is_ok());
+        eprintln!("hex audio bank evidence: bank_aliases; supported-controls=completed");
     }
     #[test]
     fn duplicate_and_byte_refusal_return_original_source_vector_and_capacity() {
-        if !crate::pcm_arc::native_layout_known() {
-            assert!(OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]]).is_err());
+        if !constructor_supported("bank_duplicate_and_bytes") {
             return;
         }
         let ids = ids();
@@ -536,11 +547,13 @@ mod tests {
             assert_eq!(refusal.sources.capacity(), capacity);
             assert_eq!(refusal.reservation, limit);
         }
+        eprintln!(
+            "hex audio bank evidence: bank_duplicate_and_bytes; supported-controls=completed"
+        );
     }
     #[test]
     fn typed_bank_data_dedups_allocations_never_handles_and_commit_invalidates_old_tokens() {
-        if !crate::pcm_arc::native_layout_known() {
-            assert!(OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]]).is_err());
+        if !constructor_supported("typed_bank_data") {
             return;
         }
         let ids = ids();
@@ -567,6 +580,7 @@ mod tests {
                 .source_view(&output.source_token(ids[0]).unwrap())
                 .is_ok()
         );
+        eprintln!("hex audio bank evidence: typed_bank_data; supported-controls=completed");
     }
     #[test]
     fn actual_streamed_constructor_and_refusal_preserve_alias_custody_and_tokens() {
@@ -589,11 +603,13 @@ mod tests {
                     .reason,
                 AudioStorageError::UnsupportedConstructor
             );
+            eprintln!("hex audio bank evidence: streamed_bank; branch=unsupported-refusal");
             return;
         }
         let source = OwnedAudioSource::try_streamed(metadata.clone())
             .ok()
             .unwrap();
+        eprintln!("hex audio bank evidence: streamed_bank; branch=supported-constructor");
         let mut bank = OwnedAudioInputs::try_new(vec![(ids[0], source)], reservation())
             .ok()
             .unwrap();
@@ -617,5 +633,6 @@ mod tests {
                 .streamed_metadata(),
             Some(&metadata)
         );
+        eprintln!("hex audio bank evidence: streamed_bank; supported-controls=completed");
     }
 }

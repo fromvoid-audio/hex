@@ -65,21 +65,25 @@ fn owning_audio_stage_fixture() -> (
     let token = bank.source_token(asset).unwrap();
     (editor.project().clone(), bank, token)
 }
-fn owning_constructor_available() -> bool {
+fn owning_constructor_available(test: &str) -> bool {
     match hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8]) {
-        Ok(_) => true,
+        Ok(_) => {
+            eprintln!("hex preparation host evidence: {test}; branch=supported-constructor");
+            true
+        }
         Err(refusal) => {
             assert_eq!(
                 refusal.reason,
                 hex_engine::AudioStorageError::UnsupportedConstructor
             );
+            eprintln!("hex preparation host evidence: {test}; branch=unsupported-refusal");
             false
         }
     }
 }
 #[test]
 fn actual_native_pending_host_retains_audio_stage_through_handle_abandonment_cancel_and_recovery() {
-    if !owning_constructor_available() {
+    if !owning_constructor_available("pending_host_cancel_recovery") {
         return;
     }
     let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
@@ -111,23 +115,27 @@ fn actual_native_pending_host_retains_audio_stage_through_handle_abandonment_can
     assert!(bank.source_view(&source_token).is_ok());
     assert_eq!(bank.owning_handle_count(), 1);
     assert!(lifecycle_anchor.recover_audio_arrangement(&token).is_none());
+    eprintln!(
+        "hex preparation host evidence: pending_host_cancel_recovery; supported-controls=completed"
+    );
 }
 #[test]
 fn terminal_close_keeps_abandoned_bank_pending_and_refuses_replacement_without_false_cleanup() {
-    if !owning_constructor_available() {
+    if !owning_constructor_available("terminal_close_abandonment") {
         return;
     }
     let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
     let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
-    let (project, bank, _) = owning_audio_stage_fixture();
-    let token = root
-        .begin_audio_arrangement(
-            hex_engine::AudioArrangementInput::new(&project, 1, bank),
-            48_000,
-        )
-        .ok()
-        .unwrap();
-    drop(token); // token abandonment has no owner destructor or join
+    {
+        let (project, bank, _) = owning_audio_stage_fixture();
+        let _token = root
+            .begin_audio_arrangement(
+                hex_engine::AudioArrangementInput::new(&project, 1, bank),
+                48_000,
+            )
+            .ok()
+            .unwrap();
+    } // lexical token abandonment has no owner destructor or join
     assert_eq!(root.tick(true), hex_stream::MediaCleanupPhase::Pending);
     assert_eq!(
         root.audio_arrangement_phase(),
@@ -146,6 +154,9 @@ fn terminal_close_keeps_abandoned_bank_pending_and_refuses_replacement_without_f
     assert_eq!(refusal.inputs.capacity_report(), capacity);
     assert!(refusal.inputs.source_view(&source).is_ok());
     assert_eq!(root.tick(true), hex_stream::MediaCleanupPhase::Pending);
+    eprintln!(
+        "hex preparation host evidence: terminal_close_abandonment; supported-controls=completed"
+    );
 }
 pub(super) struct FixtureFile(std::path::PathBuf);
 impl Drop for FixtureFile {
