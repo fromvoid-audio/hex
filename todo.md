@@ -2477,3 +2477,17 @@ display. Regression coverage includes pre/post DSP levels, bypass, input/output
 undo, schema-19 loading and readout updates during a held pointer press. Native
 Mac pointer/paint/listening acceptance remains user-owned. Pulse discovery is
 blocked by list_projects/list_tags server errors; no issue update is claimed.
+
+## 15 October 2026 — variable-size instrument memory admission (Pulse2589 / PR242)
+
+User authorized replacing the effect-derived per-instrument 4 KiB ceiling with
+declared requirements and aggregate accounting. Mutable pairs can now exceed
+8 KiB within the unchanged combined 2 MiB/256-instance active budget; retained
+tails keep their independent 2 MiB cap. Effect/Return per-twin, voice/event,
+retarget-proof, ledger and checkpoint limits remain separate. Tests exercise
+actual larger owned buffers, exact aggregate/tail boundaries, construction-free
+refusal, PCM/rollback/history/checkpoint continuity and larger callback copies.
+A failed-before regression and optimized component measurements are retained in
+`artifacts/instrument-memory-budget/`; see docs/performance.md. Full exact-source
+CI and native delivery results belong in the linked PR/Pulse evidence. This does
+not complete Operator filter2326, higher-polyphony2226 or scalability2108.

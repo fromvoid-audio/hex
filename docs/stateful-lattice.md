@@ -49,6 +49,10 @@ control-side graph retirement; callbacks never perform their final destruction.
 
 Initial admission caps are 256 active stateful processors, 256 captured-tail
 processors, 256 tail groups and 4096 declared runtime bytes per processor twin.
+The per-twin bound applies to effects. Mutable instruments instead declare their
+own object/buffer requirements and draw from the unchanged 2 MiB aggregate
+active-pair pool and separate 2 MiB retained-tail pool; see
+[instrument admission](lattice-instruments.md#variable-size-mutable-runtime-admission).
 The active-plus-tail paired-history ceiling is 4 MiB; bounded chain/graph metadata,
 source media, prepared configuration and scheduler buffers are separate. These
 caps are not CPU deadline guarantees or a claim that 100 tracks with 16 stateful
