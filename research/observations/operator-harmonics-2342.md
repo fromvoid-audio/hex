@@ -109,3 +109,20 @@ range/Repeat/Normalize/drawing modes as authoring-related hypotheses supported
 by the manual, with actual dependency/domain semantics still pending. Native
 E05 is blocked pending a human-opened safely bound disposable copy; no competing
 control is authorized. Accessible image copies are requested via PR158.
+
+## User clarification — 15 October 2026
+
+The user reports that reducing the range to 16 deactivates partials 17–64 while
+retaining their authored amplitudes; expanding to 64 restores their visibility
+and sound contribution. This is a direct user requirement/observation, without
+a fresh executable identity or measured output. Implement range as an active
+partial count, not just viewport zoom, and never erase the hidden values.
+
+The user does not know the numerical amplitude range, Normalize behavior or
+Repeat options and authorizes sensible independently defined behavior, informed
+by available Operator documentation. These unknown reference laws no longer
+require another product-permission question. Use bounded nonnegative linear
+amplitudes (0 silent, 1 full authored amplitude), with an explicitly documented
+normalization and Repeat law before production integration. Do not claim those
+numerical laws were measured in Live. Native appearance/listening checks remain
+separate from that authorization.

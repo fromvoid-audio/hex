@@ -786,3 +786,19 @@ history integration, live held/release/Undo/cancel continuation with complete
 ownership/accounting, harmonic callback allocation/CPU verification, and the
 reference/native/user acceptance in the task contract. PR158 remains draft;
 a passing portable suite alone cannot establish completion of this feature.
+
+### Range and control clarification — 15 October 2026
+
+The user confirms the 16/32/64 choice is an active harmonic count: values above
+the count remain cached/persisted but are inaudible; expanding restores them.
+A range edit must retain all 64 authored coefficients and be an ordinary
+canonical, undoable audio edit with the same live-continuation obligations as
+painting. Hidden amplitudes participate in save/reopen and Undo, never in the
+currently selected spectrum's normalization or output.
+
+The user authorizes sensible original amplitude/Normalize/Repeat laws where
+reference behavior is unknown. The amplitude domain is finite linear [0,1];
+zero is off and one is full authored amplitude. Primary manual inventory remains
+useful for control selection, but numerical Live parity is unproven. This resolves
+the reference/product-choice hold; it does not resolve the measured host-memory
+conflict or install the production state/provider/lease/painter implementation.

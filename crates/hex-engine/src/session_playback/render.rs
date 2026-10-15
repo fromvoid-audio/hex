@@ -676,10 +676,10 @@ impl SessionPlayback {
                     }
                 }
                 if let Some(capture) = capture.as_mut() {
-                    if !(metered_instrument
-                        && !ordered
-                        && !stateful_effects
-                        && track.sends().is_empty())
+                    if !metered_instrument
+                        || ordered
+                        || stateful_effects
+                        || !track.sends().is_empty()
                     {
                         for frame in render_output.iter_mut() {
                             *frame = mix.apply_frame(*frame);
