@@ -1,82 +1,185 @@
-use crate::ControlStyle;
+use crate::{ControlStyle, DEVICE_CORNER_RADIUS};
 use gpui::{Div, IntoElement, div, prelude::*, px, rgb};
 
-/// Fixed vertical geometry shared by compact native device frames.
-pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 18.0;
-pub const COMPACT_DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
+/// Canonical compact shell geometry, in logical pixels, for every device.
+pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
+pub const DEVICE_FRAME_HEADER_PADDING: f32 = 3.0;
+pub const DEVICE_FRAME_HEADER_GAP: f32 = 2.0;
 pub const DEVICE_FRAME_BORDER_WIDTH: f32 = 1.0;
+pub const DEVICE_BODY_INSET: f32 = 3.0;
+pub const DEVICE_LAYOUT_GUTTER: f32 = 4.0;
+pub const DEVICE_SECTION_RADIUS: f32 = 3.0;
+pub const DEVICE_SECTION_INSET: f32 = 4.0;
+pub const DEVICE_ROW_GUTTER: f32 = 2.0;
 
-/// Compact device frame. The caller supplies title content and header actions,
-/// including any drag input; the frame owns only shared styling and geometry.
+/// Orthogonal compositions; owners supply sizes, children and musical meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceLayout {
+    Row,
+    Column,
+    Wrapped,
+    /// Equal-width columns. Zero is treated as one column.
+    Grid(u16),
+}
+
+/// Compose controls without coupling appearance to a device type or parameter.
+pub fn device_layout(layout: DeviceLayout) -> Div {
+    let base = div().min_w_0().min_h_0().gap(px(DEVICE_LAYOUT_GUTTER));
+    match layout {
+        DeviceLayout::Row => base.flex(),
+        DeviceLayout::Column => base.flex().flex_col(),
+        DeviceLayout::Wrapped => base.flex().flex_wrap().content_start(),
+        DeviceLayout::Grid(columns) => base.grid().grid_cols(columns.max(1)),
+    }
+}
+
+/// Equal flexible split panes. Use a Row composition for unequal/fixed widths.
+pub fn device_split(first: impl IntoElement, second: impl IntoElement) -> Div {
+    device_layout(DeviceLayout::Row)
+        .child(div().min_w_0().flex_1().child(first))
+        .child(div().min_w_0().flex_1().child(second))
+}
+
+/// Shared surround body. Children are inset beyond the rounded lower corners.
+/// Keep this inset when adding scrolling or custom layouts. GPUI's overflow mask
+/// is rectangular: the inset, not `overflow_hidden` alone, protects the corners.
+pub fn device_body(style: ControlStyle) -> Div {
+    device_layout(DeviceLayout::Row)
+        .w_full()
+        .overflow_hidden()
+        .rounded_bl(px(DEVICE_SECTION_RADIUS))
+        .rounded_br(px(DEVICE_SECTION_RADIUS))
+        .border_l(px(DEVICE_BODY_INSET))
+        .border_r(px(DEVICE_BODY_INSET))
+        .border_color(rgb(style.surface))
+        .py(px(1.0))
+        .bg(rgb(style.surface))
+}
+
+/// Semantic surfaces, independent of device identity and section dimensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceSectionSurface {
+    Surround,
+    Rail,
+    Display,
+}
+
+/// Rounded short/tall section. Horizontal content inset is at least the radius,
+/// so even full-height child artwork stays out of the rounded corner cutouts.
+/// Children may choose row/column/grid layout and explicit height independently.
+pub fn device_section(style: ControlStyle, surface: DeviceSectionSurface) -> Div {
+    let color = match surface {
+        DeviceSectionSurface::Surround => style.surface,
+        DeviceSectionSurface::Rail => style.rail,
+        DeviceSectionSurface::Display => style.background,
+    };
+    div()
+        .min_w_0()
+        .min_h_0()
+        .relative()
+        .rounded(px(DEVICE_SECTION_RADIUS))
+        .overflow_hidden()
+        .border_l(px(DEVICE_SECTION_INSET))
+        .border_r(px(DEVICE_SECTION_INSET))
+        .border_color(rgb(color))
+        .bg(rgb(color))
+}
+
+/// A rail's shared surround and row gutters. Width/height belong to composition.
+pub fn device_rail(style: ControlStyle) -> Div {
+    device_layout(DeviceLayout::Column)
+        .gap(px(DEVICE_ROW_GUTTER))
+        .bg(rgb(style.surface))
+}
+
+/// Grouped parameter row with shared focus surface; no semantic focus ownership.
+pub fn device_grouped_row(style: ControlStyle, active: bool) -> Div {
+    device_section(
+        style,
+        if active {
+            DeviceSectionSurface::Surround
+        } else {
+            DeviceSectionSurface::Rail
+        },
+    )
+    .w_full()
+    .flex()
+    .flex_shrink_0()
+    .items_center()
+    .gap(px(DEVICE_ROW_GUTTER))
+}
+
+/// Recessed graph/inspector display. Owners retain graph and tab/focus state.
+pub fn device_display(style: ControlStyle) -> Div {
+    device_section(style, DeviceSectionSurface::Display)
+        .flex()
+        .flex_col()
+        .gap(px(DEVICE_SECTION_RADIUS))
+}
+
+/// Canonical device frame. Title/actions retain caller input handlers. The idle
+/// header and surround use the same surface, without an intervening border.
+/// Use `device_body` for rounded lower-surface/content containment.
 pub fn device_frame(
     title: impl IntoElement,
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
 ) -> Div {
-    device_frame_inner(title, style, header_actions, body, false)
-}
-
-/// Device frame with the shared rounder outline and compact title-bar geometry.
-pub fn compact_device_frame(
-    title: impl IntoElement,
-    style: ControlStyle,
-    header_actions: impl IntoElement,
-    body: impl IntoElement,
-) -> Div {
-    device_frame_inner(title, style, header_actions, body, true)
-}
-
-fn device_frame_inner(
-    title: impl IntoElement,
-    style: ControlStyle,
-    header_actions: impl IntoElement,
-    body: impl IntoElement,
-    compact_header: bool,
-) -> Div {
-    let radius = crate::DEVICE_CORNER_RADIUS;
-    let header_height = if compact_header {
-        COMPACT_DEVICE_FRAME_HEADER_HEIGHT
-    } else {
-        DEVICE_FRAME_HEADER_HEIGHT
-    };
-    let header_padding = if compact_header { 2.0 } else { 4.0 };
-    let header_gap = if compact_header { 2.0 } else { 4.0 };
-    let frame = div()
+    let radius = DEVICE_CORNER_RADIUS;
+    div()
         .flex()
         .flex_col()
         .min_w_0()
+        .min_h_0()
         .border_1()
         .border_color(rgb(style.border))
         .bg(rgb(style.surface))
+        .rounded(px(radius))
+        .overflow_hidden()
+        .child(device_header(title, style, header_actions))
+        .child(body)
+}
+
+/// Canonical header composition, also available to custom surrounds. Insets clip
+/// oversized caller actions/title content to the safe rounded interior.
+pub fn device_header(
+    title: impl IntoElement,
+    style: ControlStyle,
+    header_actions: impl IntoElement,
+) -> Div {
+    div()
+        .debug_selector(|| "device-frame-header".into())
+        .flex()
+        .flex_shrink_0()
+        .h(px(DEVICE_FRAME_HEADER_HEIGHT))
+        .border_l(px(DEVICE_FRAME_HEADER_PADDING))
+        .border_r(px(DEVICE_FRAME_HEADER_PADDING))
+        .border_color(rgb(style.surface))
+        .overflow_hidden()
+        .gap(px(DEVICE_FRAME_HEADER_GAP))
+        .items_center()
+        .bg(rgb(style.surface))
+        .rounded_tl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
+        .rounded_tr(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .child(
             div()
-                .flex()
-                .h(px(header_height))
-                .px(px(header_padding))
-                .gap(px(header_gap))
-                .items_center()
-                .bg(rgb(style.raised))
-                // GPUI overflow masks are rectangular; round the header background too.
-                .rounded_tl(px(radius - DEVICE_FRAME_BORDER_WIDTH))
-                .rounded_tr(px(radius - DEVICE_FRAME_BORDER_WIDTH))
-                .border_b_1()
-                .border_color(rgb(style.border))
-                .child(div().size(px(7.0)).rounded_full().bg(rgb(style.accent)))
-                .child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_color(rgb(style.text))
-                        .text_size(px(style.font_size))
-                        .child(title),
-                )
-                .child(header_actions),
+                .size(px(7.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(rgb(style.accent)),
         )
-        .child(body);
-    frame.rounded(px(radius)).overflow_hidden()
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .min_w_0()
+                .overflow_hidden()
+                .text_color(rgb(style.text))
+                .text_size(px(style.font_size))
+                .child(title),
+        )
+        .child(header_actions)
 }

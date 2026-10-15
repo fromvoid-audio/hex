@@ -43,11 +43,53 @@ draws a saturation/brightness field and hue strip, and emits synchronized RGB/HS
 values. The caller retains the RGB value as canonical state and may synchronize
 it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
-device-specific layout or parameter semantics. All device frames use the shared
-`DEVICE_CORNER_RADIUS` token; `compact_device_frame` changes header density only.
-Header backgrounds carry matching inner rounding because GPUI's content masks
-are rectangular. Numeric readouts use `CONTROL_CORNER_RADIUS`. Device modules
-must reuse these library frames rather than selecting device-specific corners.
+device-specific layout or parameter semantics.
+
+### shared device composition
+
+Every device uses one `device_frame`/`device_header` geometry: 14px header,
+3px horizontal header inset, 2px header gaps, 4px outer radius and 1px border.
+The header and surround both paint the injected `surface`, with no bottom rule.
+`with_device_selection` transforms only the frame's supplied palette; pass the
+original layout/control styles to the body and controls to retain their colors.
+There is no compact/standard frame switch or device-selected header density.
+
+Build the body with `device_body` (3px horizontal inset, 4px layout gutters),
+then compose independently sized children:
+
+- `device_layout(DeviceLayout::{Row, Column, Wrapped, Grid(columns)})` provides
+  ordinary, wrapping or equal-column grid arrangements; zero grid columns means
+  one. `device_split(first, second)` gives two equal flexible panes. A Row allows
+  fixed/unequal widths and caller-selected flexible children.
+- `device_section(style, DeviceSectionSurface::{Surround, Rail, Display})` gives
+  a rounded semantic surface without fixing its height or children.
+- `device_rail` groups rows with 2px gutters. `device_grouped_row(style, active)`
+  supplies the shared rail/surround focus state, without owning focus or bindings.
+- `device_display` supplies a recessed column for graphs or tabbed inspectors.
+  Owners retain graph data, tab slots, selection/focus state and gesture entities.
+
+Sections use 3px radii and 4px horizontal insets. Insets are same-color structural
+side borders: GPUI clips descendants' paint and hit masks inside visible borders,
+whereas padding alone cannot contain oversized children at rounded corners.
+This leaves the full vertical content height available for 40px controls. Keep
+those borders/overflow masks when composing; do not replace them with padding,
+transparent borders or `overflow_visible`. Add content padding inside when needed.
+The body uses the same mechanism with 3px side borders and rounded lower corners.
+Header side borders protect the inner rounded top corners and clip oversized
+caller title/actions. The surface and border paint retain their actual radii.
+Numeric readouts retain the separate `CONTROL_CORNER_RADIUS` token.
+
+Extend this library first when a device needs a new visual capability. Add a
+small generic semantic primitive/layout option and rendered boundary coverage,
+then consume it in the panel. Do not add device-named variants, type-ID switches,
+parameter semantics, a monolithic device template or another GUI library.
+Colors stay injected and typography inherited; device width, parameter order,
+canonical bindings and musical meaning remain caller-owned.
+
+Rendered tests cover normal/constrained header/body bounds, actual filled-quad
+radii/backgrounds, oversized content paint/hit masks, equal split/grid placement,
+wrapping and unchanged control heights. They inspect the GPUI scene and input
+routing, not GPU framebuffer pixels or physical native visual acceptance.
 
 Numeric event phases are `begin`, `change`, `commit` and `cancel`. The widget
 keeps a responsive local draft but does not queue audio work, merge gestures,

@@ -315,7 +315,7 @@ pub(super) fn render_return_effect(
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
             } else {
-                let mut body = div()
+                let mut body = device_body(device_layout_style())
                     .id(ElementId::Name(
                         format!("device-body-{}", id.value()).into(),
                     ))
@@ -327,8 +327,7 @@ pub(super) fn render_return_effect(
                     .flex()
                     .flex_wrap()
                     .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
+                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
                 for parameter in &device_view.parameters {
                     body = body.child(parameter_control(
                         view,
@@ -343,43 +342,19 @@ pub(super) fn render_return_effect(
                 }
                 body
             };
-            if matches!(
-                device_view.type_id.as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            ) {
-                compact_device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            } else {
-                device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            }
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text(device_view.name.clone()),
+                ),
+                device_layout_style().with_device_selection(selected),
+                actions,
+                body,
+            )
+            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -389,50 +364,18 @@ pub(super) fn render_return_effect(
                     .as_str()
                     .unwrap_or("unknown device"),
             );
-            let body = div()
-                .h(px(
-                    if matches!(
-                        device.state().type_id().as_str(),
-                        Ok("hex.utility"
-                            | "hex.eq8"
-                            | "hex.saturator"
-                            | "hex.compressor"
-                            | "hex.gate"
-                            | "hex.auto-pan")
-                    ) {
-                        UTILITY_FRAME_BODY_HEIGHT
-                    } else {
-                        DEVICE_FRAME_BODY_HEIGHT
-                    },
-                ))
+            let body = device_body(device_layout_style())
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                 .child(theme::text(format!("unsupported device state · {error}")));
-            if matches!(
-                device.state().type_id().as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            ) {
-                compact_device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            } else {
-                device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            }
+            device_frame(
+                device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                device_layout_style().with_device_selection(selected),
+                actions,
+                body,
+            )
+            .into_any_element()
         }
     };
     view.device_panel.views.insert(
