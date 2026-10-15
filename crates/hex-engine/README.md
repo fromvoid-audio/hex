@@ -495,3 +495,15 @@ on control. Both preflight and commit fill borrowed scratch and return eligibili
 so neither creates or returns large inline plans on the callback stack. Actual
 capacities and the checked preflight bound are charged to preroll storage; declined
 queries reset the valid prefix, and handoff never resizes or drops the buffers.
+
+## private audio-only preparation roots
+
+Opt-in `AudioPreparationCustody` owns constructor-paired sources, persistent
+Arrangement/Session preparation stages and a private Arrangement Project value.
+`with_audio_project_inventory` reserves final containers before moves and exposes
+restricted metadata only. Track/Return/feed reports inspect actual row, staging or
+root storage, and all root children restore into validated persistent destinations
+before existing disposal. Ordinary compiler Arc ingress remains Unknown; no legacy
+owner is promoted by pointer or reference-count inference. No native publication,
+complete accounting or retirement admission is established by this path.
+See [integration and toolchain contract](../../docs/streaming-prerequisite-integration.md).

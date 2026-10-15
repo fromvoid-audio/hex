@@ -12,7 +12,36 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
+mod audio_input_storage;
+mod audio_only_inputs;
+mod audio_preparation;
+mod session_audio_preparation;
+mod session_shared_preparation;
+mod session_structure_preparation;
+pub use session_shared_preparation::SessionSharedCapacity;
+mod session_tempo_preparation;
+pub use audio_preparation::{
+    ArrangementClipCapacity, ArrangementReturnCapacity, ArrangementReturnMetadata,
+    ArrangementRootCapacity, ArrangementTrackCapacity, ArrangementTrackMetadata,
+    AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, ReturnFeedCapacity,
+};
+pub use session_audio_preparation::SessionSourceCapacity;
+pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};
+pub use session_structure_preparation::SessionStructureCapacity;
+pub use session_tempo_preparation::SessionTempoCapacity;
 mod native_device_view;
+pub use audio_input_storage::{
+    AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
+};
+pub use audio_only_inputs::{
+    AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
+    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
+    ResidentSourceRefusal, StreamedSourceRefusal,
+};
+mod owned_shared;
+mod pcm_arc;
+pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
@@ -21,7 +50,7 @@ pub use native_device_view::{
 };
 
 mod gain_envelope;
-pub use gain_envelope::{GainAutomationCapacity, MAX_PREPARED_GAIN_KNOTS};
+pub use gain_envelope::{GainAutomationCapacity, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS};
 mod return_feed_plan;
 mod streamed;
 pub use streamed::{
@@ -281,6 +310,7 @@ impl Tempo {
 pub struct Audio {
     sample_rate: u32,
     frames: Arc<[Frame]>,
+    pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
 }
 impl Audio {
     /// Source rate; compilation currently requires an exact project-rate match.
@@ -304,6 +334,7 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
+            pcm_arc_receipt: pcm_arc::PcmArcReceipt::current(frames.len()),
             frames: frames.into(),
         })
     }
@@ -926,6 +957,17 @@ impl Track {
         }
         Ok(self)
     }
+    pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
+        self.gain_envelope
+            .as_ref()
+            .map_or(&[], |envelope| envelope.knots())
+    }
+    /// Logical prepared gain at an Arrangement frame, independent of the runtime source owner.
+    pub fn prepared_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
     pub(crate) fn has_gain_automation(&self) -> bool {
         self.gain_envelope.is_some()
     }
@@ -1512,7 +1554,7 @@ pub struct Project {
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
-    shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
     /// Accounted Arrangement note-bank bytes, including each bank's entry
@@ -1599,7 +1641,9 @@ impl Project {
             loop_region,
             master_gain,
             has_streamed_sources,
-            shared_contexts: Arc::new(shared_analytic::SharedAnalyticContextTable::default()),
+            shared_contexts: owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            ),
         })
     }
 
@@ -1613,7 +1657,7 @@ impl Project {
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
         project.return_buses = return_buses;
-        project.shared_contexts = shared_contexts;
+        project.shared_contexts = owned_shared::OwnedShared::untracked(shared_contexts);
         project.audible_end_frame = project
             .tracks
             .iter()

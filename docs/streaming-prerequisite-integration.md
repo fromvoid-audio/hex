@@ -26,7 +26,7 @@ stream admission is changed by this prerequisite checkpoint.
 
 ## strict persistence reconciliation
 
-Main used schema19 for a gain envelope without provenance/routing. The retained
+Main used schema19 for a host device-gain format without provenance/routing. The retained
 foundation used19 for provenance/routing and22 for output-only host gain. These
 wire formats cannot share a widened device DTO without accepting hybrids or
 losing input gain.
@@ -57,8 +57,38 @@ metered automation capture regression, affected all-target strict Clippy, format
 and architecture/GPUI/UI guards pass on this source checkpoint. Full final local
 CI and native verification have not been established by these targeted checks.
 
-Streaming-specific source extraction, Project/PreparedRevision root assembly,
-root failure-custody controls, exact-source full CI and guarded delivery remain
-required. Complete accounting/admission remains disabled until those contracts
+The preparation-only streaming source has been extracted without native callback,
+publication, readiness, media-worker or UI lanes. The private Arrangement Project
+root now reserves actual final Track/Return containers, transfers the prepared
+feed/context and constructs all nine fields explicitly. Reports follow actual row,
+staging or final root locations; context data is counted once while both physical
+context handles remain obligations. Cleanup validates restoration vacancies and
+associations before unpacking into persistent child destinations.
+
+Six focused root tests cover resident/streamed PCM with loops, gain, master and
+Return feeds; every reserve/transfer/install error and panic frontier; exact bank
+recovery; clone conservation and distinct same-content owners; occupied restoration
+and byte pressure; invalid associations; and actual child destructor-panic retention.
+The54 existing preparation tests remain passing on actual supported constructors.
+The affected engine/project/lattice/storage test and doc-test processes pass
+under pinned1.94 (`artifacts/pr232-root-checkpoint/backend-tests.log`); strict
+all-target affected Clippy, formatting and source guards pass. An explicit1.98.1
+run exercises all six unsupported-origin refusals and preserves original input
+owners (`artifacts/pr232-root-checkpoint/unsupported-1.98.1.log`). These are
+checkpoint checks, not final full-CI merge evidence.
+
+PreparedRevision shared-root assembly, its failure-custody controls, exact-source
+full CI and guarded delivery remain required. Complete accounting/admission remains disabled until those contracts
 are explicitly satisfied. This checkpoint does not establish native streaming,
 physical deadlines,100-track acceptance or the broad PR177 review obligations.
+
+## constructor toolchain provenance
+
+`rust-toolchain.toml` pins Rust1.94.0, compiler commit
+`4a4ef493e3a1488c6e321570238084b38948f6db`, matching the original verified std
+requested-layout contract. The build script records actual compiler/sysroot and
+ordinary-install evidence. Unknown versions, wrappers, cross-target or ambiguous
+flags keep declarations Unknown and refuse the opt-in constructor. This pin makes
+normal local CI and optimized builds exercise the real supported branch; explicit
+Rust1.98.1 tests remain unsupported-origin negative controls. This is a requested
+allocation layout declaration, never allocator/RSS or complete lifetime admission.

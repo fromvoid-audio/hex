@@ -11,6 +11,10 @@ workspace member list were added; original crate source was unchanged.
 
 The original fixture has one empty hybrid track, two Returns and opaque original
 test-device payload `[0, 255, 42]` at effect, instrument and Return positions.
+The public original encoder was called after each fixture edit: zero host gains
+select19, adding feeds selects20, adding automation selects21, and nonunity output
+gains selects22. No schema-specific internal writer was substituted.
+
 Main19 includes input/output gains `(3000, -9500)`, `(-60000, 24000)`,
 `(12000, -60000)` millidecibels. Foundation19 retains original provenance bytes
 `[255, 0, 42]`;20 adds a0.25 Return feed;21 adds a beat-zero step gain0.5;22

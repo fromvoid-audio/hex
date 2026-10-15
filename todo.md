@@ -1,3 +1,15 @@
+## 2026-10-15 — #2537 private Arrangement root checkpoint
+
+- Extracted preparation-only source and constructor declarations from the exact
+  published foundation; current native/media/UI behavior remains separate.
+- Private Project-root assembly now owns actual final Track/Return containers,
+  feeds and shared context. Reports follow moved owners; teardown validates the
+  full restoration batch before normal child disposal.
+- Existing54 preparation tests and six new root tests pass on actual supported
+  Rust1.94 constructors. Pinned that verified toolchain for normal checks/builds;
+  other compiler origins retain refusal. Final shared PreparedRevision roots,
+  exact full CI and guarded delivery remain open.
+
 ## 2026-10-15 — #2537 approved backend prerequisite extraction
 
 - Ported required routing/Return-feed/gain-envelope backend contracts from the

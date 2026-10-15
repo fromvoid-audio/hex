@@ -1,4 +1,5 @@
 //! Immutable control-side inventory of every canonical Session cell.
+pub(crate) mod audio_assembly;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
     Audio, MidiTemplateError, MidiTiming, PreparedMidiInstrumentTemplate,
@@ -289,7 +290,8 @@ pub struct PreparedSessionInventory {
     contains_streamed_sources: bool,
     midi_note_bank_storage_bytes: usize,
     midi_note_bank_reference_count: usize,
-    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts:
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
 }
 
 impl std::fmt::Debug for PreparedSessionInventory {
@@ -1050,7 +1052,7 @@ impl PreparedSessionInventory {
             contains_streamed_sources,
             midi_note_bank_storage_bytes: midi_bank_bytes,
             midi_note_bank_reference_count: midi_bank_references,
-            shared_contexts,
+            shared_contexts: crate::owned_shared::OwnedShared::untracked(shared_contexts),
         })
     }
 

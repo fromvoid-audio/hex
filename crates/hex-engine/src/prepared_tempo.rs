@@ -7,6 +7,7 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod persistent;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.
 pub const MAX_PREPARED_TEMPO_POINTS: usize = 1_024;
@@ -77,6 +78,19 @@ impl PreparedTempoMap {
         canonical: TempoMap,
         expected_sample_rate: u32,
     ) -> Result<Self, PreparedTempoError> {
+        let max_micro_bpm = Self::validate_canonical(&canonical, expected_sample_rate)?;
+        Ok(Self {
+            canonical,
+            max_micro_bpm,
+        })
+    }
+
+    // Shared borrowed preflight for the new persistent canonical-copy stage.
+    // No consumed owner can be dropped by a validation error on this path.
+    pub(crate) fn validate_canonical(
+        canonical: &TempoMap,
+        expected_sample_rate: u32,
+    ) -> Result<u32, PreparedTempoError> {
         let actual_sample_rate = canonical.sample_rate();
         if expected_sample_rate != actual_sample_rate {
             return Err(PreparedTempoError::SampleRateMismatch {
@@ -94,10 +108,7 @@ impl PreparedTempoMap {
             .map(|point| point.tempo().micro_bpm())
             .max()
             .ok_or(PreparedTempoError::PointCountOutOfRange { points: 0 })?;
-        Ok(Self {
-            canonical,
-            max_micro_bpm,
-        })
+        Ok(max_micro_bpm)
     }
 
     pub fn sample_rate(&self) -> u32 {

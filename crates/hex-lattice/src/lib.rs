@@ -49,7 +49,8 @@ mod instrument_runtime;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
     NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
+    SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_runtime::{
     InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentAnalyticSeed,
