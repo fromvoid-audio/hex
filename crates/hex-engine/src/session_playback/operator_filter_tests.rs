@@ -2,7 +2,10 @@ use super::*;
 use hex_devices::operator_state::OPERATOR_METADATA;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 fn fixture() -> Project {
-    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    fixture_duration(8 << 32)
+}
+fn fixture_duration(duration: u64) -> Project {
+    let mut snapshot = project(1.0, 0, duration).snapshot();
     let mut state = OPERATOR_METADATA.default_state().unwrap();
     for (id, v) in [
         (1, 1.0),
@@ -232,12 +235,7 @@ fn operator_filter_refuses_ambiguous_reloaded_sounding_sources_without_changing_
 
 #[test]
 fn operator_filter_imports_released_analytic_voice_with_original_gate_and_finite_end() {
-    let mut snapshot = fixture().snapshot();
-    let TrackContentSnapshot::Instrument(clips) = &mut snapshot.tracks[0].content else {
-        panic!("midi")
-    };
-    clips[0].notes[0].duration_raw = 1 << 24;
-    let source = Project::from_snapshot(snapshot).unwrap();
+    let source = fixture_duration(1 << 24);
     let table = Arc::new(hex_devices::SineTable::new());
     let prepared = revision(&source, Arc::clone(&table));
     let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -262,7 +260,11 @@ fn operator_filter_imports_released_analytic_voice_with_original_gate_and_finite
         render_checkpoint_prefix(&mut reference, 1)
     );
     assert!(next.releases.is_empty());
-    render_checkpoint_prefix(&mut next, 1000);
+    let release = next.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .max_release_tail_frames() as usize;
+    render_checkpoint_prefix(&mut next, release + 128);
     assert!(
         next.mutable_instruments[0]
             .as_ref()
