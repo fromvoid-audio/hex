@@ -447,3 +447,21 @@ For the additive shared-context sampling comparison, run
 It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
 outside timing, and reports render versus control construction separately.
 It is a headless benchmark, not a native callback deadline test.
+
+Canonical selected TrackId/ReturnId outputs are available through control-built
+`OutputCapturePlan` and borrowed `OutputCapture` slices, transactionally committed
+with Main. See [the capture contract](../../docs/output-capture.md) for admitted
+Arrangement-only modes, original retired-tail identity, bounds and export limits.
+
+## Opt-in analytic parameter continuation
+
+Prepared analytic providers may approve bounded coefficient continuation between
+compatible contexts. Current-owner notes and detached tails have explicit binding
+provenance; detachment snapshots the finite transition and retains its target
+context lease. Rapid edits start at the actual applied boundary, preserve onset
+and gate, and preflight before ownership mutation. Unsupported providers retain
+the existing old-context policy. Two control-allocated fixed `MAX_TRACKS` tables
+are charged to preroll accounting; handoff/render never resize or drop their
+allocations. Stop and accepted seek clear the current transition. Arrangement,
+Session and output capture use the same sampled frame. See
+[contract and validation gaps](../../docs/operator-enable-continuation.md).

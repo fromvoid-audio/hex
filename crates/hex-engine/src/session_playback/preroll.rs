@@ -297,6 +297,14 @@ impl SessionPlayback {
             &mut total,
             self.context_lease_plan.capacity(),
         )?;
+        add_capacity::<Option<hex_lattice::AnalyticContinuation>>(
+            &mut total,
+            self.analytic_continuations.capacity(),
+        )?;
+        add_capacity::<Option<hex_lattice::AnalyticContinuation>>(
+            &mut total,
+            self.analytic_continuation_scratch.capacity(),
+        )?;
         add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppressions.capacity())?;
         add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppression_scratch.capacity())?;
         Some(total)
@@ -413,6 +421,15 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
         std::mem::size_of::<crate::shared_analytic::ContextLeasePlan>(),
     )?;
+    // Both owner and publication scratch tables have a construction-checked
+    // exact capacity; no stack-resident MAX_TRACKS transition arrays remain.
+    for _ in 0..2 {
+        add_vec(
+            &mut total,
+            MAX_TRACKS,
+            std::mem::size_of::<Option<hex_lattice::AnalyticContinuation>>(),
+        )?;
+    }
     for _ in 0..2 {
         add_vec(
             &mut total,
