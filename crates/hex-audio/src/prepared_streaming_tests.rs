@@ -159,6 +159,59 @@ fn terminal_close_keeps_abandoned_bank_pending_and_refuses_replacement_without_f
     );
 }
 pub(super) struct FixtureFile(std::path::PathBuf);
+#[test]
+fn actual_native_pending_slot_hosts_connected_session_source_stage_and_control_recovery() {
+    if !owning_constructor_available("connected_session_source_stage") {
+        return;
+    }
+    let (project, bank, source_token) = owning_audio_stage_fixture();
+    let track = project.tracks()[0].id();
+    let asset = project.assets().next().unwrap().id();
+    let mut editor = hex_project::Editor::new(project, 16).unwrap();
+    let hex_project::Created::Scene(scene) = editor
+        .execute(hex_project::Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    editor
+        .execute(hex_project::Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "session audio".into(),
+            asset,
+            source_start: 1,
+            source_end: 7,
+        })
+        .unwrap();
+    let original_capacity = bank.capacity_report();
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let token = root
+        .begin_audio_arrangement(
+            hex_engine::AudioArrangementInput::new(editor.project(), 1, bank)
+                .with_session_sources(),
+            48_000,
+        )
+        .ok()
+        .unwrap();
+    assert_eq!(
+        root.audio_arrangement_phase(),
+        Some(hex_engine::AudioPreparationPhase::ArrangementAndSessionSources)
+    );
+    assert!(root.cancel_audio_arrangement(&token));
+    assert!(root.recover_audio_arrangement(&token).is_none());
+    let _ = root.tick(false);
+    let bank = root.recover_audio_arrangement(&token).unwrap();
+    assert_eq!(bank.capacity_report(), original_capacity);
+    assert_eq!(bank.owning_handle_count(), 1);
+    assert!(bank.source_view(&source_token).is_ok());
+    eprintln!(
+        "hex preparation host evidence: connected_session_source_stage; supported-controls=completed"
+    );
+}
 impl Drop for FixtureFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);

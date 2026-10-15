@@ -504,3 +504,18 @@ the bank, remaining aliases, payload and tombstone without retry. Abandoned bank
 recovery after terminal close remains pending and backpressures that fixed slot;
 it is not automatic cleanup success. Data-capacity declarations are not allocator
 bookkeeping/RSS or proof of whole-graph, domain or lifetime completeness.
+
+`AudioArrangementInput::with_session_sources` explicitly adds Session audio
+source/name construction in that same custody. It borrows and validates every
+audio cell's track/scene/asset/rate/interval before bank transfer, reserves the
+actual cache/cell/name capacities, then installs independently recorded cache
+and clip aliases into persistent destinations. Repeated cells reuse the current
+bank's private cache allocation identity, with a separate obligation for every
+physical handle. Names copy exactly into pre-reserved persistent Strings; no
+temporary source map, path/name clone or raw previous inventory is adopted.
+Legacy previous-inventory source aliases remain untracked and are not inputs to
+this stage. Every source/name/cached-alias disposal is pending before destruction
+and normally complete before original-bank recovery. Metadata/data charges stay
+retained through cleanup; no lifetime-closed fact is emitted. This is still a
+source/name compiler stage, not complete scene/Stop/index/preview/tempo/template
+inventory, PreparedRevision accounting, or a renderable Session publication.

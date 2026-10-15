@@ -1,7 +1,10 @@
-//! Preparation-only Arrangement source-binding stage. Not a prepared revision,
+//! Preparation-only Arrangement and opt-in Session source-binding stages. Not a prepared revision,
 //! storage-complete graph, publication admission or lifetime-closure authority.
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
+#[cfg(test)]
+#[path = "session_audio_preparation_tests.rs"]
+mod session_source_tests;
 use std::{
     any::Any,
     mem,
@@ -13,6 +16,7 @@ pub enum AudioPreparationPhase {
     Vacant,
     Constructing,
     ArrangementSources,
+    ArrangementAndSessionSources,
     Cleaning,
     Recoverable,
     FailedIncomplete,
@@ -24,6 +28,9 @@ pub struct AudioPreparationToken {
     incarnation: u64,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Accepted-stage declarations/actual backing observations, not whole graph or
+/// process memory. Refusals may contain only partially collected observations;
+/// aggregate fields are authoritative only after successful full preflight.
 pub struct AudioArrangementCapacity {
     pub source_slot_capacity: usize,
     pub source_slot_bytes: usize,
@@ -33,6 +40,7 @@ pub struct AudioArrangementCapacity {
     pub declared_source_bytes: usize,
     pub retained_stage_bytes: usize,
     pub construction_peak_bytes: usize,
+    pub session: crate::SessionSourceCapacity,
 }
 pub struct AudioArrangementRefusal {
     pub reason: AudioStorageError,
@@ -45,6 +53,7 @@ pub struct AudioArrangementInput<'a> {
     project: &'a hex_project::Project,
     generation: u64,
     inputs: OwnedAudioInputs,
+    include_session: bool,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -59,7 +68,15 @@ impl<'a> AudioArrangementInput<'a> {
             project,
             generation,
             inputs,
+            include_session: false,
         }
+    }
+    /// Explicitly add the new persistent Session audio source/name stage.
+    /// Previous legacy inventories are never adopted; cache aliases originate
+    /// only in this same input bank and remain in the same preparation custodian.
+    pub fn with_session_sources(mut self) -> Self {
+        self.include_session = true;
+        self
     }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
         Box::new(AudioArrangementRefusal {
@@ -101,7 +118,7 @@ impl Drop for SourceSlot {
     }
 }
 #[cfg(test)]
-struct DropProbe(Option<Box<dyn FnOnce() + Send>>);
+pub(super) struct DropProbe(Option<Box<dyn FnOnce() + Send>>);
 #[cfg(test)]
 impl Drop for DropProbe {
     fn drop(&mut self) {
@@ -124,6 +141,7 @@ pub struct AudioPreparationCustody {
     first_panic: Option<Box<dyn Any + Send>>,
     capacity: AudioArrangementCapacity,
     reason: Option<AudioStorageError>,
+    session: crate::session_audio_preparation::SessionSourceConstruction,
     #[cfg(test)]
     fail_after: Option<usize>,
     #[cfg(test)]
@@ -134,7 +152,12 @@ impl AudioPreparationCustody {
         &mut self,
         input: AudioArrangementInput<'_>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_arrangement_on_control(input.project, input.generation, input.inputs)
+        self.begin_stages_on_control(
+            input.project,
+            input.generation,
+            input.inputs,
+            input.include_session,
+        )
     }
     pub fn try_new_on_control() -> Result<Self, AudioStorageError> {
         Ok(Self {
@@ -147,6 +170,7 @@ impl AudioPreparationCustody {
             first_panic: None,
             capacity: AudioArrangementCapacity::default(),
             reason: None,
+            session: crate::session_audio_preparation::SessionSourceConstruction::default(),
             #[cfg(test)]
             fail_after: None,
             #[cfg(test)]
@@ -176,6 +200,15 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
+        self.begin_stages_on_control(project, generation, inputs, false)
+    }
+    fn begin_stages_on_control(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        inputs: OwnedAudioInputs,
+        include_session: bool,
+    ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
         let result = self.preflight(project, generation, &inputs, &mut slots, &mut capacity);
@@ -189,15 +222,87 @@ impl AudioPreparationCustody {
                 }));
             }
         };
+        if include_session {
+            let previous_session_bytes = capacity.session.bytes();
+            // Persistent destinations BEFORE fallible names/helper work. Bank
+            // remains borrowed, so every pre-transfer refusal returns it intact.
+            self.phase = AudioPreparationPhase::Constructing;
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                self.session
+                    .reserve(project, generation, &inputs, slots.len())
+            }));
+            capacity.session = self.session.capacity;
+            let result = match result {
+                Ok(result) => result.and_then(|()| {
+                    capacity.retained_stage_bytes = capacity
+                        .retained_stage_bytes
+                        .checked_sub(previous_session_bytes?)
+                        .ok_or(AudioStorageError::Overflow)?
+                        .checked_add(capacity.session.bytes()?)
+                        .ok_or(AudioStorageError::Overflow)?;
+                    capacity.construction_peak_bytes = capacity
+                        .construction_peak_bytes
+                        .checked_sub(previous_session_bytes?)
+                        .ok_or(AudioStorageError::Overflow)?
+                        .checked_add(capacity.session.bytes()?)
+                        .and_then(|n| n.checked_add(capacity.session.previous_backing_bytes))
+                        .ok_or(AudioStorageError::Overflow)?;
+                    if capacity.retained_stage_bytes > inputs.reservation.max_prepared_data_bytes
+                        || capacity.construction_peak_bytes
+                            > inputs.reservation.max_construction_data_bytes
+                    {
+                        return Err(AudioStorageError::ReservationExceeded);
+                    }
+                    Ok(())
+                }),
+                Err(payload) => {
+                    self.first_panic = Some(payload);
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                    Err(AudioStorageError::UnknownStorage)
+                }
+            };
+            if let Err(reason) = result {
+                if self.phase != AudioPreparationPhase::FailedIncomplete {
+                    if self.dispose_session_on_control()
+                        && self.session.clear_disposed_rows().is_ok()
+                    {
+                        self.phase = AudioPreparationPhase::Vacant;
+                    } else {
+                        self.phase = AudioPreparationPhase::FailedIncomplete;
+                    }
+                }
+                return Err(Box::new(AudioArrangementRefusal {
+                    reason,
+                    inputs,
+                    capacity,
+                }));
+            }
+        }
         // Vacant destination validated above. Fixed moves only; no owner dropped.
         self.slots = slots;
         self.bank = Some(inputs);
         self.incarnation = next;
         self.capacity = capacity;
         self.phase = AudioPreparationPhase::Constructing;
-        let result = catch_unwind(AssertUnwindSafe(|| self.construct()));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.construct()?;
+            if include_session {
+                self.session.construct(
+                    self.bank
+                        .as_ref()
+                        .ok_or(AudioStorageError::SourceMismatch)?,
+                )?;
+            }
+            Ok(())
+        }));
         match result {
-            Ok(Ok(())) => self.phase = AudioPreparationPhase::ArrangementSources,
+            Ok(Ok(())) => {
+                self.phase = if include_session {
+                    AudioPreparationPhase::ArrangementAndSessionSources
+                } else {
+                    AudioPreparationPhase::ArrangementSources
+                }
+            }
             Ok(Err(reason)) => {
                 self.reason = Some(reason);
                 self.phase = AudioPreparationPhase::Cleaning;
@@ -278,6 +383,9 @@ impl AudioPreparationCustody {
             .source_container_bytes
             .checked_add(inputs.capacity.alias_container_bytes)
             .ok_or(AudioStorageError::Overflow)?;
+        // Empty retained Session Vec backings still belong to this root even
+        // when a later opt-in request compiles Arrangement sources only.
+        capacity.session = self.session.retained_capacity()?;
         for (index, (_, source)) in inputs.sources.iter().enumerate() {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             if !inputs.sources[..index]
@@ -296,6 +404,7 @@ impl AudioPreparationCustody {
             .checked_add(capacity.custodian_inline_bytes)
             .and_then(|n| n.checked_add(capacity.input_container_bytes))
             .and_then(|n| n.checked_add(capacity.declared_source_bytes))
+            .and_then(|n| capacity.session.bytes().ok().and_then(|m| n.checked_add(m)))
             .and_then(|n| n.checked_add(inputs.reservation.caller_retained_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         capacity.construction_peak_bytes = capacity
@@ -457,7 +566,27 @@ impl AudioPreparationCustody {
                 }
             }
         }
+        if !self.dispose_session_on_control() {
+            return;
+        }
         self.phase = AudioPreparationPhase::Recoverable;
+    }
+    fn dispose_session_on_control(&mut self) -> bool {
+        while self.session.has_next_disposal() {
+            match catch_unwind(AssertUnwindSafe(|| self.session.dispose_next())) {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                    return false;
+                }
+                Err(payload) => {
+                    self.first_panic = Some(payload);
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                    return false;
+                }
+            }
+        }
+        true
     }
     /// Only actual normal partial-owner disposal permits original-bank recovery.
     /// Identity/refusal leaves the input bank, its Vec capacities and tokens intact.
@@ -468,12 +597,20 @@ impl AudioPreparationCustody {
         if !self.matches(token) || self.phase != AudioPreparationPhase::Recoverable {
             return None;
         }
+        // Scalar validation precedes original-owner extraction. Clearing disposed
+        // rows frees no source/name allocation (only already-empty headers).
+        if self.session.clear_disposed_rows().is_err() {
+            return None;
+        }
         let bank = self.bank.take()?;
         self.slots.clear(); // normally disposed scalar rows; backing stays charged
         self.next_disposal = 0;
         self.reason = None;
         self.phase = AudioPreparationPhase::Vacant;
         Some(bank)
+    }
+    pub fn installed_session_source_bindings(&self) -> (usize, usize) {
+        self.session.counts()
     }
     /// Scalar audit of this compiler stage, not complete storage/admission.
     pub fn installed_source_bindings(&self) -> usize {
@@ -519,7 +656,7 @@ mod tests {
         );
         false
     }
-    fn fixture(clips: usize) -> (hex_project::Project, OwnedAudioInputs) {
+    pub(super) fn fixture(clips: usize) -> (hex_project::Project, OwnedAudioInputs) {
         use hex_project::{Command, Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
         let Created::Track(track) = editor
