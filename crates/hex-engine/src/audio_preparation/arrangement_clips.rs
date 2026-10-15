@@ -1,11 +1,13 @@
 //! Private final Arrangement clip owners; not a Track/Project or publication.
 //! Every Box and paired destination exists before any source alias moves.
+pub(super) mod tracks;
 use super::*;
 use crate::{Clip, ClipMetadata, owned_shared::SharedDeclaration};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArrangementClipCapacity {
+    pub tracks: tracks::ArrangementTrackCapacity,
     pub pair_backing_bytes: usize,
     pub metadata_pointee_bytes: usize,
     pub previous_growth_backing_bytes: usize,
@@ -14,6 +16,7 @@ impl ArrangementClipCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
         self.pair_backing_bytes
             .checked_add(self.metadata_pointee_bytes)
+            .and_then(|n| n.checked_add(self.tracks.bytes().ok()?))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -26,6 +29,7 @@ struct Binding {
     handle: u64,
 }
 struct Pair {
+    transferred: bool,
     binding: Binding,
     clip: Option<Clip>,
     metadata: Option<Box<ClipMetadata>>,
@@ -46,6 +50,7 @@ enum Phase {
 #[derive(Default)]
 pub(super) struct ArrangementClips {
     rows: Vec<Pair>,
+    tracks: tracks::TrackAssembly,
     phase: Phase,
     growth: usize,
     cursor: usize,
@@ -82,21 +87,32 @@ impl ArrangementClips {
                         .ok_or(AudioStorageError::Overflow)
                 })?;
         Ok(ArrangementClipCapacity {
+            tracks: self.tracks.capacity(growth)?,
             pair_backing_bytes: self
                 .rows
                 .capacity()
                 .checked_mul(mem::size_of::<Pair>())
                 .ok_or(AudioStorageError::Overflow)?,
             metadata_pointee_bytes: metadata
+                .checked_add(self.tracks.metadata_boxes())
+                .ok_or(AudioStorageError::Overflow)?
                 .checked_mul(mem::size_of::<ClipMetadata>())
                 .ok_or(AudioStorageError::Overflow)?,
-            previous_growth_backing_bytes: if growth { self.growth } else { 0 },
+            previous_growth_backing_bytes: if growth {
+                self.growth
+                    .checked_add(self.tracks.capacity(true)?.previous_growth_backing_bytes)
+                    .ok_or(AudioStorageError::Overflow)?
+            } else {
+                0
+            },
         })
     }
     pub(super) fn reserve(
         &mut self,
         slots: &[SourceSlot],
         inputs: &OwnedAudioInputs,
+        project: &hex_project::Project,
+        tracks: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || !self.rows.is_empty()
@@ -149,6 +165,7 @@ impl ArrangementClips {
             .map_err(|_| AudioStorageError::Allocation)?;
         for (slot, s) in slots.iter().enumerate() {
             self.rows.push(Pair {
+                transferred: false,
                 binding: Binding {
                     slot,
                     track: s.track,
@@ -179,6 +196,9 @@ impl ArrangementClips {
                 }));
             }
         }
+        if tracks {
+            self.tracks.reserve(project, &self.rows)?;
+        }
         #[cfg(test)]
         if self.mismatch {
             if let Some(r) = self.rows.first_mut() {
@@ -195,6 +215,7 @@ impl ArrangementClips {
         &mut self,
         slots: &mut [SourceSlot],
         inputs: &OwnedAudioInputs,
+        tracks: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Reserved || self.rows.len() != slots.len() {
             return Err(AudioStorageError::Capacity);
@@ -217,6 +238,7 @@ impl ArrangementClips {
                     source: s.source,
                     handle: s.handle,
                 })
+                || r.transferred
                 || r.clip.is_some()
                 || r.installed_handle.is_some()
                 || r.installed_slot.is_some()
@@ -290,12 +312,19 @@ impl ArrangementClips {
             }
         }
         self.phase = Phase::Installed;
+        if tracks {
+            self.tracks.construct(&mut self.rows)?;
+        }
         Ok(())
     }
     pub(super) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        if self.tracks.has_next() {
+            self.tracks.dispose_next(&mut self.rows)?;
+            return Ok(());
+        }
         self.phase = Phase::Cleaning;
         if self.cursor == self.rows.len() {
             self.phase = Phase::Complete;
@@ -371,20 +400,26 @@ impl ArrangementClips {
             || self.pending_audio.is_some()
             || self.pending_stream.is_some()
             || self.pending_metadata.is_some()
-            || self
-                .rows
-                .iter()
-                .any(|r| r.clip.is_some() || r.metadata.is_some() || r.stream.is_some())
+            || self.rows.iter().any(|r| {
+                r.transferred || r.clip.is_some() || r.metadata.is_some() || r.stream.is_some()
+            })
         {
             return Err(AudioStorageError::Capacity);
         }
+        self.tracks.clear_disposed()?;
         self.rows.clear();
         self.cursor = 0;
         self.phase = Phase::Vacant;
         Ok(())
     }
     pub(super) fn installed(&self) -> usize {
-        self.rows.iter().filter(|r| r.clip.is_some()).count()
+        self.rows.iter().filter(|r| r.clip.is_some()).count() + self.tracks.installed_clips()
+    }
+    pub(super) fn track_metadata(
+        &self,
+        index: usize,
+    ) -> Option<tracks::ArrangementTrackMetadata<'_>> {
+        self.tracks.metadata(index)
     }
     #[cfg(test)]
     pub(super) fn handles(&self) -> Vec<Option<u64>> {

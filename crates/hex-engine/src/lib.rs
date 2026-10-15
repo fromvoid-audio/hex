@@ -21,8 +21,9 @@ mod session_structure_preparation;
 pub use session_shared_preparation::SessionSharedCapacity;
 mod session_tempo_preparation;
 pub use audio_preparation::{
-    ArrangementClipCapacity, AudioArrangementCapacity, AudioArrangementInput,
-    AudioArrangementRefusal, AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken,
+    ArrangementClipCapacity, ArrangementTrackCapacity, ArrangementTrackMetadata,
+    AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken,
 };
 pub use session_audio_preparation::SessionSourceCapacity;
 pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};

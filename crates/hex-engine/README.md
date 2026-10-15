@@ -691,3 +691,55 @@ Remaining finite assembly/accounting checklist after this bounded clip unit:
 
 Existing numeric caps and graph exclusions are unchanged; this stage does not
 mint a complete storage report, lifetime receipt, readiness or admission.
+
+`with_audio_track_inventory()` is the next explicit opt-in: the same retained
+preparation custodian now owns private actual Arrangement Tracks. It composes the
+previous clip/Session stages; earlier opt-ins and all legacy compiler APIs keep
+their behavior. Strict metadata returns only Track IDs, copyable mixes/send
+indices/gains and borrowed scalar gain knots. It exposes no Track, Clip,
+cloneable owning child, Arc, Deref or mutable runtime.
+
+Every current Track field is explicit. Instruments, state, device processors,
+mutable/MIDI providers and ordered matrices are absent/refused for this class.
+Mandatory meter ownership is not inferred absent: the lattice owning module
+exhaustively declares DeviceMeter's two AtomicU32 fields, separately from its
+constructor-paired Arc requested layout and independent handle. Empty chains use
+a DISTINCT explicit `Arc::new([T; 0])` allocation followed by safe unsizing,
+retaining the same pinned constructor declaration. Legacy raw/default/empty-Vec
+Arcs remain Unknown. Requested layout is not allocator rounding/RSS or universal
+std ABI. No gate/toolchain/policy is weakened.
+
+All Track rows, per-Track clip/send/pair destinations, gain-knot backing and
+control-only source/destination bijection scratch are reserved before source
+moves. Gain preparation fills the owning module's persistent Vec directly through
+a borrowed helper; partial conversion/fill errors never unwind a local owning
+Vec. Legacy preparation uses the same numerical filler and retains its original
+public/error behavior. Quantized duplicate frames retain the existing last-knot
+law and tempo-marker interpolation. Nonempty sends or automation set source_mix
+to identity. Automation uses unity static gain, authored absolute gains and
+balance; static gain is not applied twice. Solo/mute and canonical Return send
+indices match the existing compiler, without claiming a prepared Return graph.
+
+Exact clip/binding/declaration/handle custody moves into each pre-reserved Track
+location together. A unique preallocated destination map rejects duplicate or
+missing source associations before any moves. Control cleanup validates the
+complete return destination, unpacks into vacant persistent fields, returns exact
+clip associations, then disposes meter/chain owners Pending-before-take. Gain
+buffers return to persistent copy custody; every spare capacity remains charged.
+A panic retains remaining owners, first payload and an incomplete tombstone; no
+retry or original-bank recovery until actual normal cleanup. No callback path is
+changed or gains a preparation traversal, lock, allocation or owner clone.
+
+Reports include actual row/clip/send/knot/pair/scratch backing, meter and explicit
+empty-chain declared payload/header layouts, original staging headers, retained
+spare storage and construction growth/caller overlap. Data allocations and
+independent owning handles remain different obligations. Immutable graphs remain
+outside the existing runtime 32MiB cap; caller prepared/construction reservations
+and all other existing caps remain unchanged. Unsupported ownership still refuses
+complete accounting/admission.
+
+Remaining finite assembly work: Return/feed graph, restricted Arrangement Project
+and PreparedRevision/root construction, explicit empty preview provenance and
+root descriptors. Full cross-ledger allocation/handle obligations, all ending
+lifetime cases, production admission/readiness/preroll, and optimized native
+100-track mixed-rate/edit/seek/launch/fault/deadline acceptance are still pending.

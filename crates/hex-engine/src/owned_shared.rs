@@ -32,6 +32,16 @@ impl<T> OwnedShared<T> {
     }
 }
 impl<T> OwnedShared<[T]> {
+    /// DISTINCT explicit allocation origin. Sized zero-array Arc::new allocates
+    /// its checked header with T alignment; unsizing moves the same allocation.
+    /// Default/from_owned_vec(empty)/raw ingress remain Unknown.
+    pub(crate) fn new_owned_empty_slice() -> Self {
+        let value: [T; 0] = [];
+        let OwnedShared { arc, receipt } = OwnedShared::new_owned(value);
+        let arc: Arc<[T]> = arc;
+        Self { arc, receipt }
+    }
+
     pub(crate) fn from_owned_vec(value: Vec<T>) -> Self {
         let receipt = if value.is_empty() {
             1
@@ -153,5 +163,53 @@ mod tests {
             assert!(slice.parts().is_none());
         }
         assert!(Layout::array::<u16>(usize::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod explicit_empty_tests {
+    use super::*;
+    #[repr(align(64))]
+    struct Aligned;
+    #[test]
+    fn explicit_sized_empty_allocation_keeps_identity_layout_and_distinct_unknown_origins() {
+        let a = OwnedShared::<[Aligned]>::new_owned_empty_slice();
+        let b = OwnedShared::<[Aligned]>::new_owned_empty_slice();
+        assert!(a.arc().is_empty());
+        assert!(!Arc::ptr_eq(a.arc(), b.arc()));
+        assert_eq!(Arc::strong_count(a.arc()), 1);
+        let alias = a.clone_on_control();
+        assert!(Arc::ptr_eq(a.arc(), alias.arc()));
+        assert_eq!(a.parts(), alias.parts());
+        assert!(OwnedShared::<[Aligned]>::default().parts().is_none());
+        assert!(
+            OwnedShared::from_owned_vec(Vec::<Aligned>::with_capacity(7))
+                .parts()
+                .is_none()
+        );
+        assert!(
+            OwnedShared::untracked(Arc::clone(a.arc()))
+                .parts()
+                .is_none()
+        );
+        if crate::pcm_arc::native_layout_known() {
+            let requested = Layout::array::<AtomicUsize>(2)
+                .unwrap()
+                .extend(Layout::new::<[Aligned; 0]>())
+                .unwrap()
+                .0
+                .pad_to_align();
+            assert_eq!(a.parts(), Some((0, requested.size())));
+            assert_eq!(requested.align(), 64);
+            let (arc, declaration) = b.into_paired_parts_on_control();
+            assert_eq!(declaration.parts(&arc), Some((0, requested.size())));
+            assert_eq!(Arc::strong_count(&arc), 1);
+            eprintln!(
+                "hex preparation evidence: explicit_owned_empty; supported-controls=completed; alignment64-declaration"
+            );
+        } else {
+            assert!(a.parts().is_none());
+            eprintln!("hex preparation evidence: explicit_owned_empty; branch=unsupported-refusal");
+        }
     }
 }

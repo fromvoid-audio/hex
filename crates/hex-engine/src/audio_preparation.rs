@@ -18,7 +18,10 @@ mod structure_tests;
 #[cfg(test)]
 #[path = "session_tempo_preparation_tests.rs"]
 mod tempo_tests;
-pub use arrangement_clips::ArrangementClipCapacity;
+pub use arrangement_clips::{
+    ArrangementClipCapacity,
+    tracks::{ArrangementTrackCapacity, ArrangementTrackMetadata},
+};
 #[cfg(test)]
 mod arrangement_clip_tests;
 use std::{
@@ -68,15 +71,20 @@ pub struct AudioArrangementRefusal {
     pub inputs: OwnedAudioInputs,
     pub capacity: AudioArrangementCapacity,
 }
+#[derive(Clone, Copy, Default)]
+struct Stages {
+    include_session: bool,
+    assemble_session: bool,
+    assemble_arrangement: bool,
+    assemble_tracks: bool,
+}
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
 pub struct AudioArrangementInput<'a> {
     project: &'a hex_project::Project,
     generation: u64,
     inputs: OwnedAudioInputs,
-    include_session: bool,
-    assemble_session: bool,
-    assemble_arrangement: bool,
+    stages: Stages,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -91,32 +99,36 @@ impl<'a> AudioArrangementInput<'a> {
             project,
             generation,
             inputs,
-            include_session: false,
-            assemble_session: false,
-            assemble_arrangement: false,
+            stages: Stages::default(),
         }
     }
     /// Explicitly add the new persistent Session audio source/name stage.
     /// Previous legacy inventories are never adopted; cache aliases originate
     /// only in this same input bank and remain in the same preparation custodian.
     pub fn with_session_sources(mut self) -> Self {
-        self.include_session = true;
+        self.stages.include_session = true;
         self
     }
     /// Explicit sealed final Session assembly. No legacy inventory/clip/Arc is
     /// returned; publication and complete accounting remain unavailable.
     pub fn with_session_inventory(mut self) -> Self {
-        self.include_session = true;
-        self.assemble_session = true;
+        self.stages.include_session = true;
+        self.stages.assemble_session = true;
         self
     }
     /// Explicit private Arrangement clip targets plus the sealed Session stage.
     /// No Track/Project/PreparedRevision or publication capability is exposed.
     pub fn with_audio_clip_inventory(mut self) -> Self {
-        self.include_session = true;
-        self.assemble_session = true;
-        self.assemble_arrangement = true;
+        self.stages.include_session = true;
+        self.stages.assemble_session = true;
+        self.stages.assemble_arrangement = true;
         self
+    }
+    /// Add sealed private Track targets; no Project/PreparedRevision/publication.
+    pub fn with_audio_track_inventory(self) -> Self {
+        let mut input = self.with_audio_clip_inventory();
+        input.stages.assemble_tracks = true;
+        input
     }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
         Box::new(AudioArrangementRefusal {
@@ -199,14 +211,7 @@ impl AudioPreparationCustody {
         &mut self,
         input: AudioArrangementInput<'_>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(
-            input.project,
-            input.generation,
-            input.inputs,
-            input.include_session,
-            input.assemble_session,
-            input.assemble_arrangement,
-        )
+        self.begin_stages_on_control(input.project, input.generation, input.inputs, input.stages)
     }
     pub fn try_new_on_control() -> Result<Self, AudioStorageError> {
         Ok(Self {
@@ -255,17 +260,21 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(project, generation, inputs, false, false, false)
+        self.begin_stages_on_control(project, generation, inputs, Stages::default())
     }
     fn begin_stages_on_control(
         &mut self,
         project: &hex_project::Project,
         generation: u64,
         inputs: OwnedAudioInputs,
-        include_session: bool,
-        assemble_session: bool,
-        assemble_arrangement: bool,
+        stages: Stages,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
+        let Stages {
+            include_session,
+            assemble_session,
+            assemble_arrangement,
+            assemble_tracks,
+        } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
         let result = self.preflight(project, generation, &inputs, &mut slots, &mut capacity);
@@ -302,10 +311,20 @@ impl AudioPreparationCustody {
                     .reserve(project, generation, &inputs, slots.len())?;
                 self.structure.reserve(project, &self.session)?;
                 self.tempo.reserve(project)?;
+                let track_handles = if assemble_tracks {
+                    project
+                        .tracks()
+                        .len()
+                        .checked_mul(2)
+                        .ok_or(AudioStorageError::Overflow)?
+                } else {
+                    0
+                };
                 let handles = inputs
                     .owning_handle_count()
                     .checked_add(slots.len())
                     .and_then(|n| n.checked_add(self.session.capacity.reserved_handle_destinations))
+                    .and_then(|n| n.checked_add(track_handles))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -317,7 +336,8 @@ impl AudioPreparationCustody {
                     )?;
                 }
                 if assemble_arrangement {
-                    self.arrangement_clips.reserve(&slots, &inputs)?;
+                    self.arrangement_clips
+                        .reserve(&slots, &inputs, project, assemble_tracks)?;
                 }
                 Ok(())
             }));
@@ -442,6 +462,7 @@ impl AudioPreparationCustody {
                     self.bank
                         .as_ref()
                         .ok_or(AudioStorageError::SourceMismatch)?,
+                    assemble_tracks,
                 )?;
             }
             if include_session {
@@ -928,6 +949,12 @@ impl AudioPreparationCustody {
         self.reason = None;
         self.phase = AudioPreparationPhase::Vacant;
         Some(bank)
+    }
+    pub fn arrangement_track_metadata(&self, index: usize) -> Option<ArrangementTrackMetadata<'_>> {
+        if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
+            return None;
+        }
+        self.arrangement_clips.track_metadata(index)
     }
     pub fn session_inventory_metadata(&self) -> Option<crate::SessionInventoryMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
