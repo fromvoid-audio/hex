@@ -95,6 +95,7 @@ pub struct SessionPendingRouteStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackError {
+    Capture(capture::OutputCaptureError),
     RevisionTrackMismatch,
     RevisionSampleRateMismatch,
     Allocation,
@@ -129,6 +130,7 @@ impl SessionPlaybackError {
     /// in the audio callback. Detailed numeric timing formatting stays on control.
     pub(crate) fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::Capture(error) => error.message(),
             Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
             Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
             Self::Allocation => "could not reserve session playback runtime storage",
@@ -295,6 +297,9 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    capture_runtime: u64,
+    capture_epoch: u64,
+    device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -310,6 +315,9 @@ pub struct SessionPlayback {
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    // Immutable original ownership, including effect-only suffixes. Inline
+    // slots are charged by size_of::<Self>() in actual and paired preflight.
+    tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -320,12 +328,17 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
+    // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
+    // revision context. Actual capacities are charged in preroll accounting.
+    analytic_continuations: Vec<Option<hex_lattice::AnalyticContinuation>>,
+    analytic_continuation_scratch: Vec<Option<hex_lattice::AnalyticContinuation>>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
     spans: MidiSpanBuffer,
+    analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
@@ -352,6 +365,17 @@ impl fmt::Debug for SessionPlayback {
 }
 
 impl SessionPlayback {
+    pub(crate) fn set_device_metering(&mut self, enabled: bool) {
+        self.device_metering = enabled;
+        for chain in self
+            .device_chains
+            .iter_mut()
+            .chain(self.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
+        }
+    }
+
     pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
         self.historical_floor
             .into_iter()
@@ -772,6 +796,9 @@ impl SessionPlayback {
             .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let analytic_continuations = reserve_analytic_continuations()?;
+        let analytic_continuation_scratch = reserve_analytic_continuations()?;
+
         let mut suppressions = Vec::new();
         suppressions
             .try_reserve_exact(release_capacity)
@@ -782,6 +809,9 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
         Ok(Self {
+            capture_runtime: capture::next_runtime()?,
+            capture_epoch: 0,
+            device_metering: false,
             revision,
             periodic_tempo,
             anchor: None,
@@ -797,6 +827,7 @@ impl SessionPlayback {
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
+            tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -807,12 +838,15 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
+            analytic_continuations,
+            analytic_continuation_scratch,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
             spans: MidiSpanBuffer::default(),
+            analytic_import: analytic_import::ImportPlan::new()?,
             performance_frame: 0,
             arrangement_frame: 0,
             arrangement_loop_pass: 0,
@@ -941,7 +975,7 @@ impl SessionPlayback {
                     .arrangement()
                     .tracks()
                     .iter()
-                    .any(crate::Track::has_stateful_devices))
+                    .any(crate::Track::has_device_chain))
     }
 
     pub(crate) fn has_active_arrangement_voices(&self) -> bool {
@@ -1069,10 +1103,30 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod capture;
+/// These tables never grow, shrink, swap ownership or allocate in handoff or
+/// rendering. Refusal/destruction of their storage belongs to control.
+fn reserve_analytic_continuations()
+-> Result<Vec<Option<hex_lattice::AnalyticContinuation>>, SessionPlaybackError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_TRACKS)
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    if slots.capacity() != MAX_TRACKS {
+        return Err(SessionPlaybackError::Allocation);
+    }
+    slots.resize(MAX_TRACKS, None);
+    Ok(slots)
+}
+
 mod commands;
 mod handoff;
 mod preroll;
 mod render;
+pub use capture::{
+    MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
+    OutputCaptureId, OutputCapturePlan,
+};
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
@@ -1151,3 +1205,5 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+mod analytic_import;

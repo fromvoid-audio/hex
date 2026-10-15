@@ -59,6 +59,7 @@ pub(super) enum OperatorPage {
     Envelope,
     Routing,
     Lfo,
+    Filter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,6 +164,7 @@ pub(super) fn render_body(
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
+        OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
     div()
@@ -396,7 +398,7 @@ fn operator_row(
             .child(fixed_control),
     );
     row = row.child(level).child(
-        operator_label(view, cx, device, operator, selected)
+        operator_label(view, cx, device, parameters, operator, selected)
             .absolute()
             .right(px(4.0))
             .top(px(14.0)),
@@ -408,10 +410,15 @@ fn operator_label(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    parameters: &[NativeDeviceParameterView],
     operator: usize,
     selected: bool,
 ) -> Stateful<Div> {
     let owner = context::Owner::capture(view, device);
+    let enabled = matches!(
+        value(view, device, parameters, id(513 + operator as u32)),
+        Some(ParameterValue::Bool(true))
+    );
     let focus = navigation_focus(view, cx, device, NavigationTarget::Oscillator(operator));
     div()
         .id(ElementId::Name(
@@ -438,12 +445,19 @@ fn operator_label(
         } else {
             theme::PaletteRole::Border
         })))
-        .bg(rgb([0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]))
-        .text_color(rgb(0x15171b))
+        .bg(rgb(if enabled {
+            [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]
+        } else {
+            0x191919
+        }))
+        .text_color(rgb(if enabled { 0x15171b } else { 0xb8b8b8 }))
         .cursor(gpui::CursorStyle::PointingHand)
         .child(theme::text(["a", "b", "c", "d"][operator]))
         .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
+            if owner.is_some_and(|owner| owner.is_current(view))
+                && finalize_controls(view, cx)
+                && toggle_enable(view, device, operator)
+            {
                 focus.focus(window);
                 let state = view.device_panel.operator_pages.entry(device).or_default();
                 state.selected_operator = operator;
@@ -466,6 +480,51 @@ fn operator_label(
                 cx.stop_propagation();
             }
         }))
+}
+
+/// One ordinary canonical Boolean edit, with pending state retained on queue
+/// refusal. Rapid clicks read the latest queued value rather than a render's
+/// captured flag. Project history and audio publication remain session-owned.
+pub(super) fn toggle_enable(view: &mut EditorView, device: DeviceId, operator: usize) -> bool {
+    if operator >= 4 {
+        return false;
+    }
+    let key = ParameterKey {
+        device,
+        parameter: id(513 + operator as u32),
+    };
+    let canonical = view
+        .device_panel
+        .views
+        .get(&device)
+        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+        .and_then(|device_view| {
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == key.parameter)
+        })
+        .map(|parameter| parameter.value);
+    let previous_pending = view.device_panel.pending_values.get(&key).copied();
+    let Some(ParameterValue::Bool(previous)) = previous_pending.or(canonical) else {
+        view.error = Some("oscillator enable control is unavailable".into());
+        return false;
+    };
+    let value = ParameterValue::Bool(!previous);
+    view.device_panel.pending_values.insert(key, value);
+    if !view.enqueue_device_barrier(hex_session::service::Request::SetDeviceParameter {
+        device,
+        parameter: key.parameter,
+        value,
+    }) {
+        if let Some(previous) = previous_pending {
+            view.device_panel.pending_values.insert(key, previous);
+        } else {
+            view.device_panel.pending_values.remove(&key);
+        }
+        return false;
+    }
+    true
 }
 
 fn page_tab(
@@ -1164,6 +1223,109 @@ pub(super) fn lfo_summary(
     row
 }
 
+fn filter_detail(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut detail = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_title("filter"));
+    for fields in [
+        &[(20_003, "slope"), (20_004, "circuit")][..],
+        &[(20_007, "morph")][..],
+    ] {
+        let mut row = div()
+            .w_full()
+            .h(px(48.0))
+            .flex()
+            .items_center()
+            .gap(px(3.0));
+        for &(parameter, label) in fields {
+            row = row.child(compact_control(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                id(parameter),
+                if parameter < 20_005 {
+                    ControlPresentation::CompactSelector
+                } else {
+                    ControlPresentation::MicroDial
+                },
+                Some(label),
+            ));
+        }
+        detail = detail.child(row);
+    }
+    detail.id(ElementId::Name(
+        format!("operator-filter-detail-{}", device.value()).into(),
+    ))
+}
+
+pub(super) fn filter_summary(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let section = Section::Preview("filter");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
+    let mut row = div()
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
+        .id(ElementId::Name(
+            format!("operator-preview-row-{}-filter", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-preview-row-{}-filter", device.value()))
+        .track_focus(&focus)
+        .w_full()
+        .h(px(40.0))
+        .px(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .bg(rgb(if focused {
+            RAIL_GUTTER
+        } else {
+            RAIL_BACKGROUND
+        }));
+    for (parameter, label) in [
+        (20_001, "filter"),
+        (20_002, "type"),
+        (20_005, "freq"),
+        (20_006, "res"),
+    ] {
+        row = row.child(compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            &device_view.parameters,
+            id(parameter),
+            if parameter == 20_001 {
+                ControlPresentation::CompactButton
+            } else if parameter < 20_005 {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
+            Some(label),
+        ));
+    }
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,6 +1347,8 @@ mod tests {
         }
         exposed.extend([61]);
         exposed.extend(82..=92);
+        exposed.extend(20_001..=20_007);
+        exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
@@ -1210,9 +1374,9 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 88);
+        assert_eq!(exposed.len(), 99);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&92));
+        assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }

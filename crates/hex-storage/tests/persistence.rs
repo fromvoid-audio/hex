@@ -149,7 +149,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -328,7 +328,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -531,7 +531,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -593,7 +593,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -625,7 +625,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
 #[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     json["version"] = 13.into();
     remove_schema_seventeen_routes(&mut json);
     for track in json["tracks"].as_array_mut().unwrap() {
@@ -769,7 +769,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 19);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -896,8 +896,8 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 17);
-    json["version"] = 18.into();
+    assert_eq!(json["version"], 19);
+    json["version"] = 20.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     remove_schema_seventeen_routes(&mut json);
@@ -1019,7 +1019,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 17);
+    assert_eq!(current_json["version"], 19);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
@@ -1553,4 +1553,82 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
     assert_eq!(right.notes()[0].start(), BeatTime::ZERO);
     assert_eq!(right.notes()[0].duration(), beat(1));
     assert_ne!(right.notes()[0].id(), resized.notes()[1].id());
+}
+
+#[test]
+fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
+    let mut editor = Editor::new(project(), 8).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let state = NativeDeviceState::new(DeviceTypeId::from_static("test.device"), 1, vec![1, 2])
+        .unwrap()
+        .with_input_gain_db(3.0)
+        .unwrap()
+        .with_output_gain_db(-9.5)
+        .unwrap();
+    let Created::Device(id) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device");
+    };
+    let bytes = encode(editor.project()).unwrap();
+    let restored = decode(&bytes).unwrap();
+    assert_eq!(
+        restored.device(id).unwrap().state().output_gain_millidb(),
+        -9500
+    );
+    assert_eq!(restored.device(id).unwrap().state().input_gain_db(), 3.0);
+    let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    legacy["version"] = 17.into();
+    legacy["tracks"][0]["devices"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("input_gain_millidb");
+    legacy["tracks"][0]["devices"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("output_gain_millidb");
+    assert_eq!(
+        decode(&serde_json::to_vec(&legacy).unwrap())
+            .unwrap()
+            .device(id)
+            .unwrap()
+            .state()
+            .output_gain_millidb(),
+        0
+    );
+    legacy["version"] = 18.into();
+    legacy["tracks"][0]["devices"][0]["output_gain_millidb"] = 24_001.into();
+    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
+    assert!(
+        restored
+            .device(id)
+            .unwrap()
+            .state()
+            .clone()
+            .with_output_gain_db(f32::NAN)
+            .is_err()
+    );
+}
+
+#[test]
+fn invalid_host_input_gain_refuses_loading() {
+    let mut editor = Editor::new(project(), 8).unwrap();
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: NativeDeviceState::new(DeviceTypeId::from_static("test.device"), 1, vec![])
+                .unwrap(),
+        })
+        .unwrap();
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
+    json["tracks"][0]["devices"][0]["input_gain_millidb"] = (-60_001).into();
+    assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
 }
