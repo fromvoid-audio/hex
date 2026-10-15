@@ -356,9 +356,9 @@ fn actual_inline_pair_capacity_and_complete_pool_accounting() {
         2054168
     );
     assert_eq!(pool_bytes(), 2817144);
-    assert_eq!(context_bytes(), 2564);
+    assert_eq!(context_bytes(), 2572);
     let charge = size_of::<CompactSlot>() + context_bytes();
-    assert_eq!(charge, 5020);
+    assert_eq!(charge, 5028);
     assert_eq!(2 * 1024 * 1024 / charge, 417);
     assert!(418 * charge > 2 * 1024 * 1024);
     assert_eq!(30728168 + pool_bytes(), 33545312);
@@ -367,7 +367,7 @@ fn actual_inline_pair_capacity_and_complete_pool_accounting() {
     assert_eq!(size_of::<AdditivePair>(), 8312);
     assert_eq!(super::pool_bytes(), 2853688);
     eprintln!(
-        "inline pair=8024 align=8 pair_capacity={} pair_vec_charge={} record=2408 slot=2456 pool={} context=2564 recipe=5020 retained=417 EQ=33545312 margin=9120",
+        "inline pair=8024 align=8 pair_capacity={} pair_vec_charge={} record=2408 slot=2456 pool={} context=2572 recipe=5028 retained=417 historical_EQ=33545312 historical_margin=9120",
         pairs.capacity(),
         size_of_val(&pairs) + pairs.capacity() * size_of::<CandidatePair>(),
         pool_bytes()

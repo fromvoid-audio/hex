@@ -756,6 +756,12 @@ canonical enable badges retain Boolean edits through mouse, Enter and Space.
 Metered analytic capture must preserve Main PCM and apply track gain/pan exactly
 once; a new capture regression covers non-unity fader/pan before Main gain.
 
+Host gain metadata also increases the actual v8 provider context declaration
+from 1,468 to 1,476 bytes and the typed capture proposal from 2,564 to 2,572.
+The uncompressed 2,488-byte slot therefore admits 414 complete recipes under
+2 MiB and refuses 415; the inline 2,456-byte slot still admits 417 and refuses
+418. These are separate test proposals, with no production pool installation.
+
 The earlier positive storage-fit checkpoints are historical. With current actual
 accounting, the real 256-retained-EQ-chain fixture owns 31,514,600 bytes. Adding
 the original 2,639,456-byte proposed pool costs 34,154,056, exceeding the unchanged

@@ -73,7 +73,7 @@ fn canonical_v8_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     assert_eq!(authored.state_version(), 8);
     assert_eq!(authored.payload().len(), 380); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 1468); // Cap charge unchanged.
+    assert_eq!(prepared.declared_context_bytes(), 1476); // Includes host gain metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())
