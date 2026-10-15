@@ -208,6 +208,25 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// Exhaustive audited empty-table payload check for the opt-in compiler.
+    /// Vec headers belong to this outer payload; nonzero spare capacities or
+    /// nested handles are unsupported rather than assumed free/complete.
+    pub(crate) fn require_empty_owned_storage(&self) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            owners,
+            ids,
+            payload_bytes,
+        } = self;
+        if !owners.is_empty()
+            || owners.capacity() != 0
+            || !ids.is_empty()
+            || ids.capacity() != 0
+            || *payload_bytes != 0
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
     pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
         crate::owned_shared::OwnedShared::new_owned(Self::default())
     }
@@ -638,5 +657,42 @@ mod owned_storage_tests {
             assert_eq!(table.payload_bytes, 12345);
             assert_eq!(Arc::strong_count(&table), strong);
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_owned_storage_tests {
+    use super::*;
+    #[test]
+    fn empty_table_check_refuses_spare_storage_and_declared_nested_payload() {
+        assert!(
+            SharedAnalyticContextTable::default()
+                .require_empty_owned_storage()
+                .is_ok()
+        );
+        let owners = SharedAnalyticContextTable {
+            owners: Vec::with_capacity(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            owners.require_empty_owned_storage(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
+        let ids = SharedAnalyticContextTable {
+            ids: Vec::with_capacity(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            ids.require_empty_owned_storage(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
+        let payload = SharedAnalyticContextTable {
+            payload_bytes: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            payload.require_empty_owned_storage(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
     }
 }

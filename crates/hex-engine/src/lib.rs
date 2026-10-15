@@ -16,7 +16,9 @@ mod audio_input_storage;
 mod audio_only_inputs;
 mod audio_preparation;
 mod session_audio_preparation;
+mod session_shared_preparation;
 mod session_structure_preparation;
+pub use session_shared_preparation::SessionSharedCapacity;
 mod session_tempo_preparation;
 pub use audio_preparation::{
     AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,

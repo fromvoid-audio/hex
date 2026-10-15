@@ -53,7 +53,7 @@ fn owning_audio_stage_fixture() -> (
         vec![(asset, source)],
         hex_engine::AudioStorageReservation {
             allocation_items: 8,
-            handle_obligations: 8,
+            handle_obligations: 16, // caller reserve includes fixed inventory handles
             max_prepared_data_bytes: usize::MAX,
             max_construction_data_bytes: usize::MAX,
             caller_retained_bytes: 0,

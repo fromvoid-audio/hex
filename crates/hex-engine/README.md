@@ -545,6 +545,32 @@ copy custody and clears only scalar contents, retaining and charging spare backi
 capacity even across later Arrangement-only requests. Panic retains partial
 buffers and the first payload without retry or original-bank consumption.
 This is canonical-tempo assembly only: no complete PreparedTempoMap/inventory or
-publication is produced. Periodic tempo installation, mandatory sine/shared-context
-owners, complete prepared inventory assembly, cross-ledger/runtime accounting
+publication is produced. Periodic tempo installation, complete prepared inventory assembly, cross-ledger/runtime accounting
 and lifetime closure remain unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.
+
+The opt-in Session stage also creates the mandatory sine table and strictly empty
+shared-context table inside persistent custody. The audited sine payload is only
+its fixed inline sample array; the owning context module exhaustively refuses
+nonzero payload, nested handles, or even empty spare Vec backing. Only these
+engine-created constructors use the existing pinned requested-layout declarations;
+raw/legacy Arcs and nonempty provider contexts remain Unknown. No provider trait
+or DSP behavior changes. Before construction, three fixed physical-handle slots
+and checked identities are reserved: Session sine and separate Arrangement/Session
+context handles. The two context handles share the actual allocation by
+Arc::ptr_eq, with equal declarations, so data is charged once but both obligations
+remain. This is not a refcount-based ledger. All handle/receipt/slot headers are
+part of the containing custody size; outer Arc payloads include their own headers
+and inline fields, with declared Arc overhead separate. Existing caller byte and
+construction-overlap checks precede bank moves and the context alias; no hidden
+shared owner leaves the custodian. Every owner release is Pending before take,
+outside the ordinary root mutex, and normal cleanup precedes bank recovery.
+Panic keeps remaining owners, original bank and first payload without retry.
+Positive fixtures explicitly reserve the extra actual handles; the former
+eight-handle declaration still refuses when nine are required. This is caller
+reservation pressure, not a changed graph/project/domain/component cap.
+
+These are unresolved storage/handle observations for fixed inventory metadata,
+not full inventory assembly, aggregate completeness, callback admission or
+retirement closure. Periodic tempo, final prepared containers/bindings, graph and
+runtime/caller cross-ledger coverage, and lifetime contracts remain unfinished.
+The legacy report's Unknown reasons and require_complete refusal are unchanged.
