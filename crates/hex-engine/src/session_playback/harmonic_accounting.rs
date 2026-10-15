@@ -186,8 +186,9 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
     assert_eq!(tails, hex_project::MAX_TRACKS);
     // Current instrument accounting includes all declared pair bytes. The
     // historical positive fit is no longer valid on this integrated source.
-    assert_eq!(existing, 34_336_744);
-    assert_eq!(proposed, 36_976_200);
+    // Main's filter-capable LFO factories add 320 bytes per retained pair.
+    assert_eq!(existing, 34_336_744 + 320 * hex_project::MAX_TRACKS);
+    assert_eq!(proposed, 37_058_120);
     assert!(existing > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
