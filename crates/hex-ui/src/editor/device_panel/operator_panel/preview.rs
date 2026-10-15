@@ -181,11 +181,13 @@ pub(super) fn render(
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(2.0));
+    let mut content = hex_widgets::device_rail(super::super::device_layout_style())
+        .w_full()
+        .h_full();
     for row in rows {
         content = content.child(row);
     }
-    div()
+    hex_widgets::device_rail(super::super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-preview-{}", device.value()).into(),
         ))
@@ -193,7 +195,6 @@ pub(super) fn render(
         .w(px(PANEL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(super::RAIL_GUTTER))
         .pl(px(2.0))
         .child(content)
 }
@@ -209,7 +210,7 @@ fn row(
     let owner = super::context::Owner::capture(view, device);
     let section = super::Section::Preview(title);
     let (section_focus, focused) = super::context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::super::device_layout_style(), focused)
         .on_children_prepainted(super::context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
@@ -218,7 +219,6 @@ fn row(
         .track_focus(&section_focus)
         .w_full()
         .h(px(ROW_HEIGHT))
-        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(1.0));
@@ -245,13 +245,6 @@ fn row(
         dials = dials.child(control(view, cx, device, *field));
     }
     row = row.child(dials);
-    row = row
-        .bg(rgb(if focused {
-            super::RAIL_GUTTER
-        } else {
-            super::RAIL_BACKGROUND
-        }))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
         row = row.capture_any_mouse_down(cx.listener(
             move |view, event: &gpui::MouseDownEvent, _, cx| {
@@ -313,7 +306,7 @@ fn routing_link(
             .into()
         })
         .border_1()
-        .border_color(rgb(super::RAIL_GUTTER))
+        .border_color(rgb(super::super::device_layout_style().surface))
         .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .w(px(18.0))
         .h(px(34.0))

@@ -16,7 +16,7 @@ use hex_widgets::{
     ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
-    compact_device_frame, device_frame,
+    device_body, device_frame,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -54,9 +54,6 @@ const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
     - (DEVICE_CHAIN_PADDING * 2.0);
 const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
     - hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-    - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
-const UTILITY_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
-    - hex_widgets::COMPACT_DEVICE_FRAME_HEADER_HEIGHT
     - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -232,6 +229,19 @@ pub(super) fn control_style() -> ControlStyle {
         dial_rail: 0x000000,
         hover: theme::color(theme::PaletteRole::Hover),
         font_size: 9.0,
+    }
+}
+
+/// Product-owned neutral layout colors, shared by every native device shell.
+/// Widgets select semantic surfaces; device identity never selects appearance.
+pub(super) fn device_layout_style() -> ControlStyle {
+    ControlStyle {
+        background: 0x191919,
+        surface: 0x474747,
+        raised: 0x474747,
+        rail: 0x363636,
+        border: 0x474747,
+        ..control_style()
     }
 }
 
@@ -1370,7 +1380,7 @@ fn render_effect(
                     sample_rate,
                 )
             } else {
-                let mut body = div()
+                let mut body = device_body(device_layout_style())
                     .id(ElementId::Name(
                         format!("device-body-{}", device_id.value()).into(),
                     ))
@@ -1382,8 +1392,7 @@ fn render_effect(
                     .flex()
                     .flex_wrap()
                     .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
+                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
                 for parameter in &device_view.parameters {
                     body = body.child(parameter_control(
                         view,
@@ -1398,63 +1407,27 @@ fn render_effect(
                 }
                 body
             };
-            if matches!(
-                device_view.type_id.as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            ) {
-                compact_device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    header_actions,
-                    body,
-                )
-            } else {
-                device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    header_actions,
-                    body,
-                )
-            }
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text(device_view.name.clone()),
+                ),
+                device_layout_style().with_device_selection(selected),
+                header_actions,
+                body,
+            )
         }
         Err(error) => {
-            let compact = matches!(
-                device.state().type_id().as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            );
-            let body = div()
+            let body = device_body(device_layout_style())
                 .id(ElementId::Name(
                     format!("device-body-{}", device_id.value()).into(),
                 ))
                 .debug_selector(move || format!("device-body-{}", device_id.value()))
                 .w_full()
-                .h(px(if compact {
-                    UTILITY_FRAME_BODY_HEIGHT
-                } else {
-                    DEVICE_FRAME_BODY_HEIGHT
-                }))
+                .h(px(DEVICE_FRAME_BODY_HEIGHT))
                 .min_h_0()
                 .overflow_y_scroll()
                 .p(px(5.0))
@@ -1468,21 +1441,12 @@ fn render_effect(
                     .as_str()
                     .unwrap_or("unknown device"),
             );
-            if compact {
-                compact_device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    header_actions,
-                    body,
-                )
-            } else {
-                device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    header_actions,
-                    body,
-                )
-            }
+            device_frame(
+                device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                device_layout_style().with_device_selection(selected),
+                header_actions,
+                body,
+            )
         }
     };
     view.device_panel.views.insert(
@@ -1904,7 +1868,7 @@ fn render_instrument(
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
                 let body = operator_panel::render_body(view, cx, device_id, device_view);
-                compact_device_frame(
+                device_frame(
                     device_drag_title(
                         view,
                         cx,
@@ -1912,12 +1876,12 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    operator_panel::frame_style().with_device_selection(selected),
+                    device_layout_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
             } else {
-                let mut body = div()
+                let mut body = device_body(device_layout_style())
                     .id(ElementId::Name(
                         format!("device-body-{}", device_id.value()).into(),
                     ))
@@ -1929,8 +1893,7 @@ fn render_instrument(
                     .flex()
                     .flex_wrap()
                     .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
+                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
                 if device_view.parameters.is_empty() {
                     body = body.child(menu_message("no parameters"));
                 }
@@ -1954,14 +1917,14 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    control_style().with_device_selection(selected),
+                    device_layout_style().with_device_selection(selected),
                     header_actions,
                     body,
                 )
             }
         }
         Err(error) => {
-            let body = div()
+            let body = device_body(device_layout_style())
                 .id(ElementId::Name(
                     format!("device-body-{}", device_id.value()).into(),
                 ))
@@ -1990,7 +1953,7 @@ fn render_instrument(
                             .unwrap_or("unknown instrument"),
                     ),
                 ),
-                control_style().with_device_selection(selected),
+                device_layout_style().with_device_selection(selected),
                 header_actions,
                 body,
             )

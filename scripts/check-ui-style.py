@@ -24,6 +24,11 @@ widgets = (
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
+    # Generic device layout components accept already-themed child elements.
+    'hex_widgets::device_display(', 'hex_widgets::device_body(',
+    'hex_widgets::device_section(', 'hex_widgets::device_layout(',
+    'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
+    'hex_widgets::device_split(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
