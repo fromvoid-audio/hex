@@ -338,15 +338,29 @@ fn assert_independent_pcm(frames: &[[f32; 2]], first_frame: u64, carrier: f32) {
 fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm() {
     let mut fixture = fixture();
     let revision = prepared(&fixture, None);
-    assert_eq!(
+    let catalog =
         hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
-            .expect("instrument catalog")
-            .iter()
-            .find(|entry| entry.type_id == OPERATOR)
-            .expect("Operator catalog entry")
-            .parameters
-            .len(),
-        88
+            .expect("instrument catalog");
+    let operator = catalog
+        .iter()
+        .find(|entry| entry.type_id == OPERATOR)
+        .expect("Operator catalog entry");
+    assert_eq!(operator.parameters.len(), 99);
+    let enables: Vec<_> = operator
+        .parameters
+        .iter()
+        .filter(|parameter| (513..=516).contains(&parameter.id.value()))
+        .map(|parameter| (parameter.id.value(), parameter.kind, parameter.default))
+        .collect();
+    assert_eq!(
+        enables,
+        (513..=516)
+            .map(|id| (
+                id,
+                hex_lattice_contract::ParameterKind::Bool,
+                ParameterValue::Bool(true)
+            ))
+            .collect::<Vec<_>>()
     );
 
     let mut renderer = Renderer::new(revision.arrangement());

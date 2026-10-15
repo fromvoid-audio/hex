@@ -21,6 +21,9 @@ these controls and bind their descriptors; changes to shared controls propagate
 to every device using them. Presentation variants describe reusable density or
 control purpose, never a device identity.
 
+Device frames accept title elements as well as text, so callers can attach header
+drag input while the frame retains shared title styling and fixed geometry.
+
 ## Dependencies
 
 Depends only on GPUI. Control colors, labels, values, units, and callbacks are
@@ -90,6 +93,10 @@ caret/selection and inset background without a continuous accent outline;
 invalid input keeps its existing red error outline. The one-pixel transparent
 root border preserves the prior layout inset.
 
+Untouched numeric drafts retain the original exact value when an owner finalizes
+them or the field loses focus. Display rounding is not a parameter edit. Actual
+typed/composed input is tracked separately, so deliberately entering the displayed
+rounded value still commits through the existing edit events and validation.
 Numeric, toggle, selector and response-graph controls can opt into rendered-order
 Tab traversal with `set_tab_navigation`. Participation defaults off and excludes
 disabled controls (or noneditable graphs), including when availability changes
@@ -111,3 +118,14 @@ The renderer consumes NumericSpec's mapping without changing parameter laws.
 retain their footprints. The transient pointer-capture element is absolute so
 pressing cannot insert a flex gap or move the dial/readout.
 See research/observations/knob-focus-001.md for reference limits.
+
+The `DeviceMeters` numeric presentation renders two adjacent sample-peak wells.
+The input well is read-only; output uses the existing numeric scrub/reset/focus
+contract. Callers supply levels, held markers, height, colors and already-themed
+hover text through `DeviceMeterReadout`; widgets never fetch audio telemetry.
+
+`DeviceMeters` presents one compact adjustable meter well. The host supplies
+input/output index, live and held sample peaks, gain, colors and tooltip text,
+and composes the two controls. Gain and unity lines accompany the audio fill.
+Readout updates do not interrupt pointer gestures; both wells use the shared
+numeric gesture and double-click reset lifecycle.

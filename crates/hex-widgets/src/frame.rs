@@ -6,9 +6,10 @@ pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 18.0;
 pub const COMPACT_DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
 pub const DEVICE_FRAME_BORDER_WIDTH: f32 = 1.0;
 
-/// Compact device header and body frame. Header actions remain caller-owned.
+/// Compact device frame. The caller supplies title content and header actions,
+/// including any drag input; the frame owns only shared styling and geometry.
 pub fn device_frame(
-    title: impl Into<gpui::SharedString>,
+    title: impl IntoElement,
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
@@ -18,7 +19,7 @@ pub fn device_frame(
 
 /// Device frame with the shared rounder outline and compact title-bar geometry.
 pub fn compact_device_frame(
-    title: impl Into<gpui::SharedString>,
+    title: impl IntoElement,
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
@@ -27,13 +28,12 @@ pub fn compact_device_frame(
 }
 
 fn device_frame_inner(
-    title: impl Into<gpui::SharedString>,
+    title: impl IntoElement,
     style: ControlStyle,
     header_actions: impl IntoElement,
     body: impl IntoElement,
     compact_header: bool,
 ) -> Div {
-    let title = title.into();
     let radius = crate::DEVICE_CORNER_RADIUS;
     let header_height = if compact_header {
         COMPACT_DEVICE_FRAME_HEADER_HEIGHT
@@ -66,6 +66,9 @@ fn device_frame_inner(
                 .child(
                     div()
                         .flex_1()
+                        .h_full()
+                        .flex()
+                        .items_center()
                         .min_w_0()
                         .overflow_hidden()
                         .text_color(rgb(style.text))

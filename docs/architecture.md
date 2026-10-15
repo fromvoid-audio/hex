@@ -1,5 +1,11 @@
 # Architecture
 
+Foreign CLAP admission is specified in [the admission and containment
+contract](clap-admission.md) (Pulse #2523). It proposes a disposable macOS guest
+boundary for a finite offline profile; no foreign execution tuple is qualified.
+This design enables no plugin loading, entitlement, dependency or Rust FFI change.
+Original fixture implementation/history remains in frozen PR199/#20.
+
 ## Implemented
 
 The native device DSP system is named **lattice**. Its staged implementation,
