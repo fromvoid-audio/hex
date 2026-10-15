@@ -276,9 +276,16 @@ impl SessionPlayback {
                 .get(usize::from(old_context_index))
                 .copied()
                 .flatten();
-            let transition = target
-                .continue_from(source, prior, previous.performance_frame)
-                .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
+            // Stop resets the performance clock and all voices/transitions.
+            // There is no audible boundary to continue at that endpoint. A
+            // paused, previously rendered runtime still needs its frozen ramp.
+            let transition = if previous.playing || previous.performance_frame != 0 {
+                target
+                    .continue_from(source, prior, previous.performance_frame)
+                    .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
+            } else {
+                None
+            };
             self.analytic_continuation_scratch[usize::from(new_context_index)] = transition;
             let same_opted_in_configuration = target.same_configuration(source)
                 && target

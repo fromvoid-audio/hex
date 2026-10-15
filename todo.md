@@ -1,3 +1,15 @@
+## PR164 review fixes — 15 october 2026
+
+Stopped/reset analytic enable edits now begin next playback at the target
+endpoint, while paused previously rendered notes preserve their frozen ramp.
+Successful output capture clears only the requested prefix; refusal retains
+bounded full-slice cleanup. Both focused regressions reproduced before repair.
+Continuation (11) and capture (12) tests pass on Linux/Rust1.94 with the default
+Rust test stack. All 137 audio allocation-feature tests pass. A two-output
+release microbenchmark reduces median capture time from 6.169 to 3.816 µs;
+`docs/performance.md` records its workload and limits. Final full local CI is
+pending; native listening and physical deadline acceptance remain separate.
+
 ## device chain pan and bottom navigator — 13 october 2026
 
 Track and return device chains now share middle-button horizontal drag panning and

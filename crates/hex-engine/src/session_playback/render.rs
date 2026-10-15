@@ -84,7 +84,7 @@ impl SessionPlayback {
             capture.invalidate();
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
-        capture.invalidate();
+        capture.begin(output.len());
         self.candidate_admission_open = false;
         self.render_internal(output, pages, None, Some(capture))
     }

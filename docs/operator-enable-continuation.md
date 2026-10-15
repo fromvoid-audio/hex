@@ -21,6 +21,12 @@ share the same sample at the absolute performance boundary. Mutable feedback/LFO
 uses the same fixed five-millisecond coefficient ramp without resetting phases,
 clock, onset age or gate. The ordinary built-in zero-feedback path remains analytic.
 
+A stopped/reset runtime (not playing, performance frame zero) has no audible
+boundary to continue. Analytic enable edits there use the target endpoint on
+next Play; no old oscillator level is introduced into a fresh note. Pause after
+rendering preserves the frozen performance boundary and its five-millisecond
+continuity on resume.
+
 Two fixed-length transition tables are allocated on control using fallible
 reservation, require exactly `MAX_TRACKS` capacity, and never resize or exchange
 allocation ownership in callback handoff/render. Both capacities are charged to

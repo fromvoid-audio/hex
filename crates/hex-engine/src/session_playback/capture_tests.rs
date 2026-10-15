@@ -883,3 +883,58 @@ fn capture_bounds_and_handoff_generation_exhaustion_refuse_before_runtime_mutati
         );
     }
 }
+
+#[test]
+fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
+    let mut runtime = linear(audio_fixture(true, false, false));
+    let ids = [
+        OutputCaptureId::Track(runtime.routes[0].id),
+        OutputCaptureId::Return(runtime.revision.arrangement().return_buses()[0].id),
+    ];
+    let plan = runtime
+        .output_capture_plan(&ids, MAX_OUTPUT_CAPTURE_FRAMES)
+        .unwrap();
+    let sentinel = [9.0, -9.0];
+    let mut track = vec![sentinel; MAX_OUTPUT_CAPTURE_FRAMES];
+    let mut bus = track.clone();
+    for frames in [256, 0, 17] {
+        let previous_track = track.clone();
+        let previous_bus = bus.clone();
+        let mut main = vec![[0.0; 2]; frames];
+        let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        assert_eq!(capture.valid_frames(), frames);
+        assert!(
+            capture
+                .output(0)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
+        );
+        assert!(
+            capture
+                .output(1)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
+        );
+        assert_eq!(track[frames..], previous_track[frames..]);
+        assert_eq!(bus[frames..], previous_bus[frames..]);
+    }
+    // Refusal still performs the documented bounded full-slice cleanup.
+    let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    let mut oversized = vec![[9.0; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1];
+    assert!(
+        runtime
+            .render_with_capture(&mut oversized, &mut capture)
+            .is_err()
+    );
+    assert_eq!(capture.valid_frames(), 0);
+    assert!(track.iter().chain(&bus).all(|frame| *frame == [0.0; 2]));
+}

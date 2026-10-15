@@ -649,3 +649,41 @@ fn reconstructed_matching_session_sources_keep_current_ownership_through_histori
         assert_eq!(*frame, signal(176 + offset as u64, 192_000, gain));
     }
 }
+
+#[test]
+fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
+    for session in [false, true] {
+        for paused in [false, true] {
+            let on = fixture(1, 0, 0, 8 << 32);
+            let off = edited(&on, 0, 0, 0);
+            let mut old = playing(&on, session);
+            render_checkpoint_prefix(&mut old, 96);
+            old.apply(if paused {
+                SessionPlaybackCommand::Pause
+            } else {
+                SessionPlaybackCommand::Stop
+            })
+            .unwrap();
+            let mut disabled = handoff(&mut old, &off);
+            // Rendering while stopped/paused must not advance the ramp clock.
+            assert_eq!(render_checkpoint_prefix(&mut disabled, 16), [[0.0; 2]; 16]);
+            disabled.apply(SessionPlaybackCommand::Play).unwrap();
+            let actual = render_checkpoint_prefix(&mut disabled, 241);
+            for (offset, frame) in actual.iter().enumerate() {
+                let expected = if paused {
+                    signal(
+                        96 + offset as u64,
+                        192_000,
+                        (1.0 - offset as f64 / 240.0).max(0.0),
+                    )
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(
+                    *frame, expected,
+                    "session={session}, paused={paused}, offset={offset}"
+                );
+            }
+        }
+    }
+}

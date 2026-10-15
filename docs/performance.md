@@ -1,3 +1,28 @@
+## PR164 capture prefix clearing — 15 October 2026
+
+A release-mode headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed
+CPUs), Rust1.94 measures two selected outputs (one track and one Return), 48kHz,
+256-frame blocks and 16,384-frame borrowed slices. Each process warms 200 blocks
+and times 3,000 render calls with `Instant`; preparation, sample inspection and
+sorting stay outside timing. The existing capture audio fixture supplies two
+tracks and shared Return routing; its finite clips finish during warmup, so this
+primarily measures silent-block overhead. One process per variant, uncontrolled
+host load, no concurrent Cargo. Only success-path clearing differs.
+
+| Clearing | p50 µs | p99 µs | max µs |
+| --- | ---: | ---: | ---: |
+| full supplied slices | 6.169 | 30.426 | 1162.093 |
+| rendered prefix | 3.816 | 14.171 | 288.876 |
+
+Clear writes fall from 32,768 to 512 stereo frames per call for this selection.
+This is a short throughput comparison, not sustained/native deadline evidence.
+Reproducer (temporarily appended to `session_playback/capture_tests.rs`) and raw
+logs: `artifacts/pr164-review/capture-prefix-microbenchmark.rs` and
+`capture-benchmark-{before,after}.log`. Command:
+`cargo test --release -p hex-engine --lib capture_prefix_microbenchmark -- --nocapture`.
+The temporary benchmark was removed after measurement; deterministic prefix and
+refusal regression coverage remains in the normal suite.
+
 ## 100-track original Lattice effects — 11 October 2026
 
 Pulse2317/PR140 measures canonical resident Arrangement rendering on Apple M5
