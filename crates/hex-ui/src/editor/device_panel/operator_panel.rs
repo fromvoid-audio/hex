@@ -467,7 +467,7 @@ fn operator_label(
         }))
         .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) {
-                if finalize_controls(view, cx) && toggle_enable(view, device, operator) {
+                if finalize_controls(view, cx) {
                     let state = view.device_panel.operator_pages.entry(device).or_default();
                     state.selected_operator = operator;
                     if state.page != OperatorPage::Envelope {

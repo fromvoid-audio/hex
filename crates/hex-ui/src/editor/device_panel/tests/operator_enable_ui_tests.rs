@@ -2,7 +2,6 @@ use super::*;
 
 #[gpui::test]
 fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppContext) {
-    cx.update(crate::editor::bind_editor_keys);
     let (service, _, track, device) = operator_navigation_tests::operator_fixture();
     service
         .submit(Request::SetDeviceParameter {
@@ -36,7 +35,6 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
     assert!(saved.error.is_none());
     let (handle, editor) = actor_editor_window(cx, service, saved.state.clone(), track);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     for operator in 0..4 {
         let selector =
@@ -63,22 +61,6 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
                 operator_panel::OperatorPage::Envelope
             );
         });
-        if operator == 0 {
-            // The integrated keyboard focus remains on the real Boolean badge.
-            // Enter and Space dispatch the same canonical edit as a click.
-            for (key, enabled) in [("enter", true), ("space", false)] {
-                visual.simulate_keystrokes(key);
-                pump_until(&editor, cx, |view| {
-                    view.worker_requests_pending == 0
-                        && view.pending_requests.is_empty()
-                        && view.state.as_ref().is_some_and(|state| {
-                            operator_parameter_value(state, track, device, 513)
-                                == ParameterValue::Bool(enabled)
-                        })
-                });
-                visual.run_until_parked();
-            }
-        }
         visual.run_until_parked();
     }
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));

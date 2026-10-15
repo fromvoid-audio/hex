@@ -2597,8 +2597,8 @@ not complete Operator filter2326, higher-polyphony2226 or scalability2108.
 
 Current-main integration preserves Vector naming, metering/gains, keyboard focus
 and canonical oscillator enables. Metered analytic capture applies track gain
-once, with a Main/capture PCM regression; enable history/save-reopen coverage now
-also exercises Enter/Space. Historical pool-fit claims are superseded by current
+once, with a Main/capture PCM regression; enable history/save-reopen coverage
+preserves main's navigation-only Enter/Space contract. Historical pool-fit claims are superseded by current
 negative accounting evidence in docs/operator-harmonic-retarget.md. The custom
 harmonic state/provider/pool/painter and feature acceptance remain incomplete;
 PR158 must remain draft until its actual task contract is delivered.

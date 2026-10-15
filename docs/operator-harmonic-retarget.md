@@ -751,8 +751,9 @@ preview context/visibility, or replace either branch's navigation/visual tests.
 ## Current-main integration — 15 October 2026
 
 Integrating main `d7915f8` preserves Vector naming, keyboard focus, device input/
-output metering, host gains and aggregate instrument/effect admission. The
-canonical enable badges retain Boolean edits through mouse, Enter and Space.
+output metering, host gains and aggregate instrument/effect admission. Canonical
+enable badges retain mouse Boolean edits; Enter/Space keep main's explicit
+navigation-only behavior.
 Metered analytic capture must preserve Main PCM and apply track gain/pan exactly
 once; a new capture regression covers non-unity fader/pan before Main gain.
 
@@ -810,6 +811,6 @@ Main advanced to `3b24602` (PR164) during this integration. The follow-up merge
 retains its stopped-runtime continuation reset, bounded successful capture-buffer
 clearing, metered hybrid capture coverage, exact numeric drafts and preview-owner
 retirement. Both branches' single-application capture fixes converge on the
-shared `already_mixed` condition. Canonical enable keyboard activation remains
-covered alongside main's host-output-gain persistence assertion. This prerequisite
+shared `already_mixed` condition. Main's explicit badge keyboard navigation
+remains unchanged, alongside its host-output-gain persistence assertion. This prerequisite
 merge does not install the harmonic feature or resolve its memory projection.
