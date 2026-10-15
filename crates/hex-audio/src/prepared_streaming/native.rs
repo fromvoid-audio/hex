@@ -359,6 +359,133 @@ impl NativeCleanupPermit<'_> {
     }
 }
 impl NativeStreamRoot {
+    pub(crate) fn begin_audio_arrangement(
+        &self,
+        input: hex_engine::AudioArrangementInput<'_>,
+        device_rate: u32,
+    ) -> Result<hex_engine::AudioPreparationToken, Box<hex_engine::AudioArrangementRefusal>> {
+        use hex_engine::AudioStorageError as Error;
+        // Same lock order and persistent extraction destination as lifecycle
+        // cleanup. No source clone, allocation reclamation or compiler helper
+        // executes with the ordinary media-root mutex held.
+        let Ok(mut custody) = self.inner.cleanup.try_lock() else {
+            return Err(input.refuse(Error::Capacity));
+        };
+        if custody.faulted || custody.capsule.is_some() {
+            return Err(input.refuse(Error::Capacity));
+        }
+        {
+            let Ok(mut root) = self.inner.ordinary.try_lock() else {
+                return Err(input.refuse(Error::Capacity));
+            };
+            if root.closing
+                || root.faulted
+                || root.busy_incarnation.is_some()
+                || root.preparation.is_none()
+                || !root
+                    .bridge
+                    .as_ref()
+                    .is_some_and(|b| Arc::ptr_eq(&b.tag, &self.inner.tag))
+            {
+                return Err(input.refuse(Error::Capacity));
+            }
+            if input.sample_rate() != device_rate {
+                return Err(input.refuse(Error::SourceMismatch));
+            }
+            let Some(next) = custody.incarnation.checked_add(1) else {
+                return Err(input.refuse(Error::HandleExhausted));
+            };
+            // No fallible operation after first move; exact existing root and
+            // pending slot remain anchored, including through compiler failure.
+            if let Some(mut bridge) = root.bridge.take() {
+                let returns = bridge.native_retired.take();
+                custody.capsule = Some(CleanupCapsule {
+                    bridge,
+                    preparation: root.preparation.take(),
+                    returns,
+                });
+                custody.incarnation = next;
+                root.busy_incarnation = Some(next);
+            }
+        }
+        let outcome = match custody
+            .capsule
+            .as_mut()
+            .and_then(|c| c.preparation.as_mut())
+        {
+            Some(slot) => slot.begin_audio_on_control(input),
+            None => Err(input.refuse(Error::Capacity)),
+        };
+        // Engine captures a first construction panic in its persistent field.
+        // Do not retry or detach that field on fault; existing quarantine owns it.
+        if custody
+            .capsule
+            .as_ref()
+            .and_then(|c| c.preparation.as_ref())
+            .is_some_and(|p| p.phase() == hex_stream::MediaCleanupPhase::FailedIncomplete)
+        {
+            custody.faulted = true;
+            self.latch_cleanup_fault(&custody);
+            return outcome;
+        }
+        let mut root = self.lock();
+        if root.busy_incarnation != Some(custody.incarnation)
+            || root.bridge.is_some()
+            || root.preparation.is_some()
+            || root.faulted
+        {
+            root.faulted = true;
+            custody.faulted = true;
+            return outcome; // persistent capsule retained, never overwritten
+        }
+        if let Some(mut capsule) = custody.capsule.take() {
+            if root.closing {
+                if let Some(slot) = capsule.preparation.as_mut() {
+                    slot.close();
+                }
+            }
+            capsule.bridge.native_retired = capsule.returns.take();
+            root.bridge = Some(capsule.bridge);
+            root.preparation = capsule.preparation;
+            root.busy_incarnation = None;
+        }
+        outcome
+    }
+    pub(crate) fn cancel_audio_arrangement(
+        &self,
+        token: &hex_engine::AudioPreparationToken,
+    ) -> bool {
+        self.inner
+            .ordinary
+            .try_lock()
+            .ok()
+            .and_then(|mut r| r.preparation.as_mut().map(|p| p.cancel_audio(token)))
+            .unwrap_or(false)
+    }
+    pub(crate) fn audio_arrangement_phase(&self) -> Option<hex_engine::AudioPreparationPhase> {
+        self.inner
+            .ordinary
+            .try_lock()
+            .ok()?
+            .preparation
+            .as_ref()?
+            .audio_phase()
+    }
+    pub(crate) fn recover_audio_arrangement(
+        &self,
+        token: &hex_engine::AudioPreparationToken,
+    ) -> Option<hex_engine::OwnedAudioInputs> {
+        // Recovery moves ONLY the original bank after actual normal disposal.
+        // Engine keeps its empty metadata backing; no vector allocation/owner
+        // destructor executes in this ordinary-lock operation.
+        self.inner
+            .ordinary
+            .try_lock()
+            .ok()?
+            .preparation
+            .as_mut()?
+            .recover_audio(token)
+    }
     fn preparation_storage_bytes() -> Option<usize> {
         std::mem::size_of::<NativeRootOwner>()
             .checked_sub(std::mem::size_of::<std::sync::Mutex<StreamBridgeControl>>())

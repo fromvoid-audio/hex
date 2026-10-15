@@ -8,6 +8,145 @@ use std::{
 };
 
 static FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn owning_audio_stage_fixture() -> (
+    hex_project::Project,
+    hex_engine::OwnedAudioInputs,
+    hex_engine::AudioSourceToken,
+) {
+    use hex_project::{Command, Created, Editor, Project};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "owned.wav".into(),
+            sample_rate: 48_000,
+            frames: 8,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 8,
+            source_offset: 0,
+            source_length: 8,
+            looping: false,
+        })
+        .unwrap();
+    let source = hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.25; 2]; 8])
+        .ok()
+        .unwrap();
+    let bank = hex_engine::OwnedAudioInputs::try_new(
+        vec![(asset, source)],
+        hex_engine::AudioStorageReservation {
+            allocation_items: 8,
+            handle_obligations: 8,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    let token = bank.source_token(asset).unwrap();
+    (editor.project().clone(), bank, token)
+}
+fn owning_constructor_available() -> bool {
+    match hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8]) {
+        Ok(_) => true,
+        Err(refusal) => {
+            assert_eq!(
+                refusal.reason,
+                hex_engine::AudioStorageError::UnsupportedConstructor
+            );
+            false
+        }
+    }
+}
+#[test]
+fn actual_native_pending_host_retains_audio_stage_through_handle_abandonment_cancel_and_recovery() {
+    if !owning_constructor_available() {
+        return;
+    }
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (project, bank, source_token) = owning_audio_stage_fixture();
+    let original_capacity = bank.capacity_report();
+    let token = root
+        .begin_audio_arrangement(
+            hex_engine::AudioArrangementInput::new(&project, 1, bank),
+            48_000,
+        )
+        .ok()
+        .unwrap();
+    let lifecycle_anchor = root.clone(); // existing root custody, not a token registry
+    drop(root);
+    assert_eq!(
+        lifecycle_anchor.audio_arrangement_phase(),
+        Some(hex_engine::AudioPreparationPhase::ArrangementSources)
+    );
+    assert!(lifecycle_anchor.cancel_audio_arrangement(&token));
+    assert!(lifecycle_anchor.recover_audio_arrangement(&token).is_none());
+    let _ = lifecycle_anchor.tick(false);
+    assert_eq!(
+        lifecycle_anchor.audio_arrangement_phase(),
+        Some(hex_engine::AudioPreparationPhase::Recoverable)
+    );
+    let bank = lifecycle_anchor.recover_audio_arrangement(&token).unwrap();
+    assert_eq!(bank.capacity_report(), original_capacity);
+    assert!(bank.source_view(&source_token).is_ok());
+    assert_eq!(bank.owning_handle_count(), 1);
+    assert!(lifecycle_anchor.recover_audio_arrangement(&token).is_none());
+}
+#[test]
+fn terminal_close_keeps_abandoned_bank_pending_and_refuses_replacement_without_false_cleanup() {
+    if !owning_constructor_available() {
+        return;
+    }
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let (project, bank, _) = owning_audio_stage_fixture();
+    let token = root
+        .begin_audio_arrangement(
+            hex_engine::AudioArrangementInput::new(&project, 1, bank),
+            48_000,
+        )
+        .ok()
+        .unwrap();
+    drop(token); // token abandonment has no owner destructor or join
+    assert_eq!(root.tick(true), hex_stream::MediaCleanupPhase::Pending);
+    assert_eq!(
+        root.audio_arrangement_phase(),
+        Some(hex_engine::AudioPreparationPhase::Recoverable)
+    );
+    let (other, bank, source) = owning_audio_stage_fixture();
+    let capacity = bank.capacity_report();
+    let refusal = root
+        .begin_audio_arrangement(
+            hex_engine::AudioArrangementInput::new(&other, 2, bank),
+            48_000,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(refusal.reason, hex_engine::AudioStorageError::Capacity);
+    assert_eq!(refusal.inputs.capacity_report(), capacity);
+    assert!(refusal.inputs.source_view(&source).is_ok());
+    assert_eq!(root.tick(true), hex_stream::MediaCleanupPhase::Pending);
+}
 pub(super) struct FixtureFile(std::path::PathBuf);
 impl Drop for FixtureFile {
     fn drop(&mut self) {

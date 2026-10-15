@@ -139,8 +139,47 @@ pub(crate) struct PreparationSlot {
     domains: DomainIds,
     entry: Option<Entry>,
     closing: bool,
+    // Same fixed lifecycle pending slot, never handed to UI. Construction runs
+    // only after this entire slot is extracted into persistent cleanup custody.
+    audio: Option<hex_engine::AudioPreparationCustody>,
 }
 impl PreparationSlot {
+    pub(crate) fn begin_audio_on_control(
+        &mut self,
+        input: hex_engine::AudioArrangementInput<'_>,
+    ) -> Result<hex_engine::AudioPreparationToken, Box<hex_engine::AudioArrangementRefusal>> {
+        if self.closing
+            || self.entry.is_some()
+            || self
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.phase() != hex_engine::AudioPreparationPhase::Vacant)
+        {
+            return Err(input.refuse(hex_engine::AudioStorageError::Capacity));
+        }
+        if self.audio.is_none() {
+            match hex_engine::AudioPreparationCustody::try_new_on_control() {
+                Ok(custody) => self.audio = Some(custody),
+                Err(reason) => return Err(input.refuse(reason)),
+            }
+        }
+        match self.audio.as_mut() {
+            Some(custody) => custody.begin_input_on_control(input),
+            None => Err(input.refuse(hex_engine::AudioStorageError::Capacity)),
+        }
+    }
+    pub(crate) fn cancel_audio(&mut self, token: &hex_engine::AudioPreparationToken) -> bool {
+        self.audio.as_mut().is_some_and(|a| a.cancel(token))
+    }
+    pub(crate) fn recover_audio(
+        &mut self,
+        token: &hex_engine::AudioPreparationToken,
+    ) -> Option<hex_engine::OwnedAudioInputs> {
+        self.audio.as_mut()?.recover_on_control(token)
+    }
+    pub(crate) fn audio_phase(&self) -> Option<hex_engine::AudioPreparationPhase> {
+        self.audio.as_ref().map(|a| a.phase())
+    }
     #[cfg(test)]
     pub(crate) fn original_addresses(
         &self,
@@ -167,7 +206,12 @@ impl PreparationSlot {
     ) -> Result<PreparationToken, PreparationRefusal> {
         let reason = if self.closing {
             Some("stream preparation is closing")
-        } else if self.entry.is_some() {
+        } else if self.entry.is_some()
+            || self
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.phase() != hex_engine::AudioPreparationPhase::Vacant)
+        {
             Some("stream preparation slot is occupied")
         } else {
             validate(&input, rate, device_epoch).err()
@@ -269,6 +313,15 @@ impl PreparationSlot {
         true
     }
     pub(crate) fn phase(&self) -> MediaCleanupPhase {
+        if let Some(audio) = self.audio.as_ref() {
+            match audio.phase() {
+                hex_engine::AudioPreparationPhase::FailedIncomplete => {
+                    return MediaCleanupPhase::FailedIncomplete;
+                }
+                hex_engine::AudioPreparationPhase::Vacant => {}
+                _ => return MediaCleanupPhase::Pending,
+            }
+        }
         match self.entry.as_ref() {
             None => MediaCleanupPhase::Complete,
             Some(e)
@@ -281,6 +334,12 @@ impl PreparationSlot {
     }
     pub(crate) fn tick(&mut self, closing: bool) {
         self.closing |= closing;
+        if let Some(audio) = self.audio.as_mut() {
+            if self.closing {
+                audio.close_on_control();
+            }
+            audio.cleanup_on_control(); // already outside the ordinary root lock
+        }
         let Some(mut entry) = self.entry.take() else {
             return;
         };

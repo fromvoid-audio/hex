@@ -27,6 +27,34 @@ pub struct PreparedOutput {
     pub spectrum_error: Option<String>,
 }
 impl PreparedOutput {
+    /// Opt-in PREPARATION ONLY. This does not construct/admit a Playback or
+    /// publish streamed audio. The existing lifecycle root owns partial owners;
+    /// the caller receives only a checked nonowning token.
+    pub fn prepare_audio_arrangement(
+        &self,
+        input: hex_engine::AudioArrangementInput<'_>,
+    ) -> Result<hex_engine::AudioPreparationToken, Box<hex_engine::AudioArrangementRefusal>> {
+        match self.stream_root.as_ref() {
+            Some(root) => root.begin_audio_arrangement(input, self.sample_rate),
+            None => Err(input.refuse(hex_engine::AudioStorageError::UnsupportedGraph)),
+        }
+    }
+    pub fn cancel_audio_arrangement(&self, token: &hex_engine::AudioPreparationToken) -> bool {
+        self.stream_root
+            .as_ref()
+            .is_some_and(|r| r.cancel_audio_arrangement(token))
+    }
+    pub fn audio_arrangement_phase(&self) -> Option<hex_engine::AudioPreparationPhase> {
+        self.stream_root.as_ref()?.audio_arrangement_phase()
+    }
+    /// Recovery can remain unavailable during cleanup or permanent quarantine.
+    /// No equivalent bank is reconstructed and no request/join owner escapes.
+    pub fn recover_audio_arrangement(
+        &self,
+        token: &hex_engine::AudioPreparationToken,
+    ) -> Option<hex_engine::OwnedAudioInputs> {
+        self.stream_root.as_ref()?.recover_audio_arrangement(token)
+    }
     /// Opens the current default device with an empty, paused arrangement.
     /// Prepare and publish rate-matching graphs before sending Play.
     pub fn open() -> Result<Self, String> {

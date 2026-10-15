@@ -483,3 +483,24 @@ and before Main/sends in Arrangement, Session and export. No-automation paths
 remain; detached tails freeze the effective transition gain. Actual prepared knot
 capacity is reported separately from process memory and native deadline evidence.
 See [track gain automation](../../docs/track-gain-automation.md).
+
+The new opt-in `OwnedAudioInputs` bank owns every explicit caller alias; callers
+receive nonowning tokens and borrowed leaf views. Its typed input-storage result
+reports constructor-declared data, actual bank/ledger backing capacities and
+unresolved independent handle obligations. This is input-bank accounting only;
+it neither filters generic report Unknowns nor permits publication admission.
+
+`AudioPreparationCustody` implements only the Arrangement source-binding compiler
+stage. Before any source clone, it validates supported fields, asset/rate/region
+bindings, checked identities, destination and handle capacities, and declared
+reservation arithmetic. Each construction alias is installed directly into its
+persistent exact track/clip slot before later work. It produces no Session
+inventory, prepared revision or renderable runtime. Legacy compilers are separate.
+The host must retain custody: native audio uses the existing single pending slot
+and cleanup extraction capsule, not a UI-owned request. Cancellation is scalar;
+actual partial-owner disposal runs outside the ordinary root mutex. Original
+bank recovery requires normal disposal of every construction alias. Panic pins
+the bank, remaining aliases, payload and tombstone without retry. Abandoned bank
+recovery after terminal close remains pending and backpressures that fixed slot;
+it is not automatic cleanup success. Data-capacity declarations are not allocator
+bookkeeping/RSS or proof of whole-graph, domain or lifetime completeness.

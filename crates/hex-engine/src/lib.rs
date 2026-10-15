@@ -12,7 +12,22 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
+mod audio_input_storage;
+mod audio_only_inputs;
+mod audio_preparation;
+pub use audio_preparation::{
+    AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken,
+};
 mod native_device_view;
+pub use audio_input_storage::{
+    AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
+};
+pub use audio_only_inputs::{
+    AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
+    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
+    ResidentSourceRefusal, StreamedSourceRefusal,
+};
 mod owned_prepared;
 mod owned_shared;
 mod pcm_arc;
