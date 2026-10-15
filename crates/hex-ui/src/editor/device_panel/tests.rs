@@ -5044,3 +5044,39 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
         Some(&viewport),
     ));
 }
+
+#[gpui::test]
+fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("sine")
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [1280.0, 880.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        for device in [instrument, effect] {
+            let title = visual
+                .debug_bounds(Box::leak(
+                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("title");
+            let body = visual
+                .debug_bounds(Box::leak(
+                    format!("device-body-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("body");
+            assert_eq!(
+                title.size.height,
+                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+            );
+            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
+        }
+    }
+}

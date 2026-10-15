@@ -15,25 +15,11 @@ pub(super) mod preview;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 =
     SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
-const BODY_HEIGHT: f32 = 168.0;
+const BODY_HEIGHT: f32 = super::DEVICE_FRAME_BODY_HEIGHT;
 // Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
 const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 const DETAIL_WIDTH: f32 = 292.0;
 const FIELD_WIDTH: f32 = 46.0;
-// Neutral colors based on the user-supplied Operator reference crops.
-const DISPLAY_BACKGROUND: u32 = 0x191919;
-const RAIL_BACKGROUND: u32 = 0x363636;
-const RAIL_GUTTER: u32 = 0x474747;
-
-pub(super) fn frame_style() -> hex_widgets::ControlStyle {
-    hex_widgets::ControlStyle {
-        background: RAIL_GUTTER,
-        surface: RAIL_GUTTER,
-        raised: RAIL_GUTTER,
-        border: RAIL_GUTTER,
-        ..super::control_style()
-    }
-}
 
 gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 
@@ -114,7 +100,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Instrument,
         type_id: device_view.type_id,
     };
-    let mut shell = div()
+    let mut shell = hex_widgets::device_rail(super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-shell-{}", device.value()).into(),
         ))
@@ -122,10 +108,6 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(RAIL_GUTTER))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
         .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
@@ -167,7 +149,7 @@ pub(super) fn render_body(
         OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
         .id(ElementId::Name(
@@ -178,14 +160,9 @@ pub(super) fn render_body(
         .h(px(BODY_HEIGHT))
         .min_h_0()
         .overflow_hidden()
-        .flex()
-        .gap(px(4.0))
-        .bg(rgb(RAIL_GUTTER))
-        .px(px(3.0))
-        .py(px(1.0))
         .child(shell)
         .child(
-            div()
+            hex_widgets::device_display(super::device_layout_style())
                 .on_children_prepainted(context::section_listener(
                     view,
                     cx,
@@ -200,15 +177,7 @@ pub(super) fn render_body(
                 .w(px(DETAIL_WIDTH))
                 .min_w_0()
                 .track_focus(&detail_focus)
-                .bg(rgb(DISPLAY_BACKGROUND))
-                .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-                .overflow_hidden()
-                .relative()
-                .px(px(4.0))
                 .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
                 .child(detail)
                 .child(
                     div()
@@ -346,7 +315,7 @@ fn operator_row(
     );
     let (section_focus, focused) =
         context::section_focus(view, cx, device, Section::Oscillator(operator));
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(
             view,
             cx,
@@ -363,16 +332,9 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .pl(px(4.0))
-        .pr(px(18.0))
+        .pr(px(14.0))
         .relative()
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .track_focus(&section_focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -1088,7 +1050,7 @@ fn value(
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
     let mut style = super::control_style();
-    style.background = DISPLAY_BACKGROUND;
+    style.background = super::device_layout_style().background;
     style.rail = 0x242424;
     style
 }
@@ -1171,21 +1133,14 @@ pub(super) fn lfo_summary(
     );
     let section = Section::Preview("lfo");
     let (focus, focused) = context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-lfo", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
-        .px(px(4.0))
         .track_focus(&focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .flex()
         .items_center()
@@ -1282,7 +1237,7 @@ pub(super) fn filter_summary(
     };
     let section = Section::Preview("filter");
     let (focus, focused) = context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-filter", device.value()).into(),
@@ -1291,15 +1246,9 @@ pub(super) fn filter_summary(
         .track_focus(&focus)
         .w_full()
         .h(px(40.0))
-        .px(px(4.0))
         .flex()
         .items_center()
-        .gap(px(2.0))
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }));
+        .gap(px(2.0));
     for (parameter, label) in [
         (20_001, "filter"),
         (20_002, "type"),

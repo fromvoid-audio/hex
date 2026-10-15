@@ -37,6 +37,34 @@
   This is a source checkpoint; full final CI, tracked roots and downstream
   delivery remain open. See docs/streaming-prerequisite-integration.md.
 
+## shared device layout primitives — pulse2470 / PR205, 16 october 2026
+
+`hex-widgets` now supplies composable frame/header/body, rounded semantic sections,
+rails/grouped rows, recessed displays and row/column/grid/wrapped/split layouts.
+Every production instrument/effect/Return shell uses one compact 14px header and
+shared shell/inset/radius tokens; device-ID header-density selection is removed.
+Idle header/surround share a surface without a dark dividing rule. Vector retains
+its 168px composition, 40px rows, tab slots, focus groups and existing gestures;
+Sine/effects retain useful widths and parameter arrangements. Product colors and
+canonical parameter semantics/bindings stay outside the widget library.
+
+Two new rendered widget tests pass: normal/constrained shell/body bounds, actual
+filled-quad corner radii/backgrounds, oversized descendant paint/hit clipping,
+wrapping/grid/split placement and unchanged control heights. All 84 targeted device
+panel tests pass, including new Sine/effect header/body alignment and existing
+Vector focus/navigation/gesture/containment regressions. Strict all-target widgets
+and UI Clippy, architecture/style/GPUI guards and format/diff checks pass. The
+minimal GPUI test-support accessor correction skips transparent border-only fills;
+the cumulative patch applies exactly to the checksum-verified archive and all 15
+patched file hashes match provenance. It changes no production native/render path.
+
+The [widget API/extension rule](crates/hex-widgets/README.md#shared-device-composition)
+and [device controls contract](docs/device-controls.md#extensible-shared-layout--pulse2470)
+require generic library extensions before new panel visual capabilities. Scene
+and hit-mask evidence does not establish GPU pixels or physical native input.
+Full exact-candidate local CI, merge and optimized stable-path delivery remain the
+coordinator's next steps; optional native appearance/input checks remain separate.
+
 ## PR164 review fixes — 15 october 2026
 
 Stopped/reset analytic enable edits now begin next playback at the target
@@ -758,6 +786,9 @@ remain separate from time editing and DSP.
   ripple/preview, source controls, clip detail values, resizing, overview/panning,
   save/reopen and minimum-layout focus. Use owning documents' concrete checklists;
   do not rerun interactions already explicitly accepted unless affected by a change.
+  Consolidated evidence and staged remaining checks: [native interaction](docs/native-interaction.md),
+  Pulse #22 / PR244. On 16 October the user reported no additional results;
+  native acceptance remains open. No runtime change or new delivery is claimed.
 - [ ] **native audio reliability** — listening, device selection/disconnect/restart,
   stop under pressure, sustained stress, physical timing and first-transient checks.
 - [ ] **long-project streaming** — graph/catalog leases, callback endpoint retirement,

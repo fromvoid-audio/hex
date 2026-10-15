@@ -41,6 +41,41 @@ paint. Optional device-owned display names are presentation metadata; stable
 type IDs and opaque persisted state are unchanged. Unknown or unsupported
 states report errors instead of displaying defaults.
 
+## extensible shared layout — pulse2470
+
+`hex-widgets` owns the shared frame/header, surround body, rounded sections,
+rail/grouped rows and recessed display compositions. `DeviceLayout` supplies
+Row, Column, Wrapped and Grid arrangements; `device_split` supplies equal flexible
+panes, while Row composition retains unequal/fixed device widths. See the
+[widget API and extension rule](../crates/hex-widgets/README.md#shared-device-composition).
+
+All instrument, effect and Return frames use one 14px header, 3px horizontal
+header inset, 2px header gap, 4px outer radius and 1px border. Idle header/surround
+share the injected surface without a dark separating rule. Production dispatch
+selects musical panel content and useful widths, never header density or style.
+One product-owned neutral layout palette preserves the accepted Vector hierarchy;
+widgets receive colors through ControlStyle and have no device identities.
+Frame selection still transforms only its supplied palette; bodies/controls
+receive the unselected layout/control palettes independently.
+
+Vector composes its accepted oscillator/preview rails, 40px grouped rows and dark
+rounded detail display from these primitives. Existing focus entities, tab slots,
+parameter controls and gesture bindings remain panel-owned. Sine and effects use
+the same frame/body metrics, retaining their distinct parameter arrangements.
+Semantic section surfaces support short/tall content, graphs and tabbed inspectors
+without requiring one universal device template. Any new visual capability must
+first be a generic library extension with meaningful rendered tests, then be
+consumed by panels; no device-named appearance variants or type-ID style selection.
+
+Rounded sections use same-color structural side borders as their content inset.
+GPUI's rectangular overflow masks then exclude those borders, keeping oversized
+paint/hit regions out of corner cutouts while preserving full row height. Padding
+alone is insufficient. Rendered widget tests inspect actual filled scene quads,
+rounded radii, clipped descendant masks/hits at normal and constrained sizes, and
+layout reflow. Production UI tests retain Vector focus/tab/gesture/row-containment
+coverage and check Sine/effect header/body alignment. This is source/scene evidence;
+physical macOS visual and input acceptance remains optional native testing.
+
 ## Interaction contract
 
 - Validate finite ranges/defaults and typed input. Linear, positive logarithmic

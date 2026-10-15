@@ -29,17 +29,17 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
         .w_full()
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
+        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
         .flex()
         .justify_between()
         .gap(px(2.0))
-        .p(px(3.0))
+        .py(px(3.0))
         .child(gate_column(
             view,
             cx,
