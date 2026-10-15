@@ -35,6 +35,7 @@ pub(super) struct SessionTempoConstruction {
     // This already allocated inline destination is private persistent custody.
     // Do not call legacy PreparedTempoMap::prepare with its consumed owner.
     pub(super) canonical: Option<TempoMap>,
+    inventory_owns_map: bool,
     max_micro_bpm: u32,
     expected_rate: u32,
     loop_region: Option<hex_project::LoopRegion>,
@@ -124,10 +125,50 @@ impl SessionTempoConstruction {
             });
         Ok(())
     }
+    pub(crate) fn preflight_inventory_transfer(&self) -> Result<(), AudioStorageError> {
+        if self.inventory_owns_map
+            || self.prepared.is_none()
+            || self.canonical.is_some()
+            || self.copy.phase() != hex_project::TempoMapCopyPhase::Transferred
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        Ok(())
+    }
+    pub(crate) fn commit_inventory_transfer(
+        &mut self,
+        destination: &mut Option<PreparedTempoMap>,
+    ) -> bool {
+        if destination.is_some() || self.prepared.is_none() || self.inventory_owns_map {
+            return false;
+        }
+        *destination = self.prepared.take();
+        self.inventory_owns_map = true;
+        true
+    }
+    pub(crate) fn restore_inventory_map(
+        &mut self,
+        source: &mut Option<PreparedTempoMap>,
+    ) -> Result<(), AudioStorageError> {
+        if !self.inventory_owns_map
+            || self.prepared.is_some()
+            || self.canonical.is_some()
+            || source.is_none()
+            || self.copy.phase() != hex_project::TempoMapCopyPhase::Transferred
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.prepared = source.take();
+        self.inventory_owns_map = false;
+        Ok(())
+    }
     pub(super) fn incomplete(&self) -> bool {
         self.copy.phase() == hex_project::TempoMapCopyPhase::Incomplete
     }
     pub(super) fn cleanup(&mut self) -> Result<(), AudioStorageError> {
+        if self.inventory_owns_map {
+            return Err(AudioStorageError::Capacity);
+        }
         if self.prepared.is_some() {
             if self.canonical.is_some()
                 || self.copy.phase() != hex_project::TempoMapCopyPhase::Transferred
@@ -162,6 +203,7 @@ impl SessionTempoConstruction {
             copy: _,
             canonical: _,
             prepared: _,
+            inventory_owns_map: _,
             max_micro_bpm: _,
             expected_rate: _,
             loop_region: _,
@@ -180,7 +222,9 @@ impl SessionTempoConstruction {
         // Scalar metadata never authenticates ownership. Impossible combinations
         // remain Unknown; a partially installed owner may still be observed.
         if (self.periodic.is_some() && self.periodic_error.is_some())
-            || (self.source_admission_max_micro_bpm != 0 && self.prepared.is_none())
+            || (self.source_admission_max_micro_bpm != 0
+                && self.prepared.is_none()
+                && !self.inventory_owns_map)
         {
             return Err(AudioStorageError::UnknownStorage);
         }

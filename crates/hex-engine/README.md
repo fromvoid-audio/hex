@@ -594,3 +594,50 @@ slot to retained copy custody before bank recovery. Failure before installation
 retains that slot; panic after installation retains the actual prepared owner,
 remaining graph owners, bank and first payload without retry. These observations
 do not close either allocation obligation or complete aggregate admission.
+
+`AudioArrangementInput::with_session_inventory` explicitly adds sealed final
+Session assembly; `with_session_sources` retains the prior staging behavior.
+The existing native pending slot can host either mode. A single assembly
+custodian reserves all seven final-vector/pair-record backings before bank moves.
+Scene/track targets initially contain only copied scalar metadata and empty
+Strings. Final audio order is established before moving any owner; the complete
+pair row (clip/track/scene/asset/interval, original source-row/bank location and
+conserved physical handle) sorts together. Borrowed batch preflight validates
+all destinations and exact bank-backed allocation identities. Subsequent moves
+transfer existing names/source owners rather than clone or regenerate handles.
+Only bare-Arc fields use a private consuming Arc+declaration split, with both
+parts installed in the same sealed custodian before later fault points. The
+Session context owner remains OwnedShared. No raw adoption/receipt constructor
+or owning error is public; legacy inventory/clip getters and Clone never escape
+through the new strict view. Only IDs, names/cell scalars and borrowed streamed
+metadata are exposed by SessionInventoryMetadata (compile-fail escape controls).
+
+The actual private PreparedSessionInventory value covers every existing field:
+owned prepared/periodic timing, sine/context owners, scene/track/name containers,
+canonical sparse cells and scene indices/ranges, sorted paired audio clips,
+installed-source streamed flag, and explicitly empty MIDI/mutable vectors with
+zero MIDI/mutable work and counters. Unsupported input fields still refuse.
+No PreparedRevision/Arrangement root or renderable publication is constructed.
+Pair declarations are constructor-layout evidence, never a retirement receipt.
+
+The extra assembly charge is actual final/pair Vec backing plus checked old-growth
+construction overlap. Existing source/structure name, source-bank data, tempo and
+fixed-shared charge groups follow those SAME allocations into final destinations;
+adding their data again would double-charge them. Staging/cache/final/pair backings
+all remain charged simultaneously, including vacated spare capacity and inline
+headers in the parent size. Source bank/caller/cache handles remain independently
+owned. Observations remain partial until the full cross-ledger contract is built.
+Cancellation first unpacks the final value into vacant persistent fields outside
+the ordinary root mutex, then disposes individual names and sources with Pending
+before take. Source and name teardown fields are separate, retaining the latter
+if source disposal panics. Exact timing returns to its original copy custodian;
+remaining context handles dispose through their existing owner. Original-bank
+recovery requires normal disposal of all aliases. Panic pins pairs, remaining
+owners, actual payload and tombstone without retry. No callback work, cap change,
+new registry, admission enable, whole-issue readiness or native proof is implied.
+
+Remaining convergence: final Arrangement/return/gain/source containers; sealed
+PreparedRevision/preview/empty-slice origins and descriptors; exhaustive caller,
+bank, graph, runtime and domain cross-ledger accounting; all publication-ending
+lifetime closures; connected installed demand/preroll/native lifecycle; optimized
+native100-track mixed-rate/edit/seek/launch/fault/CoreAudio/deadline acceptance.

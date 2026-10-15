@@ -4,6 +4,7 @@
 use crate::audio_only_inputs::*;
 use hex_project::{Project, SessionCellContent};
 use std::mem;
+mod assembly;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionSourceCapacity {
@@ -30,6 +31,7 @@ enum Disposal {
     Unstarted,
     Pending,
     Complete,
+    Transferred,
 }
 struct CacheSlot {
     source: usize,
@@ -41,6 +43,7 @@ struct CellSlot {
     track: hex_project::TrackId,
     scene: hex_project::SceneId,
     clip: hex_project::ClipId,
+    asset: hex_project::AssetId,
     cache: usize,
     handle: u64,
     start: u64,
@@ -79,6 +82,11 @@ pub(super) struct SessionSourceConstruction {
     pub(super) panic_after_alias: Option<usize>,
     #[cfg(test)]
     pub(super) fail_name_reserve: Option<usize>,
+}
+impl SessionAudioBinding {
+    pub(crate) fn clip_id(&self) -> hex_project::ClipId {
+        self.clip
+    }
 }
 impl SessionSourceConstruction {
     pub(super) fn binding_for(
@@ -274,6 +282,7 @@ impl SessionSourceConstruction {
                 track: cell.track(),
                 scene: cell.scene(),
                 clip: clip.id(),
+                asset: clip.asset(),
                 cache,
                 handle: handle()?,
                 start: clip.source_start(),
@@ -379,7 +388,7 @@ impl SessionSourceConstruction {
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         if self.next_cell_disposal < self.cells.len() {
             let row = &mut self.cells[self.next_cell_disposal];
-            if row.disposal != Disposal::Unstarted {
+            if !matches!(row.disposal, Disposal::Unstarted | Disposal::Transferred) {
                 return Err(AudioStorageError::UnknownStorage);
             }
             row.disposal = Disposal::Pending;

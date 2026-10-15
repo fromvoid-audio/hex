@@ -36,6 +36,7 @@ enum Disposal {
     Unstarted,
     Pending,
     Complete,
+    Transferred,
 }
 #[derive(Default)]
 pub(super) struct SessionSharedConstruction {
@@ -180,7 +181,12 @@ impl SessionSharedConstruction {
     /// Borrowed caller catch surrounds this operation. Pending BEFORE take;
     /// panic leaves all remaining fields and exact failure location persistent.
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
-        if self.next >= 3 || self.disposal[self.next] != Disposal::Unstarted {
+        if self.next >= 3
+            || !matches!(
+                self.disposal[self.next],
+                Disposal::Unstarted | Disposal::Transferred
+            )
+        {
             return Err(AudioStorageError::Capacity);
         }
         self.disposal[self.next] = Disposal::Pending;
@@ -208,6 +214,45 @@ impl SessionSharedConstruction {
         self.disposal = [Disposal::Unstarted; 3];
         self.next = 0;
         Ok(())
+    }
+    pub(crate) fn inventory_handles(&self) -> [u64; 3] {
+        self.handles
+    }
+    pub(crate) fn preflight_inventory_transfer(
+        &self,
+        handles: [u64; 3],
+    ) -> Result<(), AudioStorageError> {
+        if handles != self.handles
+            || self.observe()?.installed_handle_obligations != 3
+            || self.disposal != [Disposal::Unstarted; 3]
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        Ok(())
+    }
+    pub(crate) fn commit_inventory_transfer(
+        &mut self,
+        sine: &mut Option<Arc<SineTable>>,
+        declaration: &mut Option<crate::owned_shared::SharedDeclaration>,
+        contexts: &mut Option<OwnedShared<SharedAnalyticContextTable>>,
+    ) -> bool {
+        if sine.is_some()
+            || declaration.is_some()
+            || contexts.is_some()
+            || self.sine.is_none()
+            || self.session_contexts.is_none()
+        {
+            return false;
+        }
+        if let Some(owner) = self.sine.take() {
+            let (arc, receipt) = owner.into_paired_parts_on_control();
+            *declaration = Some(receipt);
+            *sine = Some(arc);
+        }
+        *contexts = self.session_contexts.take();
+        self.disposal[0] = Disposal::Transferred;
+        self.disposal[2] = Disposal::Transferred;
+        true
     }
     #[cfg(test)]
     pub(super) fn handle_ids(&self) -> [u64; 3] {

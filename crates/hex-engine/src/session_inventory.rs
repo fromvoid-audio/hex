@@ -1,4 +1,5 @@
 //! Immutable control-side inventory of every canonical Session cell.
+pub(crate) mod audio_assembly;
 mod storage;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{

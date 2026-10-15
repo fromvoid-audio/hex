@@ -47,7 +47,25 @@ impl<T> OwnedShared<[T]> {
         }
     }
 }
+/// Engine-private declaration moved beside its exact bare-Arc target. No public
+/// constructor, Clone, raw adoption, or lifetime/handle completion authority.
+#[derive(Debug)]
+pub(crate) struct SharedDeclaration(usize);
+impl SharedDeclaration {
+    pub(crate) fn parts<T: ?Sized>(&self, owner: &Arc<T>) -> Option<(usize, usize)> {
+        self.0
+            .checked_sub(2)
+            .map(|overhead| (std::mem::size_of_val(owner.as_ref()), overhead))
+    }
+}
 impl<T: ?Sized> OwnedShared<T> {
+    /// Private fixed-move commit only. Callers install BOTH parts in an already
+    /// validated persistent paired destination before any subsequent fallible
+    /// work. This split does not change provenance or generate a new handle.
+    pub(crate) fn into_paired_parts_on_control(self) -> (Arc<T>, SharedDeclaration) {
+        let Self { arc, receipt } = self;
+        (arc, SharedDeclaration(receipt))
+    }
     pub(crate) fn untracked(arc: Arc<T>) -> Self {
         Self { arc, receipt: 0 }
     }

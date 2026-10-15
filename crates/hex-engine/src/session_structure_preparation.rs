@@ -6,6 +6,7 @@ use crate::{
 };
 use hex_project::{Project, SceneId, SessionCellContent, TrackId};
 use std::mem;
+mod assembly;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionStructureCapacity {
@@ -48,6 +49,7 @@ enum Disposal {
     Unstarted,
     Pending,
     Complete,
+    Transferred,
 }
 struct SceneRow {
     value: crate::PreparedSessionScene,
@@ -489,7 +491,7 @@ impl SessionStructureConstruction {
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         if self.scene_disposal < self.scenes.len() {
             let row = &mut self.scenes[self.scene_disposal];
-            if row.disposal != Disposal::Unstarted {
+            if !matches!(row.disposal, Disposal::Unstarted | Disposal::Transferred) {
                 return Err(AudioStorageError::UnknownStorage);
             }
             row.disposal = Disposal::Pending;
@@ -500,7 +502,7 @@ impl SessionStructureConstruction {
             self.scene_disposal += 1;
         } else if self.track_disposal < self.tracks.len() {
             let row = &mut self.tracks[self.track_disposal];
-            if row.disposal != Disposal::Unstarted {
+            if !matches!(row.disposal, Disposal::Unstarted | Disposal::Transferred) {
                 return Err(AudioStorageError::UnknownStorage);
             }
             row.disposal = Disposal::Pending;

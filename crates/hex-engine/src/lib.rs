@@ -25,6 +25,7 @@ pub use audio_preparation::{
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken,
 };
 pub use session_audio_preparation::SessionSourceCapacity;
+pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};
 pub use session_structure_preparation::SessionStructureCapacity;
 pub use session_tempo_preparation::SessionTempoCapacity;
 mod native_device_view;
