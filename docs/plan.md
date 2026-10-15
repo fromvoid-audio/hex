@@ -3,6 +3,10 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
+Pulse #22 retains [native interaction acceptance](native-interaction.md): finite
+prior approvals, remaining staged user checks and exact artifact limits.
+The 16 October consolidation adds no native results or runtime behavior.
+
 ## active work unit — lattice native devices, 9 October 2026
 
 The user reprioritized the native DSP system, device panel and first devices
