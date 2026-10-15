@@ -279,13 +279,18 @@ fn compile_project<'a>(
             .filter(|device| !device.bypassed())
             .and(instrument_config.as_ref())
         {
-            instrument
-                .prepare_mutable_runtime()
-                .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
-                .map(|factory| {
-                    crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
-                })
-                .transpose()?
+            (if track.instrument().is_some_and(|device| {
+                shared_contexts.requires_mutable_continuation(track.id(), device.id())
+            }) {
+                instrument.prepare_mutable_continuation_runtime()
+            } else {
+                instrument.prepare_mutable_runtime()
+            })
+            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+            .map(|factory| {
+                crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
+            })
+            .transpose()?
         } else {
             None
         };

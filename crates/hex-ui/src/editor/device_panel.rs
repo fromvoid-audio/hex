@@ -153,6 +153,7 @@ pub(super) struct DevicePanelState {
     operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
+    operator_harmonics: HashMap<(DeviceId, usize), operator_panel::harmonics::Control>,
     operator_envelope_graphs:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
     operator_envelope_gestures:
@@ -387,6 +388,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
+        operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
@@ -488,6 +490,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
+        operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
@@ -548,6 +551,7 @@ fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
         }
     }
     operator_panel::envelope::cancel_all(view, cx);
+    operator_panel::harmonics::retire(view, cx, |_| false);
     view.device_panel.views.clear();
     view.device_panel.pending_values.clear();
     retire_removed_eq8_graphs(view, cx, &HashSet::new());
@@ -764,6 +768,7 @@ fn render_track(
         .operator_context_focus
         .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
+    operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities
         .iter()
         .filter_map(|(device, identity)| {

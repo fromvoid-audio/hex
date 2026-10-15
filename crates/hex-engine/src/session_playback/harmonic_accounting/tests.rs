@@ -116,11 +116,14 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         hex_lattice_contract::ParameterValue::Float(-0.0),
     )
     .unwrap();
-    assert_eq!(original.state_version(), 8);
-    assert_eq!(original.payload().len(), 380);
+    assert_eq!(
+        original.state_version(),
+        hex_devices::operator_state::OPERATOR_STATE_VERSION
+    );
+    assert_eq!(original.payload().len(), 1452);
     assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
     let mut proposal = payload::Payload {
-        prefix: original.payload().try_into().unwrap(),
+        prefix: original.payload()[..380].try_into().unwrap(),
         authored: [[0.0; 64]; 4],
         ranges: [0; 4],
         mode_history: [0; 4],
@@ -130,7 +133,7 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
     proposal.authored[2][62] = f32::from_bits(0x3f12_3456);
     proposal.mode_history[3] = 0x1020_3040;
     let copied = proposal;
-    assert_eq!(copied.prefix.as_slice(), original.payload());
+    assert_eq!(copied.prefix.as_slice(), &original.payload()[..380]);
     for oscillator in 0..4 {
         for partial in 0..64 {
             assert_eq!(

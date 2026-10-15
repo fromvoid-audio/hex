@@ -294,6 +294,59 @@ impl PreparedOperatorConfiguration {
         ((routed * note.velocity) as f32, signals)
     }
 
+    /// Borrow a provider-owned waveform law while preserving original routing,
+    /// envelope, velocity and phase arithmetic. No preparation occurs here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sample_with_waveform_sampler(
+        &self,
+        note: &PreparedOperatorNote,
+        age: u64,
+        gate: u64,
+        phases: &[u64; 4],
+        previous: [f64; 4],
+        levels: [f64; 4],
+        carriers: [f64; 4],
+        feedback: [f64; 4],
+        mut sample: impl FnMut(usize, u64, u64) -> f32,
+    ) -> (f32, [f64; 4]) {
+        let mut amplitudes = self.envelopes.levels(age, gate);
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
+        }
+        let mut signals = [0.0; 4];
+        for &target in &self.configuration.routing.order {
+            if levels[target] == 0.0 {
+                continue;
+            }
+            let mut modulation: f64 = signals
+                .iter()
+                .enumerate()
+                .map(|(source, signal)| {
+                    signal * self.configuration.routing.modulation[source][target]
+                })
+                .sum();
+            if feedback[target] != 0.0 {
+                modulation += feedback[target] * previous[target];
+            }
+            let phase = phases[target]
+                .wrapping_add(self.configuration.phases[target])
+                .wrapping_add(crate::fm4::phase_from_turns(modulation));
+            signals[target] = f64::from(sample(target, phase, note.steps[target]))
+                * levels[target]
+                * amplitudes[target];
+        }
+        let output: f64 = signals
+            .iter()
+            .zip(carriers)
+            .map(|(signal, weight)| signal * weight)
+            .sum();
+        ((output * note.velocity) as f32, signals)
+    }
+
+    pub(crate) fn harmonic_initial_phases(note: &PreparedOperatorNote, age: u64) -> [u64; 4] {
+        note.steps.map(|step| step.wrapping_mul(age))
+    }
+
     pub(crate) fn note_matches_configuration(&self, note: &PreparedOperatorNote) -> bool {
         if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
             return note.harmonic_caps == 0;

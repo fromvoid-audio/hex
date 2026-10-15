@@ -467,7 +467,15 @@ impl PreparedSessionInventory {
             let mutable_runtime = if slot.is_some_and(|device| !device.bypassed()) {
                 config
                     .as_deref()
-                    .map(PreparedNativeInstrument::prepare_mutable_runtime)
+                    .map(|prepared| {
+                        if slot.is_some_and(|device| {
+                            shared_contexts.requires_mutable_continuation(track.id(), device.id())
+                        }) {
+                            prepared.prepare_mutable_continuation_runtime()
+                        } else {
+                            prepared.prepare_mutable_runtime()
+                        }
+                    })
                     .transpose()
                     .map_err(|_| crate::Invalid("mutable instrument runtime is unsupported"))?
                     .flatten()

@@ -1,3 +1,7 @@
+> Historical design/proof record. The production implementation and current
+> decisions are documented in [operator harmonics](operator-harmonics.md). Earlier HOLD, unresolved-law and
+> uninstalled-runtime statements below describe that checkpoint, not current code.
+
 # Private harmonic inline encoding proof
 
 This is a disconnected, test-only checkpoint on canonical PR158/#2342. It does

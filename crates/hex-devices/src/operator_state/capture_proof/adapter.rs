@@ -74,12 +74,13 @@ impl Root {
         let x = a.authored_state.payload();
         let y = b.authored_state.payload();
         self.rate == target.rate
-            && a.authored_state.state_version() == 8
-            && b.authored_state.state_version() == 8
-            && x.len() == 380
-            && y.len() == 380
+            && a.authored_state.state_version() == OPERATOR_STATE_VERSION
+            && b.authored_state.state_version() == OPERATOR_STATE_VERSION
+            && x.len() == PAYLOAD_BYTES
+            && y.len() == PAYLOAD_BYTES
             && x[..224] == y[..224]
             && x[240..364] == y[240..364]
+            && x[380..] == y[380..]
             && a.continuation_format == b.continuation_format
     }
 }

@@ -11,6 +11,7 @@ use hex_project::DeviceId;
 
 pub(super) mod context;
 pub(super) mod envelope;
+pub(super) mod harmonics;
 pub(super) mod preview;
 
 pub(super) const OPERATOR_FRAME_WIDTH: f32 =
@@ -144,6 +145,10 @@ pub(super) fn render_body(
         device,
         (state.page == OperatorPage::Envelope).then_some(state.selected_operator),
     );
+    harmonics::retire(view, cx, |key| {
+        key.0 != device
+            || (state.page == OperatorPage::Oscillator && key.1 == state.selected_operator)
+    });
     let detail = match state.page {
         OperatorPage::Oscillator => oscillator_detail(
             view,
@@ -638,15 +643,28 @@ fn oscillator_detail(
             Some("multi"),
         )
     });
-    let waveform_choice =
-        value(view, device, parameters, id(56 + one_based)).and_then(|value| match value {
-            ParameterValue::Choice(choice) => Some(choice),
-            _ => None,
-        });
-    let cycle = waveform_choice.and_then(waveform_cycle).and_then(|points| {
-        hex_widgets::curve_plot(points, display_style())
-            .map(|plot| plot.grid().grid_cols(1).grid_rows(1))
-    });
+    let graph = harmonics::graph(view, cx, device, operator);
+    let harmonic_tools = harmonics::tools(view, cx, device, operator);
+    let harmonic_range_control = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(349 + operator as u32),
+        ControlPresentation::CompactSelector,
+        Some("range"),
+    );
+    let harmonic_repeat_control = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(353 + operator as u32),
+        ControlPresentation::CompactSelector,
+        Some("repeat"),
+    );
     div()
         .id(ElementId::Name(
             format!("operator-osc-detail-{}-{operator}", device.value()).into(),
@@ -664,9 +682,19 @@ fn oscillator_detail(
                 .w_full()
                 .h(px(86.0))
                 .flex_shrink_0()
-                .child(cycle.unwrap_or_else(|| div())),
+                .child(graph),
         )
-        .child(div().h(px(16.0)).flex_shrink_0())
+        .child(
+            div()
+                .h(px(16.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .child(harmonic_range_control)
+                .child(harmonic_repeat_control)
+                .child(harmonic_tools),
+        )
         .child(
             div()
                 .w_full()
@@ -1241,7 +1269,7 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
-        exposed.extend(82..=92);
+        exposed.extend(82..=356);
         exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
@@ -1268,7 +1296,7 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 92);
+        assert_eq!(exposed.len(), 356);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&516));
         for diagonal in [13, 18, 23, 28] {

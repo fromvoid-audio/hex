@@ -372,10 +372,10 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
-    let mutable_track_count = arrangement
+    let mutable_track_count = project
         .tracks()
         .iter()
-        .filter(|track| track.has_mutable_instrument())
+        .filter(|track| track.instrument().is_some())
         .count();
     let mut revisions = Vec::new();
     revisions
@@ -394,7 +394,7 @@ fn prepare_mutable_track_revisions(
                 "mutable revision descriptor track ordering is inconsistent",
             ));
         }
-        if !compiled.has_mutable_instrument() {
+        if track.instrument().is_none() {
             continue;
         }
         if track.devices().len() > MAX_DEVICES_PER_TRACK {

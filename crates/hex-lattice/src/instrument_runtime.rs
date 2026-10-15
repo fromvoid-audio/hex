@@ -109,8 +109,31 @@ pub enum InstrumentHistoryRetargetPreparation {
 /// it alive until that graph is retired on control. The declared payload size
 /// excludes allocator bookkeeping.
 pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
+    /// Explicit cross-version import opt-in. Both target twins must additionally
+    /// validate the actual source type, complete law, capacity and history.
+    fn supports_source_runtime_version(&self, _version: u32) -> bool {
+        false
+    }
     fn declared_fixed_storage_bytes(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
+}
+
+/// One already sounding stateless voice, copied under exclusive host ownership.
+/// The host supplies complete source provenance; providers validate the source
+/// law and all note payloads before either candidate twin changes.
+#[derive(Clone, Copy, Debug)]
+pub struct AnalyticInstrumentVoice {
+    pub occurrence_id: u64,
+    pub note: super::PreparedSharedAnalyticNote,
+    pub age_frames: u64,
+    pub gate_frames: Option<u64>,
+}
+pub struct AnalyticInstrumentHistory<'a> {
+    pub source: &'a dyn super::PreparedSharedAnalyticContext,
+    pub source_id: crate::AnalyticContinuationId,
+    pub transition: Option<crate::AnalyticContinuation>,
+    pub performance_frame: u64,
+    pub voices: &'a [AnalyticInstrumentVoice],
 }
 
 /// Mutable per-note state. Compatibility must include every immutable law
@@ -124,6 +147,12 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    fn can_import_analytic_history(&self, _history: &AnalyticInstrumentHistory<'_>) -> bool {
+        false
+    }
+    /// Inactive candidate only, after both twins and the whole graph preflight.
+    fn import_analytic_history(&mut self, _history: &AnalyticInstrumentHistory<'_>) {}
+
     fn preflight_events(
         &self,
         events: &[NativeInstrumentEvent],
@@ -425,6 +454,26 @@ impl NativeInstrumentRuntimePair {
         Ok(())
     }
 
+    pub fn can_import_analytic_history(&self, history: &AnalyticInstrumentHistory<'_>) -> bool {
+        !self.block_started
+            && self.primary.is_quiescent()
+            && self.scratch.is_quiescent()
+            && history.voices.len() <= self.max_active_occurrences
+            && self.primary.can_import_analytic_history(history)
+            && self.scratch.can_import_analytic_history(history)
+    }
+    pub fn import_analytic_history(
+        &mut self,
+        history: &AnalyticInstrumentHistory<'_>,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.can_import_analytic_history(history) {
+            return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
+        }
+        self.primary.import_analytic_history(history);
+        self.scratch.import_analytic_history(history);
+        Ok(())
+    }
+
     /// Preflight an explicit prepared retarget of both runtime twins. Exact
     /// `can_inherit_from` semantics remain unchanged; candidate topology and
     /// source identity are checked by the owning engine graph.
@@ -435,7 +484,8 @@ impl NativeInstrumentRuntimePair {
     ) -> bool {
         !self.block_started
             && !previous.block_started
-            && self.runtime_version == previous.runtime_version
+            && (self.runtime_version == previous.runtime_version
+                || proof.supports_source_runtime_version(previous.runtime_version))
             && self
                 .primary
                 .can_retarget_history_from(previous.primary.as_ref(), proof)

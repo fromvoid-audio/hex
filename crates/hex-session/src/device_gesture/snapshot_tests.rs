@@ -443,3 +443,112 @@ fn snapshot_coalesces_and_retries_queue_refusal_without_losing_terminal() {
             .is_err()
     );
 }
+
+#[test]
+fn actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen() {
+    let mut session = Session::new(48000, 32, 0).unwrap();
+    let (Created::Track(track), prepared) = session
+        .command_prepared_revision(
+            Command::AddMidiTrack {
+                name: "harmonics".into(),
+            },
+            None,
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let (_, prepared) = session
+        .command_prepared_revision(
+            Command::ReplaceDeviceState { device, state },
+            Some(&prepared),
+        )
+        .unwrap();
+    let original = session.project().clone();
+    let spectrum = |amplitude: f32| {
+        DeviceParameterSnapshot::new(&std::array::from_fn::<_, 64, _>(|i| {
+            (
+                ParameterId::from_static(93 + i as u32),
+                ParameterValue::Float(if i == 63 { amplitude } else { 0.0 }),
+            )
+        }))
+        .unwrap()
+    };
+    let key = GestureKey {
+        generation: 1,
+        token: 1,
+    };
+    let mut machine = GestureMachine::default();
+    for request in [
+        GestureRequest::BeginSnapshot {
+            key,
+            device,
+            snapshot: spectrum(0.0),
+        },
+        GestureRequest::ChangeSnapshot {
+            key,
+            sequence: 1,
+            snapshot: spectrum(0.25),
+        },
+        GestureRequest::ChangeSnapshot {
+            key,
+            sequence: 2,
+            snapshot: spectrum(0.75),
+        },
+        GestureRequest::CommitSnapshot {
+            key,
+            sequence: 3,
+            snapshot: spectrum(0.5),
+        },
+    ] {
+        assert!(
+            machine
+                .handle(&mut session, request, Some(&prepared), 1)
+                .ack
+                .accepted
+        );
+    }
+    let authored = session.project().clone();
+    assert!(session.undo());
+    assert_eq!(session.project(), &original);
+    assert!(session.redo());
+    assert_eq!(session.project(), &authored);
+    let current = session.project().device(device).unwrap().state();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        current,
+        ParameterId::from_static(349),
+        ParameterValue::Choice(0),
+    )
+    .unwrap();
+    session
+        .command_prepared_revision(Command::ReplaceDeviceState { device, state }, None)
+        .unwrap();
+    let reopened = hex_storage::decode(&hex_storage::encode(session.project()).unwrap()).unwrap();
+    assert_eq!(&reopened, session.project());
+    let view = hex_engine::native_device_view_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        reopened.device(device).unwrap().state(),
+    )
+    .unwrap();
+    assert_eq!(
+        view.parameters
+            .iter()
+            .find(|p| p.descriptor.id.value() == 156)
+            .unwrap()
+            .value,
+        ParameterValue::Float(0.5)
+    );
+}

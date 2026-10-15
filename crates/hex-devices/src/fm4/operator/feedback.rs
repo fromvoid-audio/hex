@@ -44,6 +44,15 @@ impl PreparedOperatorConfiguration {
 }
 
 impl PreparedOperatorFeedbackVoice {
+    pub(crate) fn harmonic_snapshot(&self) -> (PreparedOperatorNote, u64, Option<u64>, [f64; 4]) {
+        (
+            self.note,
+            self.age_frames,
+            self.gate_frame,
+            self.previous_outputs,
+        )
+    }
+
     /// Current note-relative frame; advances once after each successful sample.
     pub const fn age_frames(&self) -> u64 {
         self.age_frames

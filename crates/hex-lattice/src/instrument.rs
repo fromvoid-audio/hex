@@ -174,6 +174,17 @@ pub trait PreparedNativeInstrument: Send + Sync {
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(None)
     }
+    /// Once opted in, the control compiler keeps this device's continuation
+    /// runtime across subsequent revisions, including Undo to an analytic state.
+    /// New opens and never-authored devices retain ordinary capability selection.
+    fn prefers_mutable_continuation(&self) -> bool {
+        false
+    }
+    fn prepare_mutable_continuation_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
+        Ok(None)
+    }
     /// Alternative single-owner law plus both mutable histories. Default absent
     /// preserves all existing instrument factories. Host selection MUST reject
     /// simultaneous independent and owned-pair mutable capabilities; neither

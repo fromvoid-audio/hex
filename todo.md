@@ -1,3 +1,13 @@
+## Operator harmonic authoring — pulse2342 / PR158
+
+Canonical 64-partial painting, 16/32/64 active ranges with hidden retention,
+User caching, Normalize/Repeat, atomic stroke history and persistence, and live
+voice continuation are implemented. Automated coverage and measured CPU/memory
+limits are in [operator harmonics](docs/operator-harmonics.md). Native macOS
+visual/listening acceptance remains user-owned. Dense 64-voice/four-oscillator
+workloads exceed some deadlines on the measured cloud CPU; no scalability or
+Live numeric parity claim is made.
+
 ## PR164 review fixes — 15 october 2026
 
 Stopped/reset analytic enable edits now begin next playback at the target

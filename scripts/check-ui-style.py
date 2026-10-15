@@ -15,6 +15,8 @@ widgets = (
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
     # `theme::text` at their component boundary.
+    'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
+    'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',

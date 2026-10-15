@@ -21,13 +21,19 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 8;
+pub const OPERATOR_STATE_VERSION: u32 = 9;
 const ENABLE_STATE_VERSION: u32 = 8;
 const LFO_STATE_VERSION: u32 = 7;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
 mod enable;
+mod harmonic_runtime;
+mod harmonics;
+pub use harmonics::{
+    partial as harmonic_parameter, range as harmonic_range_parameter,
+    repeat as harmonic_repeat_parameter,
+};
 mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
@@ -47,7 +53,8 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
     + lfo::COUNT
-    + enable::COUNT;
+    + enable::COUNT
+    + harmonics::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -56,7 +63,8 @@ const VELOCITY_PAYLOAD_BYTES: usize =
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
 const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
-const PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
+const ENABLE_PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
+const PAYLOAD_BYTES: usize = ENABLE_PAYLOAD_BYTES + harmonics::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -277,7 +285,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
             id: ParameterId::from_static((57 + operator) as u32),
             label: waveforms[operator],
             kind: ParameterKind::Choice {
-                labels: OperatorWaveform::labels(),
+                labels: &harmonics::WAVE_LABELS,
             },
             default: ParameterValue::Choice(0),
             presentation: ParameterPresentation::Linear,
@@ -347,14 +355,23 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT - enable::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT - harmonics::COUNT - lfo::COUNT - enable::COUNT + offset] =
+            lfo[offset];
         offset += 1;
     }
     let enabled = enable::descriptors();
     let mut offset = 0;
     while offset < enable::COUNT {
-        result[PARAMETER_COUNT - enable::COUNT + offset] = enabled[offset];
+        result[PARAMETER_COUNT - harmonics::COUNT - enable::COUNT + offset] = enabled[offset];
         offset += 1;
+    }
+    index = PARAMETER_COUNT - harmonics::COUNT;
+    let harmonic = harmonics::descriptors();
+    let mut extra = 0;
+    while extra < harmonics::COUNT {
+        result[index] = harmonic[extra];
+        index += 1;
+        extra += 1;
     }
     result
 }
@@ -371,6 +388,7 @@ pub struct OperatorSettings {
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
     enabled: enable::EnableSettings,
+    harmonics: harmonics::Harmonics,
 }
 
 impl OperatorSettings {
@@ -390,6 +408,7 @@ impl OperatorSettings {
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
             enabled: enable::EnableSettings::default(),
+            harmonics: harmonics::Harmonics::default(),
         }
     }
 
@@ -404,6 +423,7 @@ impl OperatorSettings {
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
             LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
+            ENABLE_STATE_VERSION => ENABLE_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -491,9 +511,16 @@ impl OperatorSettings {
             lfo::LfoSettings::default()
         };
         let enabled = if state.state_version() >= ENABLE_STATE_VERSION {
-            enable::EnableSettings::decode(&state.payload()[LFO_PAYLOAD_BYTES..PAYLOAD_BYTES])?
+            enable::EnableSettings::decode(
+                &state.payload()[LFO_PAYLOAD_BYTES..ENABLE_PAYLOAD_BYTES],
+            )?
         } else {
             enable::EnableSettings::default()
+        };
+        let harmonics = if state.state_version() >= 9 {
+            harmonics::Harmonics::decode(&state.payload()[ENABLE_PAYLOAD_BYTES..])?
+        } else {
+            harmonics::Harmonics::default()
         };
         let result = Self {
             fields,
@@ -503,6 +530,7 @@ impl OperatorSettings {
             feedback,
             lfo,
             enabled,
+            harmonics,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -529,6 +557,7 @@ impl OperatorSettings {
         }
         self.lfo.append(&mut payload);
         self.enabled.append(&mut payload);
+        self.harmonics.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -744,6 +773,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.harmonics.read(parameter, settings.waveforms) {
+            return Ok(value);
+        }
         if let Some(value) = settings.enabled.read(parameter) {
             return Ok(value);
         }
@@ -777,7 +809,13 @@ impl NativeDeviceMetadata for OperatorMetadata {
                 .waveforms
                 .get(index)
                 .copied()
-                .map(|waveform| ParameterValue::Choice(waveform.choice()))
+                .map(|waveform| {
+                    ParameterValue::Choice(if settings.harmonics.custom[index] {
+                        4
+                    } else {
+                        waveform.choice()
+                    })
+                })
                 .ok_or(DeviceContractError::UnknownParameter);
         }
         settings
@@ -815,6 +853,12 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings
+            .harmonics
+            .patch(parameter, value, settings.waveforms)
+        {
+            return settings.to_state();
+        }
         if settings.enabled.patch(parameter, value)? {
             return settings.to_state();
         }
@@ -859,8 +903,17 @@ impl NativeDeviceMetadata for OperatorMetadata {
             let ParameterValue::Choice(value) = value else {
                 return Err(DeviceContractError::InvalidParameterValue);
             };
-            settings.waveforms[index] = OperatorWaveform::from_choice(value)
-                .ok_or(DeviceContractError::InvalidParameterValue)?;
+            if value == 4 {
+                if !settings.harmonics.authored[index] {
+                    settings.harmonics.seed(index, settings.waveforms[index]);
+                }
+                settings.harmonics.custom[index] = true;
+                settings.harmonics.authored[index] = true;
+            } else {
+                settings.waveforms[index] = OperatorWaveform::from_choice(value)
+                    .ok_or(DeviceContractError::InvalidParameterValue)?;
+                settings.harmonics.custom[index] = false;
+            }
             return settings.to_state();
         }
         let ParameterValue::Float(value) = value else {
@@ -906,13 +959,19 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             sine_table,
         )?;
         Ok(Box::new(PreparedOperatorInstrument {
-            configuration,
+            configuration: configuration.clone(),
             authored_state,
             effective_levels,
             continuation_format,
             sine_table,
             feedback_runtime,
             lfo_runtime,
+            harmonic_runtime: harmonic_runtime::Factory::new(
+                settings,
+                configuration.clone(),
+                sine_table,
+                sample_rate,
+            )?,
         }))
     }
 }
@@ -925,13 +984,32 @@ struct PreparedOperatorInstrument {
     sine_table: &'static SineTable,
     feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
     lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
+    harmonic_runtime: harmonic_runtime::Factory,
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn prefers_mutable_continuation(&self) -> bool {
+        self.harmonic_runtime
+            .settings
+            .harmonics
+            .custom
+            .iter()
+            .any(|v| *v)
+    }
+    fn prepare_mutable_continuation_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(self.harmonic_runtime.clone())))
+    }
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
         if self.lfo_runtime.is_some() {
             self.configuration
                 .prepare_lfo_note(pitch, velocity)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        } else {
+            self.configuration
+                .prepare_note(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         }
         Ok(())
@@ -944,7 +1022,10 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prepare_shared_analytic_context(
         &self,
     ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
-        if self.feedback_runtime.is_some() || self.lfo_runtime.is_some() {
+        if self.prefers_mutable_continuation()
+            || self.feedback_runtime.is_some()
+            || self.lfo_runtime.is_some()
+        {
             // Mutable feedback must never be silently rendered through the
             // legacy analytic sampler. Event-source compilation owns this
             // instrument through `prepare_mutable_runtime` instead.
@@ -963,6 +1044,9 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         &self,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
     {
+        if self.prefers_mutable_continuation() {
+            return self.prepare_mutable_continuation_runtime();
+        }
         if let Some(factory) = self.lfo_runtime.as_ref() {
             return Ok(Some(
                 Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>

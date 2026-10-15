@@ -123,7 +123,7 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+    pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
@@ -292,6 +292,10 @@ impl MidiRenderSpan {
 }
 
 impl MidiReleaseVoice {
+    pub(crate) fn start_frame(&self) -> u64 {
+        self.start_frame
+    }
+
     pub(crate) fn context_ref(&self) -> Option<crate::midi_note_bank::SharedContextRef> {
         self.voice.context_ref()
     }

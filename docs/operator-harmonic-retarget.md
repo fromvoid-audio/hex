@@ -1,3 +1,7 @@
+> Historical design/proof record. The production implementation and current
+> decisions are documented in [operator harmonics](operator-harmonics.md). Earlier HOLD, unresolved-law and
+> uninstalled-runtime statements below describe that checkpoint, not current code.
+
 # harmonic live-retarget contract — Pulse2342 / PR158
 
 Status: required design constraints, not an implemented or verified runtime.

@@ -637,6 +637,67 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
     }
 }
 
+pub(super) fn export_harmonic_history(
+    runtime: &dyn MutableInstrumentRuntime,
+) -> Option<super::harmonic_runtime::Legacy> {
+    use super::harmonic_runtime::{
+        Legacy, ParameterRamp, Voice, builtin_spectrum, parameter_words,
+    };
+    let runtime = runtime.as_any().downcast_ref::<OperatorFeedbackRuntime>()?;
+    let mut base = [0; super::ENABLE_PAYLOAD_BYTES];
+    base[..FEEDBACK_PAYLOAD_BYTES].copy_from_slice(&runtime.compatibility_state);
+    for (i, word) in super::lfo::LfoSettings::default().0.iter().enumerate() {
+        base[FEEDBACK_PAYLOAD_BYTES + i * 4..FEEDBACK_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&word.to_le_bytes());
+    }
+    for i in 0..4 {
+        base[super::LFO_PAYLOAD_BYTES + i * 4..super::LFO_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+    }
+    let parameters = parameter_words(
+        runtime
+            .configuration
+            .feedback_parameters(runtime.feedback_turns)
+            .ok()?,
+    );
+    let ramp = if let Some(r) = runtime.retarget {
+        Some(ParameterRamp {
+            source: parameter_words(r.values_at(0).ok()?),
+            elapsed: runtime.retarget_elapsed,
+            frames: r.frames(),
+        })
+    } else {
+        None
+    };
+    let mut voices = [Voice::default(); 64];
+    for (target, old) in voices.iter_mut().zip(runtime.voices) {
+        if let Some(voice) = old.voice {
+            let (note, age, gate, previous) = voice.harmonic_snapshot();
+            *target = Voice {
+                note,
+                phases: PreparedOperatorConfiguration::harmonic_initial_phases(&note, age),
+                previous,
+                age,
+                gate,
+                id: old.occurrence_id,
+                ..Voice::default()
+            };
+        }
+    }
+    let spectrum = builtin_spectrum(&base)?;
+    Some(Legacy {
+        base,
+        voices,
+        parameters,
+        ramp,
+        phase: (0.0, 0),
+        source: spectrum,
+        target: spectrum,
+        elapsed: 1,
+        frames: 1,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

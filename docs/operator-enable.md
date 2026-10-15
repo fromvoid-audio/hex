@@ -1,3 +1,6 @@
+> State v9 now appends harmonic authoring after the unchanged enable prefix.
+> The completed harmonic runtime is described in [operator harmonics](operator-harmonics.md).
+
 # Operator oscillator enable controls — Pulse2335
 
 Status: integrated source; final automated and native acceptance pending.

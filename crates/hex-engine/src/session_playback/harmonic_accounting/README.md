@@ -1,3 +1,7 @@
+> Historical design/proof record. The production implementation and current
+> decisions are documented in [operator harmonics](../../../../../docs/operator-harmonics.md). Earlier HOLD, unresolved-law and
+> uninstalled-runtime statements below describe that checkpoint, not current code.
+
 # Private complete-admission proof (#2342 / PR158)
 
 This isolated `cfg(test)` module starts from frozen integration

@@ -2829,6 +2829,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     assert_eq!(
         contexts.storage_bytes().unwrap(),
         std::mem::size_of_val(contexts.as_ref())
+            + hex_project::MAX_TRACKS * std::mem::size_of::<(TrackId, hex_project::DeviceId)>()
             + contexts.context_count()
                 * (std::mem::size_of::<Arc<crate::shared_analytic::SharedContextOwner>>()
                     + std::mem::size_of::<(crate::shared_analytic::SharedContextId, u16,)>())
@@ -10804,3 +10805,6 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
 
 #[path = "instrument_memory_budget_tests.rs"]
 mod instrument_memory_budget_tests;
+
+#[path = "harmonic_tests.rs"]
+mod harmonic_tests;

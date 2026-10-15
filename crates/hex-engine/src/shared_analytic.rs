@@ -246,6 +246,7 @@ pub(crate) struct SharedAnalyticContextTable {
     owners: Vec<Arc<SharedContextOwner>>,
     ids: Vec<(SharedContextId, u16)>,
     payload_bytes: usize,
+    mutable_continuations: Vec<(TrackId, DeviceId)>,
 }
 
 impl SharedAnalyticContextTable {
@@ -263,6 +264,10 @@ impl SharedAnalyticContextTable {
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| Invalid("could not reserve shared instrument context owners"))?;
         let mut payload_bytes = 0_usize;
+        let mut mutable_continuations = Vec::new();
+        mutable_continuations
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| Invalid("could not reserve instrument continuation identities"))?;
 
         for track in project.tracks() {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
@@ -271,6 +276,24 @@ impl SharedAnalyticContextTable {
             let prepared = registry
                 .prepare_instrument(device.state(), project.sample_rate())
                 .map_err(|_| Invalid("track instrument state is unsupported"))?;
+            if prepared.prefers_mutable_continuation()
+                || previous.is_some_and(|old| {
+                    old.mutable_continuations
+                        .contains(&(track.id(), device.id()))
+                })
+            {
+                if prepared
+                    .prepare_mutable_continuation_runtime()
+                    .map_err(|_| Invalid("mutable continuation runtime is unsupported"))?
+                    .is_some()
+                {
+                    mutable_continuations.push((track.id(), device.id()));
+                    continue;
+                }
+                if prepared.prefers_mutable_continuation() {
+                    return Err(Invalid("mutable continuation capability disappeared"));
+                }
+            }
             let Some(context) = prepared
                 .prepare_shared_analytic_context()
                 .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?
@@ -349,7 +372,12 @@ impl SharedAnalyticContextTable {
             owners,
             ids,
             payload_bytes,
+            mutable_continuations,
         }))
+    }
+
+    pub(crate) fn requires_mutable_continuation(&self, track: TrackId, device: DeviceId) -> bool {
+        self.mutable_continuations.contains(&(track, device))
     }
 
     pub(crate) fn owners(&self) -> impl Iterator<Item = (u16, &SharedContextOwner)> {
@@ -414,6 +442,13 @@ impl SharedAnalyticContextTable {
             .ok_or(Invalid("shared instrument context owner size overflow"))?;
         owner_handles
             .checked_add(id_index)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.mutable_continuations
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<(TrackId, DeviceId)>())?,
+                )
+            })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
             .ok_or(Invalid("shared instrument context owner size overflow"))
     }
@@ -541,8 +576,8 @@ mod tests {
         let table_header = std::mem::size_of::<SharedAnalyticContextTable>();
         assert_eq!(owner_handles, 2_048);
         assert_eq!(id_index_entries, 4_096);
-        assert_eq!(table_header, 56);
-        assert_eq!(owner_handles + id_index_entries + table_header, 6_200);
+        assert_eq!(table_header, 80);
+        assert_eq!(owner_handles + id_index_entries + table_header, 6_224);
     }
 
     #[test]

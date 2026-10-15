@@ -277,6 +277,40 @@ impl MutableInstrumentTrackRuntime {
         })
     }
 
+    pub(crate) fn can_import_analytic(
+        &self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> bool {
+        occurrences.len() == history.voices.len()
+            && occurrences.len() <= self.primary.capacity()
+            && occurrences
+                .iter()
+                .zip(history.voices)
+                .all(|(occurrence, voice)| occurrence.is_some_and(|o| o.id == voice.occurrence_id))
+            && self.primary.is_empty()
+            && self.pair.can_import_analytic_history(history)
+    }
+    pub(crate) fn import_analytic(
+        &mut self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if !self.can_import_analytic(history, occurrences) {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.pair
+            .import_analytic_history(history)
+            .map_err(map_runtime_error)?;
+        self.primary.clear();
+        self.primary.extend(occurrences.iter().flatten().copied());
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.primary);
+        self.next_id = self.primary.iter().map(|o| o.id).max().unwrap_or(0);
+        self.next_id_scratch = self.next_id;
+        Ok(())
+    }
+
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
         self.scratch.clear();

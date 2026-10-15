@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
     let current = OPERATOR_METADATA.default_state().unwrap();
-    assert_eq!(current.payload().len(), 380);
-    assert_eq!(PARAMETER_COUNT, 92);
+    assert_eq!(current.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(PARAMETER_COUNT, 356);
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -21,7 +21,7 @@ fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on
         )
         .unwrap();
         let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-        assert_eq!(migrated.state_version(), 8);
+        assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
         assert_eq!(&migrated.payload()[..length], old.payload());
         for operator in 1..=4 {
             assert_eq!(
@@ -95,7 +95,7 @@ fn enable_suffix_refuses_nonbinary_flags_wrong_lengths_and_legacy_layout_aliases
     let original = OPERATOR_METADATA.default_state().unwrap();
     for operator in 0..4 {
         for word in [2_u32, u32::MAX, f32::NAN.to_bits()] {
-            let mut bytes = original.payload().to_vec();
+            let mut bytes = original.payload()[..380].to_vec();
             bytes[364 + operator * 4..368 + operator * 4].copy_from_slice(&word.to_le_bytes());
             let invalid = NativeDeviceState::new(OPERATOR_TYPE_ID, 8, bytes).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&invalid).is_err());

@@ -1118,6 +1118,7 @@ fn reserve_analytic_continuations()
     Ok(slots)
 }
 
+mod analytic_import;
 mod commands;
 mod handoff;
 mod preroll;

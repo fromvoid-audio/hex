@@ -1,3 +1,7 @@
+> Historical design/proof record. The production implementation and current
+> decisions are documented in [operator harmonics](../../docs/operator-harmonics.md). Earlier HOLD, unresolved-law and
+> uninstalled-runtime statements below describe that checkpoint, not current code.
+
 # Operator harmonic authoring: preflight, 11 October 2026
 
 Pulse2342 / draft PR158. Status: implementation gated; this is not acceptance

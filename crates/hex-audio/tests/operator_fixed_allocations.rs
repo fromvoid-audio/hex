@@ -131,7 +131,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [false, true] {
-        operator_modulation_allocations(Some(sync), true)?;
+        operator_modulation_allocations(Some(sync), true, false)?;
     }
     Ok(())
 }
@@ -139,18 +139,19 @@ fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 #[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, true)
+    operator_modulation_allocations(None, true, false)
 }
 
 #[test]
 fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, false)
+    operator_modulation_allocations(None, false, false)
 }
 
 fn operator_modulation_allocations(
     lfo_sync: Option<bool>,
     feedback_active: bool,
+    harmonics: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -249,6 +250,11 @@ fn operator_modulation_allocations(
         let edit = match block {
             5 | 46 => Some((513, ParameterValue::Bool(false))),
             6 | 47 => Some((513, ParameterValue::Bool(true))),
+            2 | 45 if harmonics => Some((156, ParameterValue::Float(0.75))),
+            3 | 48 if harmonics => Some((349, ParameterValue::Choice(0))),
+            4 | 49 if harmonics => Some((349, ParameterValue::Choice(2))),
+            7 if harmonics => Some((57, ParameterValue::Choice(0))),
+            8 if harmonics => Some((57, ParameterValue::Choice(4))),
             2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
             _ => None,
         };
@@ -586,4 +592,12 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         .shutdown_and_join()
         .map_err(|_| "spectrum worker did not join")?;
     Ok(())
+}
+
+#[test]
+fn harmonic_first_paint_range_cache_builtin_reversal_and_release_allocate_nothing()
+-> Result<(), Box<dyn Error>> {
+    operator_modulation_allocations(None, false, true)?;
+    operator_modulation_allocations(None, true, true)?;
+    operator_modulation_allocations(Some(false), true, true)
 }

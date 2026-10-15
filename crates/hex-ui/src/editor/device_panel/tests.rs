@@ -12,6 +12,8 @@ mod device_reorder_tests;
 mod gate_ui_tests;
 mod navigation_ui_tests;
 mod operator_enable_ui_tests;
+#[path = "operator_harmonic_ui_tests.rs"]
+mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
 mod operator_tab_tests;

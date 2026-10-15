@@ -64,16 +64,16 @@ fn exact_pcm_and_provider(
 }
 
 #[test]
-fn canonical_v8_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
+fn canonical_v9_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     let input = OPERATOR_METADATA.default_state().unwrap();
     let original = input.payload().as_ptr();
     let bytes = input.payload().to_vec();
     let prepared = context(&input);
     let authored = &operator(prepared.as_ref()).authored_state;
-    assert_eq!(authored.state_version(), 8);
-    assert_eq!(authored.payload().len(), 380); // Arc slice, no retained Vec slack.
+    assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
+    assert_eq!(authored.payload().len(), PAYLOAD_BYTES); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 1476); // Includes host gain metadata.
+    assert_eq!(prepared.declared_context_bytes(), 2548); // Includes host gain metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())
@@ -131,7 +131,12 @@ fn exact_bytes_retain_signed_zero_disabled_oscillator_and_inactive_lfo_history()
 #[test]
 fn equal_content_on_unrelated_input_owners_does_not_intern_contexts_or_payloads() {
     let input = OPERATOR_METADATA.default_state().unwrap();
-    let other = NativeDeviceState::new(OPERATOR_TYPE_ID, 8, input.payload().to_vec()).unwrap();
+    let other = NativeDeviceState::new(
+        OPERATOR_TYPE_ID,
+        OPERATOR_STATE_VERSION,
+        input.payload().to_vec(),
+    )
+    .unwrap();
     assert_eq!(input, other);
     assert!(!std::ptr::eq(input.payload(), other.payload()));
     let first = context(&input);
@@ -162,6 +167,7 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
         (5, 320),
         (6, 320),
         (7, 364),
+        (8, 380),
     ] {
         let input =
             NativeDeviceState::new(OPERATOR_TYPE_ID, version, current.payload()[..len].to_vec())
@@ -173,8 +179,8 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
         let prepared = context(&input);
         let authored = &operator(prepared.as_ref()).authored_state;
         assert_eq!(authored, &canonical);
-        assert_eq!(authored.state_version(), 8);
-        assert_eq!(authored.payload().len(), 380);
+        assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
+        assert_eq!(authored.payload().len(), PAYLOAD_BYTES);
         assert!(!std::ptr::eq(authored.payload(), input.payload()));
         exact_pcm_and_provider(prepared.as_ref(), context(&canonical).as_ref());
     }

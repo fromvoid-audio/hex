@@ -8,7 +8,7 @@ use hex_lattice::{
 use std::any::Any;
 
 impl PreparedOperatorContext {
-    fn continuation_levels(
+    pub(super) fn continuation_levels(
         &self,
         target: AnalyticContinuationId,
         frame: &AnalyticParameterFrame,
@@ -38,7 +38,7 @@ impl PreparedOperatorContext {
         AnalyticParameterFrame::new(target, words)
     }
 
-    fn continuation_note(
+    pub(super) fn continuation_note(
         &self,
         note: &PreparedSharedAnalyticNote,
     ) -> Result<PreparedOperatorNote, AnalyticContinuationError> {

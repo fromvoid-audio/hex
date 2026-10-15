@@ -484,6 +484,88 @@ impl SessionPlayback {
             },
         );
 
+        // Opt-in analytic-to-mutable adoption copies the actual committed
+        // source law and phases into an inactive, fully charged candidate.
+        // The graph identity/source checks remain independent of provider checks.
+        let mut analytic_import_new_for_old = [usize::MAX; MAX_TRACKS];
+        if !timing_changed && old_loop == new_loop {
+            for (new_index, new_route) in self.routes.iter().enumerate() {
+                let Some(target) = self
+                    .mutable_instruments
+                    .get(new_index)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                let Some(old_index) = previous
+                    .routes
+                    .iter()
+                    .position(|old| old.id == new_route.id)
+                else {
+                    continue;
+                };
+                if previous
+                    .mutable_instruments
+                    .get(old_index)
+                    .is_some_and(Option::is_some)
+                    || previous.routes[old_index].pending.is_some()
+                    || previous
+                        .revision
+                        .arrangement()
+                        .shared_contexts()
+                        .index_for_track(new_route.id)
+                        .is_none()
+                {
+                    continue;
+                }
+                let same_source = match previous.routes[old_index].owner {
+                    RouteOwner::Arrangement => previous
+                        .revision
+                        .mutable_arrangement_retarget_matches(&self.revision, new_route.id),
+                    RouteOwner::Session { clip, .. } => {
+                        previous
+                            .revision
+                            .mutable_track_retarget_topology_matches(&self.revision, new_route.id)
+                            && previous
+                                .revision
+                                .session()
+                                .midi_clip(clip)
+                                .zip(self.revision.session().midi_clip(clip))
+                                .is_some_and(|(old, new)| {
+                                    old.track == new.track
+                                        && old.scene == new.scene
+                                        && old.source_content_matches(new)
+                                        && old.instrument_identity_matches(new)
+                                        && old.instrument_enabled()
+                                        && new.instrument_enabled()
+                                })
+                    }
+                    RouteOwner::Silence => previous
+                        .revision
+                        .mutable_track_retarget_topology_matches(&self.revision, new_route.id),
+                    RouteOwner::SessionAudio { .. } => false,
+                };
+                if !same_source {
+                    continue;
+                }
+                if super::analytic_import::preflight(previous, old_index, &mut self.spans, target)?
+                {
+                    let new_chain = self
+                        .device_chains
+                        .get(new_index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    let old_chain = previous
+                        .device_chains
+                        .get(old_index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    if !new_chain.can_inherit_from(old_chain) {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    analytic_import_new_for_old[old_index] = new_index;
+                }
+            }
+        }
+
         // A retained Session source may already be sounding through a mutable
         // instrument. If the same instrument identity changes to the analytic
         // class, the candidate has no mutable runtime to inherit and an
@@ -639,6 +721,7 @@ impl SessionPlayback {
             if old_index.is_some_and(|old_index| {
                 mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
                     || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
+                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
             }) {
                 continue;
             }
@@ -844,7 +927,8 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
                 let carried_by_retarget = mutable_retarget_new_for_old
                     .get(old_index)
-                    .is_some_and(|candidate_index| *candidate_index == new_index);
+                    .is_some_and(|candidate_index| *candidate_index == new_index)
+                    || analytic_import_new_for_old[old_index] == new_index;
                 let analytic_retarget = previous
                     .revision
                     .arrangement()
@@ -893,7 +977,8 @@ impl SessionPlayback {
                             }
                             let carried_by_retarget = mutable_retarget_new_for_old
                                 .get(old_index)
-                                .is_some_and(|candidate_index| *candidate_index == new_index);
+                                .is_some_and(|candidate_index| *candidate_index == new_index)
+                                || analytic_import_new_for_old[old_index] == new_index;
                             let analytic_retarget = previous
                                 .revision
                                 .arrangement()
@@ -991,6 +1076,7 @@ impl SessionPlayback {
         if source_changed {
             for (old_index, route) in previous.routes.iter().enumerate() {
                 if matches!(route.owner, RouteOwner::Session { .. })
+                    && analytic_import_new_for_old[old_index] == usize::MAX
                     && let Some(changed) = midi_route_changed.get_mut(old_index)
                 {
                     *changed = true;
@@ -2057,6 +2143,12 @@ impl SessionPlayback {
             }
         }
 
+        self.release_scratch.retain(|release| {
+            !previous.routes.iter().enumerate().any(|(old_index, _)| {
+                analytic_import_new_for_old[old_index] != usize::MAX
+                    && super::analytic_import::imports_release(previous, old_index, release)
+            })
+        });
         for release in &mut self.release_scratch {
             if !release.voice.sampler().is_current() {
                 continue;
@@ -2138,6 +2230,17 @@ impl SessionPlayback {
             {
                 candidate.inherit_from(old);
             }
+        }
+        for (old_index, new_index) in analytic_import_new_for_old.iter().copied().enumerate() {
+            if new_index == usize::MAX {
+                continue;
+            }
+            let target = self
+                .mutable_instruments
+                .get_mut(new_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            super::analytic_import::adopt(previous, old_index, &mut self.spans, target)?;
         }
         for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
