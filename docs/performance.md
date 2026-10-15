@@ -1,3 +1,62 @@
+## PR164 capture prefix clearing — 15 October 2026
+
+A release-mode headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed
+CPUs), Rust1.94 measures two selected outputs (one track and one Return), 48kHz,
+256-frame blocks and 16,384-frame borrowed slices. Each process warms 200 blocks
+and times 3,000 render calls with `Instant`; preparation, sample inspection and
+sorting stay outside timing. The existing capture audio fixture supplies two
+tracks and shared Return routing; its finite clips finish during warmup, so this
+primarily measures silent-block overhead. One process per variant, uncontrolled
+host load, no concurrent Cargo. Only success-path clearing differs.
+
+| Clearing | p50 µs | p99 µs | max µs |
+| --- | ---: | ---: | ---: |
+| full supplied slices | 6.169 | 30.426 | 1162.093 |
+| rendered prefix | 3.816 | 14.171 | 288.876 |
+
+Clear writes fall from 32,768 to 512 stereo frames per call for this selection.
+This is a short throughput comparison, not sustained/native deadline evidence.
+Reproducer (temporarily appended to `session_playback/capture_tests.rs`) and raw
+logs: `artifacts/pr164-review/capture-prefix-microbenchmark.rs` and
+`capture-benchmark-{before,after}.log`. Command:
+`cargo test --release -p hex-engine --lib capture_prefix_microbenchmark -- --nocapture`.
+The temporary benchmark was removed after measurement; deterministic prefix and
+refusal regression coverage remains in the normal suite.
+
+## variable-size instrument state admission — 15 October 2026
+
+Pulse2589/[PR242](https://github.com/PORTALSURFER/hex/pull/242) removes the
+effect-derived 4 KiB instrument-twin ceiling while preserving the 2 MiB combined
+active DSP-pair and independently retained-tail budgets. Device DSP and voice
+counts are unchanged. This is memory admission policy, not an optimization or
+an Ableton allocation claim. Device-specific processing/timing acceptance remains
+required when a larger implementation is registered.
+
+An optimized Rust1.94.0 test probe on Linux x86_64, AMD EPYC9V74 (five visible
+vCPUs, shared cloud host), measures actual owned test-runtime buffers. Each size
+has100 control constructions of the complete pair and host ledgers, with final
+destruction outside timing. Copy measurements use100 warmups and1000 timed
+`begin_block` plus alternating commit/rollback operations; the fixture has no
+active notes. Storage construction and timing-vector allocation are outside
+copy timing. Results in nanoseconds, with scheduling outliers retained:
+
+| bytes per twin | pair bytes | construction p50 / p99 / max | copy + commit/rollback p50 / p99 / max |
+| ---: | ---: | ---: | ---: |
+| 1056 | 2112 | 250 / 12499 / 12499 | 40 / 60 / 70 |
+| 5120 | 10240 | 351 / 1623 / 1623 | 80 / 111 / 32128 |
+| 32768 | 65536 | 882 / 6891 / 6891 | 610 / 831 / 22584 |
+| 1048576 | 2097152 | 21582 / 468266 / 468266 | 21913 / 62234 / 140492 |
+
+Command: `cargo test --release -p hex-engine --lib --locked profile_instrument_memory_budget -- --ignored --nocapture`.
+Raw log: `artifacts/instrument-memory-budget/release-copy.log`; exact source and
+log digests accompany PR evidence. These are one-run headless component costs,
+not instrument rendering, dense workloads, native callback deadlines, listening
+acceptance or a justification for increasing the aggregate pool. The former
+policy fails the new >8 KiB owned-pair regression with `Budget`; the new policy
+passes. Boundary tests retain byte/count/overflow refusal before construction,
+full tail ownership and separate checkpoint limits. Callback allocation probes
+use an actual >8 KiB inline-state fixture with full history copying.
+
 ## 100-track original Lattice effects — 11 October 2026
 
 Pulse2317/PR140 measures canonical resident Arrangement rendering on Apple M5

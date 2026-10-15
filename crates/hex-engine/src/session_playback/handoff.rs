@@ -188,6 +188,20 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.analytic_continuations.len() != MAX_TRACKS
+            || self.analytic_continuation_scratch.len() != MAX_TRACKS
+            || previous.analytic_continuations.len() != MAX_TRACKS
+        {
+            return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
+        let capture_epoch = self
+            .capture_epoch
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let previous_capture_epoch = previous
+            .capture_epoch
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -243,6 +257,72 @@ impl SessionPlayback {
             // active loop gate. Keep the old graph audible until a later
             // handoff can prove its remaining gate under the new timing map.
             return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
+        // Pure preflight against the actual applied revision and absolute
+        // boundary. Scratch changes are never committed on refusal.
+        self.analytic_continuation_scratch.fill(None);
+        let mut analytic_new_for_old = [None; MAX_TRACKS];
+        let mut analytic_owner_matches = [false; MAX_TRACKS];
+        for (new_context_index, target) in self.revision.arrangement().shared_contexts().owners() {
+            let old_contexts = previous.revision.arrangement().shared_contexts();
+            let Some(old_context_index) = old_contexts.index_for_device(target.device_id()) else {
+                continue;
+            };
+            let source = old_contexts
+                .owner(old_context_index)
+                .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+            let prior = previous
+                .analytic_continuations
+                .get(usize::from(old_context_index))
+                .copied()
+                .flatten();
+            // Stop resets the performance clock and all voices/transitions.
+            // There is no audible boundary to continue at that endpoint. A
+            // paused, previously rendered runtime still needs its frozen ramp.
+            let transition = if previous.playing || previous.performance_frame != 0 {
+                target
+                    .continue_from(source, prior, previous.performance_frame)
+                    .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
+            } else {
+                None
+            };
+            self.analytic_continuation_scratch[usize::from(new_context_index)] = transition;
+            let same_opted_in_configuration = target.same_configuration(source)
+                && target
+                    .context()
+                    .analytic_continuation()
+                    .zip(source.context().analytic_continuation())
+                    .is_some_and(|(target, source)| target.format() == source.format());
+            analytic_owner_matches[usize::from(old_context_index)] =
+                source.id() == target.id() || transition.is_some() || same_opted_in_configuration;
+            if source.id() != target.id() && (transition.is_some() || same_opted_in_configuration) {
+                analytic_new_for_old[usize::from(old_context_index)] = Some(new_context_index);
+                // Compact note compatibility is checked before any publication
+                // or retained-owner mutation, including inactive bank entries.
+                for track in previous.revision.arrangement().tracks() {
+                    if let Some(instrument) = &track.instrument
+                        && instrument
+                            .bank
+                            .context_matches(Some((old_context_index, source)))
+                    {
+                        instrument
+                            .bank
+                            .validate_continuation_notes(target)
+                            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
+                    }
+                }
+                for route in &previous.routes {
+                    if let RouteOwner::Session { clip, .. } = route.owner
+                        && let Some(clip) = previous.revision.session().midi_clip(clip)
+                    {
+                        let bank = clip.instrument_template().note_bank();
+                        if bank.context_matches(Some((old_context_index, source))) {
+                            bank.validate_continuation_notes(target)
+                                .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
+                        }
+                    }
+                }
+            }
         }
         let mut mutable_continuity_new_for_old = [usize::MAX; MAX_TRACKS];
         let mut mutable_retarget_new_for_old = [usize::MAX; MAX_TRACKS];
@@ -697,7 +777,7 @@ impl SessionPlayback {
                                 span.start,
                                 span.gate_end,
                                 span.end,
-                                sampler,
+                                sampler.detach(&previous.analytic_continuations),
                                 previous.arrangement_frame,
                                 previous.performance_frame,
                             );
@@ -760,7 +840,14 @@ impl SessionPlayback {
                 let carried_by_retarget = mutable_retarget_new_for_old
                     .get(old_index)
                     .is_some_and(|candidate_index| *candidate_index == new_index);
+                let analytic_retarget = previous
+                    .revision
+                    .arrangement()
+                    .shared_contexts()
+                    .index_for_track(old_route.id)
+                    .is_some_and(|index| analytic_new_for_old[usize::from(index)].is_some());
                 if !old_track.instrument_config_matches(new_track)
+                    && !analytic_retarget
                     && !carried_by_retarget
                     && let Some(changed) = arrangement_instrument_changed.get_mut(old_index)
                 {
@@ -802,7 +889,18 @@ impl SessionPlayback {
                             let carried_by_retarget = mutable_retarget_new_for_old
                                 .get(old_index)
                                 .is_some_and(|candidate_index| *candidate_index == new_index);
-                            if !next.instrument_config_matches(old) && !carried_by_retarget {
+                            let analytic_retarget = previous
+                                .revision
+                                .arrangement()
+                                .shared_contexts()
+                                .index_for_track(old_route.id)
+                                .is_some_and(|index| {
+                                    analytic_new_for_old[usize::from(index)].is_some()
+                                });
+                            if !next.instrument_config_matches(old)
+                                && !analytic_retarget
+                                && !carried_by_retarget
+                            {
                                 if let Some(changed) = midi_route_changed.get_mut(old_index) {
                                     *changed = true;
                                 }
@@ -1033,7 +1131,7 @@ impl SessionPlayback {
                                 span.start,
                                 span.gate_end,
                                 span.end,
-                                sampler,
+                                sampler.detach(&previous.analytic_continuations),
                                 cut_frame,
                                 previous.performance_frame,
                             )
@@ -1042,7 +1140,7 @@ impl SessionPlayback {
                                 span.start,
                                 span.gate_end,
                                 span.end,
-                                sampler,
+                                sampler.detach(&previous.analytic_continuations),
                                 cut_frame,
                                 previous.performance_frame,
                             )
@@ -1372,12 +1470,24 @@ impl SessionPlayback {
                     } else {
                         None
                     };
-                    let Some(voice) = span
+                    let Some(mut voice) = span
                         .reconcile_at(previous.performance_frame, mapped_gate)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
                     else {
                         continue;
                     };
+                    // A historical floor can also bridge unchanged owned
+                    // occurrences on other tracks. Keep those current only
+                    // after proving occurrence AND actual instrument law.
+                    let compatible_owner = previous
+                        .revision
+                        .arrangement()
+                        .shared_contexts()
+                        .index_for_track(old_route.id)
+                        .is_some_and(|index| analytic_owner_matches[usize::from(index)]);
+                    if !matches || !compatible_owner {
+                        voice.detach(&previous.analytic_continuations);
+                    }
                     if self.release_scratch.len() >= self.release_capacity {
                         return Err(SessionPlaybackError::ReleaseBankFull);
                     }
@@ -1574,9 +1684,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -1654,8 +1762,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                     || tail_runtime_bytes
-                        > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                        > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                     || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1758,9 +1865,7 @@ impl SessionPlayback {
                 .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1879,9 +1984,7 @@ impl SessionPlayback {
                 .checked_add(runtime.max_active_occurrences())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 || reserved_tail_voices > self.release_capacity
             {
@@ -1939,6 +2042,49 @@ impl SessionPlayback {
             }
         }
 
+        for release in &mut self.release_scratch {
+            if !release.voice.sampler().is_current() {
+                continue;
+            }
+            let source = release.voice.sampler().context_id().and_then(|id| {
+                previous
+                    .revision
+                    .arrangement()
+                    .shared_contexts()
+                    .index_for_id(id)
+            });
+            let old_route = previous
+                .routes
+                .iter()
+                .position(|route| route.id == release.track_id);
+            let still_owned = old_route.is_some_and(|index| {
+                track_map[index] != usize::MAX
+                    && (!midi_route_changed[index] || release.continuation.is_some())
+                    && !arrangement_instrument_changed[index]
+                    && source.is_some_and(|index| analytic_owner_matches[usize::from(index)])
+            });
+            if still_owned {
+                if let Some(target_index) =
+                    source.and_then(|index| analytic_new_for_old[usize::from(index)])
+                {
+                    let target = self
+                        .revision
+                        .arrangement()
+                        .shared_contexts()
+                        .owner(target_index)
+                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                    release.voice.set_sampler(
+                        release
+                            .voice
+                            .sampler()
+                            .rebind(target_index, target)
+                            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?,
+                    );
+                }
+            } else {
+                release.voice.detach(&previous.analytic_continuations);
+            }
+        }
         self.preflight_shared_context_leases(previous)?;
 
         let inherited_floor = if source_changed {
@@ -2089,6 +2235,7 @@ impl SessionPlayback {
                 )
             {
                 std::mem::swap(candidate, previous_group);
+                self.tail_track_ids[slot] = previous.tail_track_ids[slot];
                 if let (Some(candidate_active), Some(previous_active)) = (
                     self.tail_output_active.get_mut(slot),
                     previous.tail_output_active.get(slot).copied(),
@@ -2145,6 +2292,7 @@ impl SessionPlayback {
                     old_chain,
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
+                self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
                 if let (Some(active), Some(prepared_active)) = (
                     self.tail_output_active.get_mut(slot),
                     old_track_tail_output_active.get(old_index).copied(),
@@ -2203,6 +2351,8 @@ impl SessionPlayback {
             }
         }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
+        self.analytic_continuations
+            .copy_from_slice(&self.analytic_continuation_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         self.release_order = next_order;
         self.release_order_scratch = next_order;
@@ -2211,6 +2361,8 @@ impl SessionPlayback {
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;
+        self.capture_epoch = capture_epoch;
+        previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
         self.route_historical_floors = candidate_route_floors;
@@ -2233,36 +2385,29 @@ impl SessionPlayback {
         let old_contexts = previous.revision.arrangement().shared_contexts();
         let new_contexts = self.revision.arrangement().shared_contexts();
         for release in &self.release_scratch {
-            let Some(context_ref) = release.voice.context_ref() else {
+            let Some(id) = release.voice.sampler().context_id() else {
                 continue;
-            };
-            let (id, source, bytes) = match context_ref {
-                SharedContextRef::Revision(index) => {
-                    let owner = old_contexts
-                        .owner(index)
-                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-                    (
-                        owner.id(),
-                        ContextLeaseSource::Revision(index),
-                        owner.declared_bytes(),
-                    )
-                }
-                SharedContextRef::Retained(index) => {
-                    let owner = previous
-                        .retained_contexts
-                        .get(usize::from(index))
-                        .and_then(Option::as_deref)
-                        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-                    (
-                        owner.id(),
-                        ContextLeaseSource::Retained(index),
-                        owner.declared_bytes(),
-                    )
-                }
             };
             if new_contexts.index_for_id(id).is_some() {
                 continue;
             }
+            let (source, bytes) = if let Some(index) = old_contexts.index_for_id(id) {
+                let owner = old_contexts
+                    .owner(index)
+                    .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                (ContextLeaseSource::Revision(index), owner.declared_bytes())
+            } else {
+                let Some(SharedContextRef::Retained(index)) = release.voice.context_ref() else {
+                    return Err(SessionPlaybackError::SharedAnalyticContext);
+                };
+                let owner = previous
+                    .retained_contexts
+                    .get(usize::from(index))
+                    .and_then(Option::as_deref)
+                    .filter(|owner| owner.id() == id)
+                    .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
+                (ContextLeaseSource::Retained(index), owner.declared_bytes())
+            };
             if self.context_lease_plan.len() >= self.context_lease_plan.capacity() {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -2280,20 +2425,9 @@ impl SessionPlayback {
         .map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
 
         for release in &mut self.release_scratch {
-            let Some(context_ref) = release.voice.context_ref() else {
+            let Some(id) = release.voice.sampler().context_id() else {
                 continue;
             };
-            let id = match context_ref {
-                SharedContextRef::Revision(index) => {
-                    old_contexts.owner(index).map(|owner| owner.id())
-                }
-                SharedContextRef::Retained(index) => previous
-                    .retained_contexts
-                    .get(usize::from(index))
-                    .and_then(Option::as_deref)
-                    .map(|owner| owner.id()),
-            }
-            .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
             if let Some(index) = new_contexts.index_for_id(id) {
                 release
                     .voice

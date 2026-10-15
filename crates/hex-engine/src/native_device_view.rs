@@ -536,7 +536,23 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 88);
+        assert_eq!(operator_view.parameters.len(), 92);
+        let enables: Vec<_> = operator_view
+            .parameters
+            .iter()
+            .filter(|parameter| (513..=516).contains(&parameter.descriptor.id.value()))
+            .map(|parameter| (parameter.descriptor.id.value(), parameter.value))
+            .collect();
+        assert_eq!(
+            enables,
+            vec![
+                (513, ParameterValue::Bool(true)),
+                (514, ParameterValue::Bool(true)),
+                (515, ParameterValue::Bool(true)),
+                (516, ParameterValue::Bool(true)),
+            ],
+            "all four canonical enable facades preserve their true default"
+        );
         for parameter in operator_view
             .parameters
             .iter()

@@ -23,6 +23,7 @@ pub(super) struct OperatorLfoFactory {
     configuration: PreparedOperatorConfiguration,
     table: &'static SineTable,
     base: [u8; FEEDBACK_PAYLOAD_BYTES],
+    enabled: super::enable::EnableSettings,
     lfo: LfoSettings,
     feedback: [f64; 4],
     release: u64,
@@ -47,6 +48,7 @@ pub(super) fn prepare_factory(
             .try_into()
             .map_err(|_| DeviceContractError::MalformedState)?,
         lfo: settings.lfo,
+        enabled: settings.enabled,
         feedback: settings.effective_feedback().map(f64::from),
         rate,
     }))
@@ -84,6 +86,32 @@ struct Runtime {
     factory: OperatorLfoFactory,
     voices: [Voice; VOICES],
     phase: Phase,
+    enable_ramp: Option<EnableRamp>,
+}
+
+/// One owner-level ramp, shared by all current notes, including new onsets.
+/// A copied twin carries the actual clock; another toggle collapses its scalar
+/// boundary without retaining an old factory or allocating a voice ramp.
+#[derive(Clone, Copy)]
+struct EnableRamp {
+    start: [f64; 4],
+    elapsed: u32,
+    frames: u32,
+}
+
+impl EnableRamp {
+    fn levels(self, target: [f64; 4]) -> [f64; 4] {
+        if self.elapsed >= self.frames {
+            return target;
+        }
+        if self.elapsed == 0 {
+            return self.start;
+        }
+        let amount = f64::from(self.elapsed) / f64::from(self.frames);
+        std::array::from_fn(|index| {
+            self.start[index] + (target[index] - self.start[index]) * amount
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -118,6 +146,7 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
             factory: self.clone(),
             voices: [Voice::default(); VOICES],
             phase: Phase::default(),
+            enable_ramp: None,
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -141,6 +170,11 @@ impl Runtime {
     fn copy(&mut self, other: &Self) {
         self.voices = other.voices;
         self.phase = other.phase;
+        self.enable_ramp = other.enable_ramp;
+    }
+    fn current_levels(&self) -> [f64; 4] {
+        let target = self.factory.configuration.effective_oscillator_levels();
+        self.enable_ramp.map_or(target, |ramp| ramp.levels(target))
     }
     fn expire(&mut self) {
         for voice in &mut self.voices {
@@ -274,6 +308,7 @@ impl MutableInstrumentRuntime for Runtime {
         let law = self.factory.lfo;
         let mut event = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
+            let levels = self.enable_ramp.map(|_| self.current_levels());
             while let Some(next) = events.get(event) {
                 let at = match *next {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
@@ -309,15 +344,28 @@ impl MutableInstrumentRuntime for Runtime {
                     self.phase
                 };
                 let multiplier = (lfo.value(law.0[1]) * law.amount()).exp2();
-                let (sample, previous) = self.factory.configuration.sample_lfo(
-                    self.factory.table,
-                    &voice.note,
-                    voice.age,
-                    voice.gate,
-                    &voice.phases,
-                    self.factory.feedback,
-                    voice.previous,
-                );
+                let (sample, previous) = if let Some(levels) = levels {
+                    self.factory.configuration.sample_lfo_with_levels(
+                        self.factory.table,
+                        &voice.note,
+                        voice.age,
+                        voice.gate,
+                        &voice.phases,
+                        self.factory.feedback,
+                        voice.previous,
+                        Some(levels),
+                    )
+                } else {
+                    self.factory.configuration.sample_lfo(
+                        self.factory.table,
+                        &voice.note,
+                        voice.age,
+                        voice.gate,
+                        &voice.phases,
+                        self.factory.feedback,
+                        voice.previous,
+                    )
+                };
                 frame[0] += sample;
                 frame[1] += sample;
                 voice.previous = previous;
@@ -334,21 +382,29 @@ impl MutableInstrumentRuntime for Runtime {
                 voice.age = voice.age.saturating_add(1);
             }
             self.phase.advance(delta);
+            if let Some(ramp) = &mut self.enable_ramp {
+                ramp.elapsed += 1;
+                if ramp.elapsed >= ramp.frames {
+                    self.enable_ramp = None;
+                }
+            }
             self.expire();
         }
     }
     fn reset(&mut self) {
         self.voices = [Voice::default(); VOICES];
         self.phase = Phase::default();
+        self.enable_ramp = None;
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)
     }
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|p| self.compatible_base(p) && self.factory.lfo == p.factory.lfo)
+        previous.as_any().downcast_ref::<Self>().is_some_and(|p| {
+            self.compatible_base(p)
+                && self.factory.lfo == p.factory.lfo
+                && self.factory.enabled == p.factory.enabled
+        })
     }
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
@@ -380,7 +436,18 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
             && self.can_retarget_history_from(p, proof)
         {
+            let enable_changed = self.factory.enabled != p.factory.enabled;
+            let boundary = p.current_levels();
             self.copy(p);
+            if enable_changed {
+                // The factory rate was validated on control; fixed five-ms
+                // duration is in [40,960], far below the u32 clock bound.
+                self.enable_ramp = Some(EnableRamp {
+                    start: boundary,
+                    elapsed: 0,
+                    frames: ((u64::from(self.factory.rate) * 5 + 500) / 1_000) as u32,
+                });
+            }
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -390,6 +457,10 @@ impl MutableInstrumentRuntime for Runtime {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "lfo_enable_tests.rs"]
+mod enable_tests;
 
 #[cfg(test)]
 mod tests {
@@ -584,7 +655,7 @@ mod tests {
                     original.lfo.append(&mut payload);
                     let state = hex_lattice_contract::NativeDeviceState::new(
                         super::super::OPERATOR_TYPE_ID,
-                        super::super::OPERATOR_STATE_VERSION,
+                        super::super::LFO_STATE_VERSION,
                         payload,
                     )
                     .unwrap();

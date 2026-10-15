@@ -365,6 +365,8 @@ struct MutableFeedbackRuntime {
     voices: [MutableFeedbackVoice; 64],
     feedback: f32,
     tail_left: u8,
+    // Optional real owned storage exercises variable-sized runtime accounting.
+    storage: Box<[u8]>,
 }
 
 /// Minimal mutable voice used to exercise an instrument with a real declared
@@ -663,6 +665,12 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
             voices: [MutableFeedbackVoice::default(); 64],
             feedback: 0.0,
             tail_left: 0,
+            storage: vec![
+                0;
+                self.declared_twin_bytes()
+                    .saturating_sub(std::mem::size_of::<MutableFeedbackRuntime>())
+            ]
+            .into_boxed_slice(),
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -765,20 +773,22 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         self.voices.iter().all(|voice| !voice.active) && self.tail_left == 0 && self.feedback == 0.0
     }
     fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|old| self.key == old.key && self.release_frames == old.release_frames)
+        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
+            self.key == old.key
+                && self.release_frames == old.release_frames
+                && self.storage.len() == old.storage.len()
+        })
     }
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
             self.feedback = old.feedback;
             self.tail_left = old.tail_left;
+            self.storage.copy_from_slice(&old.storage);
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        std::mem::size_of::<Self>() + self.storage.len()
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -5071,6 +5081,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         voices: [MutableFeedbackVoice::default(); 64],
         feedback: 0.0,
         tail_left: 0,
+        storage: Box::default(),
     };
     let note_on = [hex_lattice::NativeInstrumentEvent::NoteOn {
         frame_offset: 0,
@@ -8443,6 +8454,10 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
     assert_eq!(playback.release_voice_count(), 1);
+    let old_release_boundaries = (
+        playback.releases[0].voice.gate_end_frame(),
+        playback.releases[0].voice.end_frame(),
+    );
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
             clip,
@@ -8450,6 +8465,35 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
 
+    // A full bank still permits cancelling an unheard exact-onset occurrence.
+    let unheard_frame = playback.performance_frame();
+    playback
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert_eq!(playback.performance_frame(), unheard_frame);
+    assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
+    assert_eq!(playback.owner(track), Some(SessionPlaybackOwner::Silence));
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+
+    // Once that occurrence has sounded, its tail needs another release slot.
+    let mut relaunched = [[0.0; 2]; 1];
+    playback.render(&mut relaunched).unwrap();
+    let cut_frame = playback.performance_frame();
     assert_eq!(
         playback.apply(SessionPlaybackCommand::StopTrack {
             track,
@@ -8457,7 +8501,15 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         }),
         Err(SessionPlaybackError::ReleaseBankFull)
     );
+    assert_eq!(playback.performance_frame(), cut_frame);
     assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
     assert_eq!(
         playback.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
@@ -10602,16 +10654,15 @@ fn mutable_checkpoint_refuses_uncommitted_wrong_revision_and_wrong_frame_atomica
 
 #[test]
 fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
-    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
-    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    playback.apply(SessionPlaybackCommand::Play).unwrap();
-    render_checkpoint_prefix(&mut playback, 1);
-
     let counter = Arc::new(AtomicUsize::new(0));
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
         bytes.set(Some(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES));
     });
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut playback, 1);
     let mut byte_limited = MutableRuntimeCheckpointStore::new();
     let byte_refusal = loop {
         match byte_limited.capture_track(&playback, track) {
@@ -10635,6 +10686,9 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut count_limited = MutableRuntimeCheckpointStore::new();
     while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
         render_checkpoint_prefix(&mut playback, 1);
@@ -10688,9 +10742,13 @@ mod source_loop_tests;
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
 
+#[path = "capture_tests.rs"]
+mod capture_tests;
 #[path = "device_capacity_tests.rs"]
 mod device_capacity_tests;
 
+#[path = "analytic_continuation_tests.rs"]
+mod analytic_continuation_tests;
 #[test]
 fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
     for input in [true, false] {
@@ -10749,3 +10807,6 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         }
     }
 }
+
+#[path = "instrument_memory_budget_tests.rs"]
+mod instrument_memory_budget_tests;
