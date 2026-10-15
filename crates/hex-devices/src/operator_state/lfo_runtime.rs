@@ -828,10 +828,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
             frames: r.frames,
         });
     }
-    let mut filter = FilterTrajectory::new(
-        crate::operator_filter::Settings::default(),
-        runtime.factory.rate,
-    );
+    let mut filter = FilterTrajectory::inactive(runtime.factory.rate);
     if let Some(bank) = runtime.filter.as_ref() {
         filter = FilterTrajectory {
             from: bank.from,

@@ -743,10 +743,7 @@ pub(super) fn export_harmonic_history(
         target: spectrum,
         elapsed: 1,
         frames: 1,
-        filter: super::harmonic_runtime::FilterTrajectory::new(
-            crate::operator_filter::Settings::default(),
-            runtime.sample_rate,
-        ),
+        filter: super::harmonic_runtime::FilterTrajectory::inactive(runtime.sample_rate),
     })
 }
 

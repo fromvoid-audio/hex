@@ -9,6 +9,17 @@ pub(in crate::operator_state) struct Trajectory {
     pub armed: bool,
 }
 impl Trajectory {
+    pub fn inactive(rate: u32) -> Self {
+        let frame = Frame::dry();
+        Self {
+            from: frame,
+            target: frame,
+            elapsed: 0,
+            frames: (rate * 5 + 500) / 1000,
+            armed: false,
+        }
+    }
+
     pub fn new(settings: Settings, rate: u32) -> Self {
         let frame = settings
             .prepare(rate)
@@ -29,6 +40,12 @@ impl Trajectory {
         )
     }
     pub fn retarget(&mut self, target: Self) {
+        if !self.armed && target.armed {
+            *self = target;
+            self.from.wet = 0.0;
+            self.elapsed = 0;
+            return;
+        }
         self.armed |= target.armed;
         if self.target != target.target {
             self.from = self.frame();

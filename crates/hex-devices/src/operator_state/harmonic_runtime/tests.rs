@@ -179,3 +179,25 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
         assert_eq!(render(&mut next_a, &[], 512), render(&mut next_b, &[], 512));
     }
 }
+
+#[test]
+fn first_filter_activation_uses_prepared_target_coefficients_and_dry_source() {
+    let mut settings = crate::operator_filter::Settings::default();
+    settings
+        .patch(ParameterId::from_static(20001), ParameterValue::Bool(true))
+        .unwrap();
+    settings
+        .patch(
+            ParameterId::from_static(20005),
+            ParameterValue::Float(6500.0),
+        )
+        .unwrap();
+    let target = FilterTrajectory::new(settings, 48000);
+    let mut actual = FilterTrajectory::inactive(48000);
+    actual.retarget(target);
+    let mut expected = target.target;
+    expected.wet = 0.0;
+    assert_eq!(actual.frame(), expected);
+    assert_eq!(actual.target, target.target);
+    assert!(actual.armed);
+}
