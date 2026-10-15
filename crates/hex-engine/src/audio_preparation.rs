@@ -2,6 +2,7 @@
 //! storage-complete graph, publication admission or lifetime-closure authority.
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
+mod arrangement_clips;
 #[cfg(test)]
 #[path = "session_inventory_assembly_tests.rs"]
 mod assembly_tests;
@@ -17,6 +18,9 @@ mod structure_tests;
 #[cfg(test)]
 #[path = "session_tempo_preparation_tests.rs"]
 mod tempo_tests;
+pub use arrangement_clips::ArrangementClipCapacity;
+#[cfg(test)]
+mod arrangement_clip_tests;
 use std::{
     any::Any,
     mem,
@@ -57,6 +61,7 @@ pub struct AudioArrangementCapacity {
     pub tempo: crate::SessionTempoCapacity,
     pub shared: crate::SessionSharedCapacity,
     pub assembly: crate::SessionAssemblyCapacity,
+    pub arrangement_clips: ArrangementClipCapacity,
 }
 pub struct AudioArrangementRefusal {
     pub reason: AudioStorageError,
@@ -71,6 +76,7 @@ pub struct AudioArrangementInput<'a> {
     inputs: OwnedAudioInputs,
     include_session: bool,
     assemble_session: bool,
+    assemble_arrangement: bool,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -87,6 +93,7 @@ impl<'a> AudioArrangementInput<'a> {
             inputs,
             include_session: false,
             assemble_session: false,
+            assemble_arrangement: false,
         }
     }
     /// Explicitly add the new persistent Session audio source/name stage.
@@ -103,6 +110,14 @@ impl<'a> AudioArrangementInput<'a> {
         self.assemble_session = true;
         self
     }
+    /// Explicit private Arrangement clip targets plus the sealed Session stage.
+    /// No Track/Project/PreparedRevision or publication capability is exposed.
+    pub fn with_audio_clip_inventory(mut self) -> Self {
+        self.include_session = true;
+        self.assemble_session = true;
+        self.assemble_arrangement = true;
+        self
+    }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
         Box::new(AudioArrangementRefusal {
             reason,
@@ -111,11 +126,13 @@ impl<'a> AudioArrangementInput<'a> {
         })
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Disposal {
+    #[default]
     Unstarted,
     Pending,
     Complete,
+    Transferred,
 }
 // One exact handle location per Arrangement clip, not a content/key identity.
 // Geometry is a compiler intermediate; no source owner escapes through views.
@@ -171,6 +188,7 @@ pub struct AudioPreparationCustody {
     tempo: crate::session_tempo_preparation::SessionTempoConstruction,
     shared: crate::session_shared_preparation::SessionSharedConstruction,
     assembly: crate::session_inventory::audio_assembly::SessionAssembly,
+    arrangement_clips: arrangement_clips::ArrangementClips,
     #[cfg(test)]
     fail_after: Option<usize>,
     #[cfg(test)]
@@ -187,6 +205,7 @@ impl AudioPreparationCustody {
             input.inputs,
             input.include_session,
             input.assemble_session,
+            input.assemble_arrangement,
         )
     }
     pub fn try_new_on_control() -> Result<Self, AudioStorageError> {
@@ -206,6 +225,7 @@ impl AudioPreparationCustody {
             tempo: crate::session_tempo_preparation::SessionTempoConstruction::default(),
             shared: crate::session_shared_preparation::SessionSharedConstruction::default(),
             assembly: crate::session_inventory::audio_assembly::SessionAssembly::default(),
+            arrangement_clips: arrangement_clips::ArrangementClips::default(),
             #[cfg(test)]
             fail_after: None,
             #[cfg(test)]
@@ -235,7 +255,7 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(project, generation, inputs, false, false)
+        self.begin_stages_on_control(project, generation, inputs, false, false, false)
     }
     fn begin_stages_on_control(
         &mut self,
@@ -244,6 +264,7 @@ impl AudioPreparationCustody {
         inputs: OwnedAudioInputs,
         include_session: bool,
         assemble_session: bool,
+        assemble_arrangement: bool,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
@@ -268,6 +289,7 @@ impl AudioPreparationCustody {
                         n.checked_add(capacity.tempo.bytes()?)
                             .and_then(|n| n.checked_add(capacity.shared.bytes().ok()?))
                             .and_then(|n| n.checked_add(capacity.assembly.bytes().ok()?))
+                            .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
                             .ok_or(AudioStorageError::Overflow)
                     })
             });
@@ -294,6 +316,9 @@ impl AudioPreparationCustody {
                         self.shared.inventory_handles(),
                     )?;
                 }
+                if assemble_arrangement {
+                    self.arrangement_clips.reserve(&slots, &inputs)?;
+                }
                 Ok(())
             }));
             capacity.session = self.session.capacity;
@@ -317,8 +342,13 @@ impl AudioPreparationCustody {
             if let Ok(report) = assembly_observation {
                 capacity.assembly = report;
             }
+            let arrangement_observation = self.arrangement_clips.capacity(assemble_arrangement);
+            if let Ok(report) = arrangement_observation {
+                capacity.arrangement_clips = report;
+            }
             let result = match result {
                 Ok(result) => result.and_then(|()| {
+                    arrangement_observation?;
                     structure_observation?;
                     tempo_observation?;
                     shared_observation?;
@@ -330,6 +360,7 @@ impl AudioPreparationCustody {
                         .and_then(|n| n.checked_add(capacity.tempo.bytes().ok()?))
                         .and_then(|n| n.checked_add(capacity.shared.bytes().ok()?))
                         .and_then(|n| n.checked_add(capacity.assembly.bytes().ok()?))
+                        .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
                         .ok_or(AudioStorageError::Overflow)?;
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
@@ -349,6 +380,9 @@ impl AudioPreparationCustody {
                         .and_then(|n| n.checked_add(capacity.tempo.previous_growth_backing_bytes))
                         .and_then(|n| {
                             n.checked_add(capacity.assembly.previous_growth_backing_bytes)
+                        })
+                        .and_then(|n| {
+                            n.checked_add(capacity.arrangement_clips.previous_growth_backing_bytes)
                         })
                         .ok_or(AudioStorageError::Overflow)?;
                     if capacity.retained_stage_bytes > inputs.reservation.max_prepared_data_bytes
@@ -370,7 +404,9 @@ impl AudioPreparationCustody {
                     self.phase = AudioPreparationPhase::FailedIncomplete;
                 }
                 if self.phase != AudioPreparationPhase::FailedIncomplete {
-                    if self.dispose_assembly_on_control()
+                    if self.dispose_arrangement_clips_on_control()
+                        && self.arrangement_clips.clear_disposed().is_ok()
+                        && self.dispose_assembly_on_control()
                         && self.assembly.clear_disposed().is_ok()
                         && self.dispose_session_on_control()
                         && self.dispose_structure_on_control()
@@ -400,6 +436,14 @@ impl AudioPreparationCustody {
         self.phase = AudioPreparationPhase::Constructing;
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.construct()?;
+            if assemble_arrangement {
+                self.arrangement_clips.construct(
+                    &mut self.slots,
+                    self.bank
+                        .as_ref()
+                        .ok_or(AudioStorageError::SourceMismatch)?,
+                )?;
+            }
             if include_session {
                 self.session.construct(
                     self.bank
@@ -532,6 +576,7 @@ impl AudioPreparationCustody {
         capacity.tempo = self.tempo.observe(false)?;
         capacity.shared = self.shared.observe()?;
         capacity.assembly = self.assembly.capacity(false)?;
+        capacity.arrangement_clips = self.arrangement_clips.capacity(false)?;
         for (index, (_, source)) in inputs.sources.iter().enumerate() {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             if !inputs.sources[..index]
@@ -567,6 +612,7 @@ impl AudioPreparationCustody {
                     .ok()
                     .and_then(|m| n.checked_add(m))
             })
+            .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
             .and_then(|n| n.checked_add(inputs.reservation.caller_retained_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         capacity.construction_peak_bytes = capacity
@@ -704,12 +750,15 @@ impl AudioPreparationCustody {
         if self.phase != AudioPreparationPhase::Cleaning {
             return;
         }
-        if !self.dispose_assembly_on_control() {
+        if !self.dispose_arrangement_clips_on_control() || !self.dispose_assembly_on_control() {
             return;
         }
         while self.next_disposal < self.slots.len() {
             let index = self.next_disposal;
-            if self.slots[index].disposal != Disposal::Unstarted {
+            if !matches!(
+                self.slots[index].disposal,
+                Disposal::Unstarted | Disposal::Transferred
+            ) {
                 self.phase = AudioPreparationPhase::FailedIncomplete;
                 return;
             }
@@ -744,6 +793,23 @@ impl AudioPreparationCustody {
             return;
         }
         self.phase = AudioPreparationPhase::Recoverable;
+    }
+    fn dispose_arrangement_clips_on_control(&mut self) -> bool {
+        while self.arrangement_clips.has_next() {
+            match catch_unwind(AssertUnwindSafe(|| self.arrangement_clips.dispose_next())) {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                    return false;
+                }
+                Err(payload) => {
+                    self.first_panic = Some(payload);
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                    return false;
+                }
+            }
+        }
+        true
     }
     fn dispose_assembly_on_control(&mut self) -> bool {
         while self.assembly.has_next_disposal() {
@@ -840,7 +906,9 @@ impl AudioPreparationCustody {
         if !self.matches(token) || self.phase != AudioPreparationPhase::Recoverable {
             return None;
         }
-        if self.assembly.clear_disposed().is_err() {
+        if self.arrangement_clips.clear_disposed().is_err()
+            || self.assembly.clear_disposed().is_err()
+        {
             return None;
         }
         // Scalar validation precedes original-owner extraction. Clearing disposed
@@ -878,21 +946,23 @@ impl AudioPreparationCustody {
     }
     /// Scalar audit of this compiler stage, not complete storage/admission.
     pub fn installed_source_bindings(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| {
-                let geometry = slot.end > slot.start
-                    && slot.source_length > 0
-                    && (!slot.looping || slot.phase < (slot.source_length as u64));
-                // IDs/offset are retained exact location/geometry, not alias identity.
-                let _location = (slot.track, slot.clip, slot.source_offset, slot.fade);
-                geometry
-                    && slot
-                        .owner
-                        .as_ref()
-                        .is_some_and(|owner| owner.handle == slot.handle)
-            })
-            .count()
+        self.arrangement_clips.installed()
+            + self
+                .slots
+                .iter()
+                .filter(|slot| {
+                    let geometry = slot.end > slot.start
+                        && slot.source_length > 0
+                        && (!slot.looping || slot.phase < (slot.source_length as u64));
+                    // IDs/offset are retained exact location/geometry, not alias identity.
+                    let _location = (slot.track, slot.clip, slot.source_offset, slot.fade);
+                    geometry
+                        && slot
+                            .owner
+                            .as_ref()
+                            .is_some_and(|owner| owner.handle == slot.handle)
+                })
+                .count()
     }
 }
 

@@ -641,3 +641,53 @@ PreparedRevision/preview/empty-slice origins and descriptors; exhaustive caller,
 bank, graph, runtime and domain cross-ledger accounting; all publication-ending
 lifetime closures; connected installed demand/preroll/native lifecycle; optimized
 native100-track mixed-rate/edit/seek/launch/fault/CoreAudio/deadline acceptance.
+
+The further explicit `with_audio_clip_inventory()` preparation mode composes
+that Session stage with **private final Arrangement clip targets**. It is not a
+compiled Track/Project/PreparedRevision and cannot be published. Legacy builders
+and the earlier source-only/Session-only opt-ins keep their previous behavior.
+The private paired row retains exact original source-slot/track/clip/bank-source
+and independent handle identity. Resident PCM receipts move with Audio; streamed
+Arc and its constructor declaration move together into the sealed destination.
+No raw Clip, Arc, mutable runtime or legacy recovery API is exposed.
+
+The entire destination batch and all required ClipMetadata boxes are constructed
+before bank consumption. Streamed clips, phased loops and faded clips receive
+preallocated metadata; neutral resident clips keep the compact None case. This
+preserves source geometry, loop phase and fixed fade metadata without calling a
+legacy consuming-error builder. Final source moves perform no allocation or
+cloning. Actual pair Vec capacity (including inline Clip/receipt/handle state),
+metadata Box pointees, retained spare pair capacity and old/new growth overlap
+are checked in the existing caller prepared/construction reservations. Data
+allocations remain charged once by their actual bank identity; physical source
+handles remain independent obligations. Allocator bookkeeping/physical rounding
+are not measured, and process-fatal OOM/abort remains outside recoverable API
+failures, as for the existing constructors.
+
+Control cleanup stages source and metadata into separate persistent fields,
+marks destruction Pending before taking each owner, and uses the existing
+borrowed-custody catch. Failure retains metadata, remaining clips, bank, first
+payload and an irreversible incomplete state, with no destructive retry. Original
+bank recovery follows normal final/source/cache/Session cleanup only. Actual
+headless native pending-root tests exercise this same opt-in, cancellation and
+control recovery; they are not CoreAudio or native streaming acceptance.
+
+Remaining finite assembly/accounting checklist after this bounded clip unit:
+
+- Arrangement Track fields: mixes, gain-envelope knots, sends, empty chain
+  constructor provenance, instrument meter owner, and their exact paired final
+  locations. No absent instrument or empty chain may hide a meter allocation.
+- Arrangement return buses/feed plan, root scalar metadata and shared-context
+  handle; persistently prepared gain/return temporaries and capacity overlap.
+- Restricted PreparedRevision/root assembly, explicit empty MIDI preview slice
+  provenance, root/Session/Arrangement shared allocation and mutable-revision
+  metadata. No legacy inventory/clip getter may escape through strict custody.
+- Exhaustive cross-ledger actual allocation/location and independent handle
+  obligations across caller bank, construction, final graph/runtime/domain and
+  reclaim-pending custody; unsupported providers/raw origins/Weak stay Unknown.
+- Actual never-installed/final-active lifetime closure, production admission,
+  installed engine demand/preroll and real optimized native long-project
+  playback/edit/seek/launch/fault/deadline evidence.
+
+Existing numeric caps and graph exclusions are unchanged; this stage does not
+mint a complete storage report, lifetime receipt, readiness or admission.
