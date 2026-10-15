@@ -120,7 +120,49 @@ fn operator_filter_imports_sounding_analytic_notes_without_retrigger_or_duplicat
                 .unwrap(),
             );
             let mut target = SessionPlayback::new(new).unwrap();
+            let scratch_pointers = (
+                target.analytic_import.seeds.as_ptr(),
+                target.analytic_import.proofs.as_ptr(),
+            );
+            if kind == 0 {
+                // Reuse the real candidate scratch across a successful query and
+                // a declined source, then perform the normal two-phase handoff.
+                let clock = previous.timing_view();
+                assert!(
+                    SessionPlayback::analytic_import_plan(
+                        &previous,
+                        0,
+                        &target.revision,
+                        0,
+                        &clock,
+                        &mut target.spans,
+                        &mut target.analytic_import,
+                    )
+                    .unwrap()
+                );
+                assert_eq!(target.analytic_import.len, 1);
+                assert!(
+                    !SessionPlayback::analytic_import_plan(
+                        &previous,
+                        0,
+                        &old,
+                        0,
+                        &clock,
+                        &mut target.spans,
+                        &mut target.analytic_import,
+                    )
+                    .unwrap()
+                );
+                assert_eq!(target.analytic_import.len, 0);
+            }
             target.try_inherit_state_from(&mut previous).unwrap();
+            assert_eq!(
+                scratch_pointers,
+                (
+                    target.analytic_import.seeds.as_ptr(),
+                    target.analytic_import.proofs.as_ptr(),
+                )
+            );
             assert_eq!(target.performance_frame(), 128);
             assert_eq!(
                 target.mutable_instruments[0]

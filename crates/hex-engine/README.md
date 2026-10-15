@@ -465,3 +465,9 @@ are charged to preroll accounting; handoff/render never resize or drop their
 allocations. Stop and accepted seek clear the current transition. Arrangement,
 Session and output capture use the same sampled frame. See
 [contract and validation gaps](../../docs/operator-enable-continuation.md).
+
+Analytic-to-mutable handoff uses candidate-owned fixed seed/proof buffers reserved
+on control. Both preflight and commit fill borrowed scratch and return eligibility,
+so neither creates or returns large inline plans on the callback stack. Actual
+capacities and the checked preflight bound are charged to preroll storage; declined
+queries reset the valid prefix, and handoff never resizes or drops the buffers.

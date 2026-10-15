@@ -501,14 +501,16 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
-                if let Some(plan) = Self::analytic_import_plan(
+                if Self::analytic_import_plan(
                     previous,
                     old_index,
                     &self.revision,
                     new_index,
                     &old_clock,
                     &mut self.spans,
+                    &mut self.analytic_import,
                 )? {
+                    let plan = &self.analytic_import;
                     if runtime.can_import_analytic(&plan.seeds[..plan.len]) {
                         analytic_import_new_for_old[old_index] = new_index;
                     }
@@ -2165,15 +2167,18 @@ impl SessionPlayback {
             if new_index == usize::MAX {
                 continue;
             }
-            let plan = Self::analytic_import_plan(
+            if !Self::analytic_import_plan(
                 previous,
                 old_index,
                 &self.revision,
                 new_index,
                 &old_clock,
                 &mut self.spans,
-            )?
-            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                &mut self.analytic_import,
+            )? {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            let plan = &self.analytic_import;
             self.mutable_instruments
                 .get_mut(new_index)
                 .and_then(Option::as_mut)
