@@ -177,10 +177,10 @@ pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
     pub(in crate::editor::device_panel) selectors: HashMap<Choice, SelectorPreview>,
-    pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor::device_panel) values: [f64; 12],
     pub(in crate::editor::device_panel) enabled: [bool; 2],
     pub(in crate::editor::device_panel) selected: [usize; 2],
+    pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
 }
 
 impl Default for State {

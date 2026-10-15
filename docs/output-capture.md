@@ -50,6 +50,10 @@ plan, every slice must fit the requested block and the fixed 16,384-frame bound,
 plan capacity. Empty selections are allowed. The normal Main-only and device
 `PostNodeObserver` APIs remain available.
 
+On an admitted render, only the requested frame prefix is cleared and written;
+unrendered buffer capacity is preserved, including on empty blocks. Successful
+clearing therefore scales with block length rather than slice capacity.
+
 Capture is speculative until the complete render returns `Ok`. Only then does
 `valid_frames()` expose the committed prefix through `output(index)`. Every
 refusal invalidates the entire view, sets validity to zero and clears supplied

@@ -126,6 +126,14 @@ impl<'a, 'samples> OutputCapture<'a, 'samples> {
             output[..end].fill([0.0; 2]);
         }
     }
+    /// Called only after validation; successful work scales with the block,
+    /// while refusal retains the bounded full-slice cleanup above.
+    pub(super) fn begin(&mut self, frames: usize) {
+        self.valid_frames = 0;
+        for output in self.outputs.iter_mut() {
+            output[..frames].fill([0.0; 2]);
+        }
+    }
     pub(super) fn commit(&mut self, frames: usize) {
         self.valid_frames = frames;
     }

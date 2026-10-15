@@ -170,6 +170,7 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
     let revision = state.revision;
+    let original = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
@@ -190,6 +191,32 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
             assert_eq!(view.device_panel.operator_pages[&device].page, page)
         });
         assert_eq!(focused(&mut visual), target);
+    }
+    // Badge keyboard activation is navigation only. Mouse enable toggles
+    // must not leak into Enter/Space or create a canonical history operation.
+    for operator in 0..4 {
+        for key in ["enter", "space"] {
+            let target = editor.read_with(cx, |view, _| {
+                view.device_panel.operator_navigation_focus[&(
+                    device,
+                    operator_panel::NavigationTarget::Oscillator(operator),
+                )]
+                    .clone()
+            });
+            visual.update(|window, _| target.focus(window));
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.device_panel.operator_pages[&device].selected_operator,
+                    operator
+                );
+                assert_eq!(view.state.as_ref().unwrap().revision, revision);
+                assert_eq!(view.state.as_ref().unwrap().project, original);
+                assert_eq!(view.worker_requests_pending, 0);
+            });
+            assert_eq!(focused(&mut visual), target);
+        }
     }
     let parameter = hex_lattice_contract::ParameterId::from_static(2);
     enter_typed_value(&mut visual, device, parameter, "invalid");

@@ -4,6 +4,25 @@ use super::*;
 fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, _, track, device) = operator_navigation_tests::operator_fixture();
+    service
+        .submit(Request::SetDeviceParameter {
+            device,
+            parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
+            value: ParameterValue::Float(-12.345),
+        })
+        .unwrap();
+    let trimmed = receive_service_event(&service);
+    assert!(trimmed.error.is_none());
+    assert_eq!(
+        trimmed
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .output_gain_millidb(),
+        -12_345
+    );
     let path = std::env::temp_dir().join(format!(
         "hex-enable-{}-{}.hex",
         std::process::id(),
@@ -88,6 +107,16 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
     reload.submit(Request::Open(path.clone())).unwrap();
     let reopened = receive_service_event(&reload);
     assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .output_gain_millidb(),
+        -12_345
+    );
     for operator in 0..4 {
         assert_eq!(
             operator_parameter_value(&reopened.state, track, device, 513 + operator),

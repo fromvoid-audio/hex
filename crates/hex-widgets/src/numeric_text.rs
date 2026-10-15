@@ -74,6 +74,7 @@ impl EntityInputHandler for NumericControl {
             cx.notify();
             return;
         }
+        self.text_modified |= !selected.is_empty() || !new_text.is_empty();
         self.text.replace_range(range.clone(), &new_text);
         let cursor = range.start + new_text.len();
         self.selected = cursor..cursor;
@@ -110,6 +111,7 @@ impl EntityInputHandler for NumericControl {
             cx.notify();
             return;
         }
+        self.text_modified |= !selected.is_empty() || !new_text.is_empty();
         self.text.replace_range(range.clone(), &new_text);
         self.marked = (!new_text.is_empty()).then_some(range.start..range.start + new_text.len());
         self.selected = new_selected

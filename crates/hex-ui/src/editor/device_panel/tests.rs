@@ -13,6 +13,7 @@ mod gate_ui_tests;
 mod navigation_ui_tests;
 mod operator_enable_ui_tests;
 mod operator_navigation_tests;
+mod operator_preview_navigation_tests;
 mod operator_tab_tests;
 
 mod operator_routing_readout_tests;

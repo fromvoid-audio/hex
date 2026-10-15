@@ -84,7 +84,7 @@ impl SessionPlayback {
             capture.invalidate();
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
-        capture.invalidate();
+        capture.begin(output.len());
         self.candidate_admission_open = false;
         self.render_internal(output, pages, None, Some(capture))
     }
@@ -368,6 +368,8 @@ impl SessionPlayback {
                 || !track.sends().is_empty()
                 || metered_instrument;
             let ordered = track.requires_ordered_processing();
+            let already_mixed =
+                metered_instrument && !ordered && !stateful_effects && track.sends().is_empty();
             while self
                 .release_scratch
                 .get(release_cursor)
@@ -651,11 +653,7 @@ impl SessionPlayback {
                     }
                 }
                 for (frame_index, source) in render_output.iter().copied().enumerate() {
-                    if metered_instrument
-                        && !ordered
-                        && !stateful_effects
-                        && track.sends().is_empty()
-                    {
+                    if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
                         output[frame_index][1] += source[1];
@@ -676,11 +674,7 @@ impl SessionPlayback {
                     }
                 }
                 if let Some(capture) = capture.as_mut() {
-                    if !metered_instrument
-                        || ordered
-                        || stateful_effects
-                        || !track.sends().is_empty()
-                    {
+                    if !already_mixed {
                         for frame in render_output.iter_mut() {
                             *frame = mix.apply_frame(*frame);
                         }

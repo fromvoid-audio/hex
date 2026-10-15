@@ -802,3 +802,14 @@ zero is off and one is full authored amplitude. Primary manual inventory remains
 useful for control selection, but numerical Live parity is unproven. This resolves
 the reference/product-choice hold; it does not resolve the measured host-memory
 conflict or install the production state/provider/lease/painter implementation.
+
+
+### Enable prerequisite merged on main
+
+Main advanced to `3b24602` (PR164) during this integration. The follow-up merge
+retains its stopped-runtime continuation reset, bounded successful capture-buffer
+clearing, metered hybrid capture coverage, exact numeric drafts and preview-owner
+retirement. Both branches' single-application capture fixes converge on the
+shared `already_mixed` condition. Canonical enable keyboard activation remains
+covered alongside main's host-output-gain persistence assertion. This prerequisite
+merge does not install the harmonic feature or resolve its memory projection.
