@@ -10808,3 +10808,5 @@ mod instrument_memory_budget_tests;
 
 #[path = "harmonic_tests.rs"]
 mod harmonic_tests;
+#[path = "operator_filter_tests.rs"]
+mod operator_filter_tests;

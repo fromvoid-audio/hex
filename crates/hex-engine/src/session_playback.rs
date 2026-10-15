@@ -1121,6 +1121,7 @@ fn reserve_analytic_continuations()
 mod analytic_import;
 mod commands;
 mod handoff;
+mod harmonic_import;
 mod preroll;
 mod render;
 pub use capture::{

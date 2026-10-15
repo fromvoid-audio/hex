@@ -64,7 +64,7 @@ fn exact_pcm_and_provider(
 }
 
 #[test]
-fn canonical_v9_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
+fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     let input = OPERATOR_METADATA.default_state().unwrap();
     let original = input.payload().as_ptr();
     let bytes = input.payload().to_vec();
@@ -73,7 +73,7 @@ fn canonical_v9_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
     assert_eq!(authored.payload().len(), PAYLOAD_BYTES); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 2548); // Includes host gain metadata.
+    assert_eq!(prepared.declared_context_bytes(), 2584); // Includes host gain metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())
@@ -168,6 +168,7 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
         (6, 320),
         (7, 364),
         (8, 380),
+        (11, 416),
     ] {
         let input =
             NativeDeviceState::new(OPERATOR_TYPE_ID, version, current.payload()[..len].to_vec())

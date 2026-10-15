@@ -1,335 +1,314 @@
-//! Borrowed, checked analytic-to-owned-history adoption at one committed cut.
+//! Bounded opt-in import of actual sounding shared analytic occurrences.
 use super::*;
-use crate::midi_note_bank::PreparedMidiNote;
-use crate::mutable_instrument::{
-    MutableOccurrence, MutableOccurrenceKey, MutableOccurrenceSignature,
+use crate::{
+    midi_note_bank::{PreparedMidiNote, SharedContextRef},
+    mutable_instrument::{MutableOccurrence, MutableOccurrenceKey, MutableOccurrenceSignature},
 };
-use hex_lattice::{AnalyticInstrumentHistory, AnalyticInstrumentVoice, PreparedSharedAnalyticNote};
-const CAPACITY: usize = crate::mutable_instrument::MAX_MUTABLE_OCCURRENCE_PROOFS;
-pub(super) struct Import {
-    context: u16,
-    pub voices: [AnalyticInstrumentVoice; CAPACITY],
-    pub occurrences: [Option<MutableOccurrence>; CAPACITY],
-    pub len: usize,
+use hex_lattice::NativeInstrumentAnalyticSeed;
+const CAP: usize = crate::mutable_instrument::MAX_MUTABLE_OCCURRENCE_PROOFS;
+pub(super) struct ImportPlan {
+    pub(super) seeds: [NativeInstrumentAnalyticSeed; CAP],
+    pub(super) proofs: [Option<MutableOccurrence>; CAP],
+    pub(super) len: usize,
 }
-impl Import {
-    pub fn history<'a>(
-        &'a self,
-        previous: &'a SessionPlayback,
-    ) -> Result<AnalyticInstrumentHistory<'a>, SessionPlaybackError> {
-        let source = previous
-            .revision
-            .arrangement()
-            .shared_contexts()
-            .owner(self.context)
-            .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-        Ok(AnalyticInstrumentHistory {
-            source: source.context(),
-            source_id: source
-                .continuation_id()
-                .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?,
-            transition: previous
-                .analytic_continuations
-                .get(usize::from(self.context))
-                .copied()
-                .flatten(),
-            performance_frame: previous.performance_frame,
-            voices: &self.voices[..self.len],
-        })
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn push(
-        &mut self,
-        previous: &SessionPlayback,
-        route: TrackRoute,
-        sampler: PreparedMidiNote,
-        start: u64,
-        gate: u64,
-        end: u64,
-        cut: u64,
-        clip: hex_project::ClipId,
-        note: hex_project::NoteId,
-        iteration: u64,
-        onset_beat: hex_project::BeatTime,
-        gate_end_beat: hex_project::BeatTime,
-        pitch: u8,
-        channel: u8,
-        velocity: u8,
-        honor_suppression: bool,
-    ) -> Result<(), SessionPlaybackError> {
-        if start >= cut
-            || end <= cut
-            || (honor_suppression
-                && previous.suppressions.iter().any(|entry| {
-                    entry.track == route.id
-                        && entry.clip == clip
-                        && entry.note == note
-                        && entry.iteration == iteration
-                        && entry.until_frame > previous.performance_frame
-                }))
+impl SessionPlayback {
+    pub(super) fn analytic_import_plan<T: crate::MidiTiming + ?Sized>(
+        previous: &Self,
+        old_index: usize,
+        candidate: &PreparedRevision,
+        new_index: usize,
+        clock: &T,
+        spans: &mut MidiSpanBuffer,
+    ) -> Result<Option<ImportPlan>, SessionPlaybackError> {
+        let old_route = previous
+            .routes
+            .get(old_index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if previous
+            .mutable_instruments
+            .get(old_index)
+            .is_some_and(Option::is_some)
+            || old_route.pending.is_some()
+            || previous.releases.iter().any(|r| r.track_id == old_route.id)
+            || previous
+                .suppressions
+                .iter()
+                .any(|s| s.track == old_route.id)
+            || previous
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .any(|t| t.track_id == old_route.id)
         {
-            return Ok(());
+            return Ok(None);
         }
-        let PreparedMidiNote::Shared {
-            context: crate::midi_note_bank::SharedContextRef::Revision(context),
-            note: payload,
-            id,
-            ..
-        } = sampler
-        else {
-            return Err(SessionPlaybackError::SharedAnalyticContext);
+        let Some(factory) = candidate.session().mutable_instrument_factory(old_route.id) else {
+            return Ok(None);
         };
-        let owner = previous
+        let old_track = previous
             .revision
             .arrangement()
-            .shared_contexts()
-            .owner(self.context)
-            .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-        if context != self.context || owner.id() != id || self.len >= CAPACITY {
-            return Err(SessionPlaybackError::SharedAnalyticContext);
+            .tracks()
+            .get(old_index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let new_track = candidate
+            .arrangement()
+            .tracks()
+            .get(new_index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if !old_track.instrument_slot_enabled() || !new_track.instrument_slot_enabled() {
+            return Ok(None);
         }
-        let age = cut
-            .checked_sub(start)
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        let gate_age = gate
-            .checked_sub(start)
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        let id = (self.len + 1) as u64;
-        self.voices[self.len] = AnalyticInstrumentVoice {
-            occurrence_id: id,
-            note: payload,
-            age_frames: age,
-            gate_frames: (gate <= cut).then_some(gate_age),
-        };
-        let gate_end_frame = if gate >= cut {
-            previous
-                .performance_frame
-                .checked_add(gate - cut)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?
-        } else {
-            previous.performance_frame.saturating_sub(cut - gate)
-        };
-        let quiet_deadline_frame = previous
-            .performance_frame
-            .checked_add(end - cut)
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        self.occurrences[self.len] = Some(MutableOccurrence {
-            signature: MutableOccurrenceSignature::from_parts(
-                MutableOccurrenceKey::new(
-                    route.id,
-                    clip,
-                    note,
-                    iteration,
-                    previous.arrangement_loop_pass,
-                ),
-                onset_beat,
-                gate_end_beat,
-                pitch,
-                channel,
-                velocity,
-            ),
-            id,
-            onset_frame: previous.performance_frame.saturating_sub(age),
-            gate_end_frame,
-            quiet_deadline_frame,
-            note_off_sent: gate <= cut,
-        });
-        self.len += 1;
-        Ok(())
-    }
-}
-pub(super) fn at_cut(
-    previous: &SessionPlayback,
-    index: usize,
-    spans: &mut MidiSpanBuffer,
-) -> Result<Import, SessionPlaybackError> {
-    let route = *previous
-        .routes
-        .get(index)
-        .ok_or(SessionPlaybackError::UnknownTrack)?;
-    let context = previous
-        .revision
-        .arrangement()
-        .shared_contexts()
-        .index_for_track(route.id)
-        .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-    let mut out = Import {
-        context,
-        voices: [AnalyticInstrumentVoice {
-            occurrence_id: 0,
-            note: PreparedSharedAnalyticNote::new([0; 8], 0),
-            age_frames: 0,
-            gate_frames: None,
-        }; CAPACITY],
-        occurrences: [None; CAPACITY],
-        len: 0,
-    };
-    match route.owner {
-        RouteOwner::Arrangement => {
-            let track = previous
+        let sources_match = match old_route.owner {
+            RouteOwner::Arrangement => previous
                 .revision
-                .arrangement()
-                .tracks()
-                .get(index)
-                .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let mut failure = None;
-            track
-                .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
-                    if failure.is_some() {
-                        return;
-                    }
-                    failure = out
-                        .push(
-                            previous,
-                            route,
-                            sampler,
-                            span.start,
-                            span.gate_end,
-                            span.end,
-                            previous.arrangement_frame,
-                            span.clip,
-                            span.note,
-                            span.iteration,
+                .mutable_arrangement_retarget_matches(candidate, old_route.id),
+            RouteOwner::Session { clip, .. } => {
+                previous
+                    .revision
+                    .mutable_track_retarget_topology_matches(candidate, old_route.id)
+                    && previous
+                        .revision
+                        .session()
+                        .midi_clip(clip)
+                        .zip(candidate.session().midi_clip(clip))
+                        .is_some_and(|(old, new)| {
+                            old.source_content_matches(new) && old.track == new.track
+                        })
+            }
+            _ => false,
+        };
+        if !sources_match {
+            return Ok(None);
+        }
+        let mut plan = ImportPlan {
+            seeds: [NativeInstrumentAnalyticSeed::default(); CAP],
+            proofs: [None; CAP],
+            len: 0,
+        };
+        let mut compatible = true;
+        let mut append = |signature: MutableOccurrenceSignature,
+                          start: u64,
+                          gate: u64,
+                          end: u64,
+                          cut: u64,
+                          sampler: PreparedMidiNote|
+         -> Result<(), SessionPlaybackError> {
+            if start >= cut {
+                return Ok(());
+            }
+            let PreparedMidiNote::Shared {
+                context: SharedContextRef::Revision(index),
+                note,
+                binding: crate::midi_note_bank::AnalyticBinding::Current,
+                ..
+            } = sampler
+            else {
+                compatible = false;
+                return Ok(());
+            };
+            if previous
+                .analytic_continuations
+                .get(usize::from(index))
+                .copied()
+                .flatten()
+                .is_some_and(|r| {
+                    r.elapsed_at(previous.performance_frame)
+                        .map_or(true, |n| n < r.duration())
+                })
+            {
+                compatible = false;
+                return Ok(());
+            }
+            let context = previous
+                .revision
+                .session()
+                .shared_contexts()
+                .owner(index)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if !factory.can_import_analytic_context(context.context()) {
+                compatible = false;
+                return Ok(());
+            }
+            if plan.len >= CAP {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
+            let age = cut
+                .checked_sub(start)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let id = (plan.len + 1) as u64;
+            plan.seeds[plan.len] = NativeInstrumentAnalyticSeed {
+                occurrence_id: id,
+                note,
+                age_frames: age,
+                gate_frame: (gate <= cut).then_some(gate.saturating_sub(start)),
+            };
+            plan.proofs[plan.len] = Some(MutableOccurrence {
+                signature,
+                id,
+                onset_frame: previous.performance_frame,
+                gate_end_frame: previous
+                    .performance_frame
+                    .checked_add(gate.saturating_sub(cut))
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                quiet_deadline_frame: previous
+                    .performance_frame
+                    .checked_add(
+                        end.checked_sub(cut)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                note_off_sent: gate <= cut,
+            });
+            plan.len += 1;
+            Ok(())
+        };
+        match old_route.owner {
+            RouteOwner::Arrangement => {
+                let cut = previous.arrangement_frame;
+                let mut failure = None;
+                old_track
+                    .for_each_active_midi_span(cut, |span, sampler| {
+                        if failure.is_some() {
+                            return;
+                        }
+                        if previous
+                            .historical_floor_for(old_index)
+                            .is_some_and(|floor| span.onset_beat < floor)
+                        {
+                            return;
+                        }
+                        if previous.arrangement_loop_pass > 0
+                            && previous
+                                .revision
+                                .arrangement()
+                                .loop_region()
+                                .is_some_and(|r| {
+                                    r.enabled()
+                                        && span.start < r.start()
+                                        && span.gate_end <= r.start()
+                                })
+                        {
+                            return;
+                        }
+                        let signature = MutableOccurrenceSignature::from_parts(
+                            MutableOccurrenceKey::new(
+                                old_route.id,
+                                span.clip,
+                                span.note,
+                                span.iteration,
+                                previous.arrangement_loop_pass,
+                            ),
                             span.onset_beat,
                             span.gate_end_beat,
                             span.pitch,
                             span.channel,
                             span.velocity,
-                            true,
-                        )
-                        .err();
-                })
-                .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
-            if let Some(error) = failure {
-                return Err(error);
+                        );
+                        if let Err(e) =
+                            append(signature, span.start, span.gate_end, span.end, cut, sampler)
+                        {
+                            failure = Some(e);
+                        }
+                    })
+                    .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                if let Some(e) = failure {
+                    return Err(e);
+                }
             }
+            RouteOwner::Session { clip, launch } => {
+                let prepared = previous
+                    .revision
+                    .session()
+                    .midi_clip(clip)
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let end = previous
+                    .performance_frame
+                    .checked_add(1)
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                if let Some(floor) = previous.historical_floor_for(old_index) {
+                    prepared.instrument_template().query_after_onset(
+                        launch,
+                        clock,
+                        previous.performance_frame,
+                        end,
+                        spans,
+                        floor,
+                    )
+                } else {
+                    prepared.instrument_template().query(
+                        launch,
+                        clock,
+                        previous.performance_frame,
+                        end,
+                        spans,
+                    )
+                }
+                .map_err(SessionPlaybackError::Midi)?;
+                for span in spans.spans().copied() {
+                    let Some(sampler) = span.prepared_voice() else {
+                        return Ok(None);
+                    };
+                    let signature = MutableOccurrenceSignature::from_parts(
+                        MutableOccurrenceKey::new(
+                            old_route.id,
+                            span.clip,
+                            span.note,
+                            span.iteration,
+                            0,
+                        ),
+                        span.onset_beat,
+                        span.gate_end_beat,
+                        span.pitch,
+                        span.channel,
+                        span.velocity,
+                    );
+                    append(
+                        signature,
+                        span.start_frame,
+                        span.gate_end_frame,
+                        span.end_frame,
+                        previous.performance_frame,
+                        sampler,
+                    )?;
+                }
+            }
+            _ => return Ok(None),
         }
-        RouteOwner::Session { clip, launch } => {
-            let clip = previous
-                .revision
-                .session()
-                .midi_clip(clip)
-                .ok_or(SessionPlaybackError::UnknownClip)?;
-            let clock = timing_view_for(
-                previous.revision.session(),
-                previous.periodic_tempo,
-                previous.anchor,
-            );
-            let frame = previous.performance_frame;
-            let end = frame
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            if let Some(floor) = previous.historical_floor_for(index) {
-                clip.instrument_template()
-                    .query_after_onset(launch, &clock, frame, end, spans, floor)
-            } else {
-                clip.instrument_template()
-                    .query(launch, &clock, frame, end, spans)
-            }
-            .map_err(SessionPlaybackError::Midi)?;
-            for span in spans.spans() {
-                let sampler = span
-                    .voice
-                    .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-                out.push(
-                    previous,
-                    route,
-                    sampler,
-                    span.start_frame,
-                    span.gate_end_frame,
-                    span.end_frame,
-                    frame,
-                    span.clip,
-                    span.note,
-                    span.iteration,
-                    span.onset_beat,
-                    span.gate_end_beat,
-                    span.pitch,
-                    span.channel,
-                    span.velocity,
-                    true,
-                )?;
-            }
-        }
-        RouteOwner::SessionAudio { .. } | RouteOwner::Silence => {}
+        if compatible { Ok(Some(plan)) } else { Ok(None) }
     }
-    // Current-owner bridges have already been suppressed in the route query.
-    // Import them once; detached historical generations keep their original law.
-    for entry in &previous.releases {
-        if !imports_release(previous, index, entry) {
-            continue;
-        }
-        let continuation = entry
-            .continuation
-            .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
-        let c = continuation;
-        // The matching suppression was intentionally honored above. This bridge
-        // now supplies the actual age, gate and sampler instead of a fresh chase.
-        out.push(
-            previous,
-            route,
-            entry.voice.sampler(),
-            entry.voice.start_frame(),
-            entry.voice.gate_end_frame(),
-            entry.voice.end_frame(),
-            previous.performance_frame,
-            c.key.clip,
-            c.key.note,
-            c.key.iteration,
-            c.onset_beat,
-            c.gate_end_beat,
-            c.pitch,
-            c.channel,
-            c.velocity,
-            false,
-        )?;
-    }
-    Ok(out)
-}
-pub(super) fn imports_release(
-    previous: &SessionPlayback,
-    index: usize,
-    entry: &ReleaseEntry,
-) -> bool {
-    entry.track_id == previous.routes[index].id
-        && entry.location.tail_group().is_none()
-        && entry.voice.sampler().is_current()
-        && entry.voice.context_ref()
-            == previous
-                .revision
-                .arrangement()
-                .shared_contexts()
-                .index_for_track(entry.track_id)
-                .map(crate::midi_note_bank::SharedContextRef::Revision)
-        && entry.voice.end_frame() > previous.performance_frame
 }
 
-// Keep fixed voice batches out of the already large host handoff stack frame.
+// Keep fixed import-plan copies out of the host's large handoff stack frame.
 #[inline(never)]
-pub(super) fn preflight(
+pub(super) fn preflight<T: crate::MidiTiming + ?Sized>(
     previous: &SessionPlayback,
     index: usize,
+    candidate: &PreparedRevision,
+    new_index: usize,
+    clock: &T,
     spans: &mut MidiSpanBuffer,
-    target: &crate::mutable_instrument::MutableInstrumentTrackRuntime,
+    runtime: &crate::mutable_instrument::MutableInstrumentTrackRuntime,
 ) -> Result<bool, SessionPlaybackError> {
-    let imported = at_cut(previous, index, spans)?;
-    Ok(target.can_import_analytic(
-        &imported.history(previous)?,
-        &imported.occurrences[..imported.len],
-    ))
+    Ok(
+        SessionPlayback::analytic_import_plan(previous, index, candidate, new_index, clock, spans)?
+            .is_some_and(|plan| runtime.can_import_analytic(&plan.seeds[..plan.len])),
+    )
 }
 #[inline(never)]
-pub(super) fn adopt(
+pub(super) fn adopt<T: crate::MidiTiming + ?Sized>(
     previous: &SessionPlayback,
     index: usize,
+    candidate: &PreparedRevision,
+    new_index: usize,
+    clock: &T,
     spans: &mut MidiSpanBuffer,
-    target: &mut crate::mutable_instrument::MutableInstrumentTrackRuntime,
+    runtime: &mut crate::mutable_instrument::MutableInstrumentTrackRuntime,
 ) -> Result<(), SessionPlaybackError> {
-    let imported = at_cut(previous, index, spans)?;
-    target
-        .import_analytic(
-            &imported.history(previous)?,
-            &imported.occurrences[..imported.len],
-        )
+    let plan =
+        SessionPlayback::analytic_import_plan(previous, index, candidate, new_index, clock, spans)?
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    runtime
+        .import_analytic(&plan.seeds[..plan.len], &plan.proofs[..plan.len])
         .map_err(|_| SessionPlaybackError::DeviceRuntime)
 }

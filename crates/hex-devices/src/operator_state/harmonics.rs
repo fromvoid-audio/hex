@@ -250,9 +250,9 @@ impl Harmonics {
 mod tests {
     use super::*;
     #[test]
-    fn version_nine_preserves_all_legacy_prefixes_and_strictly_validates_banks() {
+    fn version_twelve_preserves_all_legacy_prefixes_and_strictly_validates_banks() {
         let current = OPERATOR_METADATA.default_state().unwrap();
-        assert_eq!(current.payload().len(), 1452);
+        assert_eq!(current.payload().len(), 1488);
         for (version, len) in [
             (1, 224),
             (2, 240),
@@ -262,6 +262,7 @@ mod tests {
             (6, 320),
             (7, 364),
             (8, 380),
+            (11, 416),
         ] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
@@ -283,9 +284,11 @@ mod tests {
                 (264, 3),
             ] {
                 let mut bytes = current.payload().to_vec();
-                let start = 380 + operator * 268 + offset;
+                let start = FILTER_PAYLOAD_BYTES + operator * 268 + offset;
                 bytes[start..start + 4].copy_from_slice(&bits.to_le_bytes());
-                let invalid = NativeDeviceState::new(OPERATOR_TYPE_ID, 9, bytes).unwrap();
+                let invalid =
+                    NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                        .unwrap();
                 assert!(OPERATOR_METADATA.migrate_state(&invalid).is_err());
             }
         }
@@ -309,7 +312,10 @@ mod tests {
                 .unwrap(),
             ParameterValue::Float(0.75)
         );
-        assert_eq!(&state.payload()[..380], &original.payload()[..380]);
+        assert_eq!(
+            &state.payload()[..FILTER_PAYLOAD_BYTES],
+            &original.payload()[..FILTER_PAYLOAD_BYTES]
+        );
         let cached = state.clone();
         state = OPERATOR_METADATA
             .patch_parameter(&state, parameter::waveform(1), ParameterValue::Choice(2))
@@ -318,7 +324,10 @@ mod tests {
             .patch_parameter(&state, parameter::waveform(1), ParameterValue::Choice(4))
             .unwrap();
         // Builtin choice is retained in the old prefix; authored values remain exact.
-        assert_eq!(&state.payload()[380..], &cached.payload()[380..]);
+        assert_eq!(
+            &state.payload()[FILTER_PAYLOAD_BYTES..],
+            &cached.payload()[FILTER_PAYLOAD_BYTES..]
+        );
         let settings = OperatorSettings::from_state(&state).unwrap();
         assert_eq!(
             settings.harmonics.amplitudes[0][1].to_bits(),

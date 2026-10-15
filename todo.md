@@ -2603,12 +2603,13 @@ CI and native delivery results belong in the linked PR/Pulse evidence. This does
 not complete Operator filter2326, higher-polyphony2226 or scalability2108.
 
 
-## 15 October 2026 — PR158 integration repair
-
-Current-main integration preserves Vector naming, metering/gains, keyboard focus
-and canonical oscillator enables. Metered analytic capture applies track gain
-once, with a Main/capture PCM regression; enable history/save-reopen coverage
-preserves main's navigation-only Enter/Space contract. Historical pool-fit claims are superseded by current
-negative accounting evidence in docs/operator-harmonic-retarget.md. The custom
-harmonic state/provider/pool/painter and feature acceptance remain incomplete;
-PR158 must remain draft until its actual task contract is delivered.
+- Pulse2326 / PR212: registered original Clean carrier filter with LP/HP/BP/notch/
+  morph, 12/24 slope, canonical saved frequency/resonance/morph controls, v11 codec
+  preserving v8 enable prefix and reserved parallel formats/IDs. Bounded analytic import
+  preserves sounding Arrangement/Session voices and gates on first activation;
+  feedback/LFO history and supported parameter ramps survive compatible edits.
+  Both banks are charged under Pulse2589 aggregate admission. Independent transfer,
+  boundary, codec, callback allocation, UI focus/history and export checks added.
+  See docs/operator-filter.md for finite pre-envelope output-tail law, explicit
+  active-seek/class-exit refusals, offline overhead and native/reference gaps.
+  Exact final full local CI and guarded native delivery evidence belongs to PR212.

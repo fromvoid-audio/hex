@@ -60,6 +60,7 @@ pub(super) enum OperatorPage {
     Envelope,
     Routing,
     Lfo,
+    Filter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -168,6 +169,7 @@ pub(super) fn render_body(
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
+        OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
     div()
@@ -1249,6 +1251,109 @@ pub(super) fn lfo_summary(
     row
 }
 
+fn filter_detail(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut detail = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_title("filter"));
+    for fields in [
+        &[(20_003, "slope"), (20_004, "circuit")][..],
+        &[(20_007, "morph")][..],
+    ] {
+        let mut row = div()
+            .w_full()
+            .h(px(48.0))
+            .flex()
+            .items_center()
+            .gap(px(3.0));
+        for &(parameter, label) in fields {
+            row = row.child(compact_control(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                id(parameter),
+                if parameter < 20_005 {
+                    ControlPresentation::CompactSelector
+                } else {
+                    ControlPresentation::MicroDial
+                },
+                Some(label),
+            ));
+        }
+        detail = detail.child(row);
+    }
+    detail.id(ElementId::Name(
+        format!("operator-filter-detail-{}", device.value()).into(),
+    ))
+}
+
+pub(super) fn filter_summary(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let section = Section::Preview("filter");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
+    let mut row = div()
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
+        .id(ElementId::Name(
+            format!("operator-preview-row-{}-filter", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-preview-row-{}-filter", device.value()))
+        .track_focus(&focus)
+        .w_full()
+        .h(px(40.0))
+        .px(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .bg(rgb(if focused {
+            RAIL_GUTTER
+        } else {
+            RAIL_BACKGROUND
+        }));
+    for (parameter, label) in [
+        (20_001, "filter"),
+        (20_002, "type"),
+        (20_005, "freq"),
+        (20_006, "res"),
+    ] {
+        row = row.child(compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            &device_view.parameters,
+            id(parameter),
+            if parameter == 20_001 {
+                ControlPresentation::CompactButton
+            } else if parameter < 20_005 {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
+            Some(label),
+        ));
+    }
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1270,6 +1375,7 @@ mod tests {
         }
         exposed.extend([61]);
         exposed.extend(82..=356);
+        exposed.extend(20_001..=20_007);
         exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
@@ -1296,9 +1402,9 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 356);
+        assert_eq!(exposed.len(), 363);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&516));
+        assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }

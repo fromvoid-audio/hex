@@ -118,6 +118,10 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
         settings.harmonics.custom[0] = true;
         settings.harmonics.authored[0] = true;
         settings.feedback[0] = 0.2;
+        settings
+            .filter
+            .patch(ParameterId::from_static(20001), ParameterValue::Bool(true))
+            .unwrap();
         if lfo {
             settings.lfo.0[0] = 1;
             settings.lfo.0[5] = 0.2_f32.to_bits();
@@ -156,6 +160,13 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
         b.retarget_from(&old, &proof).unwrap();
         assert_eq!(render(&mut a, &[], 37), render(&mut b, &[], 37));
         settings.harmonics.amplitudes[0][3] = 0.75;
+        settings
+            .filter
+            .patch(
+                ParameterId::from_static(20005),
+                ParameterValue::Float(3000.0),
+            )
+            .unwrap();
         let edited = make(settings);
         let mut next_a = pair(&edited);
         let mut next_b = pair(&edited);

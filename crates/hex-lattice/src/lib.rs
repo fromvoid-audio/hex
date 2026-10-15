@@ -56,8 +56,8 @@ pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
 };
 pub use instrument_runtime::{
-    AnalyticInstrumentHistory, AnalyticInstrumentVoice, InstrumentHistoryRetargetPreparation,
-    MutableInstrumentRuntime, NativeInstrumentClock, NativeInstrumentEvent,
+    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
+    NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
     NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
     PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };

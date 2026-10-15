@@ -54,6 +54,19 @@ impl PreparedOperatorFeedbackVoice {
     }
 
     /// Current note-relative frame; advances once after each successful sample.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn filter_seed(
+        &self,
+    ) -> Option<(PreparedOperatorNote, u64, Option<u64>, [f64; 4], [f64; 4])> {
+        Some((
+            self.note,
+            self.age_frames,
+            self.gate_frame,
+            self.previous_outputs,
+            self.feedback_turns,
+        ))
+    }
+    /// Current note-relative frame; advances once after each successful sample.
     pub const fn age_frames(&self) -> u64 {
         self.age_frames
     }

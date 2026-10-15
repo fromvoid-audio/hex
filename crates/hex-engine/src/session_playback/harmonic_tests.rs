@@ -316,3 +316,64 @@ fn first_paint_capacity_refusal_preserves_old_committed_audio_and_all_occurrence
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_lfo() {
+    for (feedback, lfo, notes) in [(false, false, 64), (true, false, 16), (true, true, 16)] {
+        let original = fixture(notes, 8 << 32);
+        let mut changes = vec![
+            (ParameterId::from_static(20001), ParameterValue::Bool(true)),
+            (
+                ParameterId::from_static(20005),
+                ParameterValue::Float(650.0),
+            ),
+        ];
+        if feedback {
+            changes.push((parameter::feedback(1), ParameterValue::Float(0.2)));
+        }
+        if lfo {
+            changes.extend([
+                (ParameterId::from_static(82), ParameterValue::Bool(true)),
+                (ParameterId::from_static(87), ParameterValue::Float(25.0)),
+            ]);
+        }
+        let original = edit(&original, &changes);
+        let mut old = start(&original, false);
+        let mut oracle = start(&original, false);
+        old.render(&mut [[0.0; 2]; 512]).unwrap();
+        oracle.render(&mut [[0.0; 2]; 512]).unwrap();
+        let custom = edit(
+            &original,
+            &[(harmonic_parameter(1, 2), ParameterValue::Float(0.5))],
+        );
+        let mut next =
+            SessionPlayback::new(prepared(&custom, Some(old.revision.session()))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut a = [[0.0; 2]; 1];
+        let mut b = a;
+        next.render(&mut a).unwrap();
+        oracle.render(&mut b).unwrap();
+        assert_eq!(a, b, "first paint must preserve the actual filter history");
+        next.render(&mut [[0.0; 2]; 37]).unwrap();
+        // Mid-ramp filter and harmonic changes retain the independent carrier integrators.
+        let changed = edit(
+            &custom,
+            &[
+                (
+                    ParameterId::from_static(20005),
+                    ParameterValue::Float(3000.0),
+                ),
+                (harmonic_parameter(1, 3), ParameterValue::Float(0.25)),
+            ],
+        );
+        let mut more =
+            SessionPlayback::new(prepared(&changed, Some(next.revision.session()))).unwrap();
+        more.try_inherit_state_from(&mut next).unwrap();
+        let mut actual = [[0.0; 2]; 1];
+        let mut expected = actual;
+        more.render(&mut actual).unwrap();
+        next.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        more.render(&mut [[0.0; 2]; 257]).unwrap();
+    }
+}

@@ -7,7 +7,9 @@ instrument and settings. Internal Operator module names and reference research
 still use the historical name.
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes77 descriptors and opaque version6 state.
+catalog. The control codec exposes363 descriptors and opaque version12 state.
+The [harmonic editor](operator-harmonics.md) adds User banks, persistent painting
+and live continuation while preserving the earlier builtin/filter routes.
 Versions1–4 migrate with neutral feedback; versions1–3 also receive neutral
 amplitude velocity. Storage, history and UI use generic native-device contracts.
 
@@ -46,13 +48,16 @@ out of the mutable-feedback processing class can still refuse audio admission
 while desired project edits remain canonical. The bounded retarget path supports
 live oscillator-level, carrier and effective
 feedback changes through the registered runtime, with one shared five-millisecond
-ramp per twin. It remains below the existing 8,192-byte pair ceiling; unsupported
+ramp per twin. Its 8,064-byte pair remains fully charged to the aggregate
+instrument budget; unsupported
 waveform, tuning, envelope, modulation, sample-rate and velocity-law edits are
 refused while history is active and may use a fresh runtime only after
 committed voices and feedback tails are quiescent. See [the feedback contract](operator-feedback.md)
 for the exact transfer and acceptance limits.
 
-Filters, additional waveforms beyond these four, unbounded routing, remaining
+The original [Clean carrier filter](operator-filter.md) supports LP/HP/BP/notch/
+morph, 12/24 slopes, frequency, resonance and morph through saved shared controls.
+Other circuits, additional waveforms beyond these four, unbounded routing, remaining
 Operator controls and Live numerical parity remain open. Native listening and
 physical device deadlines require separate acceptance; see
 [performance measurements](performance.md).

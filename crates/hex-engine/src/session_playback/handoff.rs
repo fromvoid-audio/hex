@@ -487,6 +487,7 @@ impl SessionPlayback {
         // Opt-in analytic-to-mutable adoption copies the actual committed
         // source law and phases into an inactive, fully charged candidate.
         // The graph identity/source checks remain independent of provider checks.
+        let mut harmonic_import_old = [false; MAX_TRACKS];
         let mut analytic_import_new_for_old = [usize::MAX; MAX_TRACKS];
         if !timing_changed && old_loop == new_loop {
             for (new_index, new_route) in self.routes.iter().enumerate() {
@@ -548,7 +549,7 @@ impl SessionPlayback {
                 if !same_source {
                     continue;
                 }
-                if super::analytic_import::preflight(previous, old_index, &mut self.spans, target)?
+                if super::harmonic_import::preflight(previous, old_index, &mut self.spans, target)?
                 {
                     let new_chain = self
                         .device_chains
@@ -561,6 +562,37 @@ impl SessionPlayback {
                     if !new_chain.can_inherit_from(old_chain) {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
+                    analytic_import_new_for_old[old_index] = new_index;
+                    harmonic_import_old[old_index] = true;
+                }
+            }
+        }
+
+        if !timing_changed {
+            for (old_index, old_route) in previous.routes.iter().enumerate() {
+                let Some(new_index) = self
+                    .routes
+                    .iter()
+                    .position(|route| route.id == old_route.id && route.pending.is_none())
+                else {
+                    continue;
+                };
+                let Some(runtime) = self
+                    .mutable_instruments
+                    .get(new_index)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if super::analytic_import::preflight(
+                    previous,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                    &old_clock,
+                    &mut self.spans,
+                    runtime,
+                )? {
                     analytic_import_new_for_old[old_index] = new_index;
                 }
             }
@@ -720,6 +752,7 @@ impl SessionPlayback {
                 .position(|route| route.id == new_route.id);
             if old_index.is_some_and(|old_index| {
                 mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
                     || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
                     || analytic_import_new_for_old.get(old_index) == Some(&new_index)
             }) {
@@ -2146,7 +2179,7 @@ impl SessionPlayback {
         self.release_scratch.retain(|release| {
             !previous.routes.iter().enumerate().any(|(old_index, _)| {
                 analytic_import_new_for_old[old_index] != usize::MAX
-                    && super::analytic_import::imports_release(previous, old_index, release)
+                    && super::harmonic_import::imports_release(previous, old_index, release)
             })
         });
         for release in &mut self.release_scratch {
@@ -2240,7 +2273,19 @@ impl SessionPlayback {
                 .get_mut(new_index)
                 .and_then(Option::as_mut)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            super::analytic_import::adopt(previous, old_index, &mut self.spans, target)?;
+            if harmonic_import_old[old_index] {
+                super::harmonic_import::adopt(previous, old_index, &mut self.spans, target)?;
+            } else {
+                super::analytic_import::adopt(
+                    previous,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                    &old_clock,
+                    &mut self.spans,
+                    target,
+                )?;
+            }
         }
         for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {

@@ -372,10 +372,19 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
-    let mutable_track_count = project
+    // Keep bounded source/topology evidence for providers that authorize a
+    // future analytic import as well as for existing mutable owners.
+    let needs_descriptor = |track: &crate::Track| {
+        track.has_mutable_instrument()
+            || track
+                .instrument_id
+                .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
+                .is_some_and(|owner| owner.context().import_identity().is_some())
+    };
+    let mutable_track_count = arrangement
         .tracks()
         .iter()
-        .filter(|track| track.instrument().is_some())
+        .filter(|track| needs_descriptor(track))
         .count();
     let mut revisions = Vec::new();
     revisions
@@ -394,7 +403,7 @@ fn prepare_mutable_track_revisions(
                 "mutable revision descriptor track ordering is inconsistent",
             ));
         }
-        if track.instrument().is_none() {
+        if !needs_descriptor(compiled) {
             continue;
         }
         if track.devices().len() > MAX_DEVICES_PER_TRACK {

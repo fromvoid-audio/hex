@@ -4,7 +4,7 @@ use super::*;
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
     let current = OPERATOR_METADATA.default_state().unwrap();
     assert_eq!(current.payload().len(), PAYLOAD_BYTES);
-    assert_eq!(PARAMETER_COUNT, 356);
+    assert_eq!(PARAMETER_COUNT, 363);
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -13,6 +13,7 @@ fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on
         (5, 320),
         (6, 320),
         (7, 364),
+        (8, 380),
     ] {
         let old = NativeDeviceState::new(
             OPERATOR_TYPE_ID,
@@ -97,7 +98,8 @@ fn enable_suffix_refuses_nonbinary_flags_wrong_lengths_and_legacy_layout_aliases
         for word in [2_u32, u32::MAX, f32::NAN.to_bits()] {
             let mut bytes = original.payload()[..380].to_vec();
             bytes[364 + operator * 4..368 + operator * 4].copy_from_slice(&word.to_le_bytes());
-            let invalid = NativeDeviceState::new(OPERATOR_TYPE_ID, 8, bytes).unwrap();
+            let invalid =
+                NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&invalid).is_err());
         }
     }

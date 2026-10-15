@@ -307,6 +307,10 @@ impl PreparedOperatorConfiguration {
         levels: [f64; 4],
         carriers: [f64; 4],
         feedback: [f64; 4],
+        filter: Option<(
+            &mut [crate::operator_filter::Carrier; 4],
+            crate::operator_filter::Frame,
+        )>,
         mut sample: impl FnMut(usize, u64, u64) -> f32,
     ) -> (f32, [f64; 4]) {
         let mut amplitudes = self.envelopes.levels(age, gate);
@@ -314,6 +318,7 @@ impl PreparedOperatorConfiguration {
             super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
         }
         let mut signals = [0.0; 4];
+        let mut raw = [0.0; 4];
         for &target in &self.configuration.routing.order {
             if levels[target] == 0.0 {
                 continue;
@@ -331,15 +336,20 @@ impl PreparedOperatorConfiguration {
             let phase = phases[target]
                 .wrapping_add(self.configuration.phases[target])
                 .wrapping_add(crate::fm4::phase_from_turns(modulation));
-            signals[target] = f64::from(sample(target, phase, note.steps[target]))
-                * levels[target]
-                * amplitudes[target];
+            raw[target] = f64::from(sample(target, phase, note.steps[target])) * levels[target];
+            signals[target] = raw[target] * amplitudes[target];
         }
-        let output: f64 = signals
-            .iter()
-            .zip(carriers)
-            .map(|(signal, weight)| signal * weight)
-            .sum();
+        let output: f64 = if let Some((filters, frame)) = filter {
+            (0..4)
+                .map(|i| filters[i].process(raw[i], frame) * amplitudes[i] * carriers[i])
+                .sum()
+        } else {
+            signals
+                .iter()
+                .zip(carriers)
+                .map(|(signal, weight)| signal * weight)
+                .sum()
+        };
         ((output * note.velocity) as f32, signals)
     }
 
@@ -441,7 +451,7 @@ impl PreparedOperatorConfiguration {
             && self.amplitude_velocity == target.amplitude_velocity
     }
 
-    pub(super) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
+    pub(crate) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
         self.retarget_compatible_with(target)
             && self.oscillator_levels == target.oscillator_levels
             && self.configuration.routing.carriers == target.configuration.routing.carriers
@@ -620,3 +630,5 @@ const fn unpack_caps(packed: u32) -> [u8; OPERATORS] {
 
 #[cfg(test)]
 mod tests;
+
+mod filter;

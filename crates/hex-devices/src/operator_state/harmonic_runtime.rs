@@ -9,7 +9,9 @@ use hex_lattice::{
 };
 use std::any::Any;
 
+mod filter;
 mod spectrum;
+pub(super) use filter::Trajectory as FilterTrajectory;
 pub(super) use spectrum::Spectrum;
 use spectrum::{HarmonicPhaseTable, harmonic_phase_table};
 const VOICES: usize = 64;
@@ -25,6 +27,7 @@ pub(super) struct Factory {
     phase_table: &'static HarmonicPhaseTable,
     rate: u32,
     parameters: [f64; 12],
+    filter: FilterTrajectory,
 }
 impl Factory {
     pub fn new(
@@ -45,6 +48,7 @@ impl Factory {
                 .try_into()
                 .map_err(|_| DeviceContractError::MalformedState)?,
             target: Spectrum::prepare(&settings),
+            filter: FilterTrajectory::new(settings.filter, rate),
             settings,
             table,
             phase_table: harmonic_phase_table(),
@@ -88,6 +92,7 @@ pub(super) struct Voice {
     pub age: u64,
     pub gate: Option<u64>,
     pub id: u64,
+    pub filters: [crate::operator_filter::Carrier; 4],
     pub lfo_fraction: f64,
     pub lfo_cycle: u64,
 }
@@ -117,13 +122,14 @@ pub(super) struct Runtime {
     elapsed: u32,
     frames: u32,
     parameters: Option<ParameterRamp>,
+    filter: FilterTrajectory,
     phase: (f64, u64),
 }
 #[derive(Clone, Copy)]
 struct Target(u64);
 impl PreparedInstrumentHistoryRetarget for Target {
-    fn supports_source_runtime_version(&self, version: u32) -> bool {
-        matches!(version, 1..=3)
+    fn allows_runtime_versions(&self, source: u32, target: u32) -> bool {
+        target == 3 && matches!(source, 1..=3)
     }
     fn declared_fixed_storage_bytes(&self) -> usize {
         size_of::<Self>()
@@ -156,6 +162,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
             elapsed: 0,
             frames: 1,
             parameters: None,
+            filter: self.filter,
             phase: (0.0, 0),
         })
     }
@@ -294,7 +301,7 @@ impl MutableInstrumentRuntime for Runtime {
                 && !history.voices[..index]
                     .iter()
                     .any(|other| other.occurrence_id == voice.occurrence_id)
-                && voice.gate_frames.is_none_or(|gate| {
+                && voice.gate_frame.is_none_or(|gate| {
                     gate <= voice.age_frames
                         && gate
                             .checked_add(voice.note.release_frames())
@@ -342,11 +349,13 @@ impl MutableInstrumentRuntime for Runtime {
                     voice.age_frames,
                 ),
                 age: voice.age_frames,
-                gate: voice.gate_frames,
+                gate: voice.gate_frame,
                 id: voice.occurrence_id,
                 ..Voice::default()
             };
         }
+        self.filter.from.wet = 0.0;
+        self.filter.elapsed = 0;
         self.source = spectrum;
         self.frames = ((u64::from(self.factory.rate) * 5 + 500) / 1000) as u32;
         self.elapsed = 0;
@@ -453,6 +462,7 @@ impl MutableInstrumentRuntime for Runtime {
             }
             let spectrum = self.spectrum();
             let parameters = self.current_parameters();
+            let filter_frame = self.filter.armed.then(|| self.filter.frame());
             let law = self.factory.settings.lfo;
             let delta = if !law.active() {
                 0.0
@@ -488,6 +498,7 @@ impl MutableInstrumentRuntime for Runtime {
                     std::array::from_fn(|i| parameters[i]),
                     std::array::from_fn(|i| parameters[4 + i]),
                     std::array::from_fn(|i| parameters[8 + i]),
+                    filter_frame.map(|frame| (&mut voice.filters, frame)),
                     |operator, phase, step| {
                         spectrum.sample(
                             operator,
@@ -532,6 +543,7 @@ impl MutableInstrumentRuntime for Runtime {
                     self.parameters = None;
                 }
             }
+            self.filter.advance();
             self.expire();
         }
     }
@@ -541,6 +553,7 @@ impl MutableInstrumentRuntime for Runtime {
         self.elapsed = 1;
         self.frames = 1;
         self.parameters = None;
+        self.filter = self.factory.filter;
         self.phase = (0.0, 0);
     }
     fn is_quiescent(&self) -> bool {
@@ -560,6 +573,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.elapsed = p.elapsed;
             self.frames = p.frames;
             self.parameters = p.parameters;
+            self.filter = p.filter;
             self.phase = p.phase;
         }
     }
@@ -600,6 +614,8 @@ impl MutableInstrumentRuntime for Runtime {
                 *target = *source;
             }
             self.phase = p.phase;
+            self.filter = p.filter;
+            self.filter.retarget(self.factory.filter);
             if self.factory.target == p.target {
                 self.source = p.source;
                 self.elapsed = p.elapsed;
@@ -642,6 +658,7 @@ pub(super) struct Legacy {
     pub target: Spectrum,
     pub elapsed: u32,
     pub frames: u32,
+    pub filter: FilterTrajectory,
 }
 pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spectrum> {
     let mut out = Spectrum {
@@ -676,6 +693,7 @@ impl Legacy {
                 target: p.factory.target,
                 elapsed: p.elapsed,
                 frames: p.frames,
+                filter: p.filter,
             });
         }
         super::lfo_runtime::export_harmonic_history(previous)

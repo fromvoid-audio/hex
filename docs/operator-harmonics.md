@@ -34,12 +34,12 @@ editor inventory, but no installed Live measurements establish these numeric
 laws. A fresh official-manual request from this cloud was refused by its network
 proxy. This implementation makes no measured Live parity claim.
 
-State v9 is 1,452 bytes: the complete v8 380-byte prefix followed by four records
+State v12 is 1,488 bytes: the complete v11 416-byte filter prefix followed by four records
 of 64 little-endian f32 amplitudes and three u32 words (range, Repeat, mode).
 Modes distinguish never-authored builtin, active User, and cached User/builtin.
-All v1–8 states migrate explicitly. Strict length, finite amplitude, range,
+All v1–8 and v11 states migrate explicitly; reserved v9–10 remain rejected. Strict length, finite amplitude, range,
 Repeat and mode checks reject malformed input. IDs93–348 are amplitudes,
-349–352 range, 353–356 Repeat. The registered inventory has 356 parameters;
+349–352 range, 353–356 Repeat. The registered inventory has 363 parameters;
 existing IDs and host gains are preserved.
 
 ## Runtime and ownership
@@ -50,7 +50,7 @@ Both candidate twins validate the borrowed source before copying its note ages,
 gates, occurrence IDs and phases. Feedback/LFO sources export their actual
 recurrence and integrated phase state. Compatible subsequent edits retarget from
 the actual applied boundary. Harmonic changes use a 5 ms coefficient ramp;
-independent level/enable/feedback ramps retain their original clocks when their
+independent filter and level/enable/feedback ramps retain their original clocks when their
 endpoints do not change. Undo to a builtin keeps a continuation-capable compiled
 runtime for that instrument identity; this choice is not serialized.
 
@@ -62,12 +62,12 @@ The mutable admission is 64 occurrences without effective feedback/LFO, and 16
 with feedback/LFO; preparation refuses source density beyond that class's limit.
 
 The runtime owns all authored spectra, interpolated source coefficients, scalar
-ramps and voice histories inline. Each twin is 18,408 bytes on this 64-bit build;
-the pair is 36,816 bytes. Both active and retained runtimes consume the current
+ramps, carrier filter integrators and voice histories inline. Each twin is 26,896 bytes on this 64-bit build;
+the pair is 53,792 bytes. Both active and retained runtimes consume the current
 mainline's existing 2 MiB instrument budgets. No cap is raised and no proposed
 1,142-slot capture pool is installed. Current mainline's variable-size instrument
 contract supersedes the historical 8,192-byte proposal in the proof documents.
-The analytic provider charge becomes 2,548 bytes, still below 4,096. A bounded
+The analytic provider charge becomes 2,584 bytes, still below 4,096. A bounded
 256-entry control-side identity vector adds 4,096 bytes plus its 24-byte header
 to a full context table. Source descriptors retain immutable source identities,
 not copies of note buffers.
@@ -81,11 +81,11 @@ callback reclamation. Original builtin tables and builtin endpoints are retained
 
 ## Verification and limits
 
-Deterministic tests cover v1–8 migrations, malformed banks, signed zero, cached
+Deterministic tests cover v1–8/v11 migrations, malformed banks, signed zero, cached
 User restoration, strict Nyquist and a nonzero 64th partial, independent sine-sum
 agreement, Repeat and normalization bounds, real snapshot/history/save/open,
 rendered painter gestures, 64 held/released voices in Arrangement and Session,
-feedback/LFO recurrence, enable-clock continuity, range reversals, partition
+feedback/LFO/filter recurrence, enable-clock continuity, range reversals, partition
 invariance and refusal preserving old PCM. Callback probes cover first paint,
 range changes, builtin/User reversal and release with zero total/net allocations
 and deallocations. Existing transactional rollback/admission tests remain active.
@@ -97,12 +97,12 @@ amplitudes, 256-frame blocks and 128 timed blocks produced these milliseconds:
 
 | Rate | Voices | Median | p95 | Maximum | Block deadline |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 44,100 | 16 | 1.3583 | 1.5516 | 1.9703 | 5.8050 |
-| 44,100 | 64 | 5.2988 | 6.5870 | 15.3696 | 5.8050 |
-| 48,000 | 16 | 1.3291 | 1.5552 | 1.8769 | 5.3333 |
-| 48,000 | 64 | 5.3254 | 6.0898 | 13.7941 | 5.3333 |
-| 96,000 | 16 | 1.3390 | 1.4731 | 1.5618 | 2.6667 |
-| 96,000 | 64 | 5.3842 | 6.1420 | 14.5705 | 2.6667 |
+| 44,100 | 16 | 1.4576 | 1.6838 | 1.9601 | 5.8050 |
+| 44,100 | 64 | 5.7028 | 9.5163 | 22.3692 | 5.8050 |
+| 48,000 | 16 | 1.4517 | 1.7957 | 2.0633 | 5.3333 |
+| 48,000 | 64 | 5.5368 | 6.1863 | 8.2673 | 5.3333 |
+| 96,000 | 16 | 1.4130 | 1.6504 | 2.0517 | 2.6667 |
+| 96,000 | 64 | 5.5443 | 6.2868 | 7.0454 | 2.6667 |
 
 Timing covers the registered runtime's sampling, not a substitute kernel. It
 excludes preparation, event validation, host mixing and effects. Input construction

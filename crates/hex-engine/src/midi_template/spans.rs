@@ -126,6 +126,12 @@ pub struct MidiRenderSpan {
     pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
 }
 
+impl MidiRenderSpan {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+        self.voice
+    }
+}
+
 /// Identity of a carried occurrence that must not be emitted again by the
 /// newly prepared source while its copied voice is still sounding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

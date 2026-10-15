@@ -1,4 +1,4 @@
-> State v9 now appends harmonic authoring after the unchanged enable prefix.
+> State v12 appends harmonic authoring after the v11 filter and unchanged enable prefix.
 > The completed harmonic runtime is described in [operator harmonics](operator-harmonics.md).
 
 # Operator oscillator enable controls — Pulse2335

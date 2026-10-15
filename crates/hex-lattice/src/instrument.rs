@@ -57,6 +57,10 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
+    /// Optional provider identity for an explicitly authorized analytic-to-mutable import.
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     /// Optional provider-defined coefficient continuation. Default providers
     /// retain their immutable sampler law across publication. Opted-in methods
     /// must be bounded, read-only and allocation-free, including refusal paths.
