@@ -206,7 +206,10 @@ mod tests {
             let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
             assert_eq!(&migrated.payload()[..length], old.payload());
             assert_eq!(&migrated.payload()[320..], &current.payload()[320..]);
-            assert_eq!(migrated.state_version(), 7);
+            assert_eq!(
+                migrated.state_version(),
+                super::super::OPERATOR_STATE_VERSION
+            );
         }
         let mut invalid_v6 = current.payload()[..320].to_vec();
         invalid_v6[36 * 4..37 * 4].copy_from_slice(&0.0_f32.to_le_bytes());

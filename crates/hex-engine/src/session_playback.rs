@@ -1164,3 +1164,5 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+mod analytic_import;

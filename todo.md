@@ -2491,3 +2491,15 @@ A failed-before regression and optimized component measurements are retained in
 `artifacts/instrument-memory-budget/`; see docs/performance.md. Full exact-source
 CI and native delivery results belong in the linked PR/Pulse evidence. This does
 not complete Operator filter2326, higher-polyphony2226 or scalability2108.
+
+
+- Pulse2326 / PR212: registered original Clean carrier filter with LP/HP/BP/notch/
+  morph, 12/24 slope, canonical saved frequency/resonance/morph controls, v11 codec
+  preserving v7 prefix and reserved parallel formats/IDs. Bounded analytic import
+  preserves sounding Arrangement/Session voices and gates on first activation;
+  feedback/LFO history and supported parameter ramps survive compatible edits.
+  Both banks are charged under Pulse2589 aggregate admission. Independent transfer,
+  boundary, codec, callback allocation, UI focus/history and export checks added.
+  See docs/operator-filter.md for finite pre-envelope output-tail law, explicit
+  active-seek/class-exit refusals, offline overhead and native/reference gaps.
+  Exact final full local CI and guarded native delivery evidence belongs to PR212.

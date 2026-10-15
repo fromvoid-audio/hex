@@ -14,6 +14,21 @@ pub struct OperatorFeedbackParameters {
 }
 
 impl OperatorFeedbackParameters {
+    pub(crate) fn interpolate(self, target: Self, elapsed: u32, frames: u32) -> Self {
+        if elapsed == 0 {
+            return self;
+        }
+        if elapsed >= frames {
+            return target;
+        }
+        let t = f64::from(elapsed) / f64::from(frames);
+        Self {
+            oscillator_levels: interpolate(self.oscillator_levels, target.oscillator_levels, t),
+            carrier_weights: interpolate(self.carrier_weights, target.carrier_weights, t),
+            feedback_turns: interpolate(self.feedback_turns, target.feedback_turns, t),
+        }
+    }
+
     pub const fn oscillator_levels(&self) -> &[f64; OPERATORS] {
         &self.oscillator_levels
     }

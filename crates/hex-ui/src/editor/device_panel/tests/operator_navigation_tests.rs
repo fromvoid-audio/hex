@@ -215,7 +215,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in 0..2 {
+    for switch in 0..1 {
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",

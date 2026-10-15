@@ -21,7 +21,9 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 7;
+pub const OPERATOR_STATE_VERSION: u32 = 11;
+const LFO_STATE_VERSION: u32 = 7;
+const FILTER_PARAMETERS: usize = crate::operator_filter::COUNT - 1;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
@@ -42,7 +44,8 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + OPERATORS * 3
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
-    + lfo::COUNT;
+    + lfo::COUNT
+    + FILTER_PARAMETERS;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -50,7 +53,8 @@ const VELOCITY_PAYLOAD_BYTES: usize =
     TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
-const PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + crate::operator_filter::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -336,7 +340,13 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT - FILTER_PARAMETERS - lfo::COUNT + offset] = lfo[offset];
+        offset += 1;
+    }
+    let filter = crate::operator_filter::descriptors();
+    let mut offset = 0;
+    while offset < FILTER_PARAMETERS {
+        result[PARAMETER_COUNT - FILTER_PARAMETERS + offset] = filter[offset];
         offset += 1;
     }
     result
@@ -353,6 +363,7 @@ pub struct OperatorSettings {
     amplitude_velocity: [f32; OPERATORS],
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
+    filter: crate::operator_filter::Settings,
 }
 
 impl OperatorSettings {
@@ -371,6 +382,7 @@ impl OperatorSettings {
             amplitude_velocity: [0.0; OPERATORS],
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
+            filter: crate::operator_filter::Settings::default(),
         }
     }
 
@@ -384,6 +396,7 @@ impl OperatorSettings {
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
+            LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -465,12 +478,18 @@ impl OperatorSettings {
                 feedback[index] = f32::from_le_bytes(bytes);
             }
         }
-        let lfo = if state.state_version() >= OPERATOR_STATE_VERSION {
-            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..])?
+        let lfo = if state.state_version() >= LFO_STATE_VERSION {
+            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES])?
         } else {
             lfo::LfoSettings::default()
         };
+        let filter = if state.state_version() == OPERATOR_STATE_VERSION {
+            crate::operator_filter::Settings::decode(&state.payload()[LFO_PAYLOAD_BYTES..])?
+        } else {
+            crate::operator_filter::Settings::default()
+        };
         let result = Self {
+            filter,
             fields,
             waveforms,
             tuning,
@@ -502,6 +521,7 @@ impl OperatorSettings {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
         self.lfo.append(&mut payload);
+        self.filter.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -518,17 +538,23 @@ impl OperatorSettings {
     > {
         self.tuning.modes()?;
         self.lfo.validate()?;
+        self.filter.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - OPERATORS - FEEDBACK_COUNT + index]
+            PARAMETERS[PARAMETER_COUNT
+                - FILTER_PARAMETERS
+                - lfo::COUNT
+                - OPERATORS
+                - FEEDBACK_COUNT
+                + index]
                 .validate(ParameterValue::Float(*amount))?;
         }
         for (index, amount) in self.feedback.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - FEEDBACK_COUNT + index]
+            PARAMETERS[PARAMETER_COUNT - FILTER_PARAMETERS - lfo::COUNT - FEEDBACK_COUNT + index]
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -658,6 +684,15 @@ impl OperatorSettings {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FilterVoiceSeed {
+    note: PreparedOperatorNote,
+    age: u64,
+    gate: Option<u64>,
+    previous: [f64; 4],
+    id: u64,
+}
+
 /// Generic Operator control metadata and shared analytic instrument definition.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OperatorMetadata;
@@ -692,6 +727,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.filter.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.lfo.read(parameter) {
             return Ok(value);
         }
@@ -760,6 +798,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.filter.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.lfo.patch(parameter, value) {
             return settings.to_state();
         }
@@ -858,9 +899,9 @@ struct PreparedOperatorInstrument {
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if self.lfo_runtime.is_some() {
-            self.configuration
-                .prepare_lfo_note(pitch, velocity)
+        if let Some(factory) = self.lfo_runtime.as_ref() {
+            factory
+                .prepare_note_for_runtime(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         }
         Ok(())
@@ -900,12 +941,15 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 }
 
-struct PreparedOperatorContext {
+pub(super) struct PreparedOperatorContext {
     configuration: PreparedOperatorConfiguration,
     sine_table: &'static SineTable,
 }
 
 impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn declared_context_bytes(&self) -> usize {
         size_of::<Self>()
     }
@@ -970,3 +1014,6 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
 mod fixed_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod filter_runtime_tests;

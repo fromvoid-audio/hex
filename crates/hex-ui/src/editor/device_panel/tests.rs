@@ -1104,7 +1104,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..12 {
+    for field in 0..10 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -1115,7 +1115,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [2, 5] {
+    for field in [0, 3] {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -1147,178 +1147,29 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let revision = editor.read_with(cx, |view, _| {
         view.state.as_ref().expect("project state").revision
     });
-    let lfo_toggle =
+    let pitch_toggle =
         Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let toggle_bounds = visual
-        .debug_bounds(lfo_toggle)
-        .expect("local filter toggle");
-    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert!(!state.enabled[0], "right-shell toggle updates its UI state");
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
-        let selector = &state.selectors[&operator_panel::preview::Choice::FilterMode];
-        selector
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    // Keep the compact-width layout assertions above, then expose the full
-    // horizontal device rail before interacting with the far-right controls.
-    visual.simulate_resize(size(px(1440.0), px(540.0)));
-    visual.run_until_parked();
-    let wave_selector = Box::leak(
-        format!("operator-preview-{}-selector-0", instrument_id.value()).into_boxed_str(),
-    );
-    let wave_bounds = visual
-        .debug_bounds(wave_selector)
-        .expect("local filter waveform selector");
-    assert!(wave_bounds.origin.x >= px(0.0));
-    assert!(wave_bounds.origin.x + wave_bounds.size.width <= px(1440.0));
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let wave_option = Box::leak(
-        format!(
-            "operator-preview-{}-selector-0-option-0",
-            instrument_id.value()
-        )
-        .into_boxed_str(),
-    );
-    let option_bounds = visual
-        .debug_bounds(wave_option)
-        .expect("filter waveform option");
-    visual.simulate_click(option_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(state.selected[0], 0, "selector changes its local selection");
-        state.selectors[&operator_panel::preview::Choice::FilterMode]
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    let rate_knob =
-        Box::leak(format!("operator-preview-{}-0-knob", instrument_id.value()).into_boxed_str());
-    let rate_value =
-        Box::leak(format!("operator-preview-{}-0-value", instrument_id.value()).into_boxed_str());
-    let rate_bounds = visual
-        .debug_bounds(rate_value)
-        .expect("local filter rate value");
-    let rate_knob_bounds = visual.debug_bounds(rate_knob).expect("local rate knob");
-    assert!(rate_bounds.origin.x + rate_bounds.size.width <= px(1440.0));
-    assert!(rate_knob_bounds.origin.x + rate_knob_bounds.size.width <= px(1440.0));
-    let rate_click = point(
-        rate_bounds.origin.x + rate_bounds.size.width / 2.0,
-        rate_bounds.origin.y + rate_bounds.size.height / 2.0,
-    );
-    visual.simulate_mouse_down(rate_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(rate_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, cx| {
-        assert!(
-            view.device_panel.operator_previews[&instrument_id].controls
-                [&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_editing())
-        );
-    });
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("250");
-    visual.simulate_keystrokes("enter");
+    let bounds = visual
+        .debug_bounds(pitch_toggle)
+        .expect("local pitch toggle");
+    visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        let rendered_rate = view.device_panel.operator_previews[&instrument_id].controls
-            [&operator_panel::preview::Field::FilterFrequency]
-            .entity
-            .read_with(cx, |control, _| control.value());
-        assert_ne!(rendered_rate, 198.0, "micro dial receives keyboard input");
-        assert_ne!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            198.0,
-            "local numeric edit updates its view value"
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(!view.device_panel.operator_previews[&instrument_id].enabled[0]);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
     });
-    let committed_local_rate = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&instrument_id].values
-            [operator_panel::preview::Field::FilterFrequency as usize]
-    });
-    let wave_bounds = visual.debug_bounds(wave_selector).expect("wave selector");
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let rate_bounds = visual
-        .debug_bounds(rate_knob)
-        .expect("local filter rate knob");
-    let rate_start = rate_bounds.center();
-    let rate_moved = point(rate_start.x, rate_start.y - px(12.0));
-    visual.simulate_mouse_down(rate_start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(rate_moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.selected_track = Some(second_track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        assert_eq!(
-            view.device_panel.owner,
-            Some(DevicePanelOwner::Track(second_track))
-        );
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(
-            state.values[operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "owner changes preserve completed local values"
-        );
-        assert!(
-            !state.controls[&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_interacting())
-        );
-        assert!(
-            !state.selectors[&operator_panel::preview::Choice::FilterMode]
-                .entity
-                .read_with(cx, |selector, _| selector.is_open())
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-    });
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "local preview state remains available after returning to its owner"
-        );
-    });
     for operator in 0..4 {
         let row = Box::leak(
             format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
@@ -2511,11 +2362,25 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 control.origin.x + control.size.width <= lfo.origin.x + lfo.size.width - px(4.0)
             );
         }
-        for (title, fields) in [
-            ("filter", vec![0, 1]),
-            ("pitch env", vec![2, 3, 4]),
-            ("global", vec![5, 6, 7]),
-        ] {
+        let filter = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-filter", instrument_id.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        for parameter in [20001, 20002, 20005, 20006] {
+            let control = visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(control.origin.x >= filter.origin.x + px(4.0));
+            assert!(
+                control.origin.x + control.size.width
+                    <= filter.origin.x + filter.size.width - px(4.0)
+            );
+        }
+        for (title, fields) in [("pitch env", vec![0, 1, 2]), ("global", vec![3, 4, 5])] {
             let row = visual
                 .debug_bounds(Box::leak(
                     format!("operator-preview-row-{}-{title}", instrument_id.value())

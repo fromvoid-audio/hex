@@ -9,8 +9,13 @@ waveform choices, not full Operator behavior or proof of Live numerical parity.
 The standalone and registered bounded self-feedback contracts are documented in
 [Operator feedback](operator-feedback.md). Filters, further waveform controls,
 transport-specific behavior and remaining Operator behavior remain separate work.
+The registered Clean carrier filter and its state extension are defined in
+[Operator filter](operator-filter.md).
 
-`hex.instrument.operator`, state version7, owns exactly364 bytes: the original
+`hex.instrument.operator`, state version11, owns exactly400 bytes. Its 36-byte
+filter suffix follows the unchanged version7 prefix described below. State
+versions8–10 remain reserved and are rejected until their own migrations are
+integrated. The version7 prefix owns exactly364 bytes: the original
 224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32
 waveform choices (version2's 240-byte prefix), then four 12-byte tuning records.
 Each tuning record stores a u32 fixed flag, f32 frequency in Hz, and f32 multiplier.

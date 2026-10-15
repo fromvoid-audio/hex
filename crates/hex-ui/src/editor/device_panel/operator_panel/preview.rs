@@ -4,8 +4,8 @@ use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_widgets::{
     DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlEvent, NumericControlKind, NumericScale, NumericSpec, Selector, SelectorChanged,
-    SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
+    NumericControlEvent, NumericControlKind, NumericScale, NumericSpec, Toggle, ToggleChanged,
+    ToggleConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,8 +18,6 @@ const ROW_HEIGHT: f32 = 40.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub(in crate::editor::device_panel) enum Field {
-    FilterFrequency,
-    FilterResonance,
     PitchEnvelope,
     Spread,
     Transpose,
@@ -47,9 +45,7 @@ impl Field {
         matches!(self, Self::Time | Self::Tone | Self::Volume)
     }
 
-    const ALL: [Self; 12] = [
-        Self::FilterFrequency,
-        Self::FilterResonance,
+    const ALL: [Self; 10] = [
         Self::PitchEnvelope,
         Self::Spread,
         Self::Transpose,
@@ -64,8 +60,6 @@ impl Field {
 
     const fn spec(self) -> FieldSpec {
         match self {
-            Self::FilterFrequency => FieldSpec::new("freq", 20.0, 20_000.0, 198.0, "hz", 0, true),
-            Self::FilterResonance => FieldSpec::new("res", 0.0, 100.0, 74.0, "%", 0, false),
             Self::PitchEnvelope => FieldSpec::new("pitch env", -100.0, 100.0, 11.0, "%", 0, false),
             Self::Spread => FieldSpec::new("spread", 0.0, 100.0, 0.0, "%", 0, false),
             Self::Transpose => FieldSpec::new("transpose", -48.0, 48.0, 0.0, "st", 0, false),
@@ -114,46 +108,13 @@ impl FieldSpec {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::editor::device_panel) enum Switch {
-    Filter,
     Pitch,
 }
 
 impl Switch {
     const fn index(self) -> usize {
         match self {
-            Self::Filter => 0,
-            Self::Pitch => 1,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(in crate::editor::device_panel) enum Choice {
-    FilterMode,
-    FilterSlope,
-}
-
-impl Choice {
-    const ALL: [Self; 2] = [Self::FilterMode, Self::FilterSlope];
-
-    const fn index(self) -> usize {
-        match self {
-            Self::FilterMode => 0,
-            Self::FilterSlope => 1,
-        }
-    }
-
-    const fn choices(self) -> &'static [&'static str] {
-        match self {
-            Self::FilterMode => &["clean", "warm", "ms2", "sallen-key"],
-            Self::FilterSlope => &["12", "24"],
-        }
-    }
-
-    const fn default(self) -> usize {
-        match self {
-            Self::FilterMode => 0,
-            Self::FilterSlope => 1,
+            Self::Pitch => 0,
         }
     }
 }
@@ -168,19 +129,12 @@ pub(in crate::editor::device_panel) struct TogglePreview {
     _subscription: gpui::Subscription,
 }
 
-pub(in crate::editor::device_panel) struct SelectorPreview {
-    pub(in crate::editor::device_panel) entity: gpui::Entity<Selector>,
-    _subscription: gpui::Subscription,
-}
-
 pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) controls: HashMap<Field, NumericPreview>,
     pub(in crate::editor::device_panel) toggles: HashMap<Switch, TogglePreview>,
-    pub(in crate::editor::device_panel) selectors: HashMap<Choice, SelectorPreview>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
-    pub(in crate::editor::device_panel) values: [f64; 12],
-    pub(in crate::editor::device_panel) enabled: [bool; 2],
-    pub(in crate::editor::device_panel) selected: [usize; 2],
+    pub(in crate::editor::device_panel) values: [f64; 10],
+    pub(in crate::editor::device_panel) enabled: [bool; 1],
 }
 
 impl Default for State {
@@ -188,10 +142,8 @@ impl Default for State {
         Self {
             controls: HashMap::new(),
             toggles: HashMap::new(),
-            selectors: HashMap::new(),
             values: Field::ALL.map(|field| field.spec().default),
-            enabled: [true; 2],
-            selected: Choice::ALL.map(Choice::default),
+            enabled: [true; 1],
             routing_focus: None,
         }
     }
@@ -211,22 +163,13 @@ pub(super) fn render(
 ) -> Stateful<Div> {
     let rows = [
         super::lfo_summary(view, cx, device, device_view),
-        row(
-            view,
-            cx,
-            device,
-            "filter",
-            Some(Switch::Filter),
-            &[Choice::FilterSlope, Choice::FilterMode],
-            &[Field::FilterFrequency, Field::FilterResonance],
-        ),
+        super::filter_summary(view, cx, device, device_view),
         row(
             view,
             cx,
             device,
             "pitch env",
             Some(Switch::Pitch),
-            &[],
             &[Field::PitchEnvelope, Field::Spread, Field::Transpose],
         ),
         row(
@@ -235,7 +178,6 @@ pub(super) fn render(
             device,
             "global",
             None,
-            &[],
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
@@ -262,7 +204,6 @@ fn row(
     device: hex_project::DeviceId,
     title: &'static str,
     switch: Option<Switch>,
-    choices: &[Choice],
     fields: &[Field],
 ) -> Stateful<Div> {
     let owner = super::context::Owner::capture(view, device);
@@ -281,33 +222,14 @@ fn row(
         .flex()
         .items_center()
         .gap(px(1.0));
-    // Two-dial rows have a selector column. Three-dial rows reserve only
-    // the enable/routing icon, so their labels align directly above the dials.
-    let selector_row = !choices.is_empty();
     let mut left = div()
-        .w(px(if selector_row { 96.0 } else { 44.0 }))
+        .w(px(44.0))
         .flex_shrink_0()
         .h_full()
         .flex()
         .flex_col()
         .justify_center();
-    if selector_row {
-        let mut heading = div().h(px(14.0)).flex().items_center().gap(px(2.0));
-        if let Some(switch) = switch {
-            heading = heading.child(toggle(view, cx, device, switch));
-        }
-        heading = heading.child(
-            div()
-                .text_size(px(8.0))
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(title)),
-        );
-        let mut select_row = div().h(px(14.0)).flex().items_center().gap(px(2.0));
-        for choice in choices {
-            select_row = select_row.child(selector(view, cx, device, *choice));
-        }
-        left = left.child(heading).child(select_row);
-    } else if let Some(switch) = switch {
+    if let Some(switch) = switch {
         left = left.child(toggle(view, cx, device, switch));
     } else {
         left = left.child(routing_link(view, cx, device));
@@ -654,100 +576,6 @@ fn toggle(
         .child(toggle.entity.clone())
 }
 
-fn selector(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: hex_project::DeviceId,
-    choice: Choice,
-) -> Stateful<Div> {
-    let needs_control = !view
-        .device_panel
-        .operator_previews
-        .get(&device)
-        .is_some_and(|state| state.selectors.contains_key(&choice));
-    if needs_control {
-        let selected = view
-            .device_panel
-            .operator_previews
-            .get(&device)
-            .map_or(choice.default(), |state| state.selected[choice.index()]);
-        let config = match SelectorConfig::new(
-            format!(
-                "operator-preview-{}-selector-{}",
-                device.value(),
-                choice.index()
-            ),
-            choice.choices().iter().map(theme::text),
-            selected,
-            control_style(),
-        ) {
-            Ok(config) => config.with_appearance(if choice == Choice::FilterSlope {
-                DiscreteControlAppearance::CompactSegments
-            } else {
-                DiscreteControlAppearance::CompactSelector
-            }),
-            Err(error) => return control_error(error),
-        };
-        let entity = cx.new(|control_cx| {
-            let mut control = Selector::from_config(control_cx, config);
-            control.set_tab_navigation(true, control_cx);
-            control
-        });
-        let key = (device, choice);
-        let subscription = cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
-            if let Some(state) = view.device_panel.operator_previews.get_mut(&key.0) {
-                state.selected[key.1.index()] = event.index;
-            }
-            cx.notify();
-        });
-        view.device_panel
-            .operator_previews
-            .entry(device)
-            .or_default()
-            .selectors
-            .insert(
-                choice,
-                SelectorPreview {
-                    entity,
-                    _subscription: subscription,
-                },
-            );
-    }
-    let Some(selector) = view
-        .device_panel
-        .operator_previews
-        .get(&device)
-        .and_then(|state| state.selectors.get(&choice))
-    else {
-        return control_error("selector unavailable");
-    };
-    let width = if choice == Choice::FilterSlope {
-        42.0
-    } else {
-        46.0
-    };
-    div()
-        .id(ElementId::Name(
-            format!(
-                "operator-preview-{}-selector-{}",
-                device.value(),
-                choice.index()
-            )
-            .into(),
-        ))
-        .debug_selector(move || {
-            format!(
-                "operator-preview-{}-selector-{}",
-                device.value(),
-                choice.index()
-            )
-        })
-        .w(px(width))
-        .h(px(14.0))
-        .flex_shrink_0()
-        .child(selector.entity.clone())
-}
-
 fn control_error(error: impl std::fmt::Display) -> Stateful<Div> {
     div()
         .id("operator-preview-control-error")
@@ -774,26 +602,7 @@ pub(in crate::editor::device_panel) fn retire_removed(
             for control in state.controls.into_values() {
                 control.entity.update(cx, |control, cx| control.cancel(cx));
             }
-            close_selectors(
-                state
-                    .selectors
-                    .into_values()
-                    .map(|selector| selector.entity),
-                cx,
-            );
         }
-    }
-}
-
-fn close_selectors(
-    selectors: impl IntoIterator<Item = gpui::Entity<Selector>>,
-    cx: &mut Context<EditorView>,
-) {
-    for selector in selectors {
-        selector.update(cx, |selector, cx| {
-            selector.set_enabled(false, cx);
-            selector.set_enabled(true, cx);
-        });
     }
 }
 
@@ -815,21 +624,9 @@ pub(in crate::editor::device_panel) fn cancel_interactions(
                 .map(|control| control.entity.clone())
         })
         .collect();
-    let selectors: Vec<_> = view
-        .device_panel
-        .operator_previews
-        .values()
-        .flat_map(|state| {
-            state
-                .selectors
-                .values()
-                .map(|selector| selector.entity.clone())
-        })
-        .collect();
     for control in controls {
         control.update(cx, |control, cx| control.cancel(cx));
     }
-    close_selectors(selectors, cx);
 }
 
 pub(in crate::editor::device_panel) fn cancel_all(
@@ -841,13 +638,6 @@ pub(in crate::editor::device_panel) fn cancel_all(
         for control in state.controls.into_values() {
             control.entity.update(cx, |control, cx| control.cancel(cx));
         }
-        close_selectors(
-            state
-                .selectors
-                .into_values()
-                .map(|selector| selector.entity),
-            cx,
-        );
     }
 }
 
@@ -865,9 +655,6 @@ mod tests {
             if spec.logarithmic {
                 assert!(spec.min > 0.0);
             }
-        }
-        for choice in Choice::ALL {
-            assert!(choice.default() < choice.choices().len());
         }
     }
 }

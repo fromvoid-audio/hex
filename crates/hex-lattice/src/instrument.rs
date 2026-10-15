@@ -57,6 +57,10 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
+    /// Optional provider identity for an explicitly authorized analytic-to-mutable import.
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     /// Total bytes owned by this context, including allocations reachable only
     /// through it. The host checks this against its finite per-context limit.
     fn declared_context_bytes(&self) -> usize;

@@ -45,9 +45,9 @@ pub use instrument::{
     PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_runtime::{
-    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentClock,
-    NativeInstrumentEvent, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
+    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentAnalyticSeed,
+    NativeInstrumentClock, NativeInstrumentEvent, NativeInstrumentRuntimeError,
+    NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
     PreparedMutableInstrumentRuntime,
 };
 
