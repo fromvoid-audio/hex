@@ -11,7 +11,7 @@ fn fixture(
     let (p, b) = super::tests::fixture(clips);
     let mut snapshot = p.snapshot();
     if nonneutral {
-        for c in &mut snapshot.tracks[0].clips {
+        for c in snapshot.tracks[0].audio_clips_mut().unwrap() {
             c.source_offset = 1;
             c.source_length = 4;
             c.looping = true;
