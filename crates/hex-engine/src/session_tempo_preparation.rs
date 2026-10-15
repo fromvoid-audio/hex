@@ -1,6 +1,7 @@
-//! Persistent canonical-tempo assembly, not a prepared inventory or admission.
+//! Persistent prepared/periodic tempo assembly, not a prepared inventory or admission.
 //! The canonical destination stays private until full inventory assembly exists.
-use crate::{AudioStorageError, PreparedTempoMap};
+use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError};
+use crate::{AudioStorageError, MidiTiming, PreparedTempoMap};
 use hex_project::{Project, TempoMap, TempoMapCopyCustody, TempoMapCopyError};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -8,9 +9,13 @@ pub struct SessionTempoCapacity {
     pub copy_point_capacity: usize,
     pub copy_prefix_capacity: usize,
     pub copy_backing_bytes: usize,
+    /// Validated canonical intermediary, not a completed graph.
     pub completed_point_capacity: usize,
     pub completed_prefix_capacity: usize,
     pub completed_backing_bytes: usize,
+    pub prepared_point_capacity: usize,
+    pub prepared_prefix_capacity: usize,
+    pub prepared_backing_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     /// Independent unresolved exclusive allocations; transfer changes their
     /// owning location, not their lifetime status or data charge.
@@ -20,6 +25,7 @@ impl SessionTempoCapacity {
     pub(super) fn bytes(self) -> Result<usize, AudioStorageError> {
         self.copy_backing_bytes
             .checked_add(self.completed_backing_bytes)
+            .and_then(|n| n.checked_add(self.prepared_backing_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -30,6 +36,16 @@ pub(super) struct SessionTempoConstruction {
     // Do not call legacy PreparedTempoMap::prepare with its consumed owner.
     pub(super) canonical: Option<TempoMap>,
     max_micro_bpm: u32,
+    expected_rate: u32,
+    loop_region: Option<hex_project::LoopRegion>,
+    pub(super) prepared: Option<PreparedTempoMap>,
+    pub(super) periodic: Option<PreparedPeriodicSessionTempo>,
+    pub(super) periodic_error: Option<PreparedTempoError>,
+    pub(super) source_admission_max_micro_bpm: u64,
+    #[cfg(test)]
+    pub(super) fail_before_install: bool,
+    #[cfg(test)]
+    pub(super) panic_after_install: bool,
     #[cfg(test)]
     pub(super) fail_after_copy: bool,
     #[cfg(test)]
@@ -37,7 +53,7 @@ pub(super) struct SessionTempoConstruction {
 }
 impl SessionTempoConstruction {
     pub(super) fn reserve(&mut self, project: &Project) -> Result<(), AudioStorageError> {
-        if self.canonical.is_some() {
+        if self.canonical.is_some() || self.prepared.is_some() {
             return Err(AudioStorageError::Capacity);
         }
         let maximum =
@@ -47,6 +63,8 @@ impl SessionTempoConstruction {
         // Both private destinations were vacant before copying. No canonical
         // owner has moved yet; all byte/peak checks still precede bank movement.
         self.max_micro_bpm = maximum;
+        self.expected_rate = project.sample_rate();
+        self.loop_region = project.loop_region();
         #[cfg(test)]
         {
             assert!(
@@ -65,12 +83,59 @@ impl SessionTempoConstruction {
         if self.max_micro_bpm == 0 {
             return Err(AudioStorageError::SourceMismatch);
         }
-        self.copy.transfer_into(&mut self.canonical).map_err(error)
+        if self.prepared.is_some()
+            || self.canonical.is_some()
+            || self.copy.phase() != hex_project::TempoMapCopyPhase::Validated
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.copy
+            .transfer_into(&mut self.canonical)
+            .map_err(error)?;
+        #[cfg(test)]
+        if self.fail_before_install {
+            return Err(AudioStorageError::Allocation);
+        }
+        // Validation errors retain the canonical owner in its persistent slot.
+        // Never pass it to the legacy consuming fallible constructor.
+        PreparedTempoMap::install_owned_on_control(
+            &mut self.canonical,
+            &mut self.prepared,
+            self.expected_rate,
+        )?;
+        #[cfg(test)]
+        assert!(!self.panic_after_install, "persistent prepared tempo panic");
+        let map = self
+            .prepared
+            .as_ref()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        let periodic = self
+            .loop_region
+            .filter(|region| region.enabled())
+            .map(|region| PreparedPeriodicSessionTempo::prepare(map, region));
+        // Match legacy semantics: invalid periodic conversion remains explicit,
+        // while source admission uses canonical tempo rather than fake success.
+        self.periodic_error = periodic.and_then(Result::err);
+        self.periodic = periodic.and_then(Result::ok);
+        self.source_admission_max_micro_bpm = self
+            .periodic
+            .map_or(u64::from(map.max_micro_bpm()), |cycle| {
+                cycle.view(map).max_micro_bpm()
+            });
+        Ok(())
     }
     pub(super) fn incomplete(&self) -> bool {
         self.copy.phase() == hex_project::TempoMapCopyPhase::Incomplete
     }
     pub(super) fn cleanup(&mut self) -> Result<(), AudioStorageError> {
+        if self.prepared.is_some() {
+            if self.canonical.is_some()
+                || self.copy.phase() != hex_project::TempoMapCopyPhase::Transferred
+            {
+                return Err(AudioStorageError::Capacity);
+            }
+            PreparedTempoMap::return_canonical_on_control(&mut self.prepared, &mut self.canonical)?;
+        }
         if self.canonical.is_some() {
             self.copy
                 .clean_transferred_on_control(&mut self.canonical)
@@ -79,12 +144,46 @@ impl SessionTempoConstruction {
             self.copy.clean_on_control().map_err(error)?;
         }
         self.max_micro_bpm = 0;
+        self.expected_rate = 0;
+        self.loop_region = None;
+        self.periodic = None;
+        self.periodic_error = None;
+        self.source_admission_max_micro_bpm = 0;
         Ok(())
     }
     pub(super) fn observe(
         &self,
         current_growth: bool,
     ) -> Result<SessionTempoCapacity, AudioStorageError> {
+        // Exhaustive field inventory: all three possible map owners are visited
+        // below. Remaining production fields are inline Copy metadata. Fault
+        // controls are test-only booleans; no added owner may silently vanish.
+        let Self {
+            copy: _,
+            canonical: _,
+            prepared: _,
+            max_micro_bpm: _,
+            expected_rate: _,
+            loop_region: _,
+            periodic: _,
+            periodic_error: _,
+            source_admission_max_micro_bpm: _,
+            #[cfg(test)]
+                fail_before_install: _,
+            #[cfg(test)]
+                panic_after_install: _,
+            #[cfg(test)]
+                fail_after_copy: _,
+            #[cfg(test)]
+                panic_after_copy: _,
+        } = self;
+        // Scalar metadata never authenticates ownership. Impossible combinations
+        // remain Unknown; a partially installed owner may still be observed.
+        if (self.periodic.is_some() && self.periodic_error.is_some())
+            || (self.source_admission_max_micro_bpm != 0 && self.prepared.is_none())
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         let copy = self.copy.capacity();
         let mut report = SessionTempoCapacity {
             copy_point_capacity: copy.layout.point_capacity(),
@@ -105,6 +204,14 @@ impl SessionTempoConstruction {
             report.completed_point_capacity = layout.point_capacity();
             report.completed_prefix_capacity = layout.prefix_capacity();
             report.completed_backing_bytes = layout
+                .checked_backing_bytes()
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        if let Some(map) = &self.prepared {
+            let layout = map.canonical_allocation_layout();
+            report.prepared_point_capacity = layout.point_capacity();
+            report.prepared_prefix_capacity = layout.prefix_capacity();
+            report.prepared_backing_bytes = layout
                 .checked_backing_bytes()
                 .ok_or(AudioStorageError::Overflow)?;
         }
@@ -133,6 +240,8 @@ impl SessionTempoConstruction {
             TempoLocation::CopyPrefixes,
             TempoLocation::CompletedPoints,
             TempoLocation::CompletedPrefixes,
+            TempoLocation::PreparedPoints,
+            TempoLocation::PreparedPrefixes,
         ] {
             let owner = TempoOwner {
                 anchor: self,
@@ -151,6 +260,8 @@ enum TempoLocation {
     CopyPrefixes,
     CompletedPoints,
     CompletedPrefixes,
+    PreparedPoints,
+    PreparedPrefixes,
 }
 /// Lifetime-bound exact owning field/charge location, not a persistent address,
 /// data-content identity, or disposal/retirement receipt. A partial visitor sink
@@ -167,6 +278,11 @@ impl TempoOwner<'_> {
             .canonical
             .as_ref()
             .map(TempoMap::owned_allocation_layout);
+        let prepared = self
+            .anchor
+            .prepared
+            .as_ref()
+            .map(PreparedTempoMap::canonical_allocation_layout);
         let bytes = match self.location {
             TempoLocation::CopyPoints => copy.point_bytes(),
             TempoLocation::CopyPrefixes => copy.prefix_bytes(),
@@ -175,6 +291,12 @@ impl TempoOwner<'_> {
             }
             TempoLocation::CompletedPrefixes => {
                 completed.map_or(Some(0), |layout| layout.prefix_bytes())
+            }
+            TempoLocation::PreparedPoints => {
+                prepared.map_or(Some(0), |layout| layout.point_bytes())
+            }
+            TempoLocation::PreparedPrefixes => {
+                prepared.map_or(Some(0), |layout| layout.prefix_bytes())
             }
         };
         bytes.ok_or(AudioStorageError::Overflow)

@@ -22,20 +22,20 @@ fn completed_canonical_owner_and_timing_are_exact_and_spare_backings_survive_ban
     let tempo = report.tempo;
     assert_eq!(tempo.copy_backing_bytes, 0);
     assert_eq!(tempo.unresolved_owned_allocations, 2);
-    assert!(tempo.completed_backing_bytes > 0);
-    let actual = custody.tempo.canonical.as_ref().unwrap();
-    assert_eq!(actual, project.tempo_map());
+    assert!(tempo.prepared_backing_bytes > 0);
+    let actual = custody.tempo.prepared.as_ref().unwrap();
+    assert!(actual.matches_canonical(project.tempo_map()));
     assert_eq!(
-        actual.owned_allocation_layout().checked_backing_bytes(),
-        Some(tempo.completed_backing_bytes)
+        actual.canonical_allocation_layout().checked_backing_bytes(),
+        Some(tempo.prepared_backing_bytes)
     );
     for quarter in 0..40 {
         let beat = hex_project::BeatTime::from_quarters(quarter).unwrap();
         let frame = project.tempo_map().beat_to_frame(beat).unwrap();
         assert_eq!(actual.beat_to_frame(beat), Ok(frame));
         assert_eq!(
-            actual.frame_to_beat(frame),
-            project.tempo_map().frame_to_beat(frame)
+            actual.frame_to_beat(frame).unwrap(),
+            project.tempo_map().frame_to_beat(frame).unwrap()
         );
     }
     {
@@ -54,7 +54,7 @@ fn completed_canonical_owner_and_timing_are_exact_and_spare_backings_survive_ban
                 .iter()
                 .map(|owner| owner.bytes().unwrap())
                 .sum::<usize>(),
-            tempo.completed_backing_bytes
+            tempo.prepared_backing_bytes
         );
         let mut other = Vec::new();
         custody
@@ -100,15 +100,20 @@ fn completed_canonical_owner_and_timing_are_exact_and_spare_backings_survive_ban
         custody.tempo.reserve(&project),
         Err(AudioStorageError::Capacity)
     );
-    assert_eq!(
-        custody.tempo.canonical.as_ref().unwrap(),
-        project.tempo_map()
+    assert!(
+        custody
+            .tempo
+            .prepared
+            .as_ref()
+            .unwrap()
+            .matches_canonical(project.tempo_map())
     );
     assert!(custody.cancel(&token));
     custody.cleanup_on_control();
     assert!(custody.tempo.canonical.is_none());
+    assert!(custody.tempo.prepared.is_none());
     let retained = custody.tempo.observe(false).unwrap();
-    assert_eq!(retained.copy_backing_bytes, tempo.completed_backing_bytes);
+    assert_eq!(retained.copy_backing_bytes, tempo.prepared_backing_bytes);
     assert_eq!(retained.completed_backing_bytes, 0);
     assert_eq!(retained.unresolved_owned_allocations, 2); // not lifetime closure
     let bank = custody.recover_on_control(&token).unwrap();
@@ -119,8 +124,8 @@ fn completed_canonical_owner_and_timing_are_exact_and_spare_backings_survive_ban
     let reused = custody.capacity_report();
     assert_eq!(reused.tempo.previous_growth_backing_bytes, 0);
     assert_eq!(
-        reused.tempo.completed_backing_bytes,
-        tempo.completed_backing_bytes
+        reused.tempo.prepared_backing_bytes,
+        tempo.prepared_backing_bytes
     );
     assert!(custody.cancel(&next));
     custody.cleanup_on_control();
@@ -131,7 +136,7 @@ fn completed_canonical_owner_and_timing_are_exact_and_spare_backings_survive_ban
         .unwrap();
     assert_eq!(
         custody.capacity_report().tempo.copy_backing_bytes,
-        tempo.completed_backing_bytes
+        tempo.prepared_backing_bytes
     );
     assert!(custody.cancel(&arrangement));
     custody.cleanup_on_control();
@@ -206,5 +211,145 @@ fn tempo_panic_leaves_actual_persistent_buffers_and_original_bank_without_retry(
     assert!(custody.first_panic.is_some());
     eprintln!(
         "hex Session preparation evidence: tempo_construction_panic; supported-controls=completed; persistent-payload=1"
+    );
+}
+
+#[test]
+fn actual_prepared_and_periodic_metadata_match_legacy_for_enabled_disabled_and_invalid_loops() {
+    if !super::session_source_tests::supported("tempo_prepared_periodic_assembly") {
+        return;
+    }
+    use crate::{MidiTiming, prepared_tempo::PreparedPeriodicSessionTempo};
+    use hex_project::{BeatTime, Command, Editor, Tempo};
+    for (start, end, enabled) in [
+        (1_237, 91_111, true),
+        (1_237, 91_111, false),
+        (u64::MAX - 2, u64::MAX - 1, true),
+    ] {
+        let (project, bank, source_token) = super::session_source_tests::fixture(false);
+        let pointer = bank.sources.as_ptr();
+        let capacity = bank.sources.capacity();
+        let mut editor = Editor::new(project, 32).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(3).unwrap(),
+                tempo: Tempo::new(87_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start,
+                end,
+                enabled,
+            })
+            .unwrap();
+        let project = editor.project();
+        let legacy =
+            crate::PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())
+                .unwrap();
+        let expected = project
+            .loop_region()
+            .filter(|region| region.enabled())
+            .map(|region| PreparedPeriodicSessionTempo::prepare(&legacy, region));
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = begin(&mut custody, project, bank).ok().unwrap();
+        let tempo = &custody.tempo;
+        assert!(tempo.canonical.is_none());
+        let prepared = tempo.prepared.as_ref().unwrap();
+        assert!(prepared.matches_canonical(project.tempo_map()));
+        assert_eq!(tempo.periodic, expected.and_then(Result::ok));
+        assert_eq!(tempo.periodic_error, expected.and_then(Result::err));
+        let maximum = tempo
+            .periodic
+            .map_or(u64::from(legacy.max_micro_bpm()), |cycle| {
+                cycle.view(&legacy).max_micro_bpm()
+            });
+        assert_eq!(tempo.source_admission_max_micro_bpm, maximum);
+        if enabled && start == u64::MAX - 2 {
+            assert!(tempo.periodic_error.is_some());
+            assert!(tempo.periodic.is_none());
+        } else if enabled {
+            let actual = tempo.periodic.unwrap().view(prepared);
+            let expected = tempo.periodic.unwrap().view(&legacy);
+            for frame in [0, 1, start, end, end + 1, end * 2] {
+                assert_eq!(actual.frame_to_beat(frame), expected.frame_to_beat(frame));
+                assert_eq!(
+                    actual.beat_lower_bound_for_frame(frame),
+                    expected.beat_lower_bound_for_frame(frame)
+                );
+            }
+        } else {
+            assert!(tempo.periodic.is_none());
+            assert!(tempo.periodic_error.is_none());
+        }
+        let report = custody.capacity_report().tempo;
+        assert_eq!(report.completed_backing_bytes, 0);
+        assert_eq!(report.copy_backing_bytes, 0);
+        assert!(report.prepared_backing_bytes > 0);
+        assert_eq!(report.unresolved_owned_allocations, 2);
+        assert!(custody.cancel(&token));
+        custody.cleanup_on_control();
+        assert!(custody.tempo.prepared.is_none());
+        assert!(custody.tempo.periodic.is_none());
+        assert!(custody.tempo.periodic_error.is_none());
+        assert_eq!(custody.tempo.source_admission_max_micro_bpm, 0);
+        assert_eq!(
+            custody.tempo.observe(false).unwrap().copy_backing_bytes,
+            report.prepared_backing_bytes
+        );
+        let bank = custody.recover_on_control(&token).unwrap();
+        assert_eq!(bank.sources.as_ptr(), pointer);
+        assert_eq!(bank.sources.capacity(), capacity);
+        assert!(bank.source_view(&source_token).is_ok());
+    }
+    eprintln!(
+        "hex Session preparation evidence: tempo_prepared_periodic_assembly; supported-controls=completed; loop-cases=3; unresolved-allocations=2"
+    );
+}
+#[test]
+fn canonical_install_refusal_and_post_install_panic_retain_actual_owners_and_bank() {
+    if !super::session_source_tests::supported("tempo_prepared_failure_custody") {
+        return;
+    }
+    let (project, bank, source_token) = super::session_source_tests::fixture(false);
+    let pointer = bank.sources.as_ptr();
+    let capacity = bank.sources.capacity();
+    let reservation = bank.reservation;
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    custody.tempo.fail_before_install = true;
+    let token = begin(&mut custody, &project, bank).ok().unwrap();
+    assert_eq!(custody.phase(), AudioPreparationPhase::Cleaning);
+    assert!(custody.tempo.canonical.is_some());
+    assert!(custody.tempo.prepared.is_none());
+    let report = custody.tempo.observe(false).unwrap();
+    assert!(report.completed_backing_bytes > 0);
+    assert_eq!(report.prepared_backing_bytes, 0);
+    assert_eq!(report.unresolved_owned_allocations, 2);
+    custody.cleanup_on_control();
+    let bank = custody.recover_on_control(&token).unwrap();
+    assert_eq!(bank.sources.as_ptr(), pointer);
+    assert_eq!(bank.sources.capacity(), capacity);
+    assert_eq!(bank.reservation, reservation);
+    assert!(bank.source_view(&source_token).is_ok());
+    custody.tempo.fail_before_install = false;
+    custody.tempo.panic_after_install = true;
+    let token = begin(&mut custody, &project, bank).ok().unwrap();
+    assert_eq!(custody.phase(), AudioPreparationPhase::FailedIncomplete);
+    assert!(custody.tempo.canonical.is_none());
+    assert!(custody.tempo.prepared.is_some());
+    let before = custody.tempo.observe(false).unwrap();
+    assert_eq!(before.copy_backing_bytes, 0);
+    assert_eq!(before.completed_backing_bytes, 0);
+    assert!(before.prepared_backing_bytes > 0);
+    assert_eq!(before.unresolved_owned_allocations, 2);
+    assert!(custody.first_panic.is_some());
+    assert_eq!(custody.bank.as_ref().unwrap().sources.as_ptr(), pointer);
+    custody.cleanup_on_control();
+    assert!(!custody.cancel(&token));
+    assert!(custody.recover_on_control(&token).is_none());
+    assert_eq!(custody.tempo.observe(false).unwrap(), before);
+    assert!(custody.first_panic.is_some());
+    eprintln!(
+        "hex Session preparation evidence: tempo_prepared_failure_custody; supported-controls=completed; persistent-payload=1"
     );
 }

@@ -380,11 +380,11 @@ impl AudioPreparationCustody {
                 if include_session {
                     // Infallible ownership-location shift; totals were measured
                     // before bank movement, and the same two buffers moved.
-                    self.capacity.tempo.completed_point_capacity =
+                    self.capacity.tempo.prepared_point_capacity =
                         self.capacity.tempo.copy_point_capacity;
-                    self.capacity.tempo.completed_prefix_capacity =
+                    self.capacity.tempo.prepared_prefix_capacity =
                         self.capacity.tempo.copy_prefix_capacity;
-                    self.capacity.tempo.completed_backing_bytes =
+                    self.capacity.tempo.prepared_backing_bytes =
                         self.capacity.tempo.copy_backing_bytes;
                     self.capacity.tempo.copy_point_capacity = 0;
                     self.capacity.tempo.copy_prefix_capacity = 0;

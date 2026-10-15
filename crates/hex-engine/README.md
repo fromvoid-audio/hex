@@ -544,9 +544,9 @@ failed partial sinks must be discarded. Cancellation returns buffers to explicit
 copy custody and clears only scalar contents, retaining and charging spare backing
 capacity even across later Arrangement-only requests. Panic retains partial
 buffers and the first payload without retry or original-bank consumption.
-This is canonical-tempo assembly only: no complete PreparedTempoMap/inventory or
-publication is produced. Periodic tempo installation, complete prepared inventory assembly, cross-ledger/runtime accounting
-and lifetime closure remain unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.
+This remains preparation-only: no complete inventory or publication is produced.
+Complete prepared inventory assembly, cross-ledger/runtime accounting and lifetime
+closure remain unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.
 
 The opt-in Session stage also creates the mandatory sine table and strictly empty
 shared-context table inside persistent custody. The audited sine payload is only
@@ -571,6 +571,26 @@ reservation pressure, not a changed graph/project/domain/component cap.
 
 These are unresolved storage/handle observations for fixed inventory metadata,
 not full inventory assembly, aggregate completeness, callback admission or
-retirement closure. Periodic tempo, final prepared containers/bindings, graph and
+retirement closure. Final prepared containers/bindings, graph and
 runtime/caller cross-ledger coverage, and lifetime contracts remain unfinished.
 The legacy report's Unknown reasons and require_complete refusal are unchanged.
+
+Tempo assembly now installs the retained canonical buffers into a private actual
+PreparedTempoMap destination. A private control-only helper validates by borrow
+and checks destination vacancy before taking the source; refusal preserves the
+original slot/pointers. Its successful commit moves only the canonical owner and
+scalar maximum. The preparation stage never uses the legacy consuming fallible
+constructor. Periodic Session metadata/error and admission-rate metadata use the
+same existing conversion kernel and fallback semantics as the legacy inventory:
+failed periodic conversion remains an explicit error with canonical timing,
+not a manufactured valid cycle. No transport, callback or clock behavior changes.
+
+Capacity/owner observation distinguishes the copy buffers, temporary canonical
+slot and actual prepared-map slot, charging the two data allocations only at their
+current owning locations. All wrapper, periodic, error and scalar headers are in
+the containing custodian size once; periodic metadata has no heap owner. Actual
+normal cancellation returns the original buffers through the persistent canonical
+slot to retained copy custody before bank recovery. Failure before installation
+retains that slot; panic after installation retains the actual prepared owner,
+remaining graph owners, bank and first payload without retry. These observations
+do not close either allocation obligation or complete aggregate admission.
