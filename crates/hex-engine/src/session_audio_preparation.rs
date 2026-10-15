@@ -53,6 +53,15 @@ struct CellSlot {
     #[cfg(test)]
     probe: Option<super::audio_preparation::DropProbe>,
 }
+/// Private nonowning reference to exactly one persistent source-handle row.
+/// No Clone/public scalar construction or lifetime-closure authority.
+pub(super) struct SessionAudioBinding {
+    index: usize,
+    handle: u64,
+    track: hex_project::TrackId,
+    scene: hex_project::SceneId,
+    clip: hex_project::ClipId,
+}
 #[derive(Default)]
 pub(super) struct SessionSourceConstruction {
     cells: Vec<CellSlot>,
@@ -72,6 +81,46 @@ pub(super) struct SessionSourceConstruction {
     pub(super) fail_name_reserve: Option<usize>,
 }
 impl SessionSourceConstruction {
+    pub(super) fn binding_for(
+        &self,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        clip: hex_project::ClipId,
+    ) -> Result<SessionAudioBinding, AudioStorageError> {
+        let index = self
+            .cells
+            .iter()
+            .position(|row| row.track == track && row.scene == scene && row.clip == clip)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(SessionAudioBinding {
+            index,
+            handle: self.cells[index].handle,
+            track,
+            scene,
+            clip,
+        })
+    }
+    pub(super) fn binding_matches(
+        &self,
+        binding: &SessionAudioBinding,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        installed: bool,
+    ) -> bool {
+        binding.track == track
+            && binding.scene == scene
+            && self.cells.get(binding.index).is_some_and(|row| {
+                row.handle == binding.handle
+                    && row.track == binding.track
+                    && row.scene == binding.scene
+                    && row.clip == binding.clip
+                    && (!installed
+                        || row
+                            .owner
+                            .as_ref()
+                            .is_some_and(|owner| owner.handle == binding.handle))
+            })
+    }
     pub(super) fn retained_capacity(&self) -> Result<SessionSourceCapacity, AudioStorageError> {
         let mut report = SessionSourceCapacity {
             cell_capacity: self.cells.capacity(),

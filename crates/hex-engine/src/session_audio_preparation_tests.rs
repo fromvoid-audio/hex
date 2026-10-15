@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-fn supported(test: &str) -> bool {
+pub(super) fn supported(test: &str) -> bool {
     match OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8]) {
         Ok(_) => {
             eprintln!("hex Session preparation evidence: {test}; branch=supported-constructor");
@@ -17,7 +17,9 @@ fn supported(test: &str) -> bool {
         }
     }
 }
-fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs, AudioSourceToken) {
+pub(super) fn fixture(
+    streamed: bool,
+) -> (hex_project::Project, OwnedAudioInputs, AudioSourceToken) {
     use hex_project::{Command, Created, Editor};
     let (project, bank) = super::tests::fixture(1);
     let track = project.tracks()[0].id();

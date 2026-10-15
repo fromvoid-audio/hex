@@ -519,3 +519,20 @@ and normally complete before original-bank recovery. Metadata/data charges stay
 retained through cleanup; no lifetime-closed fact is emitted. This is still a
 source/name compiler stage, not complete scene/Stop/index/preview/tempo/template
 inventory, PreparedRevision accounting, or a renderable Session publication.
+
+The same opt-in custody now also constructs ordinary Session structure: scene
+and track names/scalar mix metadata, Audio/Stop cells, track indices, and sorted
+scene-cell indices/ranges (including empty scenes). Each Audio cell binds the
+private exact source-handle row; identical content or another custodian does not
+substitute for that binding. Every vector backing and independent String backing
+has a control-borrowed actual owner plus private charge location. Capacity reports
+use owning private element sizes, actual returned capacities and checked growth
+overlap; inline headers are included only in their parent storage. These are
+unresolved exclusive-allocation observations, not global admission/retirement
+authority. A failed visitor requires discarding its partial sink. Names construct
+directly in persistent fields, become Pending before disposal, and are normally
+disposed before original-bank recovery; panic retains remaining owners/payload
+without retry. Empty retained backings remain charged on subsequent requests.
+Tempo/periodic data, mandatory sine/shared-context owners, complete prepared
+inventory assembly, cross-ledger/runtime accounting and lifetime closure remain
+unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.

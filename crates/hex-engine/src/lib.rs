@@ -16,11 +16,13 @@ mod audio_input_storage;
 mod audio_only_inputs;
 mod audio_preparation;
 mod session_audio_preparation;
+mod session_structure_preparation;
 pub use audio_preparation::{
     AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken,
 };
 pub use session_audio_preparation::SessionSourceCapacity;
+pub use session_structure_preparation::SessionStructureCapacity;
 mod native_device_view;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
