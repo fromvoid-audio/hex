@@ -192,6 +192,9 @@ struct MutableFixtureRuntime {
     key: u32,
     level: f32,
     voices: [MutableFixtureVoice; 64],
+    // Real inline state above the former 4 KiB instrument cap. All mutable
+    // publication/render/rollback/tail probes below exercise its full copy.
+    history: [u8; 8192],
 }
 
 impl hex_lattice_contract::NativeDeviceMetadata for MutableFixtureDefinition {
@@ -302,6 +305,7 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
             key: self.level.to_bits(),
             level: self.level,
             voices: [MutableFixtureVoice::default(); 64],
+            history: [0; 8192],
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -413,6 +417,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
+            self.history = old.history;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {

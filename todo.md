@@ -7,8 +7,37 @@ bounded full-slice cleanup. Both focused regressions reproduced before repair.
 Continuation (11) and capture (12) tests pass on Linux/Rust1.94 with the default
 Rust test stack. All 137 audio allocation-feature tests pass. A two-output
 release microbenchmark reduces median capture time from 6.169 to 3.816 µs;
-`docs/performance.md` records its workload and limits. Final full local CI is
-pending; native listening and physical deadline acceptance remain separate.
+`docs/performance.md` records its workload and limits. All 16 full local-CI
+stages passed on clean bf3c5c8. Current main d7915f8 is integrated, retaining
+host input/output gain and aggregate instrument-memory admission changes; only
+this file and performance notes required conflict resolution, preserving both
+histories. Fresh full CI is required on the integrated candidate before merge;
+native listening and physical deadline acceptance remain separate.
+
+## streaming source/provider matrix — pulse2536, 15 october 2026
+
+Planning-only [matrix](docs/streaming-source-support-matrix.md) maps every
+live #24 acceptance criterion, public source/provider class, constructor and
+ownership/accounting gap to existing evidence, missing source, native tests or
+explicit product decisions. It preserves #16/#2162/#2164/#2165/#2229 source work
+and the #2537–2546 decomposition. Exact published PR177 source is inspected
+separately from PR231's older intake base; unpublished root WIP remains unverified.
+Documentation link/path/claim and whitespace review are the applicable checks.
+The user subsequently authorized its documentation-only PR231 merge, subject to
+required exact-source local CI. Runtime implementation, native delivery and
+full streaming completion remain open; #24's review holds are preserved.
+
+## CLAP admission contract — 15 october 2026
+
+Pulse #2523 / PR218 defines the [foreign-module admission and containment
+contract](docs/clap-admission.md): a proposed finite macOS arm64 offline guest
+profile, byte custody, filesystem/network/IPC authority, descendant/resource
+limits, cleanup/refusal states and eleven qualification canaries. The foreign
+allowlist remains empty. No plugin was loaded and no native containment evidence
+is claimed. PR199/#20 and PR193/#21 remain canonical frozen implementation
+history; compiler/SDK notices and eight ignored Mac fixture tests remain separate
+gates. Documentation validation and required local-CI results are recorded with
+the exact PR candidate in Pulse; this entry is not a check-pass assertion.
 
 ## device chain pan and bottom navigator — 13 october 2026
 
@@ -2539,3 +2568,25 @@ Mac visual/drag/hover/slow-attack/listening/save-reopen acceptance remains user-
 Pulse issue intake is currently blocked: the live create_ticket endpoint requires
 request_id but the installed connector does not transmit that field. No ticket
 creation is claimed; the focused PR and this dated evidence retain source scope.
+
+14 October 2026 — device gain follow-up: both meter wells adjust persisted host
+gain and reset on double-click. Gain and unity markers accompany live peak fills.
+Audible meter handles survive preview/canonical handoffs without clearing the
+display. Regression coverage includes pre/post DSP levels, bypass, input/output
+undo, schema-19 loading and readout updates during a held pointer press. Native
+Mac pointer/paint/listening acceptance remains user-owned. Pulse discovery is
+blocked by list_projects/list_tags server errors; no issue update is claimed.
+
+## 15 October 2026 — variable-size instrument memory admission (Pulse2589 / PR242)
+
+User authorized replacing the effect-derived per-instrument 4 KiB ceiling with
+declared requirements and aggregate accounting. Mutable pairs can now exceed
+8 KiB within the unchanged combined 2 MiB/256-instance active budget; retained
+tails keep their independent 2 MiB cap. Effect/Return per-twin, voice/event,
+retarget-proof, ledger and checkpoint limits remain separate. Tests exercise
+actual larger owned buffers, exact aggregate/tail boundaries, construction-free
+refusal, PCM/rollback/history/checkpoint continuity and larger callback copies.
+A failed-before regression and optimized component measurements are retained in
+`artifacts/instrument-memory-budget/`; see docs/performance.md. Full exact-source
+CI and native delivery results belong in the linked PR/Pulse evidence. This does
+not complete Operator filter2326, higher-polyphony2226 or scalability2108.

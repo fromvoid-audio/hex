@@ -1041,7 +1041,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             format!(
                 "device-{}-parameter-{}-{side}-meter",
                 instrument_id.value(),
-                hex_engine::DEVICE_OUTPUT_GAIN.id.value()
+                if side == "input" {
+                    hex_engine::DEVICE_INPUT_GAIN.id.value()
+                } else {
+                    hex_engine::DEVICE_OUTPUT_GAIN.id.value()
+                }
             )
             .into_boxed_str(),
         );

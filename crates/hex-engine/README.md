@@ -2,6 +2,12 @@
 
 ## Purpose
 
+Mutable instruments declare their own fixed runtime storage; they are not
+limited by the effect-only 4 KiB per-twin policy. Both copies draw from the
+existing combined 2 MiB/256-instance active DSP budget and independently bounded
+retained-tail bank. Checkpoint/preroll accounting charges the full declaration
+and host ledgers. See [instrument admission](../../docs/lattice-instruments.md#variable-size-mutable-runtime-admission).
+
 Own musical state, typed playback commands, timing, and deterministic rendering.
 
 ## Dependencies

@@ -188,7 +188,8 @@ pub trait NativeProcessorAudition: Send {
 
 /// Maximum admitted stateful instances in one runtime bank.
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
-/// Maximum control-declared storage for one runtime twin.
+/// Maximum control-declared storage for one effect runtime twin. Mutable
+/// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
@@ -250,6 +251,7 @@ impl fmt::Debug for PreparedProcessorInstance {
 struct RuntimeEntry {
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
+    input_gain: f32,
     output_gain: f32,
     owner: ProcessorChainOwner,
     device_id: u64,
@@ -324,6 +326,10 @@ impl NativeRuntimeChain {
             entries.push(RuntimeEntry {
                 meter: instance.meter,
                 metering: false,
+                input_gain: instance
+                    .configuration
+                    .as_ref()
+                    .map_or(1.0, |state| state.input_gain_linear()),
                 output_gain: instance
                     .configuration
                     .as_ref()
@@ -908,6 +914,12 @@ impl NativeRuntimeChain {
     }
 
     fn process_entry(entry: &mut RuntimeEntry, frames: &mut [StereoFrame]) {
+        if !entry.bypassed && entry.input_gain != 1.0 {
+            for frame in frames.iter_mut() {
+                frame[0] *= entry.input_gain;
+                frame[1] *= entry.input_gain;
+            }
+        }
         if entry.metering {
             entry.meter.observe_input(frames);
         }
@@ -998,7 +1010,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
-                if descriptor.id.value() == u32::MAX {
+                if descriptor.id.value() >= u32::MAX - 1 {
                     return Err(DeviceContractError::InvalidDescriptor);
                 }
                 if definition.descriptors()[..parameter_index]
@@ -1038,6 +1050,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
         self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
     pub fn patch_parameter(
@@ -1051,6 +1064,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
@@ -1060,6 +1074,7 @@ impl<'a> NativeDeviceRegistry<'a> {
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
     pub fn prepare_matrix(
@@ -1071,6 +1086,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_matrix(&current)
     }
@@ -1084,6 +1100,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_processor(&current, sample_rate)
     }
@@ -1097,6 +1114,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,

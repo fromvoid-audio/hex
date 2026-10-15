@@ -123,3 +123,9 @@ The `DeviceMeters` numeric presentation renders two adjacent sample-peak wells.
 The input well is read-only; output uses the existing numeric scrub/reset/focus
 contract. Callers supply levels, held markers, height, colors and already-themed
 hover text through `DeviceMeterReadout`; widgets never fetch audio telemetry.
+
+`DeviceMeters` presents one compact adjustable meter well. The host supplies
+input/output index, live and held sample peaks, gain, colors and tooltip text,
+and composes the two controls. Gain and unity lines accompany the audio fill.
+Readout updates do not interrupt pointer gestures; both wells use the shared
+numeric gesture and double-click reset lifecycle.
