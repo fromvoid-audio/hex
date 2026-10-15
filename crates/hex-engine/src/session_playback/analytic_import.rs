@@ -7,9 +7,48 @@ use crate::{
 use hex_lattice::NativeInstrumentAnalyticSeed;
 const CAP: usize = crate::mutable_instrument::MAX_MUTABLE_OCCURRENCE_PROOFS;
 pub(super) struct ImportPlan {
-    pub(super) seeds: [NativeInstrumentAnalyticSeed; CAP],
-    pub(super) proofs: [Option<MutableOccurrence>; CAP],
+    pub(super) seeds: Vec<NativeInstrumentAnalyticSeed>,
+    pub(super) proofs: Vec<Option<MutableOccurrence>>,
     pub(super) len: usize,
+}
+impl ImportPlan {
+    // Construct on control; handoff only overwrites these fixed-length buffers.
+    pub(super) fn new() -> Result<Self, SessionPlaybackError> {
+        let mut seeds = Vec::new();
+        seeds
+            .try_reserve_exact(CAP)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        let mut proofs = Vec::new();
+        proofs
+            .try_reserve_exact(CAP)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        if seeds.capacity() != CAP || proofs.capacity() != CAP {
+            return Err(SessionPlaybackError::Allocation);
+        }
+        seeds.resize(CAP, NativeInstrumentAnalyticSeed::default());
+        proofs.resize(CAP, None);
+        Ok(Self {
+            seeds,
+            proofs,
+            len: 0,
+        })
+    }
+
+    pub(super) fn backing_bytes(&self) -> Option<usize> {
+        self.seeds
+            .capacity()
+            .checked_mul(std::mem::size_of::<NativeInstrumentAnalyticSeed>())?
+            .checked_add(
+                self.proofs
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Option<MutableOccurrence>>())?,
+            )
+    }
+
+    pub(super) fn preflight_bytes() -> Option<usize> {
+        CAP.checked_mul(std::mem::size_of::<NativeInstrumentAnalyticSeed>())?
+            .checked_add(CAP.checked_mul(std::mem::size_of::<Option<MutableOccurrence>>())?)
+    }
 }
 impl SessionPlayback {
     pub(super) fn analytic_import_plan<T: crate::MidiTiming + ?Sized>(
@@ -19,7 +58,9 @@ impl SessionPlayback {
         new_index: usize,
         clock: &T,
         spans: &mut MidiSpanBuffer,
-    ) -> Result<Option<ImportPlan>, SessionPlaybackError> {
+        plan: &mut ImportPlan,
+    ) -> Result<bool, SessionPlaybackError> {
+        plan.len = 0;
         let old_route = previous
             .routes
             .get(old_index)
@@ -40,10 +81,10 @@ impl SessionPlayback {
                 .flatten()
                 .any(|t| t.track_id == old_route.id)
         {
-            return Ok(None);
+            return Ok(false);
         }
         let Some(factory) = candidate.session().mutable_instrument_factory(old_route.id) else {
-            return Ok(None);
+            return Ok(false);
         };
         let old_track = previous
             .revision
@@ -57,7 +98,7 @@ impl SessionPlayback {
             .get(new_index)
             .ok_or(SessionPlaybackError::UnknownTrack)?;
         if !old_track.instrument_slot_enabled() || !new_track.instrument_slot_enabled() {
-            return Ok(None);
+            return Ok(false);
         }
         let sources_match = match old_route.owner {
             RouteOwner::Arrangement => previous
@@ -79,13 +120,8 @@ impl SessionPlayback {
             _ => false,
         };
         if !sources_match {
-            return Ok(None);
+            return Ok(false);
         }
-        let mut plan = ImportPlan {
-            seeds: [NativeInstrumentAnalyticSeed::default(); CAP],
-            proofs: [None; CAP],
-            len: 0,
-        };
         let mut compatible = true;
         let mut append = |signature: MutableOccurrenceSignature,
                           start: u64,
@@ -247,7 +283,8 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {
                     let Some(sampler) = span.prepared_voice() else {
-                        return Ok(None);
+                        plan.len = 0;
+                        return Ok(false);
                     };
                     let signature = MutableOccurrenceSignature::from_parts(
                         MutableOccurrenceKey::new(
@@ -273,8 +310,14 @@ impl SessionPlayback {
                     )?;
                 }
             }
-            _ => return Ok(None),
+            _ => {
+                plan.len = 0;
+                return Ok(false);
+            }
         }
-        if compatible { Ok(Some(plan)) } else { Ok(None) }
+        if !compatible {
+            plan.len = 0;
+        }
+        Ok(compatible)
     }
 }
