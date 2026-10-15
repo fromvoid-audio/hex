@@ -1176,6 +1176,7 @@ pub(super) fn lfo_summary(
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
+        .px(px(4.0))
         .track_focus(&focus)
         .bg(rgb(if focused {
             RAIL_GUTTER
