@@ -3,22 +3,12 @@
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
-    Audio, BorrowedMediaPage, Frame, MediaPages, PreparedRevision, SessionPlayback,
-    SessionPlaybackCommand, SineTable, StreamSourceKey,
+    Audio, Frame, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable,
     playback::{Playback, PlaybackCommand},
 };
 use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
-struct NoPages;
-impl MediaPages for NoPages {
-    fn page(&mut self, _: StreamSourceKey, _: u64) -> Option<BorrowedMediaPage<'_>> {
-        panic!("resident graph must not request pages")
-    }
-    fn request_page(&mut self, _: StreamSourceKey, _: u64) {
-        panic!("resident graph must not request pages")
-    }
-}
 fn assert_zero(count: allocation_counter::AllocationInfo) {
     assert_eq!(
         (
@@ -119,19 +109,15 @@ fn assert_callback(automation: bool) {
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
     );
+    assert!(!revision.contains_streamed_sources());
     let mut session = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     session.apply(SessionPlaybackCommand::Play).unwrap();
     let owners = Arc::strong_count(&revision);
     let mut output = [[0.0; 2]; 513];
-    let mut pages = NoPages;
     let mut calls = 0;
     assert_zero(measure(|| {
         session
-            .render_with_pages_and_post_node_observer(
-                &mut output,
-                &mut pages,
-                Some(&mut |_, _, _: &[Frame]| calls += 1),
-            )
+            .render_with_post_node_observer(&mut output, Some(&mut |_, _, _: &[Frame]| calls += 1))
             .unwrap()
     }));
     assert!(calls >= 6);
