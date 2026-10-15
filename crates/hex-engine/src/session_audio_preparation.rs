@@ -49,6 +49,8 @@ struct CellSlot {
     owner: Option<OwnedAudioSource>,
     disposal: Disposal,
     #[cfg(test)]
+    test_index: usize,
+    #[cfg(test)]
     probe: Option<super::audio_preparation::DropProbe>,
 }
 #[derive(Default)]
@@ -218,6 +220,7 @@ impl SessionSourceConstruction {
             };
             // Only an empty String header is moved. Its backing allocation is
             // reserved directly in the persistent cell before source cloning.
+            let index = self.cells.len();
             self.cells.push(CellSlot {
                 track: cell.track(),
                 scene: cell.scene(),
@@ -230,6 +233,8 @@ impl SessionSourceConstruction {
                 owner: None,
                 disposal: Disposal::Unstarted,
                 #[cfg(test)]
+                test_index: index,
+                #[cfg(test)]
                 probe: None,
             });
             self.capacity.reserved_handle_destinations = self
@@ -237,7 +242,6 @@ impl SessionSourceConstruction {
                 .len()
                 .checked_add(self.cache.len())
                 .ok_or(AudioStorageError::Overflow)?;
-            let index = self.cells.len() - 1;
             #[cfg(test)]
             if self.fail_name_reserve == Some(index) {
                 return Err(AudioStorageError::Allocation);
@@ -283,7 +287,7 @@ impl SessionSourceConstruction {
                 handle: row.handle,
             });
         }
-        for (_index, row) in self.cells.iter_mut().enumerate() {
+        for row in &mut self.cells {
             let cache = self
                 .cache
                 .get(row.cache)
@@ -296,18 +300,19 @@ impl SessionSourceConstruction {
             });
             #[cfg(test)]
             {
+                let index = row.test_index;
                 assert_ne!(
                     self.panic_after_alias,
-                    Some(_index),
+                    Some(index),
                     "Session panic after installed alias"
                 );
-                if self.fail_after_alias == Some(_index) {
+                if self.fail_after_alias == Some(index) {
                     return Err(AudioStorageError::Allocation);
                 }
-                if self.bad_interval == Some(_index) {
+                if self.bad_interval == Some(index) {
                     row.end = u64::MAX;
                 }
-                if self.fail_name == Some(_index) {
+                if self.fail_name == Some(index) {
                     return Err(AudioStorageError::Allocation);
                 }
             }
