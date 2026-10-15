@@ -16,6 +16,11 @@ pub(crate) struct ReturnFeedPlan {
     outgoing: Vec<Vec<Feed>>,
 }
 impl ReturnFeedPlan {
+    pub(crate) fn has_no_owned_storage(&self) -> bool {
+        let Self { order, outgoing } = self;
+        order.capacity() == 0 && outgoing.capacity() == 0
+    }
+
     pub(crate) fn prepare(project: &hex_project::Project) -> Result<Self, Invalid> {
         if project.authored_routing().is_empty() {
             return Ok(Self::default());

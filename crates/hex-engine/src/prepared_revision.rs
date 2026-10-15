@@ -4,6 +4,7 @@ use crate::{
     compile::PreparedAudioSource,
 };
 use hex_devices::SineTable;
+pub(crate) mod assembly;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
@@ -74,9 +75,9 @@ impl PreparedMutableTrackRevision {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
-    arrangement: Arc<PlaybackProject>,
-    session: Arc<PreparedSessionInventory>,
-    midi_preview: Arc<MidiArrangementPreview>,
+    arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
+    session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
+    midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
 }
 
@@ -165,9 +166,9 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
         })
     }
@@ -255,9 +256,9 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
         })
     }

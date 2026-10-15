@@ -49,6 +49,29 @@ pub(super) struct ArrangementRootAssembly {
     pub(super) panic_after: Option<usize>,
 }
 impl ArrangementRootAssembly {
+    #[cfg(test)]
+    pub(super) fn capacity(
+        &self,
+        growth: bool,
+    ) -> Result<ArrangementRootCapacity, AudioStorageError> {
+        self.capacity_at(growth, None)
+    }
+    pub(super) fn project(&self) -> Option<&Project> {
+        self.project.as_ref()
+    }
+    pub(super) fn transfer_project(&mut self, target: &mut Option<Project>) {
+        *target = self.project.take();
+    }
+    pub(super) fn can_restore_project(&self) -> bool {
+        self.project.is_none()
+            && self.tracks.capacity() == 0
+            && self.returns.capacity() == 0
+            && self.contexts.is_none()
+            && self.feed.has_no_owned_storage()
+    }
+    pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
+        self.project = source.take();
+    }
     pub(super) fn reserve(
         &mut self,
         project: &hex_project::Project,
@@ -121,11 +144,18 @@ impl ArrangementRootAssembly {
         self.fault(1)?;
         Ok(())
     }
-    pub(super) fn view(&self) -> Result<RootStorageView<'_>, AudioStorageError> {
-        if let Some(project) = &self.project {
+    pub(super) fn view_at<'a>(
+        &'a self,
+        external: Option<&'a Project>,
+    ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        if self.project.is_some() && external.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(project) = self.project.as_ref().or(external) {
             if self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.contexts.is_some()
+                || !self.feed.has_no_owned_storage()
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
@@ -142,20 +172,26 @@ impl ArrangementRootAssembly {
             })
         }
     }
-    pub(super) fn context(&self) -> Option<&OwnedShared<SharedAnalyticContextTable>> {
+    pub(super) fn context_at<'a>(
+        &'a self,
+        external: Option<&'a Project>,
+    ) -> Option<&'a OwnedShared<SharedAnalyticContextTable>> {
         self.project
             .as_ref()
+            .or(external)
             .map(|p| &p.shared_contexts)
             .or(self.contexts.as_ref())
     }
-    pub(super) fn capacity(
+    pub(super) fn capacity_at(
         &self,
         growth: bool,
+        external: Option<&Project>,
     ) -> Result<ArrangementRootCapacity, AudioStorageError> {
-        let view = self.view()?;
+        let view = self.view_at(external)?;
         let (tracks, returns) = self
             .project
             .as_ref()
+            .or(external)
             .map_or((&self.tracks, &self.returns), |p| {
                 (&p.tracks, &p.return_buses)
             });
@@ -171,7 +207,7 @@ impl ArrangementRootAssembly {
             previous_growth_backing_bytes: if growth { self.growth } else { 0 },
             installed_tracks: view.tracks.len(),
             installed_returns: view.returns.len(),
-            constructed: self.project.is_some(),
+            constructed: self.project.is_some() || external.is_some(),
         })
     }
     pub(super) fn construct(
@@ -245,10 +281,10 @@ impl ArrangementRootAssembly {
         returns: &mut returns::ReturnAssembly,
         shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
     ) -> Result<(), AudioStorageError> {
-        let view = self.view()?;
+        let view = self.view_at(None)?;
         tracks.preflight_root_restore(view.tracks)?;
         returns.preflight_root_restore(view.returns, self.has_feed)?;
-        if self.context().is_some() {
+        if self.context_at(None).is_some() {
             shared.preflight_arrangement_restore()?;
         }
         // Validate the whole restoration batch before unpacking any final owner.
@@ -292,3 +328,6 @@ impl ArrangementRootAssembly {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod revision_tests;

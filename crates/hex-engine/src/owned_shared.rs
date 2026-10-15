@@ -23,6 +23,39 @@ pub(crate) struct OwnedShared<T: ?Sized> {
     receipt: usize,
 }
 impl<T> OwnedShared<T> {
+    pub(crate) fn declared_parts() -> Option<(usize, usize)> {
+        Some((
+            std::mem::size_of::<T>(),
+            declared(Layout::new::<T>())?.checked_sub(2)?,
+        ))
+    }
+    /// Private control teardown of an explicitly declared constructor. A refused
+    /// extraction restores the identical owner into its persistent source slot;
+    /// reference counts never upgrade a raw/untracked allocation's provenance.
+    pub(crate) fn restore_value_on_control(
+        source: &mut Option<Self>,
+        target: &mut Option<T>,
+    ) -> Result<(), crate::AudioStorageError> {
+        if target.is_some()
+            || source
+                .as_ref()
+                .is_none_or(|owner| owner.parts().is_none() || Arc::weak_count(owner.arc()) != 0)
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        if let Some(Self { arc, receipt }) = source.take() {
+            match Arc::try_unwrap(arc) {
+                Ok(value) => {
+                    *target = Some(value);
+                }
+                Err(arc) => {
+                    *source = Some(Self { arc, receipt });
+                    return Err(crate::AudioStorageError::UnknownStorage);
+                }
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn new_owned(value: T) -> Self {
         let receipt = declared(Layout::new::<T>()).unwrap_or(1);
         Self {
@@ -135,6 +168,37 @@ pub(crate) fn clone_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn control_restore_refuses_raw_alias_weak_and_occupied_slots_without_losing_owner() {
+        let mut raw = Some(OwnedShared::untracked(Arc::new(vec![1_u8, 2, 3])));
+        let raw_pointer = Arc::as_ptr(raw.as_ref().unwrap().arc());
+        let mut destination = None;
+        assert!(OwnedShared::restore_value_on_control(&mut raw, &mut destination).is_err());
+        assert_eq!(Arc::as_ptr(raw.as_ref().unwrap().arc()), raw_pointer);
+        assert!(destination.is_none());
+        if !crate::pcm_arc::native_layout_known() {
+            return;
+        }
+        for mode in 0..3 {
+            let mut source = Some(OwnedShared::new_owned(vec![1_u8, 2, 3]));
+            let pointer = Arc::as_ptr(source.as_ref().unwrap().arc());
+            let backing = source.as_ref().unwrap().as_ptr();
+            let alias = (mode == 0).then(|| source.as_ref().unwrap().clone_on_control());
+            let weak = (mode == 1).then(|| Arc::downgrade(source.as_ref().unwrap().arc()));
+            let mut target = (mode == 2).then(|| vec![9_u8]);
+            let target_pointer = target.as_ref().map(|value| value.as_ptr());
+            assert!(OwnedShared::restore_value_on_control(&mut source, &mut target).is_err());
+            assert_eq!(Arc::as_ptr(source.as_ref().unwrap().arc()), pointer);
+            assert_eq!(target.as_ref().map(|value| value.as_ptr()), target_pointer);
+            drop(alias);
+            drop(weak);
+            target = None;
+            OwnedShared::restore_value_on_control(&mut source, &mut target).unwrap();
+            assert!(source.is_none());
+            assert_eq!(target.as_ref().unwrap().as_ptr(), backing);
+            assert_eq!(target.unwrap(), vec![1, 2, 3]);
+        }
+    }
     #[test]
     fn paired_constructor_aliases_distinct_owners_unknown_ingress_and_empty_origins() {
         let owner = OwnedShared::new_owned(7_u64);

@@ -506,4 +506,13 @@ root storage, and all root children restore into validated persistent destinatio
 before existing disposal. Ordinary compiler Arc ingress remains Unknown; no legacy
 owner is promoted by pointer or reference-count inference. No native publication,
 complete accounting or retirement admission is established by this path.
+`with_audio_prepared_revision` additionally reserves four declared owning handles
+and requested layouts, then wraps the same Project, Session and preview in the
+actual private PreparedRevision. No compiler is rerun. Reports borrow actual final
+locations and charge the four headers plus all child backings/sidecars/spares.
+Control restoration accepts only these constructor-paired owners. Occupied
+original slots, shared aliases, Weak observers or invalid associations refuse
+without abandoning remaining owners; incomplete custody is retained without retry.
+Current SessionPlayback analytic-import scratch remains covered by its existing
+runtime/preroll accounting and is outside these immutable preparation declarations.
 See [integration and toolchain contract](../../docs/streaming-prerequisite-integration.md).

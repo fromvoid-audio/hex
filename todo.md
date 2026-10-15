@@ -1,3 +1,17 @@
+## 2026-10-15 — #2537 private PreparedRevision root checkpoint
+
+- Composed four actual shared owners around the existing sealed Project, Session
+  and preview. Reserved their four handles/layouts before source-bank movement;
+  no compiler rerun or public owner escape. Reports follow actual final storage.
+- Constructor-paired control restoration retains identical owners on refusal,
+  validates all restoration slots before moves and preserves partial custody,
+  original input-bank identity and the first destructor panic without retry.
+- Eight focused final-root controls plus the preparation suite and private
+  teardown seam cover supported constructors and unsupported-origin refusal.
+  All526 engine tests across22 test processes pass (four existing ignored), with
+  strict engine Clippy and source guards. Exact-source full local CI, guarded delivery and all downstream accounting/
+  native admission obligations remain open with the primary.
+
 ## 2026-10-15 — #2537 private Arrangement root checkpoint
 
 - Extracted preparation-only source and constructor declarations from the exact

@@ -58,12 +58,37 @@ pub(crate) struct PreviewCustody {
 }
 impl PreviewCustody {
     pub(crate) fn capacity(&self) -> Result<AudioPreviewCapacity, Error> {
-        if self.clips.is_some() && self.preview.is_some() {
+        self.capacity_at(None)
+    }
+    pub(crate) fn can_transfer_revision(&self) -> bool {
+        self.phase == Phase::Installed && self.preview.is_some() && self.clips.is_none()
+    }
+    pub(crate) fn can_restore_revision(&self) -> bool {
+        self.phase == Phase::Installed
+            && self.preview.is_none()
+            && self.clips.is_none()
+            && self.disposal == Disposal::Unstarted
+    }
+    pub(crate) fn transfer_revision(&mut self, target: &mut Option<MidiArrangementPreview>) {
+        *target = self.preview.take();
+    }
+    pub(crate) fn restore_revision(&mut self, source: &mut Option<MidiArrangementPreview>) {
+        self.preview = source.take();
+    }
+    pub(crate) fn capacity_at(
+        &self,
+        external: Option<&MidiArrangementPreview>,
+    ) -> Result<AudioPreviewCapacity, Error> {
+        if self.preview.is_some() && external.is_some() {
+            return Err(Error::SourceMismatch);
+        }
+        if self.clips.is_some() && (self.preview.is_some() || external.is_some()) {
             return Err(Error::UnknownStorage);
         }
         let owner = self.clips.as_ref().or_else(|| {
             self.preview
                 .as_ref()
+                .or(external)
                 .map(|MidiArrangementPreview { clips }| clips)
         });
         let mut report = AudioPreviewCapacity {
@@ -134,13 +159,22 @@ impl PreviewCustody {
         }
         Ok(())
     }
-    pub(crate) fn metadata(&self) -> Option<AudioPreviewMetadata> {
+    pub(crate) fn metadata_at(
+        &self,
+        external: Option<&MidiArrangementPreview>,
+    ) -> Option<AudioPreviewMetadata> {
         if self.phase != Phase::Installed {
             return None;
         }
-        self.preview.as_ref().map(|p| AudioPreviewMetadata {
-            clip_count: p.clips.len(),
-        })
+        if self.preview.is_some() && external.is_some() {
+            return None;
+        }
+        self.preview
+            .as_ref()
+            .or(external)
+            .map(|p| AudioPreviewMetadata {
+                clip_count: p.clips.len(),
+            })
     }
     pub(crate) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)

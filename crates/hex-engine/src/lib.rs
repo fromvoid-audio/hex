@@ -2681,6 +2681,7 @@ pub use playback::{
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
 };
 pub use prepared_revision::PreparedRevision;
+pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
 };

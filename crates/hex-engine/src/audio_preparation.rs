@@ -1,8 +1,9 @@
-//! Preparation-only Arrangement and opt-in Session inventory assembly stages. Not a prepared revision,
-//! storage-complete graph, publication admission or lifetime-closure authority.
+//! Preparation-only Arrangement and opt-in sealed Session/revision assembly.
+//! Not a storage-complete graph, publication admission or lifetime authority.
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
+pub(crate) use arrangement_clips::ArrangementClips;
 #[cfg(test)]
 #[path = "session_inventory_assembly_tests.rs"]
 mod assembly_tests;
@@ -66,6 +67,7 @@ pub struct AudioArrangementCapacity {
     pub shared: crate::SessionSharedCapacity,
     pub assembly: crate::SessionAssemblyCapacity,
     pub arrangement_clips: ArrangementClipCapacity,
+    pub revision_roots: crate::AudioRevisionRootCapacity,
 }
 pub struct AudioArrangementRefusal {
     pub reason: AudioStorageError,
@@ -81,6 +83,7 @@ struct Stages {
     assemble_returns: bool,
     assemble_preview: bool,
     assemble_project: bool,
+    assemble_revision: bool,
 }
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
@@ -154,6 +157,13 @@ impl<'a> AudioArrangementInput<'a> {
         input.stages.assemble_project = true;
         input
     }
+    /// Compose the actual private PreparedRevision from the already constructed
+    /// audio-only Project, Session and preview. No owner/publication escape.
+    pub fn with_audio_prepared_revision(self) -> Self {
+        let mut input = self.with_audio_project_inventory();
+        input.stages.assemble_revision = true;
+        input
+    }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
         Box::new(AudioArrangementRefusal {
             reason,
@@ -225,6 +235,7 @@ pub struct AudioPreparationCustody {
     shared: crate::session_shared_preparation::SessionSharedConstruction,
     assembly: crate::session_inventory::audio_assembly::SessionAssembly,
     arrangement_clips: arrangement_clips::ArrangementClips,
+    revision: crate::prepared_revision::assembly::RevisionAssembly,
     #[cfg(test)]
     fail_after: Option<usize>,
     #[cfg(test)]
@@ -255,6 +266,7 @@ impl AudioPreparationCustody {
             shared: crate::session_shared_preparation::SessionSharedConstruction::default(),
             assembly: crate::session_inventory::audio_assembly::SessionAssembly::default(),
             arrangement_clips: arrangement_clips::ArrangementClips::default(),
+            revision: crate::prepared_revision::assembly::RevisionAssembly::default(),
             #[cfg(test)]
             fail_after: None,
             #[cfg(test)]
@@ -302,6 +314,7 @@ impl AudioPreparationCustody {
             assemble_returns,
             assemble_preview,
             assemble_project,
+            assemble_revision,
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
@@ -326,7 +339,10 @@ impl AudioPreparationCustody {
                         n.checked_add(capacity.tempo.bytes()?)
                             .and_then(|n| n.checked_add(capacity.shared.bytes().ok()?))
                             .and_then(|n| n.checked_add(capacity.assembly.bytes().ok()?))
-                            .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
+                            .and_then(|n| {
+                                n.checked_add(capacity.arrangement_clips.bytes().ok()?)
+                                    .and_then(|n| n.checked_add(capacity.revision_roots.bytes()))
+                            })
                             .ok_or(AudioStorageError::Overflow)
                     })
             });
@@ -339,6 +355,9 @@ impl AudioPreparationCustody {
                     .reserve(project, generation, &inputs, slots.len())?;
                 self.structure.reserve(project, &self.session)?;
                 self.tempo.reserve(project)?;
+                if assemble_revision {
+                    self.revision.reserve(project)?;
+                }
                 let track_handles = if assemble_tracks {
                     project
                         .tracks()
@@ -360,6 +379,7 @@ impl AudioPreparationCustody {
                     .and_then(|n| n.checked_add(track_handles))
                     .and_then(|n| n.checked_add(return_handles))
                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
+                    .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -404,8 +424,13 @@ impl AudioPreparationCustody {
             if let Ok(report) = arrangement_observation {
                 capacity.arrangement_clips = report;
             }
+            let revision_observation = self.revision.capacity();
+            if let Ok(report) = revision_observation {
+                capacity.revision_roots = report;
+            }
             let result = match result {
                 Ok(result) => result.and_then(|()| {
+                    revision_observation?;
                     arrangement_observation?;
                     structure_observation?;
                     tempo_observation?;
@@ -418,7 +443,10 @@ impl AudioPreparationCustody {
                         .and_then(|n| n.checked_add(capacity.tempo.bytes().ok()?))
                         .and_then(|n| n.checked_add(capacity.shared.bytes().ok()?))
                         .and_then(|n| n.checked_add(capacity.assembly.bytes().ok()?))
-                        .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
+                        .and_then(|n| {
+                            n.checked_add(capacity.arrangement_clips.bytes().ok()?)
+                                .and_then(|n| n.checked_add(capacity.revision_roots.bytes()))
+                        })
                         .ok_or(AudioStorageError::Overflow)?;
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
@@ -536,10 +564,28 @@ impl AudioPreparationCustody {
                         .ok_or(AudioStorageError::SourceMismatch)?,
                 )?;
             }
-            self.capacity.arrangement_clips = self.arrangement_clips.capacity(true)?;
+            if assemble_revision {
+                self.revision
+                    .construct(&mut self.arrangement_clips, &mut self.assembly)?;
+            }
+            let view = self.revision.storage_view()?;
+            if assemble_revision {
+                let bank = self
+                    .bank
+                    .as_ref()
+                    .ok_or(AudioStorageError::SourceMismatch)?;
+                self.arrangement_clips
+                    .validate_root_sources_at(bank, view.arrangement)?;
+                self.assembly.validate_pairs_at(bank, view.session)?;
+            }
+            self.capacity.revision_roots = self.revision.capacity()?;
+            self.capacity.arrangement_clips =
+                self.arrangement_clips
+                    .capacity_at(true, view.arrangement, view.preview)?;
+            self.capacity.assembly = self.assembly.capacity_at(true, view.session)?;
             self.capacity.shared = self.shared.observe_at(
-                self.arrangement_clips.root_context(),
-                self.assembly.shared_storage()?,
+                self.arrangement_clips.root_context_at(view.arrangement),
+                self.assembly.shared_storage_at(view.session)?,
             )?;
             if include_session && self.capacity.shared.installed_handle_obligations != 3 {
                 return Err(AudioStorageError::UnknownStorage);
@@ -659,6 +705,7 @@ impl AudioPreparationCustody {
         )?;
         capacity.assembly = self.assembly.capacity(false)?;
         capacity.arrangement_clips = self.arrangement_clips.capacity(false)?;
+        capacity.revision_roots = self.revision.capacity()?;
         for (index, (_, source)) in inputs.sources.iter().enumerate() {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             if !inputs.sources[..index]
@@ -694,7 +741,10 @@ impl AudioPreparationCustody {
                     .ok()
                     .and_then(|m| n.checked_add(m))
             })
-            .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
+            .and_then(|n| {
+                n.checked_add(capacity.arrangement_clips.bytes().ok()?)
+                    .and_then(|n| n.checked_add(capacity.revision_roots.bytes()))
+            })
             .and_then(|n| n.checked_add(inputs.reservation.caller_retained_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         capacity.construction_peak_bytes = capacity
@@ -877,6 +927,21 @@ impl AudioPreparationCustody {
         self.phase = AudioPreparationPhase::Recoverable;
     }
     fn dispose_arrangement_clips_on_control(&mut self) -> bool {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.revision
+                .restore(&mut self.arrangement_clips, &mut self.assembly)
+        })) {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                return false;
+            }
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                return false;
+            }
+        }
         if self
             .arrangement_clips
             .restore_root(&mut self.shared)
@@ -1019,33 +1084,52 @@ impl AudioPreparationCustody {
         self.phase = AudioPreparationPhase::Vacant;
         Some(bank)
     }
+    pub fn audio_prepared_revision_metadata(&self) -> Option<crate::AudioPreparedRevisionMetadata> {
+        if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
+            return None;
+        }
+        self.revision.metadata()
+    }
     pub fn audio_preview_metadata(&self) -> Option<crate::AudioPreviewMetadata> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
             return None;
         }
-        self.arrangement_clips.preview_metadata()
+        self.arrangement_clips
+            .preview_metadata_at(self.revision.storage_view().ok()?.preview)
     }
     pub fn arrangement_return_metadata(&self) -> Option<ArrangementReturnMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
             return None;
         }
-        self.arrangement_clips.return_metadata()
+        self.arrangement_clips
+            .return_metadata_at(self.revision.storage_view().ok()?.arrangement)
     }
     pub fn arrangement_track_metadata(&self, index: usize) -> Option<ArrangementTrackMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
             return None;
         }
-        self.arrangement_clips.track_metadata(index)
+        self.arrangement_clips
+            .track_metadata_at(index, self.revision.storage_view().ok()?.arrangement)
     }
     pub fn session_inventory_metadata(&self) -> Option<crate::SessionInventoryMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
             return None;
         }
-        self.assembly.metadata()
+        self.assembly
+            .metadata_at(self.revision.storage_view().ok()?.session)
     }
     pub fn installed_session_source_bindings(&self) -> (usize, usize) {
         let (clips, cache) = self.session.counts();
-        (clips + self.assembly.installed_clip_handles(), cache)
+        (
+            clips
+                + self.assembly.installed_clip_handles_at(
+                    self.revision
+                        .storage_view()
+                        .ok()
+                        .and_then(|view| view.session),
+                ),
+            cache,
+        )
     }
     /// Structural metadata counts only: not a renderable/prepared Session or
     /// storage/lifetime/admission completeness capability.
@@ -1054,23 +1138,27 @@ impl AudioPreparationCustody {
     }
     /// Scalar audit of this compiler stage, not complete storage/admission.
     pub fn installed_source_bindings(&self) -> usize {
-        self.arrangement_clips.installed()
-            + self
-                .slots
-                .iter()
-                .filter(|slot| {
-                    let geometry = slot.end > slot.start
-                        && slot.source_length > 0
-                        && (!slot.looping || slot.phase < (slot.source_length as u64));
-                    // IDs/offset are retained exact location/geometry, not alias identity.
-                    let _location = (slot.track, slot.clip, slot.source_offset, slot.fade);
-                    geometry
-                        && slot
-                            .owner
-                            .as_ref()
-                            .is_some_and(|owner| owner.handle == slot.handle)
-                })
-                .count()
+        self.arrangement_clips.installed_at(
+            self.revision
+                .storage_view()
+                .ok()
+                .and_then(|view| view.arrangement),
+        ) + self
+            .slots
+            .iter()
+            .filter(|slot| {
+                let geometry = slot.end > slot.start
+                    && slot.source_length > 0
+                    && (!slot.looping || slot.phase < (slot.source_length as u64));
+                // IDs/offset are retained exact location/geometry, not alias identity.
+                let _location = (slot.track, slot.clip, slot.source_offset, slot.fade);
+                geometry
+                    && slot
+                        .owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.handle == slot.handle)
+            })
+            .count()
     }
 }
 

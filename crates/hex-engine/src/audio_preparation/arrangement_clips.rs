@@ -59,7 +59,7 @@ enum Phase {
     Complete,
 }
 #[derive(Default)]
-pub(super) struct ArrangementClips {
+pub(crate) struct ArrangementClips {
     rows: Vec<Pair>,
     tracks: tracks::TrackAssembly,
     root: root::ArrangementRootAssembly,
@@ -88,7 +88,15 @@ impl ArrangementClips {
         &self,
         growth: bool,
     ) -> Result<ArrangementClipCapacity, AudioStorageError> {
-        let root = self.root.view()?;
+        self.capacity_at(growth, None, None)
+    }
+    pub(crate) fn capacity_at(
+        &self,
+        growth: bool,
+        project: Option<&crate::Project>,
+        preview: Option<&crate::MidiArrangementPreview>,
+    ) -> Result<ArrangementClipCapacity, AudioStorageError> {
+        let root = self.root.view_at(project)?;
         let metadata =
             self.rows
                 .iter()
@@ -103,9 +111,9 @@ impl ArrangementClips {
                 })?;
         Ok(ArrangementClipCapacity {
             tracks: self.tracks.capacity_at(growth, root.tracks)?,
-            root: self.root.capacity(growth)?,
+            root: self.root.capacity_at(growth, project)?,
             returns: self.returns.capacity_at(growth, root.returns, root.feed)?,
-            preview: self.preview.capacity()?,
+            preview: self.preview.capacity_at(preview)?,
             pair_backing_bytes: self
                 .rows
                 .capacity()
@@ -132,7 +140,12 @@ impl ArrangementClips {
                         )
                     })
                     .and_then(|n| {
-                        n.checked_add(self.root.capacity(true).ok()?.previous_growth_backing_bytes)
+                        n.checked_add(
+                            self.root
+                                .capacity_at(true, project)
+                                .ok()?
+                                .previous_growth_backing_bytes,
+                        )
                     })
                     .ok_or(AudioStorageError::Overflow)?
             } else {
@@ -378,8 +391,43 @@ impl ArrangementClips {
         &self,
         bank: &OwnedAudioInputs,
     ) -> Result<(), AudioStorageError> {
+        self.validate_root_sources_at(bank, None)
+    }
+    pub(super) fn validate_root_sources_at(
+        &self,
+        bank: &OwnedAudioInputs,
+        external: Option<&crate::Project>,
+    ) -> Result<(), AudioStorageError> {
         self.tracks
-            .validate_root_sources(self.root.view()?.tracks, bank)
+            .validate_root_sources(self.root.view_at(external)?.tracks, bank)
+    }
+    pub(crate) fn can_transfer_revision(&self) -> bool {
+        self.root.project().is_some() && self.preview.can_transfer_revision()
+    }
+    pub(crate) fn can_restore_revision_partial(&self, project: bool, preview: bool) -> bool {
+        (!project || self.root.can_restore_project())
+            && (!preview || self.preview.can_restore_revision())
+    }
+    pub(crate) fn transfer_project_revision(&mut self, target: &mut Option<crate::Project>) {
+        self.root.transfer_project(target);
+    }
+    pub(crate) fn transfer_preview_revision(
+        &mut self,
+        target: &mut Option<crate::MidiArrangementPreview>,
+    ) {
+        self.preview.transfer_revision(target);
+    }
+    pub(crate) fn restore_revision_values(
+        &mut self,
+        project: &mut Option<crate::Project>,
+        preview: &mut Option<crate::MidiArrangementPreview>,
+    ) {
+        if project.is_some() {
+            self.root.restore_project(project);
+        }
+        if preview.is_some() {
+            self.preview.restore_revision(preview);
+        }
     }
     pub(super) fn construct_root(
         &mut self,
@@ -399,7 +447,15 @@ impl ArrangementClips {
         &self,
     ) -> Option<&crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>>
     {
-        self.root.context()
+        self.root_context_at(None)
+    }
+    pub(super) fn root_context_at<'a>(
+        &'a self,
+        external: Option<&'a crate::Project>,
+    ) -> Option<
+        &'a crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    > {
+        self.root.context_at(external)
     }
     pub(super) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
@@ -506,26 +562,49 @@ impl ArrangementClips {
         self.phase = Phase::Vacant;
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn installed(&self) -> usize {
+        self.installed_at(None)
+    }
+    pub(super) fn installed_at(&self, external: Option<&crate::Project>) -> usize {
         self.rows.iter().filter(|r| r.clip.is_some()).count()
             + self
                 .tracks
-                .installed_clips(self.root.view().ok().map_or(&[], |v| v.tracks))
+                .installed_clips(self.root.view_at(external).ok().map_or(&[], |v| v.tracks))
     }
+    #[cfg(test)]
     pub(super) fn return_metadata(&self) -> Option<returns::ArrangementReturnMetadata<'_>> {
-        {
-            let view = self.root.view().ok()?;
-            self.returns.metadata_at(view.returns, view.feed)
-        }
+        self.return_metadata_at(None)
     }
-    pub(super) fn preview_metadata(&self) -> Option<crate::AudioPreviewMetadata> {
-        self.preview.metadata()
-    }
+    #[cfg(test)]
     pub(super) fn track_metadata(
         &self,
         index: usize,
     ) -> Option<tracks::ArrangementTrackMetadata<'_>> {
-        self.tracks.metadata(index, self.root.view().ok()?.tracks)
+        self.track_metadata_at(index, None)
+    }
+    pub(super) fn return_metadata_at<'a>(
+        &'a self,
+        external: Option<&'a crate::Project>,
+    ) -> Option<returns::ArrangementReturnMetadata<'a>> {
+        {
+            let view = self.root.view_at(external).ok()?;
+            self.returns.metadata_at(view.returns, view.feed)
+        }
+    }
+    pub(super) fn preview_metadata_at(
+        &self,
+        external: Option<&crate::MidiArrangementPreview>,
+    ) -> Option<crate::AudioPreviewMetadata> {
+        self.preview.metadata_at(external)
+    }
+    pub(super) fn track_metadata_at<'a>(
+        &'a self,
+        index: usize,
+        external: Option<&'a crate::Project>,
+    ) -> Option<tracks::ArrangementTrackMetadata<'a>> {
+        self.tracks
+            .metadata(index, self.root.view_at(external).ok()?.tracks)
     }
     #[cfg(test)]
     pub(super) fn handles(&self) -> Vec<Option<u64>> {

@@ -14,7 +14,7 @@ use std::{
 fn supported(name: &str) -> bool {
     crate::audio_preparation::session_source_tests::supported(name)
 }
-fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs) {
+pub(super) fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs) {
     let (project, mut bank, _) =
         crate::audio_preparation::arrangement_clip_tests::fixture(streamed, true, 2);
     bank.reservation.handle_obligations = 64;
@@ -60,7 +60,7 @@ fn begin(
 ) -> Result<crate::AudioPreparationToken, Box<crate::AudioArrangementRefusal>> {
     c.begin_input_on_control(AudioArrangementInput::new(p, 11, b).with_audio_project_inventory())
 }
-struct Pages;
+pub(super) struct Pages;
 impl crate::MediaPages for Pages {
     fn page(
         &mut self,

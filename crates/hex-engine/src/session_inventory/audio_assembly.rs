@@ -102,7 +102,6 @@ impl AudioTarget {
         });
         self.actual_handle = Some(handle);
     }
-    #[cfg(test)]
     fn matches(
         &self,
         clip: &PreparedSessionAudioClip,
@@ -206,7 +205,54 @@ impl SessionAssembly {
     pub(crate) fn shared_storage(
         &self,
     ) -> Result<crate::session_shared_preparation::InventorySharedView<'_>, AudioStorageError> {
-        let (sine, contexts) = if let Some(i) = &self.inventory {
+        self.shared_storage_at(None)
+    }
+    pub(crate) fn capacity(
+        &self,
+        growth: bool,
+    ) -> Result<SessionAssemblyCapacity, AudioStorageError> {
+        self.capacity_at(growth, None)
+    }
+    pub(crate) fn can_transfer_revision(&self) -> bool {
+        self.phase == AssemblyPhase::Installed && self.inventory.is_some()
+    }
+    pub(crate) fn can_restore_revision(&self) -> bool {
+        self.phase == AssemblyPhase::Installed
+            && self.inventory.is_none()
+            && self.scenes.capacity() == 0
+            && self.tracks.capacity() == 0
+            && self.cells.capacity() == 0
+            && self.indices.capacity() == 0
+            && self.ranges.capacity() == 0
+            && self.audio.capacity() == 0
+            && self.timing.is_none()
+            && self.sine.is_none()
+            && self.contexts.is_none()
+            && self.unused_midi.capacity() == 0
+            && self.unused_mutable.capacity() == 0
+            && self.pending_source.is_none()
+            && self.pending_name.is_none()
+            && self.pending_pair.is_none()
+            && !self.name_pending
+            && self.scene_cursor == 0
+            && self.track_cursor == 0
+            && self.sine_disposal == Step::Unstarted
+            && self.context_disposal == Step::Unstarted
+    }
+    pub(crate) fn transfer_revision(&mut self, target: &mut Option<PreparedSessionInventory>) {
+        *target = self.inventory.take();
+    }
+    pub(crate) fn restore_revision(&mut self, source: &mut Option<PreparedSessionInventory>) {
+        self.inventory = source.take();
+    }
+    pub(crate) fn shared_storage_at<'a>(
+        &'a self,
+        external: Option<&'a PreparedSessionInventory>,
+    ) -> Result<crate::session_shared_preparation::InventorySharedView<'a>, AudioStorageError> {
+        if self.inventory.is_some() && external.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let (sine, contexts) = if let Some(i) = self.inventory.as_ref().or(external) {
             if self.sine.is_some() || self.contexts.is_some() {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -221,22 +267,33 @@ impl SessionAssembly {
         };
         Ok(crate::session_shared_preparation::InventorySharedView { sine, contexts })
     }
-    pub(crate) fn capacity(
+    pub(crate) fn capacity_at(
         &self,
         include_growth: bool,
+        external: Option<&PreparedSessionInventory>,
     ) -> Result<SessionAssemblyCapacity, AudioStorageError> {
         // Exhaustive ownership inventory: seven charged Vec backings; names,
         // referenced source allocations, tempo and fixed shared data stay in
         // their parent charge groups while their exact paired owning locations
         // move. Optional inventory contains those SAME vectors, never duplicates.
         // Pending name/source and timing/shared destinations are persistent.
-        if let Some(i) = &self.inventory {
+        if self.inventory.is_some() && external.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(i) = self.inventory.as_ref().or(external) {
             if self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
                 || self.indices.capacity() != 0
                 || self.ranges.capacity() != 0
                 || self.audio.capacity() != 0
+                || self.timing.is_some()
+                || self.sine.is_some()
+                || self.contexts.is_some()
+                || self.pending_source.is_some()
+                || self.pending_name.is_some()
+                || self.pending_pair.is_some()
+                || self.name_pending
                 || !i.midi_clips.is_empty()
                 || i.midi_clips.capacity() != 0
                 || !i.mutable_instruments.is_empty()
@@ -253,25 +310,26 @@ impl SessionAssembly {
             return Err(AudioStorageError::UnknownStorage);
         }
         // Installed vectors have moved to inventory; count actual backings there.
-        let (scenes, tracks, cells, indices, ranges, audio) = if let Some(i) = &self.inventory {
-            (
-                &i.scenes,
-                &i.tracks,
-                &i.cells,
-                &i.scene_cell_indices,
-                &i.scene_cell_ranges,
-                &i.audio_clips,
-            )
-        } else {
-            (
-                &self.scenes,
-                &self.tracks,
-                &self.cells,
-                &self.indices,
-                &self.ranges,
-                &self.audio,
-            )
-        };
+        let (scenes, tracks, cells, indices, ranges, audio) =
+            if let Some(i) = self.inventory.as_ref().or(external) {
+                (
+                    &i.scenes,
+                    &i.tracks,
+                    &i.cells,
+                    &i.scene_cell_indices,
+                    &i.scene_cell_ranges,
+                    &i.audio_clips,
+                )
+            } else {
+                (
+                    &self.scenes,
+                    &self.tracks,
+                    &self.cells,
+                    &self.indices,
+                    &self.ranges,
+                    &self.audio,
+                )
+            };
         let report = SessionAssemblyCapacity {
             scene_bytes: bytes(scenes)?,
             track_bytes: bytes(tracks)?,
@@ -509,9 +567,20 @@ impl SessionAssembly {
     }
     #[cfg(test)]
     pub(crate) fn validate_pairs(&self, bank: &OwnedAudioInputs) -> Result<(), AudioStorageError> {
+        self.validate_pairs_at(bank, None)
+    }
+    pub(crate) fn validate_pairs_at(
+        &self,
+        bank: &OwnedAudioInputs,
+        external: Option<&PreparedSessionInventory>,
+    ) -> Result<(), AudioStorageError> {
+        if self.inventory.is_some() && external.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         let clips = self
             .inventory
             .as_ref()
+            .or(external)
             .map_or(self.audio.as_slice(), |i| i.audio_clips.as_slice());
         if clips.len() != self.pairs.len() {
             return Err(AudioStorageError::SourceMismatch);
@@ -533,9 +602,17 @@ impl SessionAssembly {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn installed_clip_handles(&self) -> usize {
+        self.installed_clip_handles_at(None)
+    }
+    pub(crate) fn installed_clip_handles_at(
+        &self,
+        external: Option<&PreparedSessionInventory>,
+    ) -> usize {
         self.inventory
             .as_ref()
+            .or(external)
             .map_or(self.audio.len(), |i| i.audio_clips.len())
             + self.pairs.iter().filter(|p| p.clip.is_some()).count()
             + usize::from(self.pending_source.is_some())
@@ -608,11 +685,17 @@ impl SessionAssembly {
             && self.sine.is_some()
             && self.contexts.is_some()
     }
-    pub(crate) fn metadata(&self) -> Option<SessionInventoryMetadata<'_>> {
+    pub(crate) fn metadata_at<'a>(
+        &'a self,
+        external: Option<&'a PreparedSessionInventory>,
+    ) -> Option<SessionInventoryMetadata<'a>> {
         if self.phase != AssemblyPhase::Installed {
             return None;
         }
-        let inventory = self.inventory.as_ref()?;
+        if self.inventory.is_some() && external.is_some() {
+            return None;
+        }
+        let inventory = self.inventory.as_ref().or(external)?;
         self.sine_declaration
             .as_ref()?
             .parts(&inventory.sine_table)?;

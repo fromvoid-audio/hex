@@ -77,9 +77,38 @@ run exercises all six unsupported-origin refusals and preserves original input
 owners (`artifacts/pr232-root-checkpoint/unsupported-1.98.1.log`). These are
 checkpoint checks, not final full-CI merge evidence.
 
-PreparedRevision shared-root assembly, its failure-custody controls, exact-source
-full CI and guarded delivery remain required. Complete accounting/admission remains disabled until those contracts
-are explicitly satisfied. This checkpoint does not establish native streaming,
+The next bounded checkpoint composes four actual shared allocations: Arrangement,
+Session, empty audio-only MIDI preview, and the outer PreparedRevision. Its four
+independent handle obligations and supported requested layouts are reserved before
+bank movement. The constructor uses the existing sealed child values and an
+exhaustively validated zero-capacity mutable descriptor Vec; it reruns no compiler.
+Actual-location reports inspect final roots or persistent partial staging and
+retain child Vec spare capacity, sidecars and construction growth. Shared contexts
+remain one payload with two physical handles.
+
+Control teardown first validates every original destination and association, then
+extracts only constructor-paired private owners. An unsuccessful Arc extraction
+restores the identical owner in its persistent slot. Unexpected aliases, Weak
+observers, invalid bindings or occupied destinations retain the bank and remaining
+owners in failed-incomplete custody, with no cleanup retry. After normal extraction,
+all child values return to the existing Project/Session/preview custody before its
+ordinary Pending-before-take destruction sequence. Eight focused revision tests
+cover resident/streamed PCM and Session source parity, twelve construction error
+and panic frontiers, distinct roots and no added aliases, outer/child extraction
+refusal, occupied slots/invalid handles, byte/handle limits and child destructor
+panic with first-payload retention. The private restoration seam separately tests
+raw ingress refusal and exact owner preservation. On the supported compiler,
+`cargo test -p hex-engine --locked` passes526 tests across22 unit/integration/doc
+processes (four existing ignored tests); strict all-target engine Clippy, formatting
+and architecture/GPUI/UI guards pass. Explicit Rust1.98.1 exercises all eight
+unsupported-origin controls. Logs are retained under
+`artifacts/pr232-root-checkpoint/revision-{engine-suite,clippy,unsupported-1.98.1}.log`.
+These targeted results are not full final local-CI merge evidence.
+
+The existing current-main analytic-import scratch Vecs and their actual/preflight
+runtime charges remain untouched. This immutable source-construction declaration
+does not report or admit SessionPlayback runtime memory. Exact-source full CI and
+guarded delivery remain required. Complete accounting/admission remains disabled. This checkpoint does not establish native streaming,
 physical deadlines,100-track acceptance or the broad PR177 review obligations.
 
 ## constructor toolchain provenance
