@@ -1,3 +1,16 @@
+## streaming source/provider matrix — pulse2536, 15 october 2026
+
+Planning-only [matrix](docs/streaming-source-support-matrix.md) maps every
+live #24 acceptance criterion, public source/provider class, constructor and
+ownership/accounting gap to existing evidence, missing source, native tests or
+explicit product decisions. It preserves #16/#2162/#2164/#2165/#2229 source work
+and the #2537–2546 decomposition. Exact published PR177 source is inspected
+separately from PR231's older intake base; unpublished root WIP remains unverified.
+Documentation link/path/claim and whitespace review are the applicable checks.
+The user subsequently authorized its documentation-only PR231 merge, subject to
+required exact-source local CI. Runtime implementation, native delivery and
+full streaming completion remain open; #24's review holds are preserved.
+
 ## device chain pan and bottom navigator — 13 october 2026
 
 Track and return device chains now share middle-button horizontal drag panning and
