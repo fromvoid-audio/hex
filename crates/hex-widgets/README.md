@@ -114,3 +114,14 @@ The renderer consumes NumericSpec's mapping without changing parameter laws.
 retain their footprints. The transient pointer-capture element is absolute so
 pressing cannot insert a flex gap or move the dial/readout.
 See research/observations/knob-focus-001.md for reference limits.
+
+The `DeviceMeters` numeric presentation renders two adjacent sample-peak wells.
+The input well is read-only; output uses the existing numeric scrub/reset/focus
+contract. Callers supply levels, held markers, height, colors and already-themed
+hover text through `DeviceMeterReadout`; widgets never fetch audio telemetry.
+
+`DeviceMeters` presents one compact adjustable meter well. The host supplies
+input/output index, live and held sample peaks, gain, colors and tooltip text,
+and composes the two controls. Gain and unity lines accompany the audio fill.
+Readout updates do not interrupt pointer gestures; both wells use the shared
+numeric gesture and double-click reset lifecycle.

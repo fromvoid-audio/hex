@@ -4,6 +4,33 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
+/// Reserved host parameter. Device codecs never own this identifier.
+pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
+    hex_lattice_contract::ParameterDescriptor {
+        id: hex_lattice_contract::ParameterId::from_static(u32::MAX),
+        label: "output gain",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: -60.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    };
+
+pub const DEVICE_INPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
+    hex_lattice_contract::ParameterDescriptor {
+        id: hex_lattice_contract::ParameterId::from_static(u32::MAX - 1),
+        label: "input gain",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: -60.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    };
+
 /// Distinguishes native effect processors from native track instruments.
 /// Type identifiers are resolved only inside the requested class registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +237,12 @@ fn read_parameter<D: NativeDeviceMetadata + ?Sized>(
     state: &NativeDeviceState,
     parameter: hex_lattice_contract::ParameterId,
 ) -> Result<ParameterValue, Invalid> {
+    if parameter == DEVICE_INPUT_GAIN.id {
+        return Ok(ParameterValue::Float(state.input_gain_db()));
+    }
+    if parameter == DEVICE_OUTPUT_GAIN.id {
+        return Ok(ParameterValue::Float(state.output_gain_db()));
+    }
     let descriptor = definition
         .descriptors()
         .iter()

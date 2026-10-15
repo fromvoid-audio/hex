@@ -365,6 +365,8 @@ struct MutableFeedbackRuntime {
     voices: [MutableFeedbackVoice; 64],
     feedback: f32,
     tail_left: u8,
+    // Optional real owned storage exercises variable-sized runtime accounting.
+    storage: Box<[u8]>,
 }
 
 /// Minimal mutable voice used to exercise an instrument with a real declared
@@ -663,6 +665,12 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
             voices: [MutableFeedbackVoice::default(); 64],
             feedback: 0.0,
             tail_left: 0,
+            storage: vec![
+                0;
+                self.declared_twin_bytes()
+                    .saturating_sub(std::mem::size_of::<MutableFeedbackRuntime>())
+            ]
+            .into_boxed_slice(),
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -765,20 +773,22 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         self.voices.iter().all(|voice| !voice.active) && self.tail_left == 0 && self.feedback == 0.0
     }
     fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|old| self.key == old.key && self.release_frames == old.release_frames)
+        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
+            self.key == old.key
+                && self.release_frames == old.release_frames
+                && self.storage.len() == old.storage.len()
+        })
     }
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
             self.feedback = old.feedback;
             self.tail_left = old.tail_left;
+            self.storage.copy_from_slice(&old.storage);
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        std::mem::size_of::<Self>() + self.storage.len()
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -5071,6 +5081,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         voices: [MutableFeedbackVoice::default(); 64],
         feedback: 0.0,
         tail_left: 0,
+        storage: Box::default(),
     };
     let note_on = [hex_lattice::NativeInstrumentEvent::NoteOn {
         frame_offset: 0,
@@ -10602,16 +10613,15 @@ fn mutable_checkpoint_refuses_uncommitted_wrong_revision_and_wrong_frame_atomica
 
 #[test]
 fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
-    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
-    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    playback.apply(SessionPlaybackCommand::Play).unwrap();
-    render_checkpoint_prefix(&mut playback, 1);
-
     let counter = Arc::new(AtomicUsize::new(0));
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
         bytes.set(Some(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES));
     });
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut playback, 1);
     let mut byte_limited = MutableRuntimeCheckpointStore::new();
     let byte_refusal = loop {
         match byte_limited.capture_track(&playback, track) {
@@ -10635,6 +10645,9 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut count_limited = MutableRuntimeCheckpointStore::new();
     while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
         render_checkpoint_prefix(&mut playback, 1);
@@ -10690,3 +10703,65 @@ mod transport_loop_tests;
 
 #[path = "device_capacity_tests.rs"]
 mod device_capacity_tests;
+
+#[test]
+fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
+    for input in [true, false] {
+        let project = project(0.758_499_15, 0, 8 << 32);
+        let table = Arc::new(hex_devices::SineTable::new());
+        let prepared = revision(&project, Arc::clone(&table));
+        let device = project.tracks()[0].instrument().unwrap().id();
+        let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
+        let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut metered = SessionPlayback::new(prepared).unwrap();
+        metered.set_device_metering(true);
+        ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+        metered.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut a = [[0.0; 2]; 127];
+        let mut b = a;
+        for _ in 0..5 {
+            ordinary.render(&mut a).unwrap();
+            metered.render(&mut b).unwrap();
+            assert_eq!(a, b, "telemetry must preserve per-voice summation order");
+        }
+        let peaks = meter.take_peaks();
+        assert_eq!(peaks[0], 0.0);
+        assert!(peaks[1] > 0.0);
+        let mut snapshot = project.snapshot();
+        let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
+        instrument.state = if input {
+            instrument.state.clone().with_input_gain_db(-12.0).unwrap()
+        } else {
+            instrument.state.clone().with_output_gain_db(-12.0).unwrap()
+        };
+        let changed = Project::from_snapshot(snapshot).unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare(
+                &changed,
+                &BTreeMap::new(),
+                table,
+                Some(ordinary.revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut trimmed = SessionPlayback::new(prepared).unwrap();
+        trimmed.try_inherit_state_from(&mut ordinary).unwrap();
+        assert!(
+            trimmed.releases.is_empty(),
+            "host trim must not create a duplicate voice release"
+        );
+        ordinary.render(&mut a).unwrap();
+        trimmed.render(&mut b).unwrap();
+        let gain = if input {
+            1.0
+        } else {
+            10.0_f32.powf(-12.0 / 20.0)
+        };
+        for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+            assert!((a * gain - b).abs() < 1e-7);
+        }
+    }
+}
+
+#[path = "instrument_memory_budget_tests.rs"]
+mod instrument_memory_budget_tests;

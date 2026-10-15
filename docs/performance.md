@@ -1,3 +1,37 @@
+## variable-size instrument state admission — 15 October 2026
+
+Pulse2589/[PR242](https://github.com/PORTALSURFER/hex/pull/242) removes the
+effect-derived 4 KiB instrument-twin ceiling while preserving the 2 MiB combined
+active DSP-pair and independently retained-tail budgets. Device DSP and voice
+counts are unchanged. This is memory admission policy, not an optimization or
+an Ableton allocation claim. Device-specific processing/timing acceptance remains
+required when a larger implementation is registered.
+
+An optimized Rust1.94.0 test probe on Linux x86_64, AMD EPYC9V74 (five visible
+vCPUs, shared cloud host), measures actual owned test-runtime buffers. Each size
+has100 control constructions of the complete pair and host ledgers, with final
+destruction outside timing. Copy measurements use100 warmups and1000 timed
+`begin_block` plus alternating commit/rollback operations; the fixture has no
+active notes. Storage construction and timing-vector allocation are outside
+copy timing. Results in nanoseconds, with scheduling outliers retained:
+
+| bytes per twin | pair bytes | construction p50 / p99 / max | copy + commit/rollback p50 / p99 / max |
+| ---: | ---: | ---: | ---: |
+| 1056 | 2112 | 250 / 12499 / 12499 | 40 / 60 / 70 |
+| 5120 | 10240 | 351 / 1623 / 1623 | 80 / 111 / 32128 |
+| 32768 | 65536 | 882 / 6891 / 6891 | 610 / 831 / 22584 |
+| 1048576 | 2097152 | 21582 / 468266 / 468266 | 21913 / 62234 / 140492 |
+
+Command: `cargo test --release -p hex-engine --lib --locked profile_instrument_memory_budget -- --ignored --nocapture`.
+Raw log: `artifacts/instrument-memory-budget/release-copy.log`; exact source and
+log digests accompany PR evidence. These are one-run headless component costs,
+not instrument rendering, dense workloads, native callback deadlines, listening
+acceptance or a justification for increasing the aggregate pool. The former
+policy fails the new >8 KiB owned-pair regression with `Budget`; the new policy
+passes. Boundary tests retain byte/count/overflow refusal before construction,
+full tail ownership and separate checkpoint limits. Callback allocation probes
+use an actual >8 KiB inline-state fixture with full history copying.
+
 ## 100-track original Lattice effects — 11 October 2026
 
 Pulse2317/PR140 measures canonical resident Arrangement rendering on Apple M5
@@ -2504,3 +2538,29 @@ substantially. Higher-capacity admission remains blocked on actual throughput
 and native evidence in Pulse2226/2108; no ceiling is raised. Future optimization
 needs to preserve both steady and retarget performance, with this all-active
 control included.
+
+## Device sample-peak handoffs — 13 October 2026
+
+Short cloud/headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed CPUs),
+Rust 1.94.0 release, existing `profile_lattice_effects` workload: 100 resident
+looping tracks, 48 kHz, 128-frame blocks, 100 warmup and 2000 measured blocks.
+Parent source 6574f27; candidate adds explicit `--meters` diagnostics. Other host
+load was uncontrolled; these are separate single runs, with no Cargo running
+during the final candidate timing capture.
+The runs are bounded throughput evidence, not a stable regression gate.
+
+| Case | Before p50 µs | Candidate, meters off p50 µs | Meters on p50 µs |
+| --- | ---: | ---: | ---: |
+| No effects | 35.384 | 35.063 | 35.013 |
+| 100 Saturators | 111.979 | 111.979 | 175.345 |
+| 100 Compressors | 442.278 | 438.964 | 500.818 |
+| 100 Gates | 98.279 | 99.720 | 161.734 |
+| 100 Gate+Compressor chains | 479.655 | 475.039 | 613.657 |
+
+All three runs match the independent whole-run oracle exactly and retain identical
+PCM hashes; the 300-stateful-processor case remains refused. No sampled block
+exceeded 2666.667 µs; enabled peak handoffs add roughly 0.62–0.69 µs per effect at p50
+in these runs. Raw logs are retained in `artifacts/device-gain-meters/` (ignored).
+This does not cover dense memoryless chains, native UI workload, instrument tap
+normalization, physical audio deadlines or Apple Silicon timing. The demo render
+profile also completed; native deadline/listening acceptance remains open.

@@ -54,6 +54,9 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    view.device_panel
+        .meter_states
+        .retain(|id, _| alive.contains(id));
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()
@@ -167,6 +170,7 @@ pub(super) fn render(
         )
         .child(add_button);
     let chain = super::return_drag::render_chain(view, cx, return_id, &devices);
+    let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));
@@ -448,16 +452,24 @@ pub(super) fn render_return_effect(
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
+    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width))
+        .w(px(frame_width + super::gain_meters::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
         .flex_shrink_0()
         .capture_any_mouse_down(device_selection_listener(id, cx))
         .child(rendered)
+        .child(super::gain_meters::render(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Effect,
+        ))
 }
 
 fn render_return_add_menu(

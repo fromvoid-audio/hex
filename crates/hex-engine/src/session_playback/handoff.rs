@@ -1574,9 +1574,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -1654,8 +1652,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                     || tail_runtime_bytes
-                        > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                        > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                     || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1758,9 +1755,7 @@ impl SessionPlayback {
                 .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
@@ -1879,9 +1874,7 @@ impl SessionPlayback {
                 .checked_add(runtime.max_active_occurrences())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes
-                    > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS
-                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 || reserved_tail_voices > self.release_capacity
             {
