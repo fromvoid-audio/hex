@@ -347,7 +347,6 @@ impl SessionPlayback {
             let track = tracks
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let mix = track.mix();
             let capture_id = OutputCaptureId::Track(self.route_scratch[index].id);
             let stateful_effects = self
                 .device_chains
@@ -362,10 +361,14 @@ impl SessionPlayback {
             let buffered = stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
+                || track.has_gain_automation()
                 || metered_instrument;
             let ordered = track.requires_ordered_processing();
-            let already_mixed =
-                metered_instrument && !ordered && !stateful_effects && track.sends().is_empty();
+            let already_mixed = metered_instrument
+                && !ordered
+                && !stateful_effects
+                && track.sends().is_empty()
+                && !track.has_gain_automation();
             while self
                 .release_scratch
                 .get(release_cursor)
@@ -649,6 +652,15 @@ impl SessionPlayback {
                     }
                 }
                 for (frame_index, source) in render_output.iter().copied().enumerate() {
+                    let mix = if track.has_gain_automation() {
+                        track.mix_at(
+                            arrangement_frame
+                                .checked_add(frame_index as u64)
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                        )
+                    } else {
+                        track.mix()
+                    };
                     if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
@@ -671,7 +683,12 @@ impl SessionPlayback {
                 }
                 if let Some(capture) = capture.as_mut() {
                     if !already_mixed {
-                        for frame in render_output.iter_mut() {
+                        for (frame_index, frame) in render_output.iter_mut().enumerate() {
+                            let mix = track.mix_at(
+                                arrangement_frame
+                                    .checked_add(frame_index as u64)
+                                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                            );
                             *frame = mix.apply_frame(*frame);
                         }
                     }
@@ -1018,6 +1035,63 @@ impl SessionPlayback {
                 capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
             }
         }
+        let arrangement = self.revision.arrangement();
+        if !arrangement.return_feed_plan.is_empty() {
+            for &index in arrangement.return_feed_plan.order() {
+                let bus = &arrangement.return_buses()[index];
+                let frames = &mut self.return_scratch[index][..output.len()];
+                let chain = self
+                    .return_chains
+                    .get_mut(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if let Some(observer) = observer.as_mut() {
+                    let mut observe = |owner, device_id, device_type, offset, frames: &[Frame]| {
+                        observer(
+                            crate::PostNodeIdentity::new(owner, device_id, device_type),
+                            offset,
+                            frames,
+                        );
+                    };
+                    chain.process_block_observed(frames, frame_offset, &mut observe);
+                } else {
+                    chain.process_block(frames);
+                }
+                if let Some(matrix) = bus.matrix {
+                    matrix.apply_block(frames);
+                }
+                if bus.muted {
+                    frames.fill([0.0; 2]);
+                } else {
+                    for frame in frames {
+                        frame[0] *= bus.gain;
+                        frame[1] *= bus.gain;
+                    }
+                }
+                if let Some(capture) = capture.as_mut() {
+                    capture.add(
+                        OutputCaptureId::Return(bus.id),
+                        frame_offset,
+                        &self.return_scratch[index][..output.len()],
+                    )?;
+                }
+                arrangement.return_feed_plan.propagate(
+                    index,
+                    &mut self.return_scratch,
+                    output.len(),
+                );
+            }
+            let count = output.len();
+            for frames in &self.return_scratch {
+                for (destination, source) in output.iter_mut().zip(&frames[..count]) {
+                    destination[0] += source[0];
+                    destination[1] += source[1];
+                }
+            }
+            // Captured chains feed Main only, never any current or old edge.
+            self.return_effect_tails
+                .render_chunk(output, frame_offset, capture)?;
+            return Ok(());
+        }
         for (index, bus) in self
             .revision
             .arrangement()
@@ -1340,6 +1414,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(arrangement_frame, output, page_provider)
+                    } else if track.has_gain_automation() {
+                        // This is the raw source stage; the buffered caller applies gain once.
+                        track.render_additive_with_midi_floor(arrangement_frame, output, None)
                     } else {
                         track.render_additive(arrangement_frame, output)
                     }

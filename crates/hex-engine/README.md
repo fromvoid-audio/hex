@@ -465,3 +465,27 @@ are charged to preroll accounting; handoff/render never resize or drop their
 allocations. Stop and accepted seek clear the current transition. Arrangement,
 Session and output capture use the same sampled frame. See
 [contract and validation gaps](../../docs/operator-enable-continuation.md).
+
+`SessionPlayback` and `playback::Playback` expose the combined borrowed
+`render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>` path. It uses
+the existing Session render transaction with both inputs; page and observer
+borrows are never retained. Observer code must not allocate, block, clone owners
+or retain sample slices. Post-node samples are speculative until both block
+render and caller final-output validation succeed. With no Session runtime,
+Playback's new observed path refuses before output/clock/provider/state mutation;
+with no observer it preserves existing page rendering. Existing public methods
+retain their contracts. This adds no stream dependency or native admission.
+
+Canonical stereo Return feeds use a bounded control-prepared topological plan
+with pinned ready ties in Arrangement and prepared Session/export kernels.
+Post-chain/matrix/gain/mute source output feeds destination input additively;
+current Main sums stay pinned, master runs once, and captured old chains remain
+Main-only. The no-feed loops keep their original arithmetic order. See
+[routing](../../docs/routing.md); this adds no latency compensation or native
+deadline/listening evidence.
+
+Prepared track-gain lanes apply absolute sample-offset gain once after devices
+and before Main/sends in Arrangement, Session and export. No-automation paths
+remain; detached tails freeze the effective transition gain. Actual prepared knot
+capacity is reported separately from process memory and native deadline evidence.
+See [track gain automation](../../docs/track-gain-automation.md).

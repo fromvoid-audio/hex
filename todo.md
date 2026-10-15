@@ -1,3 +1,16 @@
+## 2026-10-15 — #2537 approved backend prerequisite extraction
+
+- Ported required routing/Return-feed/gain-envelope backend contracts from the
+  retained foundation, with neutral provenance metadata for lossless old saves;
+  no importer, typing, presets, accessibility or associated UI was imported.
+- Normal save schema23 preserves both host gains and selected backend fields.
+  Frozen main17–19 and foundation18–22 readers preserve their distinct shapes.
+  Five golden byte fixtures were generated with the exact original encoders.
+- Project/storage tests, targeted gain/Return playback and metered automation
+  capture tests, affected strict Clippy and architecture/GPUI/UI guards pass.
+  This is a source checkpoint; full final CI, tracked roots and downstream
+  delivery remain open. See docs/streaming-prerequisite-integration.md.
+
 ## PR164 review fixes — 15 october 2026
 
 Stopped/reset analytic enable edits now begin next playback at the target

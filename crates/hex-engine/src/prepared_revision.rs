@@ -114,6 +114,8 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
+        crate::gain_envelope::validate_project(project)?;
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
         let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
@@ -201,6 +203,8 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
+        crate::gain_envelope::validate_project(project)?;
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
         let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(

@@ -1205,3 +1205,6 @@ mod render_diagnostic_tests {
 }
 
 mod analytic_import;
+
+#[cfg(test)]
+mod return_feed_tests;

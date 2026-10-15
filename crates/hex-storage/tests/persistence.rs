@@ -83,6 +83,33 @@ fn assert_empty_session(project: &Project) {
 }
 
 fn remove_schema_seventeen_routes(document: &mut serde_json::Value) {
+    document.as_object_mut().unwrap().remove("routing");
+    document
+        .as_object_mut()
+        .unwrap()
+        .remove("import_provenance");
+    for track in document["tracks"].as_array_mut().unwrap() {
+        track.as_object_mut().unwrap().remove("gain_envelope");
+        for device in track
+            .get_mut("devices")
+            .and_then(|v| v.as_array_mut())
+            .into_iter()
+            .flatten()
+        {
+            device.as_object_mut().unwrap().remove("input_gain_millidb");
+            device
+                .as_object_mut()
+                .unwrap()
+                .remove("output_gain_millidb");
+        }
+        if let Some(device) = track.get_mut("instrument").filter(|v| !v.is_null()) {
+            device.as_object_mut().unwrap().remove("input_gain_millidb");
+            device
+                .as_object_mut()
+                .unwrap()
+                .remove("output_gain_millidb");
+        }
+    }
     document.as_object_mut().unwrap().remove("return_tracks");
     for track in document["tracks"].as_array_mut().unwrap() {
         track.as_object_mut().unwrap().remove("sends");
@@ -149,7 +176,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -167,13 +194,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
 
     let mut schema_sixteen = json.clone();
     schema_sixteen["version"] = 16.into();
-    schema_sixteen
-        .as_object_mut()
-        .unwrap()
-        .remove("return_tracks");
-    for track in schema_sixteen["tracks"].as_array_mut().unwrap() {
-        track.as_object_mut().unwrap().remove("sends");
-    }
+    remove_schema_seventeen_routes(&mut schema_sixteen);
     let migrated = decode(&serde_json::to_vec(&schema_sixteen).unwrap()).unwrap();
     assert!(migrated.return_tracks().is_empty());
     assert!(migrated.tracks()[0].sends().is_empty());
@@ -328,7 +349,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -531,7 +552,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -593,7 +614,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -625,7 +646,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
 #[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     json["version"] = 13.into();
     remove_schema_seventeen_routes(&mut json);
     for track in json["tracks"].as_array_mut().unwrap() {
@@ -769,7 +790,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 23);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -896,8 +917,8 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
-    json["version"] = 20.into();
+    assert_eq!(json["version"], 23);
+    json["version"] = 24.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     remove_schema_seventeen_routes(&mut json);
@@ -1019,7 +1040,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 19);
+    assert_eq!(current_json["version"], 23);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
@@ -1584,6 +1605,11 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     assert_eq!(restored.device(id).unwrap().state().input_gain_db(), 3.0);
     let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     legacy["version"] = 17.into();
+    legacy.as_object_mut().unwrap().remove("routing");
+    legacy.as_object_mut().unwrap().remove("import_provenance");
+    for track in legacy["tracks"].as_array_mut().unwrap() {
+        track.as_object_mut().unwrap().remove("gain_envelope");
+    }
     legacy["tracks"][0]["devices"][0]
         .as_object_mut()
         .unwrap()

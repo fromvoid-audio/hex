@@ -53,7 +53,9 @@ refuse that identifier in device-owned descriptors. Registry migration and
 ordinary parameter edits preserve trim. DSP configuration identities explicitly
 exclude it so changing host gain does not replace instruments or filter history.
 
-Project schema 19 writes `input_gain_millidb` and `output_gain_millidb` alongside each device envelope.
+Project schema23 writes required `input_gain_millidb` and `output_gain_millidb` alongside each device envelope, together with routing, gain envelopes and provenance.
+The published main17–19 gain envelopes remain readable through their frozen
+strict lineage; see [backend integration](streaming-prerequisite-integration.md).
 Older schemas default the field to zero; invalid gains refuse loading. Native,
 Arrangement, Session and prepared export share pre/post-device trim processing. Instrument input gain affects incoming audio;
 MIDI-generated voices retain their synthesis level and respond to output gain.
