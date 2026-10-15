@@ -738,8 +738,38 @@ outside the existing runtime 32MiB cap; caller prepared/construction reservation
 and all other existing caps remain unchanged. Unsupported ownership still refuses
 complete accounting/admission.
 
-Remaining finite assembly work: Return/feed graph, restricted Arrangement Project
-and PreparedRevision/root construction, explicit empty preview provenance and
-root descriptors. Full cross-ledger allocation/handle obligations, all ending
-lifetime cases, production admission/readiness/preroll, and optimized native
-100-track mixed-rate/edit/seek/launch/fault/deadline acceptance are still pending.
+`with_audio_return_inventory()` further composes private actual Return buses and
+the existing ReturnFeedPlan representation into that same retained preparation
+custodian. Every bus field is explicit: canonical ID, authored gain/mute, absent
+matrix, and one distinct constructor-tracked allocated empty chain. Device-bearing
+Returns remain refused. Scalar metadata exposes buses, canonical indices and
+feed values only; no ReturnBus, plan, Arc or mutable/cloneable owner escapes.
+
+The new private feed constructor borrows the validated canonical Project without
+a snapshot clone or temporary owning graph. It pre-reserves persistent per-source
+feed buffers, final outgoing headers, topological order and indegree/visited
+scratch. Copies land directly in those fields; local identity/endpoint/gain/pair
+checks and deterministic Kahn ordering precede installation. Unique feed sort
+keys preserve the legacy ordering without a temporary stable-sort allocation.
+All destinations are validated before fixed vector moves into the actual plan.
+Legacy Return preparation and propagation kernels are unchanged; tests compare
+actual plans and propagation, including backward canonical-index edges, empty,
+disconnected and the existing maximum sixteen-Return DAG.
+
+Control cleanup unpacks the actual plan into vacant persistent vector fields,
+returns each nested feed backing to its original source row, and clears only
+exhaustively scalar leaves. Buses dispose Pending-before-take under the existing
+borrowed root catch. Partial copies, partially installed buses, an installed plan
+and spare buffers remain accounted through failure/cancellation. Panic retains
+remaining owners, first payload and irreversible pending state without retry;
+original bank recovery still requires actual normal alias cleanup. Reports add
+actual row/order/outgoing/feed/scratch capacities, chain declarations and separate
+physical handle obligations, including retained spares and checked old/new growth
+overlap. These are stated data-accounting charges, not allocator/RSS measurements.
+No callback or publication path changes, caps increase or completeness is implied.
+
+Remaining finite assembly work: restricted Arrangement Project and
+PreparedRevision/root construction, explicit empty preview provenance and root
+descriptors. Full cross-ledger allocation/handle obligations, all ending lifetime
+cases, production admission/readiness/preroll, and optimized native 100-track
+mixed-rate/edit/seek/launch/fault/deadline acceptance are still pending.

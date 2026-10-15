@@ -1,5 +1,6 @@
 //! Private final Arrangement clip owners; not a Track/Project or publication.
 //! Every Box and paired destination exists before any source alias moves.
+pub(super) mod returns;
 pub(super) mod tracks;
 use super::*;
 use crate::{Clip, ClipMetadata, owned_shared::SharedDeclaration};
@@ -8,6 +9,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArrangementClipCapacity {
     pub tracks: tracks::ArrangementTrackCapacity,
+    pub returns: returns::ArrangementReturnCapacity,
     pub pair_backing_bytes: usize,
     pub metadata_pointee_bytes: usize,
     pub previous_growth_backing_bytes: usize,
@@ -17,6 +19,7 @@ impl ArrangementClipCapacity {
         self.pair_backing_bytes
             .checked_add(self.metadata_pointee_bytes)
             .and_then(|n| n.checked_add(self.tracks.bytes().ok()?))
+            .and_then(|n| n.checked_add(self.returns.bytes().ok()?))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -51,6 +54,7 @@ enum Phase {
 pub(super) struct ArrangementClips {
     rows: Vec<Pair>,
     tracks: tracks::TrackAssembly,
+    returns: returns::ReturnAssembly,
     phase: Phase,
     growth: usize,
     cursor: usize,
@@ -88,6 +92,7 @@ impl ArrangementClips {
                 })?;
         Ok(ArrangementClipCapacity {
             tracks: self.tracks.capacity(growth)?,
+            returns: self.returns.capacity(growth)?,
             pair_backing_bytes: self
                 .rows
                 .capacity()
@@ -101,6 +106,14 @@ impl ArrangementClips {
             previous_growth_backing_bytes: if growth {
                 self.growth
                     .checked_add(self.tracks.capacity(true)?.previous_growth_backing_bytes)
+                    .and_then(|n| {
+                        n.checked_add(
+                            self.returns
+                                .capacity(true)
+                                .ok()?
+                                .previous_growth_backing_bytes,
+                        )
+                    })
                     .ok_or(AudioStorageError::Overflow)?
             } else {
                 0
@@ -113,6 +126,7 @@ impl ArrangementClips {
         inputs: &OwnedAudioInputs,
         project: &hex_project::Project,
         tracks: bool,
+        returns: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || !self.rows.is_empty()
@@ -199,6 +213,9 @@ impl ArrangementClips {
         if tracks {
             self.tracks.reserve(project, &self.rows)?;
         }
+        if returns {
+            self.returns.reserve(project)?;
+        }
         #[cfg(test)]
         if self.mismatch {
             if let Some(r) = self.rows.first_mut() {
@@ -216,6 +233,7 @@ impl ArrangementClips {
         slots: &mut [SourceSlot],
         inputs: &OwnedAudioInputs,
         tracks: bool,
+        returns: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Reserved || self.rows.len() != slots.len() {
             return Err(AudioStorageError::Capacity);
@@ -315,12 +333,19 @@ impl ArrangementClips {
         if tracks {
             self.tracks.construct(&mut self.rows)?;
         }
+        if returns {
+            self.returns.construct()?;
+        }
         Ok(())
     }
     pub(super) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        if self.returns.has_next() {
+            self.returns.dispose_next()?;
+            return Ok(());
+        }
         if self.tracks.has_next() {
             self.tracks.dispose_next(&mut self.rows)?;
             return Ok(());
@@ -406,6 +431,7 @@ impl ArrangementClips {
         {
             return Err(AudioStorageError::Capacity);
         }
+        self.returns.clear_disposed()?;
         self.tracks.clear_disposed()?;
         self.rows.clear();
         self.cursor = 0;
@@ -414,6 +440,9 @@ impl ArrangementClips {
     }
     pub(super) fn installed(&self) -> usize {
         self.rows.iter().filter(|r| r.clip.is_some()).count() + self.tracks.installed_clips()
+    }
+    pub(super) fn return_metadata(&self) -> Option<returns::ArrangementReturnMetadata<'_>> {
+        self.returns.metadata()
     }
     pub(super) fn track_metadata(
         &self,

@@ -20,6 +20,7 @@ mod structure_tests;
 mod tempo_tests;
 pub use arrangement_clips::{
     ArrangementClipCapacity,
+    returns::{ArrangementReturnCapacity, ArrangementReturnMetadata, ReturnFeedCapacity},
     tracks::{ArrangementTrackCapacity, ArrangementTrackMetadata},
 };
 #[cfg(test)]
@@ -77,6 +78,7 @@ struct Stages {
     assemble_session: bool,
     assemble_arrangement: bool,
     assemble_tracks: bool,
+    assemble_returns: bool,
 }
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
@@ -128,6 +130,12 @@ impl<'a> AudioArrangementInput<'a> {
     pub fn with_audio_track_inventory(self) -> Self {
         let mut input = self.with_audio_clip_inventory();
         input.stages.assemble_tracks = true;
+        input
+    }
+    /// Add sealed Return buses/feed plan; no Project/root publication capability.
+    pub fn with_audio_return_inventory(self) -> Self {
+        let mut input = self.with_audio_track_inventory();
+        input.stages.assemble_returns = true;
         input
     }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
@@ -251,8 +259,9 @@ impl AudioPreparationCustody {
             && token.incarnation == self.incarnation
             && self.phase != AudioPreparationPhase::Vacant
     }
-    /// Before bank consumption, only scalar draft rows are allocated. Every
-    /// identity, geometry and storage refusal returns the EXACT original bank.
+    /// Before bank consumption, draft and constructor owners stay in persistent
+    /// custody. Every identity, geometry and storage refusal returns the EXACT
+    /// original bank; incomplete draft cleanup remains retained separately.
     /// Fatal OOM/abort is outside the recoverable API contract.
     pub fn begin_arrangement_on_control(
         &mut self,
@@ -274,6 +283,7 @@ impl AudioPreparationCustody {
             assemble_session,
             assemble_arrangement,
             assemble_tracks,
+            assemble_returns,
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
@@ -320,11 +330,17 @@ impl AudioPreparationCustody {
                 } else {
                     0
                 };
+                let return_handles = if assemble_returns {
+                    project.return_tracks().len()
+                } else {
+                    0
+                };
                 let handles = inputs
                     .owning_handle_count()
                     .checked_add(slots.len())
                     .and_then(|n| n.checked_add(self.session.capacity.reserved_handle_destinations))
                     .and_then(|n| n.checked_add(track_handles))
+                    .and_then(|n| n.checked_add(return_handles))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -336,8 +352,13 @@ impl AudioPreparationCustody {
                     )?;
                 }
                 if assemble_arrangement {
-                    self.arrangement_clips
-                        .reserve(&slots, &inputs, project, assemble_tracks)?;
+                    self.arrangement_clips.reserve(
+                        &slots,
+                        &inputs,
+                        project,
+                        assemble_tracks,
+                        assemble_returns,
+                    )?;
                 }
                 Ok(())
             }));
@@ -463,6 +484,7 @@ impl AudioPreparationCustody {
                         .as_ref()
                         .ok_or(AudioStorageError::SourceMismatch)?,
                     assemble_tracks,
+                    assemble_returns,
                 )?;
             }
             if include_session {
@@ -949,6 +971,12 @@ impl AudioPreparationCustody {
         self.reason = None;
         self.phase = AudioPreparationPhase::Vacant;
         Some(bank)
+    }
+    pub fn arrangement_return_metadata(&self) -> Option<ArrangementReturnMetadata<'_>> {
+        if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
+            return None;
+        }
+        self.arrangement_clips.return_metadata()
     }
     pub fn arrangement_track_metadata(&self, index: usize) -> Option<ArrangementTrackMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {

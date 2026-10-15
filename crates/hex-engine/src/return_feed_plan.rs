@@ -1,6 +1,7 @@
 //! Control-side plan for the admitted stereo, post-Return additive feed DAG.
 //! Existing track sends and Main summation remain owned by their old kernels.
 use crate::{Frame, Invalid};
+pub(crate) mod persistent;
 mod storage;
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +66,13 @@ impl ReturnFeedPlan {
                 .map_err(|error| Invalid(error.0))?;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_edges(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
+        self.outgoing
+            .iter()
+            .enumerate()
+            .flat_map(|(source, v)| v.iter().map(move |f| (source, f.destination, f.id, f.gain)))
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.order.is_empty()
