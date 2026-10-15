@@ -100,11 +100,26 @@ impl SessionPlayback {
             let PreparedMidiNote::Shared {
                 context: SharedContextRef::Revision(index),
                 note,
+                binding: crate::midi_note_bank::AnalyticBinding::Current,
+                ..
             } = sampler
             else {
                 compatible = false;
                 return Ok(());
             };
+            if previous
+                .analytic_continuations
+                .get(usize::from(index))
+                .copied()
+                .flatten()
+                .is_some_and(|r| {
+                    r.elapsed_at(previous.performance_frame)
+                        .map_or(true, |n| n < r.duration())
+                })
+            {
+                compatible = false;
+                return Ok(());
+            }
             let context = previous
                 .revision
                 .session()

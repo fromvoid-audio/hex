@@ -79,6 +79,17 @@ pub(crate) fn render_streamed_page_span(
     output: &mut [Frame],
     pages: &mut (impl MediaPages + ?Sized),
 ) -> usize {
+    render_streamed_page_span_captured(mix, source, span, output, pages, None)
+}
+
+pub(crate) fn render_streamed_page_span_captured(
+    mix: PreparedTrackMix,
+    source: &StreamedSourceMetadata,
+    span: StreamedPageSpan<'_>,
+    output: &mut [Frame],
+    pages: &mut (impl MediaPages + ?Sized),
+    mut capture: Option<&mut [Frame]>,
+) -> usize {
     let StreamedPageSpan {
         source_frame,
         timeline_frame,
@@ -115,7 +126,13 @@ pub(crate) fn render_streamed_page_span(
                     sample[1] *= gain;
                 }
             }
-            mix.add_unmuted(destination, sample);
+            mix.add_captured(
+                destination,
+                sample,
+                capture
+                    .as_deref_mut()
+                    .and_then(|frames| frames.get_mut(output_offset + offset)),
+            );
         }
         incomplete = !valid || available < count;
     }
@@ -609,10 +626,14 @@ impl PreparedTrackMix {
         ]
     }
 
-    fn add_unmuted(self, destination: &mut Frame, source: Frame) {
+    fn add_captured(self, destination: &mut Frame, source: Frame, capture: Option<&mut Frame>) {
         let source = self.apply_frame(source);
         destination[0] += source[0];
         destination[1] += source[1];
+        if let Some(capture) = capture {
+            capture[0] += source[0];
+            capture[1] += source[1];
+        }
     }
 
     fn without_effects(self) -> Self {
@@ -927,6 +948,7 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_additive_with_suppressions_and_pages(
         &self,
         start_frame: u64,
@@ -934,6 +956,7 @@ impl Track {
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         pages: Option<&mut (impl MediaPages + ?Sized)>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -946,12 +969,13 @@ impl Track {
                 self.render_audio_range(start_frame, end_frame, output);
             }
             self.render_instrument_range_with_suppressions(
-                start_frame,
-                end_frame,
+                (start_frame, end_frame),
                 output,
                 None,
                 performance_frame,
                 suppressions,
+                None,
+                continuations,
             )?;
         }
         Ok(())
@@ -986,6 +1010,42 @@ impl Track {
         Ok(())
     }
 
+    // The direct Main fast path taps each existing source addition once. It
+    // does not regroup sources into a track buffer (which changes rounding).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_additive_captured<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        performance_frame: u64,
+        output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+        pages: Option<&mut P>,
+        capture: &mut [Frame],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<(), Invalid> {
+        let end_frame = start_frame
+            .checked_add(
+                u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?,
+            )
+            .ok_or(Invalid("render range overflow"))?;
+        if capture.len() != output.len() {
+            return Err(Invalid("capture length mismatch"));
+        }
+        if !self.source_mix.muted {
+            self.render_audio_range_captured(start_frame, end_frame, output, pages, Some(capture));
+            self.render_instrument_range_with_suppressions(
+                (start_frame, end_frame),
+                output,
+                None,
+                performance_frame,
+                suppressions,
+                Some(capture),
+                continuations,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn render_audio_additive_with_pages(
         &self,
         start_frame: u64,
@@ -1000,24 +1060,27 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_instrument_additive_with_suppressions(
         &self,
         start_frame: u64,
         performance_frame: u64,
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
         self.render_instrument_range_with_suppressions(
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             output,
             None,
             performance_frame,
             suppressions,
+            None,
+            continuations,
         )
     }
 
@@ -1070,9 +1133,42 @@ impl Track {
     }
 
     fn render_audio_range(&self, start_frame: u64, end_frame: u64, output: &mut [Frame]) {
+        self.render_audio_range_captured::<dyn MediaPages>(
+            start_frame,
+            end_frame,
+            output,
+            None,
+            None,
+        );
+    }
+
+    fn render_audio_range_captured<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        mut capture: Option<&mut [Frame]>,
+    ) {
+        if let Some(pages) = pages {
+            self.render_audio_range_with_pages_captured(
+                start_frame,
+                end_frame,
+                output,
+                pages,
+                capture,
+            );
+            return;
+        }
         for clip in &self.clips {
             if !clip.is_streamed() {
-                self.render_resident_clip(clip, start_frame, end_frame, output);
+                self.render_resident_clip(
+                    clip,
+                    start_frame,
+                    end_frame,
+                    output,
+                    capture.as_deref_mut(),
+                );
             }
         }
     }
@@ -1096,9 +1192,26 @@ impl Track {
         output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
     ) {
+        self.render_audio_range_with_pages_captured(start_frame, end_frame, output, pages, None);
+    }
+
+    fn render_audio_range_with_pages_captured(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: &mut (impl MediaPages + ?Sized),
+        mut capture: Option<&mut [Frame]>,
+    ) {
         for clip in &self.clips {
             if !clip.is_streamed() {
-                self.render_resident_clip(clip, start_frame, end_frame, output);
+                self.render_resident_clip(
+                    clip,
+                    start_frame,
+                    end_frame,
+                    output,
+                    capture.as_deref_mut(),
+                );
                 continue;
             }
             let Some(metadata) = clip.metadata.as_deref() else {
@@ -1144,7 +1257,7 @@ impl Track {
                 };
                 let count = remaining.min(until_wrap);
                 let output_offset = (position - start_frame) as usize;
-                let rendered = render_streamed_page_span(
+                let rendered = render_streamed_page_span_captured(
                     self.source_mix,
                     source,
                     StreamedPageSpan {
@@ -1156,6 +1269,7 @@ impl Track {
                     },
                     output,
                     pages,
+                    capture.as_deref_mut(),
                 );
                 if rendered == 0 {
                     break;
@@ -1171,6 +1285,7 @@ impl Track {
         start_frame: u64,
         end_frame: u64,
         output: &mut [Frame],
+        mut capture: Option<&mut [Frame]>,
     ) {
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
@@ -1191,17 +1306,33 @@ impl Track {
                 let gain = fade.gain_at(position - clip.start);
                 sample[0] *= gain;
                 sample[1] *= gain;
-                self.source_mix.add_unmuted(frame, sample);
+                self.source_mix.add_captured(
+                    frame,
+                    sample,
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         } else if source_phase == 0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix
-                    .add_unmuted(frame, clip.at(span_start + offset as u64, 0));
+                self.source_mix.add_captured(
+                    frame,
+                    clip.at(span_start + offset as u64, 0),
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         } else {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix
-                    .add_unmuted(frame, clip.at(span_start + offset as u64, source_phase));
+                self.source_mix.add_captured(
+                    frame,
+                    clip.at(span_start + offset as u64, source_phase),
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         }
     }
@@ -1214,23 +1345,26 @@ impl Track {
         midi_onset_floor_exclusive: Option<u64>,
     ) {
         let _ = self.render_instrument_range_with_suppressions(
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             output,
             midi_onset_floor_exclusive,
             0,
             &[],
+            None,
+            &[],
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_instrument_range_with_suppressions(
         &self,
-        start_frame: u64,
-        end_frame: u64,
+        (start_frame, end_frame): (u64, u64),
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
         performance_frame: u64,
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        mut capture: Option<&mut [Frame]>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
@@ -1244,6 +1378,7 @@ impl Track {
                 let chunk_performance_frame = performance_frame
                     .checked_add(chunk_start - start_frame)
                     .ok_or(Invalid("midi performance frame overflow"))?;
+                let mut failure = None;
                 instrument.for_each_intersecting(
                     chunk_start,
                     chunk_end,
@@ -1272,20 +1407,40 @@ impl Track {
                         };
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            if let Some(sample) = voice.sample(
+                            let Some(absolute) =
+                                chunk_performance_frame.checked_add(frame_position - chunk_start)
+                            else {
+                                failure = Some(Invalid("midi performance frame overflow"));
+                                return;
+                            };
+                            match voice.sample_at(
                                 &instrument.shared_contexts,
                                 &[],
+                                continuations,
+                                absolute,
                                 relative,
                                 span.gate_end - span.start,
                             ) {
-                                self.source_mix.add_unmuted(
-                                    &mut target[(frame_position - chunk_start) as usize],
-                                    sample,
-                                );
+                                Ok(sample) => {
+                                    self.source_mix.add_captured(
+                                        &mut target[(frame_position - chunk_start) as usize],
+                                        sample,
+                                        capture.as_deref_mut().and_then(|frames| {
+                                            frames.get_mut((frame_position - start_frame) as usize)
+                                        }),
+                                    );
+                                }
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return;
+                                }
                             }
                         }
                     },
                 );
+                if let Some(error) = failure {
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -2393,7 +2548,8 @@ pub use session_inventory::{
 };
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
-    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, SessionHandoffReport, SessionPendingRouteStatus,
-    SessionPlayback, SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner,
-    SessionRouteStatus, SessionRouteTarget,
+    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };

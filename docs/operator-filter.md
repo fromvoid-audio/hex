@@ -48,16 +48,16 @@ fully dry sampling takes the original path bit-for-bit and parks filter historie
 
 ## State, edits and ownership
 
-Version11 has 400 bytes: the exact 364-byte v7 prefix followed by nine
+Version11 has 416 bytes: the exact 380-byte v8 prefix followed by nine
 little-endian u32 words. Seven words encode enabled, type, slope, circuit,
 frequency f32 bits, resonance f32 bits and morph f32 bits. Word7 is reserved zero;
 word8 is a strict Boolean continuation flag. Enabling latches that flag so later
 bypass remains in the mutable runtime and can finish its dry fade. Editing an
 inactive, never-enabled filter does not select mutable processing. Legacy versions
-1–7 migrate to disabled/unarmed defaults; malformed inactive values are also
-rejected. Unregistered reserved versions8–10 are rejected, not reinterpreted.
-Parallel enable/harmonic/global/pitch work must explicitly reconcile formats when
-integrated. Filter parameter IDs20001–20007 avoid those lanes' reserved IDs.
+1–8 migrate to disabled/unarmed defaults; malformed inactive values are also
+rejected. Unregistered reserved versions9–10 are rejected, not reinterpreted.
+Oscillator enable v8 is integrated; parallel harmonic/global/pitch work must
+explicitly reconcile formats when integrated. Filter parameter IDs20001–20007 avoid those lanes' reserved IDs.
 Undo of the very first enable can restore an unarmed analytic state; that class
 exit retains the host’s existing admission policy while voices are active.
 Seeking an active mutable voice likewise explicitly refuses rather than clearing
@@ -81,7 +81,8 @@ ages/gates and bounded occurrence ledger. It copies phases and ages, not replaye
 PCM; the boundary sample is dry and subsequent samples fade into zero-state
 filters. Existing feedback/LFO activation copies recurrence and clocks, including
 an in-progress supported feedback ramp. Changed/ambiguous sources, pending
-launches or competing retained releases do not take this bridge. Every preflight
+launches, active analytic enable-coefficient continuations or competing retained
+releases do not take this bridge. Every preflight
 is read-only; both candidate twins must accept before mutation. Providers that do
 not opt in keep their prior behavior. Analytic continuity descriptors are built
 on control within the existing track/clip/device/source bounds. No old owner is
@@ -111,12 +112,19 @@ Linux source checks cannot establish them. See the PR's exact-commit full local
 CI report and retained profiler output for measured evidence.
 
 
-Initial x86_64 Linux release sample: 8 tracks × 16 voices × four active operators,
-128-frame blocks, 100 warm-up / 1000 measured blocks at 48 kHz. Feedback-only
-measured 2227.146 ms total (2227.146 us/block), filtered morph/24-slope/Q-resonance80
-measured 2687.472 ms (2687.472 us/block), +20.7%. Preparation measured0.225/0.230 ms.
-Declared feedback pair8064 bytes, filtered pair12640 bytes (including both banks,
-coefficient and parameter ramps). This is offline elapsed throughput in this
-shared Linux environment: the filtered sample exceeded the2.667 ms block period;
-no CPAL deadline guarantee, native Mac baseline or optimized-production claim.
-Reproduce with `cargo run --release -p hex-engine --example profile_operator_filter --locked`.
+Three x86_64 Linux release runs after integrating oscillator enable: 8 tracks ×
+16 voices × four active operators, 128-frame blocks, 100 warm-up / 1000 measured
+blocks at 48 kHz. Median elapsed totals were2240.932 ms feedback-only versus
+2700.423 ms filtered morph/24-slope/resonance80 (+20.5%). Filtered mean block
+cost ranged2671.729–2769.145 us; p99 ranged3700.352–3935.917 us and maximum
+5483.642–8398.079 us. Baseline p99 ranged3241.139–5939.040 us, maximum
+4945.741–20935.685 us, illustrating shared-host scheduling outliers. Preparation
+was0.211–0.226 ms baseline /0.200–0.203 ms filtered. Declared feedback pair8064
+bytes, filtered pair12752 bytes including both banks and ramps. These offline
+results approach/exceed the2666.667 us block period and do not prove CPAL
+physical deadlines or a native Mac baseline. Reproduce with
+`cargo run --release -p hex-engine --example profile_operator_filter --locked`.
+
+Oscillator-enable PR164 merged during implementation and is included in this
+branch. The combined state retains its full enable suffix, and filter voices
+carry enable reversals through the same current-parameter transition.

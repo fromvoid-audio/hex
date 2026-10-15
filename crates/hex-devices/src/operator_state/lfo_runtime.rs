@@ -24,6 +24,7 @@ pub(super) struct OperatorLfoFactory {
     table: &'static SineTable,
     base: [u8; FEEDBACK_PAYLOAD_BYTES],
     lfo: LfoSettings,
+    enabled: super::enable::EnableSettings,
     feedback: [f64; 4],
     release: u64,
     rate: u32,
@@ -48,6 +49,7 @@ pub(super) fn prepare_factory(
             .try_into()
             .map_err(|_| DeviceContractError::MalformedState)?,
         lfo: settings.lfo,
+        enabled: settings.enabled,
         feedback: settings.effective_feedback().map(f64::from),
         rate,
         filter: settings
@@ -90,6 +92,32 @@ struct Runtime<const N: usize = VOICES> {
     voices: [Voice; N],
     phase: Phase,
     filter: Option<Box<FilterBank<N>>>,
+    enable_ramp: Option<EnableRamp>,
+}
+
+/// One owner-level ramp, shared by all current notes, including new onsets.
+/// A copied twin carries the actual clock; another toggle collapses its scalar
+/// boundary without retaining an old factory or allocating a voice ramp.
+#[derive(Clone, Copy)]
+struct EnableRamp {
+    start: [f64; 4],
+    elapsed: u32,
+    frames: u32,
+}
+
+impl EnableRamp {
+    fn levels(self, target: [f64; 4]) -> [f64; 4] {
+        if self.elapsed >= self.frames {
+            return target;
+        }
+        if self.elapsed == 0 {
+            return self.start;
+        }
+        let amount = f64::from(self.elapsed) / f64::from(self.frames);
+        std::array::from_fn(|index| {
+            self.start[index] + (target[index] - self.start[index]) * amount
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -160,6 +188,7 @@ impl OperatorLfoFactory {
             voices: [Voice::default(); N],
             phase: Phase::default(),
             filter: self.filter.map(|p| Box::new(FilterBank::new(p))),
+            enable_ramp: None,
         }
     }
 }
@@ -241,8 +270,12 @@ impl<const N: usize> Runtime<N> {
             && self.factory.rate == other.factory.rate
             && std::ptr::eq(self.factory.table, other.factory.table)
     }
+    fn current_levels(&self) -> [f64; 4] {
+        let target = self.factory.configuration.effective_oscillator_levels();
+        self.enable_ramp.map_or(target, |r| r.levels(target))
+    }
     fn current_parameters(&self) -> crate::fm4::OperatorFeedbackParameters {
-        self.filter.as_ref().and_then(|b| b.parameters).map_or_else(
+        let p = self.filter.as_ref().and_then(|b| b.parameters).map_or_else(
             || {
                 self.factory
                     .configuration
@@ -250,7 +283,12 @@ impl<const N: usize> Runtime<N> {
                     .expect("validated factory parameters")
             },
             ParameterRamp::value,
-        )
+        );
+        if self.enable_ramp.is_some() {
+            p.with_oscillator_levels(self.current_levels())
+        } else {
+            p
+        }
     }
     fn copy(&mut self, other: &Self) {
         let target = self
@@ -264,7 +302,16 @@ impl<const N: usize> Runtime<N> {
             .feedback_parameters(other.factory.feedback)
             .expect("validated source parameters");
         let parameters = if target == old_target {
-            other.filter.as_ref().and_then(|b| b.parameters)
+            if let Some(ramp) = other.enable_ramp {
+                Some(ParameterRamp {
+                    start: other.current_parameters(),
+                    target,
+                    elapsed: 0,
+                    frames: ramp.frames - ramp.elapsed,
+                })
+            } else {
+                other.filter.as_ref().and_then(|b| b.parameters)
+            }
         } else {
             Some(ParameterRamp {
                 start: other.current_parameters(),
@@ -275,6 +322,11 @@ impl<const N: usize> Runtime<N> {
         };
         self.voices = other.voices;
         self.phase = other.phase;
+        self.enable_ramp = if self.filter.is_none() {
+            other.enable_ramp
+        } else {
+            None
+        };
         if let Some(bank) = self.filter.as_deref_mut() {
             if let Some(old) = other.filter.as_deref() {
                 *bank = *old;
@@ -427,6 +479,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             voices: self.voices,
             phase: self.phase,
             filter: None,
+            enable_ramp: None,
         };
         let mut offset = 0;
         for event in events {
@@ -504,11 +557,13 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                 law.rate() / f64::from(self.factory.rate)
             };
             let filter_frame = self.filter.as_ref().map(|bank| bank.frame());
-            let parameters = self
-                .filter
-                .as_ref()
-                .and_then(|b| b.parameters)
-                .map(ParameterRamp::value);
+            let parameters = if self.enable_ramp.is_some()
+                || self.filter.as_ref().is_some_and(|b| b.parameters.is_some())
+            {
+                Some(self.current_parameters())
+            } else {
+                None
+            };
             let adjusted =
                 parameters.map(|p| self.factory.configuration.with_runtime_parameters(p));
             let configuration = adjusted.as_ref().unwrap_or(&self.factory.configuration);
@@ -579,6 +634,12 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                     bank.parameters = None;
                 }
             }
+            if let Some(ramp) = &mut self.enable_ramp {
+                ramp.elapsed += 1;
+                if ramp.elapsed >= ramp.frames {
+                    self.enable_ramp = None;
+                }
+            }
             self.phase.advance(delta);
             self.expire();
         }
@@ -586,6 +647,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
     fn reset(&mut self) {
         self.voices = [Voice::default(); N];
         self.phase = Phase::default();
+        self.enable_ramp = None;
         if let (Some(bank), Some(p)) = (self.filter.as_deref_mut(), self.factory.filter) {
             *bank = FilterBank::new(p);
         }
@@ -598,6 +660,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             self.compatible_base(p)
                 && self.factory.lfo == p.factory.lfo
                 && self.factory.filter == p.factory.filter
+                && self.factory.enabled == p.factory.enabled
         })
     }
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
@@ -620,7 +683,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             return false;
         }
         if let Some(p) = previous.as_any().downcast_ref::<Self>() {
-            return (self.filter.is_some() || self.compatible_base(p))
+            return (self.filter.is_some() || (p.filter.is_none() && self.compatible_base(p)))
                 && self.factory.rate == p.factory.rate
                 && std::ptr::eq(self.factory.table, p.factory.table)
                 && self
@@ -635,8 +698,13 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                 .as_any()
                 .downcast_ref::<super::feedback_runtime::OperatorFeedbackRuntime>()
                 .is_some_and(|p| {
-                    p.filter_seeds(&self.factory.base, self.factory.rate, self.factory.table)
-                        .is_some()
+                    p.filter_seeds(
+                        &self.factory.base,
+                        &self.factory.configuration,
+                        self.factory.rate,
+                        self.factory.table,
+                    )
+                    .is_some()
                 })
     }
     fn retarget_history_from(
@@ -648,14 +716,27 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             return;
         }
         if let Some(p) = previous.as_any().downcast_ref::<Self>() {
+            let changed = self.factory.enabled != p.factory.enabled;
+            let boundary = p.current_levels();
             self.copy(p);
+            if changed && self.filter.is_none() {
+                self.enable_ramp = Some(EnableRamp {
+                    start: boundary,
+                    elapsed: 0,
+                    frames: (self.factory.rate * 5 + 500) / 1000,
+                });
+            }
             return;
         }
         if let Some(old) = previous
             .as_any()
             .downcast_ref::<super::feedback_runtime::OperatorFeedbackRuntime>()
-            && let Some(seeds) =
-                old.filter_seeds(&self.factory.base, self.factory.rate, self.factory.table)
+            && let Some(seeds) = old.filter_seeds(
+                &self.factory.base,
+                &self.factory.configuration,
+                self.factory.rate,
+                self.factory.table,
+            )
         {
             for (voice, seed) in self.voices.iter_mut().zip(seeds) {
                 *voice = seed.map_or(Voice::default(), |seed| Voice {
@@ -700,6 +781,10 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "lfo_enable_tests.rs"]
+mod enable_tests;
 
 #[cfg(test)]
 mod tests {
@@ -892,10 +977,9 @@ mod tests {
                     original.lfo.0[5] = amount.to_bits();
                     let mut payload = original.base.to_vec();
                     original.lfo.append(&mut payload);
-                    crate::operator_filter::Settings::default().append(&mut payload);
                     let state = hex_lattice_contract::NativeDeviceState::new(
                         super::super::OPERATOR_TYPE_ID,
-                        super::super::OPERATOR_STATE_VERSION,
+                        super::super::LFO_STATE_VERSION,
                         payload,
                     )
                     .unwrap();

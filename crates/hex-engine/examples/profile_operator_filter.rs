@@ -51,17 +51,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         for _ in 0..100 {
             playback.render(&mut pcm)?;
         }
+        let mut block_us = [0.0_f64; 1000];
         let start = Instant::now();
-        for _ in 0..1000 {
+        for sample in &mut block_us {
+            let block_start = Instant::now();
             playback.render(&mut pcm)?;
             black_box(&pcm);
+            *sample = block_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
         let elapsed = start.elapsed();
+        block_us.sort_by(f64::total_cmp);
         println!(
-            "filter={filtered} tracks=8 voices_per_track=16 operators=4 block=128 blocks=1000 prepare_ms={:.3} total_ms={:.3} mean_block_us={:.3} pair_bytes={} arch={} os={}",
+            "filter={filtered} tracks=8 voices_per_track=16 operators=4 block=128 blocks=1000 prepare_ms={:.3} total_ms={:.3} mean_block_us={:.3} p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} pair_bytes={} arch={} os={}",
             preparation.as_secs_f64() * 1000.0,
             elapsed.as_secs_f64() * 1000.0,
             elapsed.as_secs_f64() * 1000.0,
+            block_us[500],
+            block_us[950],
+            block_us[990],
+            block_us[999],
             factory.declared_twin_bytes() * 2,
             std::env::consts::ARCH,
             std::env::consts::OS

@@ -277,3 +277,59 @@ fn operator_filter_imports_released_analytic_voice_with_original_gate_and_finite
             .all(|f| *f == [0.0; 2])
     );
 }
+
+#[test]
+fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
+    let source = fixture();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepared = revision(&source, Arc::clone(&table));
+    let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut old, 128);
+    let mut editor = Editor::new(source, 16).unwrap();
+    let instrument = editor.project().tracks()[0].instrument().unwrap();
+    let device = instrument.id();
+    let state = OPERATOR_METADATA
+        .patch_parameter(
+            instrument.state(),
+            ParameterId::from_static(513),
+            ParameterValue::Bool(false),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState { device, state })
+        .unwrap();
+    let changed = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(prepared.session()),
+        )
+        .unwrap(),
+    );
+    let mut active = SessionPlayback::new(Arc::clone(&changed)).unwrap();
+    active.try_inherit_state_from(&mut old).unwrap();
+    render_checkpoint_prefix(&mut active, 17);
+    assert!(
+        active
+            .analytic_continuations
+            .iter()
+            .flatten()
+            .any(|r| r.elapsed_at(active.performance_frame()).unwrap() < r.duration())
+    );
+    let filtered = Arc::new(
+        PreparedRevision::prepare(
+            &enable(editor.project()),
+            &BTreeMap::new(),
+            table,
+            Some(changed.session()),
+        )
+        .unwrap(),
+    );
+    let mut next = SessionPlayback::new(filtered).unwrap();
+    let before = active.performance_frame();
+    assert!(next.try_inherit_state_from(&mut active).is_err());
+    assert_eq!(active.performance_frame(), before);
+    assert!(active.mutable_instruments[0].is_none());
+}

@@ -14,6 +14,11 @@ pub struct OperatorFeedbackParameters {
 }
 
 impl OperatorFeedbackParameters {
+    pub(crate) fn with_oscillator_levels(mut self, levels: [f64; OPERATORS]) -> Self {
+        self.oscillator_levels = levels;
+        self
+    }
+
     pub(crate) fn interpolate(self, target: Self, elapsed: u32, frames: u32) -> Self {
         if elapsed == 0 {
             return self;

@@ -45,7 +45,7 @@ impl Field {
         matches!(self, Self::Time | Self::Tone | Self::Volume)
     }
 
-    const ALL: [Self; 10] = [
+    pub(in crate::editor::device_panel) const ALL: [Self; 10] = [
         Self::PitchEnvelope,
         Self::Spread,
         Self::Transpose,
@@ -112,7 +112,7 @@ pub(in crate::editor::device_panel) enum Switch {
 }
 
 impl Switch {
-    const fn index(self) -> usize {
+    pub(in crate::editor::device_panel) const fn index(self) -> usize {
         match self {
             Self::Pitch => 0,
         }

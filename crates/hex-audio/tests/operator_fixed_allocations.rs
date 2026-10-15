@@ -165,6 +165,12 @@ fn operator_filter_first_activation_import_allocates_and_deallocates_nothing()
     Ok(())
 }
 
+#[test]
+fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
+-> Result<(), Box<dyn Error>> {
+    operator_modulation_allocations(None, false, false, false)
+}
+
 fn operator_modulation_allocations(
     lfo_sync: Option<bool>,
     filter: bool,
@@ -276,7 +282,16 @@ fn operator_modulation_allocations(
     for block in 0..80 {
         control.reclaim();
         let mut accepted = None;
-        if (lfo_sync.is_some() || filter) && (2..5).contains(&block) {
+        // Reversal occurs before the 240-frame coefficient transition finishes.
+        // The second pair straddles note-off at frame 6000, covering release too.
+        let edit = match block {
+            5 | 46 => Some((513, ParameterValue::Bool(false))),
+            6 | 47 => Some((513, ParameterValue::Bool(true))),
+            2..=4 if filter => Some((20005, ParameterValue::Float(200.0 * block as f32))),
+            2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
+            _ => None,
+        };
+        if let Some((parameter, value)) = edit {
             let current = editor
                 .project()
                 .track(track)
@@ -286,12 +301,8 @@ fn operator_modulation_allocations(
             let state = hex_engine::patch_native_device_parameter_for_class(
                 class,
                 current,
-                ParameterId::from_static(if filter { 20_005 } else { 87 }),
-                ParameterValue::Float(if filter {
-                    200.0 * block as f32
-                } else {
-                    20.0 * block as f32
-                }),
+                ParameterId::from_static(parameter),
+                value,
             )?;
             let state = if filter && activate_later && block == 2 {
                 hex_engine::patch_native_device_parameter_for_class(
@@ -314,7 +325,7 @@ fn operator_modulation_allocations(
             let mut next_oracle = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
             next_oracle
                 .try_inherit_runtime_from(&mut oracle)
-                .map_err(|_| "lfo oracle transfer refused")?;
+                .map_err(|_| "operator oracle transfer refused")?;
             accepted = Some(
                 control
                     .publish_with_policy_and_context_generation(
@@ -331,11 +342,11 @@ fn operator_modulation_allocations(
         oracle.render(&mut expected)?;
         let counts = measure(|| {
             callback.begin_block();
-            callback.render(&mut output).expect("feedback render");
+            callback.render(&mut output).expect("operator render");
         });
         assert!(
             output == expected,
-            "lfo callback transfer PCM block={block} accepted={accepted:?} applied={}",
+            "operator callback transfer PCM block={block} accepted={accepted:?} applied={}",
             control.status.applied_revision.load(Ordering::Acquire)
         );
         if let Some(accepted) = accepted {

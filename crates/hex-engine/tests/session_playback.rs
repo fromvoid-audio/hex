@@ -800,6 +800,12 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
             quantization: LaunchQuantization::FourQuarter,
         })
         .expect("queue first track transition");
+    let pending = playback
+        .route_status(0)
+        .expect("first track route")
+        .pending
+        .expect("queued first-track stop");
+    assert_eq!(pending.performance_frame, 192_000);
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
             clip: other_session,
@@ -807,6 +813,10 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
         })
         .expect("select second Session source");
     for _ in 0..64 {
+        let mut onset = [[0.0; 2]; 1];
+        playback
+            .render(&mut onset)
+            .expect("sound second-track onset");
         playback
             .apply(SessionPlaybackCommand::StopTrack {
                 track: other_track,
@@ -821,6 +831,10 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
             .expect("relaunch second Session source");
     }
     assert_eq!(playback.release_voice_count(), 64);
+    let mut onset = [[0.0; 2]; 1];
+    playback
+        .render(&mut onset)
+        .expect("sound final second-track onset");
     playback
         .apply(SessionPlaybackCommand::StopTrack {
             track: other_track,
@@ -833,10 +847,24 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
         Some(SessionPlaybackOwner::Silence)
     );
 
-    let mut to_pending_frame = vec![[0.0; 2]; 72_001];
+    assert_eq!(
+        playback.route_status(0).expect("first track route").pending,
+        Some(pending)
+    );
+    assert_eq!(playback.performance_frame(), 120_065);
+    let remaining = usize::try_from(192_001 - playback.performance_frame())
+        .expect("remaining frames fit the fixture buffer");
+    let mut to_pending_frame = vec![[0.0; 2]; remaining];
     playback
         .render(&mut to_pending_frame)
         .expect("expire reservations and apply pending transition");
+    assert!(
+        to_pending_frame
+            .iter()
+            .take(128)
+            .any(|frame| frame[0].abs() > 1.0e-6)
+    );
+    assert_eq!(to_pending_frame.last(), Some(&[0.0; 2]));
     assert_eq!(playback.performance_frame(), 192_001);
     assert_eq!(playback.release_voice_count(), 0);
     assert_eq!(
@@ -886,6 +914,10 @@ fn outgoing_voice_order_remains_partition_exact_after_repeated_same_track_cuts()
             .expect("select Session source");
         playback.apply(SessionPlaybackCommand::Play).expect("play");
         for _ in 0..8 {
+            let mut onset = [[0.0; 2]; 1];
+            playback
+                .render(&mut onset)
+                .expect("sound both source onsets");
             playback
                 .apply(SessionPlaybackCommand::StopTrack {
                     track: fixture.track,
@@ -899,6 +931,7 @@ fn outgoing_voice_order_remains_partition_exact_after_repeated_same_track_cuts()
                 })
                 .expect("relaunch source");
         }
+        assert_eq!(playback.release_voice_count(), 16);
     }
     let mut expected = vec![[0.0; 2]; 128];
     let mut actual = expected.clone();

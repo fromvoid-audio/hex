@@ -12,10 +12,10 @@ transport-specific behavior and remaining Operator behavior remain separate work
 The registered Clean carrier filter and its state extension are defined in
 [Operator filter](operator-filter.md).
 
-`hex.instrument.operator`, state version11, owns exactly400 bytes. Its 36-byte
-filter suffix follows the unchanged version7 prefix described below. State
-versions8–10 remain reserved and are rejected until their own migrations are
-integrated. The version7 prefix owns exactly364 bytes: the original
+`hex.instrument.operator`, state version11, owns exactly416 bytes. Its 36-byte
+filter suffix follows the unchanged 380-byte version8 prefix, which adds four
+strict enable words to the 364-byte v7 prefix described below. State versions9–10
+remain reserved and rejected. The v7 prefix contains the original
 224-byte version1 prefix of 56 little-endian f32 fields, four little-endian u32
 waveform choices (version2's 240-byte prefix), then four 12-byte tuning records.
 Each tuning record stores a u32 fixed flag, f32 frequency in Hz, and f32 multiplier.
@@ -27,7 +27,7 @@ operator order; the next16 are source-major modulation depths, including four
 reserved zero diagonal entries; the next4 are carrier weights. The final24 fields of the original prefix are
 initial, peak, sustain, attack, decay and release for each of four operators.
 Parameter IDs are one-based field indices, excluding reserved diagonals; waveform
-selectors use stable IDs57–60. There are88 editable descriptors, including the eleven LFO controls below; the earlier77 comprise52 original floats, four
+selectors use stable IDs57–60. There are92 editable descriptors, including eleven LFO and four oscillator enable controls; the earlier77 comprise52 original floats, four
 waveform choices (`sine`, `saw`, `square`, `triangle`) and one derived routing
 preset choice (`custom`, `serial`, `parallel`, `two pairs`), plus four fixed switches and eight
 frequency/multiplier floats. Tuning uses stable IDs62–73. Routing preset ID61
@@ -51,7 +51,7 @@ readback to `custom` unless it exactly matches a named layout. See the
 Every decode, migration and patch validates all fields and the acyclic routing
 graph. Unknown types/versions, wrong lengths, nonfinite values, invalid ranges,
 invalid diagonal routing and cycles are refused. Patches return a new opaque state, leaving
-the original intact on failure. Migration accepts versions1–7. Versions1–3
+the original intact on failure. Migration accepts versions1–8 and11. Versions1–3
 preserve their in-range existing prefix byte-for-byte and append neutral amplitude-
 velocity amounts; version3 fixed tuning remains intact. Version4 is validated
 as an exact 304-byte prefix and migrates with neutral feedback. Version5 validates
@@ -88,3 +88,24 @@ editable field, malformed data, atomic cycle refusal and exact round trips.
 Independent PCM coverage includes the device kernel and registered Arrangement,
 Session, seek, loop and old-context handoff paths. Native listening and full Live
 feature parity remain open.
+
+## oscillator-enable suffix — Pulse2335 / draft PR164
+
+Version8 appends four strict little-endian u32 boolean words to the exact364-byte
+version7 prefix, in oscillator order a/b/c/d at offsets364/368/372/376. Stable
+IDs513–516 use Boolean descriptors and default true. IDs93–512 remain reserved
+for the separate harmonic work; version9 may append its suffix after all380
+prefix bytes. Versions1–7 migrate with all four flags enabled. Wrong lengths,
+nonbinary words, wrong parameter types and future versions refuse atomically.
+Authored levels/routing/tuning/feedback/envelopes/LFO bytes remain independent
+and unchanged. LFO decoding remains fixed to[320,364) for versions>=7; legacy
+envelope clamping retains its literal<6 cutoff.
+
+The integrated source masks effective DSP levels without changing authored
+levels. Compatible active analytic notes use provider-approved coefficient
+continuation; mutable feedback/LFO voices adopt the same five-millisecond ramp.
+Canonical badge/history/save fixtures are present. Focused provider, mutable and
+engine tests passed before the subsequent transition-table storage repair; final
+post-repair validation and native interaction/listening remain open. See
+[enable requirements](operator-enable.md) and
+[continuation contract and evidence](operator-enable-continuation.md).

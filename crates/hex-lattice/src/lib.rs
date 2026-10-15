@@ -8,6 +8,13 @@ pub use meter::DeviceMeter;
 use std::any::Any as StdAny;
 use std::fmt;
 
+mod analytic_continuation;
+pub use analytic_continuation::{
+    ANALYTIC_CONTINUATION_WORDS, AnalyticContinuation, AnalyticContinuationError,
+    AnalyticContinuationFormat, AnalyticContinuationId, AnalyticParameterFrame,
+    MAX_ANALYTIC_CONTINUATION_FRAMES, PreparedAnalyticContinuation,
+};
+
 /// A registered memoryless linear effect definition. Implementations own their
 /// parameter codec in the contract trait and prepare a validated matrix here.
 pub trait NativeDeviceDefinition: NativeDeviceMetadata {

@@ -155,7 +155,11 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
             .unwrap(),
         ParameterValue::Bool(false)
     );
-    for version in [8, 9, 10, 12] {
+    let v8 =
+        NativeDeviceState::new(OPERATOR_TYPE_ID, 8, current.payload()[..380].to_vec()).unwrap();
+    let migrated_v8 = OPERATOR_METADATA.migrate_state(&v8).unwrap();
+    assert_eq!(&migrated_v8.payload()[..380], v8.payload());
+    for version in [9, 10, 12] {
         assert!(
             OperatorSettings::from_state(
                 &NativeDeviceState::new(OPERATOR_TYPE_ID, version, migrated.payload().to_vec())
@@ -168,7 +172,9 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
         OPERATOR_METADATA
             .descriptors()
             .iter()
-            .all(|d| d.id.value() <= 92 || d.id.value() >= 20001)
+            .all(|d| d.id.value() <= 92
+                || (513..=516).contains(&d.id.value())
+                || d.id.value() >= 20001)
     );
 }
 
@@ -189,19 +195,17 @@ fn filter_level_carrier_and_feedback_edits_keep_actual_in_flight_boundary() {
         &mut [[0.0; 2]; 123],
     );
     for (id, value) in [
-        (2, 0.3),
-        (29, 0.2),
-        (78, 0.7),
-        (2, 0.8),
-        (29, 0.9),
-        (78, 0.1),
+        (2, ParameterValue::Float(0.3)),
+        (29, ParameterValue::Float(0.2)),
+        (78, ParameterValue::Float(0.7)),
+        (513, ParameterValue::Bool(false)),
+        (513, ParameterValue::Bool(true)),
+        (2, ParameterValue::Float(0.8)),
+        (29, ParameterValue::Float(0.9)),
+        (78, ParameterValue::Float(0.1)),
     ] {
         s = OPERATOR_METADATA
-            .patch_parameter(
-                &s,
-                ParameterId::from_static(id),
-                ParameterValue::Float(value),
-            )
+            .patch_parameter(&s, ParameterId::from_static(id), value)
             .unwrap();
         let f = factory(&s);
         let mut next = f.create_runtime();

@@ -170,6 +170,7 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
     let revision = state.revision;
+    let original = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
@@ -190,6 +191,32 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
             assert_eq!(view.device_panel.operator_pages[&device].page, page)
         });
         assert_eq!(focused(&mut visual), target);
+    }
+    // Badge keyboard activation is navigation only. Mouse enable toggles
+    // must not leak into Enter/Space or create a canonical history operation.
+    for operator in 0..4 {
+        for key in ["enter", "space"] {
+            let target = editor.read_with(cx, |view, _| {
+                view.device_panel.operator_navigation_focus[&(
+                    device,
+                    operator_panel::NavigationTarget::Oscillator(operator),
+                )]
+                    .clone()
+            });
+            visual.update(|window, _| target.focus(window));
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.device_panel.operator_pages[&device].selected_operator,
+                    operator
+                );
+                assert_eq!(view.state.as_ref().unwrap().revision, revision);
+                assert_eq!(view.state.as_ref().unwrap().project, original);
+                assert_eq!(view.worker_requests_pending, 0);
+            });
+            assert_eq!(focused(&mut visual), target);
+        }
     }
     let parameter = hex_lattice_contract::ParameterId::from_static(2);
     enter_typed_value(&mut visual, device, parameter, "invalid");
@@ -801,4 +828,28 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     editor.read_with(cx, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, changed)
     });
+    let path = std::env::temp_dir().join(format!(
+        "hex-filter-{}-{}.hex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    let reload = Service::new(48000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened.state.project.device(device).unwrap().state(),
+        changed.device(device).unwrap().state()
+    );
+    std::fs::remove_file(path).unwrap();
 }

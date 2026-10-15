@@ -7,7 +7,7 @@ instrument and settings. Internal Operator module names and reference research
 still use the historical name.
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes95 descriptors and opaque version11 state.
+catalog. The control codec exposes99 descriptors and opaque version11 state.
 Versions1–4 migrate with neutral feedback; versions1–3 also receive neutral
 amplitude velocity. Storage, history and UI use generic native-device contracts.
 

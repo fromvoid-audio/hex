@@ -163,10 +163,12 @@ impl OperatorFeedbackRuntime {
     pub(super) fn filter_seeds(
         &self,
         base: &[u8; FEEDBACK_PAYLOAD_BYTES],
+        configuration: &PreparedOperatorConfiguration,
         rate: u32,
         table: &SineTable,
     ) -> Option<[Option<super::FilterVoiceSeed>; MAX_VOICES]> {
-        if &self.compatibility_state != base
+        if !self.configuration.identical_to(configuration)
+            || &self.compatibility_state != base
             || self.sample_rate != rate
             || !std::ptr::eq(self.sine_table, table)
         {

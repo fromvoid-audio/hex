@@ -61,6 +61,13 @@ pub trait PreparedSharedAnalyticContext: Send + Sync {
     fn import_identity(&self) -> Option<&dyn std::any::Any> {
         None
     }
+    /// Optional provider-defined coefficient continuation. Default providers
+    /// retain their immutable sampler law across publication. Opted-in methods
+    /// must be bounded, read-only and allocation-free, including refusal paths.
+    fn analytic_continuation(&self) -> Option<&dyn crate::PreparedAnalyticContinuation> {
+        None
+    }
+
     /// Total bytes owned by this context, including allocations reachable only
     /// through it. The host checks this against its finite per-context limit.
     fn declared_context_bytes(&self) -> usize;
