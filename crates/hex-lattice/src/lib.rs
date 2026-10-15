@@ -181,7 +181,8 @@ pub trait NativeProcessorAudition: Send {
 
 /// Maximum admitted stateful instances in one runtime bank.
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
-/// Maximum control-declared storage for one runtime twin.
+/// Maximum control-declared storage for one effect runtime twin. Mutable
+/// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the

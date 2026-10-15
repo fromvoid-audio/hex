@@ -367,6 +367,34 @@ fresh for new input. This avoids using one filter history for both the outgoing
 old signal and the candidate signal when an effect moves across the instrument
 gap.
 
+### variable-size mutable runtime admission
+
+Pulse #2589 / [PR242](https://github.com/PORTALSURFER/hex/pull/242) separates
+instrument memory requirements from the effect-only 4 KiB per-twin ceiling.
+`PreparedMutableInstrumentRuntime::declared_twin_bytes` specifies the runtime
+object plus all owned fixed buffers for one copy. The engine checks twice that
+declaration before constructing either committed or scratch runtime and checks
+the constructed pair's reported storage against the declaration. A larger
+instrument consumes more of the existing aggregate pool; it does not receive a
+new fixed allowance or a free shared-root allocation.
+
+Active mutable instrument pairs and stateful effect pairs together retain the
+256-instance and 2 MiB declared DSP-storage limits. Prepared-revision validation
+and playback construction sum checked paired declarations before constructing
+instrument runtimes. A single instrument may consume the whole pool, leaving no
+bytes for another stateful device. Effects and Return effects retain their
+independent 4 KiB per-twin checks. Voice/event limits, codecs and DSP laws do not
+change. This policy permits memory requirements above 8 KiB per instrument pair;
+it does not admit the unfinished Operator filter or raise Operator polyphony.
+
+Checkpoint accounting still includes both runtime copies and occurrence ledgers
+under the separate 256 KiB store / 512 KiB restore-operation bounds. A device
+can fit playback yet refuse checkpoint capture before factory construction.
+Preroll preflight also charges the larger declaration. Retarget proofs retain
+their independent bounds. Preparation and final retirement remain on control;
+callback copying/resetting must stay allocation-free. Memory fit does not prove
+that copying or processing a large state meets a physical audio deadline.
+
 Mutable tail groups share the 256-group/stateful-instance ceiling and 2 MiB
 declared twin-storage ceiling. Each live mutable owner reserves its declared
 maximum of 64 voices against the existing 16,384-entry release bank. Preflight
