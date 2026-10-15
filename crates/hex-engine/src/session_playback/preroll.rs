@@ -241,6 +241,7 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
@@ -318,6 +319,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, analytic_import::ImportPlan::preflight_bytes()?)?;
     checked_add(&mut total, PREROLL_SCRATCH_BYTES)?;
     let add_vec = |total: &mut usize, count: usize, item_size: usize| -> Option<()> {
         checked_add(total, count.checked_mul(item_size)?)

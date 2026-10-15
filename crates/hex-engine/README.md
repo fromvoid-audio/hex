@@ -489,3 +489,9 @@ and before Main/sends in Arrangement, Session and export. No-automation paths
 remain; detached tails freeze the effective transition gain. Actual prepared knot
 capacity is reported separately from process memory and native deadline evidence.
 See [track gain automation](../../docs/track-gain-automation.md).
+
+Analytic-to-mutable handoff uses candidate-owned fixed seed/proof buffers reserved
+on control. Both preflight and commit fill borrowed scratch and return eligibility,
+so neither creates or returns large inline plans on the callback stack. Actual
+capacities and the checked preflight bound are charged to preroll storage; declined
+queries reset the valid prefix, and handoff never resizes or drops the buffers.

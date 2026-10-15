@@ -2615,3 +2615,15 @@ not complete Operator filter2326, higher-polyphony2226 or scalability2108.
   See docs/operator-filter.md for finite pre-envelope output-tail law, explicit
   active-seek/class-exit refusals, offline overhead and native/reference gaps.
   Exact final full local CI and guarded native delivery evidence belongs to PR212.
+
+
+### 2026-10-15 — default-stack analytic-import handoff repair (Pulse #2611)
+
+- Current main `db16a68` reproduced a macOS default test-thread stack overflow in
+  `mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_suffix`;
+  both full local CI and the exact single test aborted before the repair.
+- Moved analytic seed/proof plans into control-reserved candidate-owned scratch,
+  reusing it for both handoff phases and charging its actual/preflight backing.
+  Refused plans reset their valid prefix; no callback allocation or cap increase.
+- Canonical PR #243 owns this focused fix. Exact-source full local CI and optimized
+  guarded delivery are required; source tests do not establish native listening.
