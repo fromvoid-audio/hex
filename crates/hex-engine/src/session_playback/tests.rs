@@ -10810,3 +10810,6 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
 
 #[path = "instrument_memory_budget_tests.rs"]
 mod instrument_memory_budget_tests;
+
+#[path = "operator_filter_tests.rs"]
+mod operator_filter_tests;
