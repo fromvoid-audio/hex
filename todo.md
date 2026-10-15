@@ -11,6 +11,18 @@ The user subsequently authorized its documentation-only PR231 merge, subject to
 required exact-source local CI. Runtime implementation, native delivery and
 full streaming completion remain open; #24's review holds are preserved.
 
+## CLAP admission contract — 15 october 2026
+
+Pulse #2523 / PR218 defines the [foreign-module admission and containment
+contract](docs/clap-admission.md): a proposed finite macOS arm64 offline guest
+profile, byte custody, filesystem/network/IPC authority, descendant/resource
+limits, cleanup/refusal states and eleven qualification canaries. The foreign
+allowlist remains empty. No plugin was loaded and no native containment evidence
+is claimed. PR199/#20 and PR193/#21 remain canonical frozen implementation
+history; compiler/SDK notices and eight ignored Mac fixture tests remain separate
+gates. Documentation validation and required local-CI results are recorded with
+the exact PR candidate in Pulse; this entry is not a check-pass assertion.
+
 ## device chain pan and bottom navigator — 13 october 2026
 
 Track and return device chains now share middle-button horizontal drag panning and
