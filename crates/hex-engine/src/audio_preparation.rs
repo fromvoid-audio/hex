@@ -79,6 +79,7 @@ struct Stages {
     assemble_arrangement: bool,
     assemble_tracks: bool,
     assemble_returns: bool,
+    assemble_preview: bool,
 }
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
@@ -136,6 +137,13 @@ impl<'a> AudioArrangementInput<'a> {
     pub fn with_audio_return_inventory(self) -> Self {
         let mut input = self.with_audio_track_inventory();
         input.stages.assemble_returns = true;
+        input
+    }
+    /// Assemble an actual sealed empty MIDI preview for the audio-only class.
+    /// Root/shared-graph assembly, complete accounting and admission stay gated.
+    pub fn with_audio_preview_inventory(self) -> Self {
+        let mut input = self.with_audio_return_inventory();
+        input.stages.assemble_preview = true;
         input
     }
     pub fn refuse(self, reason: AudioStorageError) -> Box<AudioArrangementRefusal> {
@@ -284,6 +292,7 @@ impl AudioPreparationCustody {
             assemble_arrangement,
             assemble_tracks,
             assemble_returns,
+            assemble_preview,
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
@@ -341,6 +350,7 @@ impl AudioPreparationCustody {
                     .and_then(|n| n.checked_add(self.session.capacity.reserved_handle_destinations))
                     .and_then(|n| n.checked_add(track_handles))
                     .and_then(|n| n.checked_add(return_handles))
+                    .and_then(|n| n.checked_add(usize::from(assemble_preview)))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -358,6 +368,7 @@ impl AudioPreparationCustody {
                         project,
                         assemble_tracks,
                         assemble_returns,
+                        assemble_preview,
                     )?;
                 }
                 Ok(())
@@ -485,6 +496,7 @@ impl AudioPreparationCustody {
                         .ok_or(AudioStorageError::SourceMismatch)?,
                     assemble_tracks,
                     assemble_returns,
+                    assemble_preview,
                 )?;
             }
             if include_session {
@@ -971,6 +983,12 @@ impl AudioPreparationCustody {
         self.reason = None;
         self.phase = AudioPreparationPhase::Vacant;
         Some(bank)
+    }
+    pub fn audio_preview_metadata(&self) -> Option<crate::AudioPreviewMetadata> {
+        if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {
+            return None;
+        }
+        self.arrangement_clips.preview_metadata()
     }
     pub fn arrangement_return_metadata(&self) -> Option<ArrangementReturnMetadata<'_>> {
         if self.phase != AudioPreparationPhase::ArrangementAndSessionSources {

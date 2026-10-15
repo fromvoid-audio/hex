@@ -768,8 +768,30 @@ physical handle obligations, including retained spares and checked old/new growt
 overlap. These are stated data-accounting charges, not allocator/RSS measurements.
 No callback or publication path changes, caps increase or completeness is implied.
 
-Remaining finite assembly work: restricted Arrangement Project and
-PreparedRevision/root construction, explicit empty preview provenance and root
-descriptors. Full cross-ledger allocation/handle obligations, all ending lifetime
-cases, production admission/readiness/preroll, and optimized native 100-track
-mixed-rate/edit/seek/launch/fault/deadline acceptance are still pending.
+`with_audio_preview_inventory()` adds the actual private audio-only
+MidiArrangementPreview value to this same custody, without exposing its legacy
+clip/owner API. Its empty clip slice uses the distinct allocated zero-array
+constructor, with pinned requested-layout declaration and one separately reserved
+owning-handle obligation. Default/raw/empty-Vec preview origins remain Unknown.
+No MIDI content is accepted by this stage. Only a copied clip count is public;
+the preview, nested slice and cloneable legacy clip references cannot escape.
+
+The slice/declaration/handle stays in a persistent reserved field before fixed
+movement into the actual preview value. No new alias or allocation is needed for
+that move. Cleanup validates a vacant persistent destination, unpacks the exact
+slice, then records Pending before disposal under the existing borrowed root
+catch. Construction errors/cancellation retain actual partial custody; panic
+retains the bank, other graph owners, payload and no-retry tombstone. Normal
+cleanup precedes original-bank recovery. Reports separately retain the unresolved
+allocation/handle obligation and declared overhead; inline preview/staging/receipt
+headers are charged once through the existing actual custodian size. Caller and
+construction reservations include this new storage before source aliases move.
+No preview/root shared Arc is created yet, no retirement is asserted and complete
+accounting/admission remains unavailable. Legacy preview construction is unchanged.
+
+Remaining finite assembly work: restricted Arrangement Project scalar metadata,
+final Track/Return/feed/context transfers; PreparedRevision/root shared owners and
+mutable-revision descriptors; preview-root shared allocation. Full cross-ledger
+allocation/handle obligations, all ending lifetime cases, production
+admission/readiness/preroll, and optimized native 100-track mixed-rate
+edit/seek/launch/fault/deadline acceptance are still pending.

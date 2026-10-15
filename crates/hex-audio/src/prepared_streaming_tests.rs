@@ -447,6 +447,83 @@ fn actual_native_pending_slot_hosts_sealed_return_inventory_and_control_recovery
         "hex preparation host evidence: connected_arrangement_return_inventory; supported-controls=completed"
     );
 }
+#[test]
+fn actual_native_pending_slot_hosts_sealed_preview_inventory_and_control_recovery() {
+    if !owning_constructor_available("connected_audio_preview_inventory") {
+        return;
+    }
+    let (project, bank, source_token) = owning_audio_stage_fixture();
+    let track = project.tracks()[0].id();
+    let asset = project.assets().next().unwrap().id();
+    let mut editor = hex_project::Editor::new(project, 16).unwrap();
+    let hex_project::Created::Scene(scene) = editor
+        .execute(hex_project::Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    editor
+        .execute(hex_project::Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "session audio".into(),
+            asset,
+            source_start: 1,
+            source_end: 7,
+        })
+        .unwrap();
+    let hex_project::Created::ReturnTrack(source) = editor
+        .execute(hex_project::Command::AddReturnTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let hex_project::Created::ReturnTrack(destination) = editor
+        .execute(hex_project::Command::AddReturnTrack {
+            name: "destination".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let project = hex_project::Project::from_snapshot(
+        editor
+            .project()
+            .snapshot()
+            .with_return_feed(source, destination, 0.5)
+            .unwrap(),
+    )
+    .unwrap();
+    let original_capacity = bank.capacity_report();
+    let (mut control, mut callback, bridge) = channel_with_streaming(48_000, 1, 3).unwrap();
+    let root = NativeStreamRoot::attach(&mut control, &mut callback, bridge);
+    let token = root
+        .begin_audio_arrangement(
+            hex_engine::AudioArrangementInput::new(&project, 1, bank)
+                .with_audio_preview_inventory(),
+            48_000,
+        )
+        .ok()
+        .unwrap();
+    assert_eq!(
+        root.audio_arrangement_phase(),
+        Some(hex_engine::AudioPreparationPhase::ArrangementAndSessionSources)
+    );
+    assert!(root.cancel_audio_arrangement(&token));
+    assert!(root.recover_audio_arrangement(&token).is_none());
+    let _ = root.tick(false);
+    let bank = root.recover_audio_arrangement(&token).unwrap();
+    assert_eq!(bank.capacity_report(), original_capacity);
+    assert_eq!(bank.owning_handle_count(), 1);
+    assert!(bank.source_view(&source_token).is_ok());
+    eprintln!(
+        "hex preparation host evidence: connected_audio_preview_inventory; supported-controls=completed"
+    );
+}
 impl Drop for FixtureFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);

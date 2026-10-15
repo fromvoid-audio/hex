@@ -1,5 +1,7 @@
 //! Private final Arrangement clip owners; not a Track/Project or publication.
 //! Every Box and paired destination exists before any source alias moves.
+#[cfg(test)]
+mod preview_tests;
 pub(super) mod returns;
 pub(super) mod tracks;
 use super::*;
@@ -10,6 +12,7 @@ use std::sync::Arc;
 pub struct ArrangementClipCapacity {
     pub tracks: tracks::ArrangementTrackCapacity,
     pub returns: returns::ArrangementReturnCapacity,
+    pub preview: crate::midi_preview::persistent::AudioPreviewCapacity,
     pub pair_backing_bytes: usize,
     pub metadata_pointee_bytes: usize,
     pub previous_growth_backing_bytes: usize,
@@ -20,6 +23,7 @@ impl ArrangementClipCapacity {
             .checked_add(self.metadata_pointee_bytes)
             .and_then(|n| n.checked_add(self.tracks.bytes().ok()?))
             .and_then(|n| n.checked_add(self.returns.bytes().ok()?))
+            .and_then(|n| n.checked_add(self.preview.bytes().ok()?))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -55,6 +59,7 @@ pub(super) struct ArrangementClips {
     rows: Vec<Pair>,
     tracks: tracks::TrackAssembly,
     returns: returns::ReturnAssembly,
+    preview: crate::midi_preview::persistent::PreviewCustody,
     phase: Phase,
     growth: usize,
     cursor: usize,
@@ -93,6 +98,7 @@ impl ArrangementClips {
         Ok(ArrangementClipCapacity {
             tracks: self.tracks.capacity(growth)?,
             returns: self.returns.capacity(growth)?,
+            preview: self.preview.capacity()?,
             pair_backing_bytes: self
                 .rows
                 .capacity()
@@ -127,6 +133,7 @@ impl ArrangementClips {
         project: &hex_project::Project,
         tracks: bool,
         returns: bool,
+        preview: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || !self.rows.is_empty()
@@ -216,6 +223,9 @@ impl ArrangementClips {
         if returns {
             self.returns.reserve(project)?;
         }
+        if preview {
+            self.preview.reserve(project)?;
+        }
         #[cfg(test)]
         if self.mismatch {
             if let Some(r) = self.rows.first_mut() {
@@ -234,6 +244,7 @@ impl ArrangementClips {
         inputs: &OwnedAudioInputs,
         tracks: bool,
         returns: bool,
+        preview: bool,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Reserved || self.rows.len() != slots.len() {
             return Err(AudioStorageError::Capacity);
@@ -336,12 +347,19 @@ impl ArrangementClips {
         if returns {
             self.returns.construct()?;
         }
+        if preview {
+            self.preview.construct()?;
+        }
         Ok(())
     }
     pub(super) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        if self.preview.has_next() {
+            self.preview.dispose_next()?;
+            return Ok(());
+        }
         if self.returns.has_next() {
             self.returns.dispose_next()?;
             return Ok(());
@@ -431,6 +449,7 @@ impl ArrangementClips {
         {
             return Err(AudioStorageError::Capacity);
         }
+        self.preview.clear_disposed()?;
         self.returns.clear_disposed()?;
         self.tracks.clear_disposed()?;
         self.rows.clear();
@@ -443,6 +462,9 @@ impl ArrangementClips {
     }
     pub(super) fn return_metadata(&self) -> Option<returns::ArrangementReturnMetadata<'_>> {
         self.returns.metadata()
+    }
+    pub(super) fn preview_metadata(&self) -> Option<crate::AudioPreviewMetadata> {
+        self.preview.metadata()
     }
     pub(super) fn track_metadata(
         &self,

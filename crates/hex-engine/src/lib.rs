@@ -42,6 +42,7 @@ pub use audio_only_inputs::{
 mod owned_prepared;
 mod owned_shared;
 mod pcm_arc;
+pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,

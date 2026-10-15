@@ -2,6 +2,7 @@
 
 use crate::Invalid;
 use hex_project::ClipId;
+pub(crate) mod persistent;
 #[cfg(test)]
 use std::sync::Arc;
 
