@@ -283,7 +283,7 @@ impl SessionSourceConstruction {
                 handle: row.handle,
             });
         }
-        for (index, row) in self.cells.iter_mut().enumerate() {
+        for (_index, row) in self.cells.iter_mut().enumerate() {
             let cache = self
                 .cache
                 .get(row.cache)
@@ -298,16 +298,16 @@ impl SessionSourceConstruction {
             {
                 assert_ne!(
                     self.panic_after_alias,
-                    Some(index),
+                    Some(_index),
                     "Session panic after installed alias"
                 );
-                if self.fail_after_alias == Some(index) {
+                if self.fail_after_alias == Some(_index) {
                     return Err(AudioStorageError::Allocation);
                 }
-                if self.bad_interval == Some(index) {
+                if self.bad_interval == Some(_index) {
                     row.end = u64::MAX;
                 }
-                if self.fail_name == Some(index) {
+                if self.fail_name == Some(_index) {
                     return Err(AudioStorageError::Allocation);
                 }
             }
