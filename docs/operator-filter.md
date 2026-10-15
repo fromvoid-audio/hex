@@ -18,8 +18,9 @@ remains pitch-only. There is no filter envelope, cutoff modulation destination,
 analog saturation or modeled analog circuit in this implementation.
 
 Supported types are low-pass, high-pass, normalized band-pass, notch and morph.
-Supported slopes are one section (12 dB/octave asymptote) or two cascaded sections
-(24 dB/octave asymptote). The only supported circuit is Clean. The old view-only
+The slope labels select one biquadratic section (12) or two cascaded sections
+(24). LP/HP asymptotes are12/24 dB per octave; BP is6/12 dB per octave on each
+side. Notch and morph response follows the selected output mixture. The only supported circuit is Clean. The old view-only
 warm/ms2/sallen-key labels have been removed. Morph crossfades LP → normalized BP
 → HP over 0–100%; at 50% it is BP. Resonance maps to
 `Q = 1/sqrt(2) + (20 - 1/sqrt(2)) * (resonance/100)^2`.
