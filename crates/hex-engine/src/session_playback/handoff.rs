@@ -484,6 +484,38 @@ impl SessionPlayback {
             },
         );
 
+        let mut analytic_import_new_for_old = [usize::MAX; MAX_TRACKS];
+        if !timing_changed {
+            for (old_index, old_route) in previous.routes.iter().enumerate() {
+                let Some(new_index) = self
+                    .routes
+                    .iter()
+                    .position(|route| route.id == old_route.id && route.pending.is_none())
+                else {
+                    continue;
+                };
+                let Some(runtime) = self
+                    .mutable_instruments
+                    .get(new_index)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if let Some(plan) = Self::analytic_import_plan(
+                    previous,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                    &old_clock,
+                    &mut self.spans,
+                )? {
+                    if runtime.can_import_analytic(&plan.seeds[..plan.len]) {
+                        analytic_import_new_for_old[old_index] = new_index;
+                    }
+                }
+            }
+        }
+
         // A retained Session source may already be sounding through a mutable
         // instrument. If the same instrument identity changes to the analytic
         // class, the candidate has no mutable runtime to inherit and an
@@ -638,6 +670,7 @@ impl SessionPlayback {
                 .position(|route| route.id == new_route.id);
             if old_index.is_some_and(|old_index| {
                 mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
                     || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
             }) {
                 continue;
@@ -837,9 +870,11 @@ impl SessionPlayback {
                     .tracks()
                     .get(new_index)
                     .ok_or(SessionPlaybackError::UnknownTrack)?;
-                let carried_by_retarget = mutable_retarget_new_for_old
-                    .get(old_index)
-                    .is_some_and(|candidate_index| *candidate_index == new_index);
+                let carried_by_retarget = analytic_import_new_for_old.get(old_index)
+                    == Some(&new_index)
+                    || mutable_retarget_new_for_old
+                        .get(old_index)
+                        .is_some_and(|candidate_index| *candidate_index == new_index);
                 let analytic_retarget = previous
                     .revision
                     .arrangement()
@@ -886,9 +921,11 @@ impl SessionPlayback {
                                     *changed = true;
                                 }
                             }
-                            let carried_by_retarget = mutable_retarget_new_for_old
-                                .get(old_index)
-                                .is_some_and(|candidate_index| *candidate_index == new_index);
+                            let carried_by_retarget = analytic_import_new_for_old.get(old_index)
+                                == Some(&new_index)
+                                || mutable_retarget_new_for_old
+                                    .get(old_index)
+                                    .is_some_and(|candidate_index| *candidate_index == new_index);
                             let analytic_retarget = previous
                                 .revision
                                 .arrangement()
@@ -2123,6 +2160,26 @@ impl SessionPlayback {
             {
                 candidate.inherit_from(old);
             }
+        }
+        for (old_index, new_index) in analytic_import_new_for_old.iter().copied().enumerate() {
+            if new_index == usize::MAX {
+                continue;
+            }
+            let plan = Self::analytic_import_plan(
+                previous,
+                old_index,
+                &self.revision,
+                new_index,
+                &old_clock,
+                &mut self.spans,
+            )?
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            self.mutable_instruments
+                .get_mut(new_index)
+                .and_then(Option::as_mut)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                .import_analytic(&plan.seeds[..plan.len], &plan.proofs[..plan.len])
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
         for (old_index, new_index) in mutable_continuity_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {

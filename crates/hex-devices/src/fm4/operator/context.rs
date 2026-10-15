@@ -388,7 +388,7 @@ impl PreparedOperatorConfiguration {
             && self.amplitude_velocity == target.amplitude_velocity
     }
 
-    pub(super) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
+    pub(crate) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
         self.retarget_compatible_with(target)
             && self.oscillator_levels == target.oscillator_levels
             && self.configuration.routing.carriers == target.configuration.routing.carriers
@@ -567,3 +567,5 @@ const fn unpack_caps(packed: u32) -> [u8; OPERATORS] {
 
 #[cfg(test)]
 mod tests;
+
+mod filter;

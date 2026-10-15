@@ -312,6 +312,37 @@ impl MutableInstrumentTrackRuntime {
         &self.primary
     }
 
+    pub(crate) fn can_import_analytic(
+        &self,
+        seeds: &[hex_lattice::NativeInstrumentAnalyticSeed],
+    ) -> bool {
+        self.primary.is_empty()
+            && self.scratch.is_empty()
+            && self.primary.capacity() >= seeds.len()
+            && self.scratch.capacity() >= seeds.len()
+            && self.pair.can_import_analytic(seeds)
+    }
+    pub(crate) fn import_analytic(
+        &mut self,
+        seeds: &[hex_lattice::NativeInstrumentAnalyticSeed],
+        proofs: &[Option<MutableOccurrence>],
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if seeds.len() != proofs.len()
+            || !self.can_import_analytic(seeds)
+            || proofs.iter().any(Option::is_none)
+        {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.pair
+            .import_analytic(seeds)
+            .map_err(map_runtime_error)?;
+        self.primary.extend(proofs.iter().flatten().copied());
+        self.scratch.extend_from_slice(&self.primary);
+        self.next_id = seeds.len() as u64;
+        self.next_id_scratch = self.next_id;
+        Ok(())
+    }
+
     /// Check whether this freshly prepared owner can take the exact committed
     /// mutable history from `previous` without allocating or changing either
     /// owner. The canonical revision descriptor and route checks remain the
