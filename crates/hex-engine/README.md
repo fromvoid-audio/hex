@@ -533,6 +533,18 @@ authority. A failed visitor requires discarding its partial sink. Names construc
 directly in persistent fields, become Pending before disposal, and are normally
 disposed before original-bank recovery; panic retains remaining owners/payload
 without retry. Empty retained backings remain charged on subsequent requests.
-Tempo/periodic data, mandatory sine/shared-context owners, complete prepared
-inventory assembly, cross-ledger/runtime accounting and lifetime closure remain
-unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.
+The same custody now reserves both canonical tempo-copy backing destinations
+before copying exact validated points and Q32 prefixes into persistent fields.
+Borrowed prepared-tempo validation happens before ownership transfer; no consumed
+canonical map is passed to a fallible legacy constructor. A vacant private engine
+slot receives the buffers by fixed moves after the byte/overlap checks. Its two
+unresolved allocation obligations change owning location without a duplicate data
+charge. Control-borrowed owner visitation binds actual custody and field location;
+failed partial sinks must be discarded. Cancellation returns buffers to explicit
+copy custody and clears only scalar contents, retaining and charging spare backing
+capacity even across later Arrangement-only requests. Panic retains partial
+buffers and the first payload without retry or original-bank consumption.
+This is canonical-tempo assembly only: no complete PreparedTempoMap/inventory or
+publication is produced. Periodic tempo installation, mandatory sine/shared-context
+owners, complete prepared inventory assembly, cross-ledger/runtime accounting
+and lifetime closure remain unfinished. Existing legacy constructors and Unknown/refusal behavior are intact.

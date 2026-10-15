@@ -56,7 +56,8 @@ pub use snapshot::{
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 pub use timebase::{
     BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterPoint, MeterPosition,
-    Tempo, TempoMap, TempoMapOwnedAllocationLayout, TempoPoint,
+    Tempo, TempoMap, TempoMapCopyCapacity, TempoMapCopyCustody, TempoMapCopyError,
+    TempoMapCopyPhase, TempoMapOwnedAllocationLayout, TempoPoint,
 };
 
 pub const MAX_TRACKS: usize = 256;

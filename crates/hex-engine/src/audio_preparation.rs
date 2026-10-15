@@ -1,4 +1,4 @@
-//! Preparation-only Arrangement and opt-in Session source-binding stages. Not a prepared revision,
+//! Preparation-only Arrangement and opt-in Session source/structure/tempo stages. Not a prepared revision,
 //! storage-complete graph, publication admission or lifetime-closure authority.
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
@@ -8,6 +8,9 @@ mod session_source_tests;
 #[cfg(test)]
 #[path = "session_structure_preparation_tests.rs"]
 mod structure_tests;
+#[cfg(test)]
+#[path = "session_tempo_preparation_tests.rs"]
+mod tempo_tests;
 use std::{
     any::Any,
     mem,
@@ -45,6 +48,7 @@ pub struct AudioArrangementCapacity {
     pub construction_peak_bytes: usize,
     pub session: crate::SessionSourceCapacity,
     pub structure: crate::SessionStructureCapacity,
+    pub tempo: crate::SessionTempoCapacity,
 }
 pub struct AudioArrangementRefusal {
     pub reason: AudioStorageError,
@@ -147,6 +151,7 @@ pub struct AudioPreparationCustody {
     reason: Option<AudioStorageError>,
     session: crate::session_audio_preparation::SessionSourceConstruction,
     structure: crate::session_structure_preparation::SessionStructureConstruction,
+    tempo: crate::session_tempo_preparation::SessionTempoConstruction,
     #[cfg(test)]
     fail_after: Option<usize>,
     #[cfg(test)]
@@ -178,6 +183,7 @@ impl AudioPreparationCustody {
             session: crate::session_audio_preparation::SessionSourceConstruction::default(),
             structure: crate::session_structure_preparation::SessionStructureConstruction::default(
             ),
+            tempo: crate::session_tempo_preparation::SessionTempoConstruction::default(),
             #[cfg(test)]
             fail_after: None,
             #[cfg(test)]
@@ -235,6 +241,10 @@ impl AudioPreparationCustody {
                     .structure
                     .bytes()
                     .and_then(|m| n.checked_add(m).ok_or(AudioStorageError::Overflow))
+                    .and_then(|n| {
+                        n.checked_add(capacity.tempo.bytes()?)
+                            .ok_or(AudioStorageError::Overflow)
+                    })
             });
             // Persistent destinations BEFORE fallible names/helper work. Bank
             // remains borrowed, so every pre-transfer refusal returns it intact.
@@ -243,7 +253,8 @@ impl AudioPreparationCustody {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 self.session
                     .reserve(project, generation, &inputs, slots.len())?;
-                self.structure.reserve(project, &self.session)
+                self.structure.reserve(project, &self.session)?;
+                self.tempo.reserve(project)
             }));
             capacity.session = self.session.capacity;
             let structure_observation = self.structure.observe().map(|mut report| {
@@ -254,13 +265,19 @@ impl AudioPreparationCustody {
             if let Ok(report) = structure_observation {
                 capacity.structure = report;
             }
+            let tempo_observation = self.tempo.observe(true);
+            if let Ok(report) = tempo_observation {
+                capacity.tempo = report;
+            }
             let result = match result {
                 Ok(result) => result.and_then(|()| {
                     structure_observation?;
+                    tempo_observation?;
                     let current = capacity
                         .session
                         .bytes()?
                         .checked_add(capacity.structure.bytes()?)
+                        .and_then(|n| n.checked_add(capacity.tempo.bytes().ok()?))
                         .ok_or(AudioStorageError::Overflow)?;
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
@@ -277,6 +294,7 @@ impl AudioPreparationCustody {
                         .and_then(|n| {
                             n.checked_add(capacity.structure.previous_growth_backing_bytes)
                         })
+                        .and_then(|n| n.checked_add(capacity.tempo.previous_growth_backing_bytes))
                         .ok_or(AudioStorageError::Overflow)?;
                     if capacity.retained_stage_bytes > inputs.reservation.max_prepared_data_bytes
                         || capacity.construction_peak_bytes
@@ -293,9 +311,13 @@ impl AudioPreparationCustody {
                 }
             };
             if let Err(reason) = result {
+                if self.tempo.incomplete() {
+                    self.phase = AudioPreparationPhase::FailedIncomplete;
+                }
                 if self.phase != AudioPreparationPhase::FailedIncomplete {
                     if self.dispose_session_on_control()
                         && self.dispose_structure_on_control()
+                        && self.dispose_tempo_on_control()
                         && self.session.clear_disposed_rows().is_ok()
                         && self.structure.clear_disposed_rows().is_ok()
                     {
@@ -326,11 +348,25 @@ impl AudioPreparationCustody {
                         .ok_or(AudioStorageError::SourceMismatch)?,
                 )?;
                 self.structure.validate(&self.session, true)?;
+                self.tempo.construct()?;
             }
             Ok(())
         }));
         match result {
             Ok(Ok(())) => {
+                if include_session {
+                    // Infallible ownership-location shift; totals were measured
+                    // before bank movement, and the same two buffers moved.
+                    self.capacity.tempo.completed_point_capacity =
+                        self.capacity.tempo.copy_point_capacity;
+                    self.capacity.tempo.completed_prefix_capacity =
+                        self.capacity.tempo.copy_prefix_capacity;
+                    self.capacity.tempo.completed_backing_bytes =
+                        self.capacity.tempo.copy_backing_bytes;
+                    self.capacity.tempo.copy_point_capacity = 0;
+                    self.capacity.tempo.copy_prefix_capacity = 0;
+                    self.capacity.tempo.copy_backing_bytes = 0;
+                }
                 self.phase = if include_session {
                     AudioPreparationPhase::ArrangementAndSessionSources
                 } else {
@@ -421,6 +457,7 @@ impl AudioPreparationCustody {
         // when a later opt-in request compiles Arrangement sources only.
         capacity.session = self.session.retained_capacity()?;
         capacity.structure = self.structure.observe()?;
+        capacity.tempo = self.tempo.observe(false)?;
         for (index, (_, source)) in inputs.sources.iter().enumerate() {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             if !inputs.sources[..index]
@@ -447,6 +484,7 @@ impl AudioPreparationCustody {
                     .ok()
                     .and_then(|m| n.checked_add(m))
             })
+            .and_then(|n| capacity.tempo.bytes().ok().and_then(|m| n.checked_add(m)))
             .and_then(|n| n.checked_add(inputs.reservation.caller_retained_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         capacity.construction_peak_bytes = capacity
@@ -614,6 +652,9 @@ impl AudioPreparationCustody {
         if !self.dispose_structure_on_control() {
             return;
         }
+        if !self.dispose_tempo_on_control() {
+            return;
+        }
         self.phase = AudioPreparationPhase::Recoverable;
     }
     fn dispose_session_on_control(&mut self) -> bool {
@@ -649,6 +690,20 @@ impl AudioPreparationCustody {
             }
         }
         true
+    }
+    fn dispose_tempo_on_control(&mut self) -> bool {
+        match catch_unwind(AssertUnwindSafe(|| self.tempo.cleanup())) {
+            Ok(Ok(())) => true,
+            Ok(Err(_)) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
+        }
     }
     /// Only actual normal partial-owner disposal permits original-bank recovery.
     /// Identity/refusal leaves the input bank, its Vec capacities and tokens intact.
