@@ -192,6 +192,9 @@ struct MutableFixtureRuntime {
     key: u32,
     level: f32,
     voices: [MutableFixtureVoice; 64],
+    // Real inline state above the former 4 KiB instrument cap. All mutable
+    // publication/render/rollback/tail probes below exercise its full copy.
+    history: [u8; 8192],
 }
 
 impl hex_lattice_contract::NativeDeviceMetadata for MutableFixtureDefinition {
@@ -302,6 +305,7 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
             key: self.level.to_bits(),
             level: self.level,
             voices: [MutableFixtureVoice::default(); 64],
+            history: [0; 8192],
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -413,6 +417,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
+            self.history = old.history;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -1218,8 +1223,10 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
         None,
     )?);
 
-    // Independent source-only renders preserve the canonical IDs and shared
-    // track mix. Their exact sum is the oracle for the hybrid compiled track.
+    // Render each source independently without devices or track coefficients,
+    // then sum at the device input. The independent original Utility inversion
+    // and gain/balance equations are applied once after that sum, matching the
+    // explicit host signal boundary rather than relying on f32 distributivity.
     let mut audio_project_snapshot = project.snapshot();
     let TrackContentSnapshot::Hybrid {
         audio_clips,
@@ -1234,12 +1241,18 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
         audio_clips,
         midi_clips: Vec::new(),
     };
+    audio_project_snapshot.tracks[0].devices.clear();
+    audio_project_snapshot.tracks[0].gain = 1.0;
+    audio_project_snapshot.tracks[0].balance = 0.0;
     let audio_project = Project::from_snapshot(audio_project_snapshot)?;
     let mut midi_project_snapshot = project.snapshot();
     midi_project_snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: Vec::new(),
         midi_clips,
     };
+    midi_project_snapshot.tracks[0].devices.clear();
+    midi_project_snapshot.tracks[0].gain = 1.0;
+    midi_project_snapshot.tracks[0].balance = 0.0;
     let midi_project = Project::from_snapshot(midi_project_snapshot)?;
     let audio_revision =
         PreparedRevision::prepare(&audio_project, &media, Arc::new(SineTable::new()), None)?;
@@ -1268,7 +1281,10 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     let expected: Vec<Frame> = audio_oracle
         .iter()
         .zip(midi_oracle.iter())
-        .map(|(audio, midi)| [audio[0] + midi[0], audio[1] + midi[1]])
+        .map(|(audio, midi)| {
+            let input = [audio[0] + midi[0], audio[1] + midi[1]];
+            [input[0] * 0.5, -input[1] * 0.375]
+        })
         .collect();
 
     let playback = Playback::try_from_prepared_with_session(revision)?;

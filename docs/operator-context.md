@@ -19,6 +19,37 @@ invalid-draft refusal, pointer drag/undo, focused keyboard adjustment, stationar
 typed editing and neighboring Utility state. This is source-level UI evidence;
 native visual acceptance remains pending.
 
+## Operator Tab navigation
+
+The Operator body forms one Tab group. Tab walks the currently rendered controls
+in layout order, and Shift-Tab reverses that order and wraps within the group.
+The shell visits d, c, b, a: each oscillator selector followed by its available
+controls, while the squares stay visually at the far right. Focusing a square
+selects its oscillator context; its thicker focus border remains distinct from
+selection. The detail pane contributes its visible envelope, lfo or
+oscillator controls and page selectors; the preview contributes its available
+controls and routing/global icon. Section containers are not Tab targets: focusing
+any child widget reveals its containing row or detail pane's gutter background,
+without changing its enable flag. Leaving a group restores its normal background,
+even when its oscillator or detail page remains selected. All lfo summary/detail
+controls and the routing preset participate; each shared lfo widget is mounted
+once, with common controls in the summary and remaining controls in detail. The routing icon remains keyboard-operable with Enter/Space. Hidden or
+disabled controls are excluded.
+Changing detail pages changes that page's available targets, without changing
+sound parameters. Enter/Space activates a focused oscillator or page selector;
+routing retains its existing keyboard activation. Numeric controls keep their
+typing and adjustment bindings. Graph nodes cycle with Ctrl-Tab/Ctrl-Shift-Tab
+so plain Tab can leave the graph.
+
+Traversal finishes a valid canonical typed draft through the canonical edit path
+and finishes view-only preview drafts through their local edit path. Invalid
+fine/filter/pitch/global previews refuse forward and reverse traversal before
+blur, just as invalid canonical drafts do. Focus alone does not author state. Stable
+per-device focus handles retire on project or track-owner changes; stale section
+activation is rejected. Shared controls outside Operator retain their existing
+Tab behavior. Native focus visibility, exact optimized macOS build delivery and
+user confirmation remain separate acceptance requirements.
+
 Pulse2171 separated immutable oscillator routing and four prepared envelopes
 from pitch steps and velocity. Pulse2183 adds four waveform selectors and
 bounded harmonic-cap metadata. The current `PreparedOperatorConfiguration`
@@ -119,3 +150,24 @@ is covered by the independent full-output oracle and a registered callback
 allocation probe, which verifies zero total and net allocation/deallocation but
 does not establish timing. No physical callback deadline or Live numerical
 parity is claimed.
+
+## focus presentation follow-up — 13 october 2026
+
+Pulse2373 / PR178 follow-up: each oscillator row traverses coarse/frequency,
+fine, fixed, level, then its A/B/C/D badge. The badge keeps its absolute position
+at the right edge; child order provides both forward and reverse keyboard order.
+The center curve/detail display always uses its dark background, including pointer
+and keyboard focus. Shell and right-side sections retain their focus highlights.
+
+GPUI emits section focus events after painting. Immediate notification in this
+phase updates the stored flag without scheduling another frame. The section
+listener now defers the editor notification until the effect cycle completes,
+so highlights and context paint without waiting for mouse movement. Rendered
+regressions inspect completed scene backgrounds along LFO/filter/pitch/global
+traversal and oscillator rows, plus keyboard/pointer focus in the detail display.
+They preserve canonical values and existing invalid-draft/owner tests.
+
+Current main still has selection-only oscillator badges. Canonical on/off DSP,
+state migration and history remain owned by Pulse2335 / unmerged PR164; focus
+changes do not substitute a local enable flag for that implementation. Native
+optimized-build review and stable macOS delivery remain separate from Linux tests.

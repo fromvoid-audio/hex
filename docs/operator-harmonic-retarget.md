@@ -746,3 +746,37 @@ complete feature acceptance remain pending.
 Current-main Operator conflicts remain deferred to the coordinator. This
 engine-only stage does not change the UI, resolve duplicate LFO tabs, alter
 preview context/visibility, or replace either branch's navigation/visual tests.
+
+
+## Current-main integration — 15 October 2026
+
+Integrating main `d7915f8` preserves Vector naming, keyboard focus, device input/
+output metering, host gains and aggregate instrument/effect admission. The
+canonical enable badges retain Boolean edits through mouse, Enter and Space.
+Metered analytic capture must preserve Main PCM and apply track gain/pan exactly
+once; a new capture regression covers non-unity fader/pan before Main gain.
+
+The earlier positive storage-fit checkpoints are historical. With current actual
+accounting, the real 256-retained-EQ-chain fixture owns 31,514,600 bytes. Adding
+the original 2,639,456-byte proposed pool costs 34,154,056, exceeding the unchanged
+33,554,432-byte preroll cap by 599,624. The newer 2,643,560-byte planner pool also
+refuses this fixture. Release-location compaction still saves 262,144 bytes; it
+does not make the combined source fit. The detached mutable fixture reports
+34,336,744 bytes even before adding the pool. This interactive handoff can be
+accepted while exceeding the separate preroll storage cap; it is not evidence
+of preroll admission or a universal 32-MiB interactive memory guarantee.
+
+The original maximum mixed case (192 EQ tracks, 16 EQ Returns, 48 feedback
+instruments) now refuses with `ReleaseBankFull` under current retained-tail
+admission, before any harmonic pool exists. Retain that negative control and a
+separate admitted mixed-owner PCM/ownership fixture; do not change admission
+limits to restore an obsolete test assumption.
+
+This integration does not install the custom harmonic state, production provider,
+root leases/pool, first-paint bridge or painter. The canonical state is still
+v8/380 bytes and `operator_harmonics` is test-only. Required remaining work is
+real 64-partial canonical painting and settings, versioned persistence and atomic
+history integration, live held/release/Undo/cancel continuation with complete
+ownership/accounting, harmonic callback allocation/CPU verification, and the
+reference/native/user acceptance in the task contract. PR158 remains draft;
+a passing portable suite alone cannot establish completion of this feature.

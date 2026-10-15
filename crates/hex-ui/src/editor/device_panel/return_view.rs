@@ -17,6 +17,10 @@ pub(super) fn render(
     };
     let devices = return_track.devices().to_vec();
     let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
+    view.device_panel.selected_device = view
+        .device_panel
+        .selected_device
+        .filter(|id| alive.contains(id));
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -52,6 +56,9 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    view.device_panel
+        .meter_states
+        .retain(|id, _| alive.contains(id));
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()
@@ -164,35 +171,8 @@ pub(super) fn render(
                 .child(theme::text(title)),
         )
         .child(add_button);
-    let mut chain = div()
-        .id("device-chain-scroll")
-        .debug_selector(|| "device-chain-scroll".into())
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .gap(px(DEVICE_CHAIN_PADDING))
-        .p(px(DEVICE_CHAIN_PADDING))
-        .overflow_x_scroll()
-        .overflow_y_hidden()
-        .drag_over::<drag::NativeDeviceDrag>(move |style, _, _, _| {
-            style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
-        })
-        .on_drop(
-            cx.listener(move |view, payload: &drag::NativeDeviceDrag, window, cx| {
-                view.drop_native_device_to_return(payload, return_id, window, cx);
-            }),
-        );
-    for (index, device) in devices.iter().enumerate() {
-        chain = chain.child(render_return_effect(
-            view, cx, return_id, &devices, index, device,
-        ));
-    }
-    chain = chain.child(
-        div()
-            .min_w(px(40.0))
-            .h(px(DEVICE_FRAME_HEIGHT))
-            .flex_shrink_0(),
-    );
+    let chain = super::return_drag::render_chain(view, cx, return_id, &devices);
+    let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
         root = root.child(render_return_add_menu(cx, return_id, catalog));
@@ -200,7 +180,7 @@ pub(super) fn render(
     root
 }
 
-fn render_return_effect(
+pub(super) fn render_return_effect(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     return_id: hex_project::ReturnId,
@@ -209,6 +189,7 @@ fn render_return_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
+    let selected = view.device_panel.selected_device == Some(id);
     let device_view = view
         .device_panel
         .views
@@ -374,16 +355,28 @@ fn render_return_effect(
                     | "hex.auto-pan")
             ) {
                 compact_device_frame(
-                    theme::text(device_view.name.clone()),
-                    control_style(),
+                    device_drag_title(
+                        view,
+                        cx,
+                        device,
+                        NativeDeviceClass::Effect,
+                        theme::text(device_view.name.clone()),
+                    ),
+                    control_style().with_device_selection(selected),
                     actions,
                     body,
                 )
                 .into_any_element()
             } else {
                 device_frame(
-                    theme::text(device_view.name.clone()),
-                    control_style(),
+                    device_drag_title(
+                        view,
+                        cx,
+                        device,
+                        NativeDeviceClass::Effect,
+                        theme::text(device_view.name.clone()),
+                    ),
+                    control_style().with_device_selection(selected),
                     actions,
                     body,
                 )
@@ -426,9 +419,21 @@ fn render_return_effect(
                     | "hex.gate"
                     | "hex.auto-pan")
             ) {
-                compact_device_frame(title, control_style(), actions, body).into_any_element()
+                compact_device_frame(
+                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                    control_style().with_device_selection(selected),
+                    actions,
+                    body,
+                )
+                .into_any_element()
             } else {
-                device_frame(title, control_style(), actions, body).into_any_element()
+                device_frame(
+                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                    control_style().with_device_selection(selected),
+                    actions,
+                    body,
+                )
+                .into_any_element()
             }
         }
     };
@@ -449,15 +454,24 @@ fn render_return_effect(
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
+    let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width))
+        .w(px(frame_width + super::gain_meters::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
         .flex_shrink_0()
+        .capture_any_mouse_down(device_selection_listener(id, cx))
         .child(rendered)
+        .child(super::gain_meters::render(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Effect,
+        ))
 }
 
 fn render_return_add_menu(

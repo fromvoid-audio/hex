@@ -32,3 +32,22 @@ classification, matrix and carrier edits, custom no-op behavior and transitions
 from manual routing to another named layout. A canonical Session integration test verifies one preset edit restores the exact
 original state with one Undo and the selected state with one Redo; no preset-specific storage or DSP path is
 introduced.
+
+## compact routing matrix readouts
+
+The existing 46-pixel matrix cells show modulation in turns with a compact `t`
+suffix and signed linear carrier amplitude with an `x` suffix. Numeric precision
+remains two decimal places with trailing zeros trimmed. Full descriptor labels
+and units (`turns`, `linear`) remain discoverable in cell tooltips; typed input
+accepts the full unit, compact suffix or a bare number. Other units and values
+outside the existing domains are refused. No conversion to decibels or changes
+to routing, parameter IDs, domains, DSP or history are introduced.
+
+Cells retain fixed widths during focus, pointer presses and typed edits. Long
+typed drafts scroll within the cell's clipping boundary rather than painting
+over neighboring columns. Rendered GPUI regressions cover both editor widths,
+signed endpoints, interior negative values, zero, typing, real canonical commits
+and active/focused geometry. The test platform's font system does not establish
+native glyph rendering; bundled-font advance measurements and actual native
+visual review are separate evidence. The private native reference capture is
+unavailable in the cloud checkout and native visual acceptance remains pending.

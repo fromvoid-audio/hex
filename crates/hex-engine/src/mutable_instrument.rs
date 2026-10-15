@@ -23,6 +23,11 @@ pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
 const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
+/// Combined declared DSP storage for committed/scratch pairs in one active
+/// graph or one retained-tail bank. Variable-size instrument requirements draw
+/// from this pool; the separate 4 KiB effect-twin limit is not an instrument cap.
+/// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
+pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MutableOccurrenceKey {
@@ -212,7 +217,7 @@ impl MutableInstrumentTrackRuntime {
         let pair_bytes = prepared.declared_twin_bytes().checked_mul(2)?;
         if prepared.runtime_version() == 0
             || prepared.declared_twin_bytes() == 0
-            || pair_bytes > hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2
+            || pair_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
             || prepared.max_events_per_block() == 0
             || prepared.max_events_per_block() > MAX_MUTABLE_EVENTS_PER_QUERY
             || prepared.max_active_occurrences() == 0
@@ -237,7 +242,7 @@ impl MutableInstrumentTrackRuntime {
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
-                max_pair_bytes: hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2,
+                max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
                 max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
                 max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
                 max_tail_frames,
@@ -790,7 +795,8 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances with two 4 KiB twins each.
+/// admits at most 256 stateful instances. Effects retain their separate 4 KiB
+/// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
     existing_bytes: usize,
@@ -804,8 +810,7 @@ pub(crate) fn validate_mutable_graph_budget(
         .checked_add(pair_bytes)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if total_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || total_bytes
-            > hex_lattice::MAX_STATEFUL_PROCESSORS * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2
+        || total_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
     {
         return Err(MutableInstrumentRuntimeError::Budget);
     }

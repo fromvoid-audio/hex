@@ -184,10 +184,12 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
         proposed.saturating_sub(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
     );
     assert_eq!(tails, hex_project::MAX_TRACKS);
-    assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    assert_eq!(existing, 29_880_296);
-    assert_eq!(proposed, 32_519_752);
-    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    // Current instrument accounting includes all declared pair bytes. The
+    // historical positive fit is no longer valid on this integrated source.
+    assert_eq!(existing, 34_336_744);
+    assert_eq!(proposed, 36_976_200);
+    assert!(existing > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
 
 #[test]
@@ -225,15 +227,15 @@ fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
     );
     assert_eq!(tails, hex_project::MAX_TRACKS);
     assert_eq!(suffixes, MAX_RETAINED_SUFFIX_ENTRIES);
-    assert_eq!(existing, 30_728_168);
-    assert_eq!(proposed, 33_367_624);
+    assert_eq!(existing, 31_514_600);
+    assert_eq!(proposed, 34_154_056);
     assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     // Reconstruct the original c048995 negative control with identical
     // capacities/payload: only the old location's eight extra bytes differ.
     let legacy_proposed = proposed + 2 * SESSION_RELEASE_CAPACITY * 8;
-    assert_eq!(legacy_proposed, 33_629_768);
+    assert_eq!(legacy_proposed, 34_416_200);
     assert!(legacy_proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
 
 // Disconnected private planner and concrete proposed layouts, compiled only in tests.

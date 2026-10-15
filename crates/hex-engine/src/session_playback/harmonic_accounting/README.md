@@ -33,6 +33,16 @@ but is not an admissible complete-context recipe count. Full owner/generation/
 context/boundary/clock identity controls deduplication; conflicting charges are
 refused. Roots and generation advancement are borrowed inputs, never mutated.
 
+## Current-source qualification
+
+The following measurements describe the frozen checkpoint above. Integration
+with main `d7915f8` changes instrument accounting and runtime layout; these
+positive fit claims do not apply to that combined source. See
+[the current integration evidence](../../../../../docs/operator-harmonic-retarget.md#current-main-integration--15-october-2026).
+The tests retain the original maximum mixed case as a current admission refusal
+and separately test an admitted mixture with real track/Return/mutable owners.
+No pool is installed and no budget is raised.
+
 ## Budget provenance and finite reachable inventory
 
 `SessionPlayback::accounted_runtime_storage_bytes` in `preroll.rs` charges

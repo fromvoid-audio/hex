@@ -1,8 +1,10 @@
 //! Validated stereo DSP primitives and the registered native processor seam.
+mod meter;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, MAX_PARAMETERS_PER_DEVICE,
     NativeDeviceMetadata, NativeDeviceState,
 };
+pub use meter::DeviceMeter;
 use std::any::Any as StdAny;
 use std::fmt;
 
@@ -190,7 +192,8 @@ pub trait NativeProcessorAudition: Send {
 
 /// Maximum admitted stateful instances in one runtime bank.
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
-/// Maximum control-declared storage for one runtime twin.
+/// Maximum control-declared storage for one effect runtime twin. Mutable
+/// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
@@ -213,6 +216,7 @@ impl ProcessorChainOwner {
 /// One processor prepared for a stable typed chain/device identity.
 #[derive(Clone)]
 pub struct PreparedProcessorInstance {
+    pub meter: std::sync::Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
     pub device_id: u64,
     pub device_type: DeviceTypeId,
@@ -249,6 +253,10 @@ impl fmt::Debug for PreparedProcessorInstance {
 }
 
 struct RuntimeEntry {
+    meter: std::sync::Arc<DeviceMeter>,
+    metering: bool,
+    input_gain: f32,
+    output_gain: f32,
     owner: ProcessorChainOwner,
     device_id: u64,
     device_type: DeviceTypeId,
@@ -320,6 +328,16 @@ impl NativeRuntimeChain {
                     (0, OutputTail::Finite { max_tail_frames: 0 }, None, None)
                 };
             entries.push(RuntimeEntry {
+                meter: instance.meter,
+                metering: false,
+                input_gain: instance
+                    .configuration
+                    .as_ref()
+                    .map_or(1.0, |state| state.input_gain_linear()),
+                output_gain: instance
+                    .configuration
+                    .as_ref()
+                    .map_or(1.0, |state| state.output_gain_linear()),
                 owner: instance.owner,
                 device_id: instance.device_id,
                 device_type: instance.device_type,
@@ -338,6 +356,12 @@ impl NativeRuntimeChain {
             stateful_count,
             declared_runtime_bytes: declared_bytes,
         })
+    }
+
+    pub fn set_metering(&mut self, enabled: bool) {
+        for entry in &mut self.entries {
+            entry.metering = enabled;
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -593,7 +617,7 @@ impl NativeRuntimeChain {
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
-                            std::sync::Arc::ptr_eq(left, right) || left == right
+                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq(right)
                         }
                         _ => false,
                     }
@@ -632,7 +656,7 @@ impl NativeRuntimeChain {
                 }
                 let configuration_matches = match (&candidate.configuration, &old.configuration) {
                     (Some(candidate), Some(old)) => {
-                        std::sync::Arc::ptr_eq(candidate, old) || candidate == old
+                        std::sync::Arc::ptr_eq(candidate, old) || candidate.processing_eq(old)
                     }
                     _ => false,
                 };
@@ -894,6 +918,15 @@ impl NativeRuntimeChain {
     }
 
     fn process_entry(entry: &mut RuntimeEntry, frames: &mut [StereoFrame]) {
+        if !entry.bypassed && entry.input_gain != 1.0 {
+            for frame in frames.iter_mut() {
+                frame[0] *= entry.input_gain;
+                frame[1] *= entry.input_gain;
+            }
+        }
+        if entry.metering {
+            entry.meter.observe_input(frames);
+        }
         if entry.bypassed {
             if let Some(runtime) = entry.scratch.as_mut() {
                 if entry.matrix.is_identity() {
@@ -912,6 +945,15 @@ impl NativeRuntimeChain {
             if let Some(runtime) = entry.scratch.as_mut() {
                 runtime.process_block(frames);
             }
+        }
+        if !entry.bypassed && entry.output_gain != 1.0 {
+            for frame in frames.iter_mut() {
+                frame[0] *= entry.output_gain;
+                frame[1] *= entry.output_gain;
+            }
+        }
+        if entry.metering {
+            entry.meter.observe_output(frames);
         }
     }
 
@@ -972,6 +1014,9 @@ impl<'a> NativeDeviceRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
+                if descriptor.id.value() >= u32::MAX - 1 {
+                    return Err(DeviceContractError::InvalidDescriptor);
+                }
                 if definition.descriptors()[..parameter_index]
                     .iter()
                     .any(|prior| prior.id == descriptor.id)
@@ -1008,7 +1053,9 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)
+        self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
     }
     pub fn patch_parameters(
         &self,
@@ -1033,7 +1080,10 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
             .iter()
@@ -1041,7 +1091,9 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)
+        self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
     }
     pub fn prepare_matrix(
         &self,
@@ -1050,7 +1102,10 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_matrix(&current)
     }
     pub fn prepare_processor(
@@ -1061,7 +1116,10 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_processor(&current, sample_rate)
     }
     pub fn prepare_device(
@@ -1072,7 +1130,10 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
             processor: definition.prepare_processor(&current, sample_rate)?,
@@ -1278,6 +1339,7 @@ mod tests {
         let definition: std::sync::Arc<dyn PreparedNativeProcessor> =
             std::sync::Arc::new(SplitAuditionPrepared(AtomicUsize::new(0)));
         let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type,
@@ -1529,6 +1591,7 @@ mod tests {
         let unbounded: std::sync::Arc<dyn PreparedNativeProcessor> =
             std::sync::Arc::new(IndependentPrepared(1));
         let instance = |device_id, definition| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id,
             device_type: DeviceTypeId::from_static("test.tail"),
@@ -1539,6 +1602,7 @@ mod tests {
             definition: Some(definition),
         };
         let matrix_only = PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 1,
             device_type: DeviceTypeId::from_static("test.matrix"),
@@ -1603,6 +1667,7 @@ mod tests {
         let configuration =
             || std::sync::Arc::new(NativeDeviceState::new(device_type, 1, vec![1, 2, 3]).unwrap());
         let instance = |configuration, bypassed| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type,
@@ -1712,6 +1777,7 @@ mod tests {
                     runtime_count: std::sync::atomic::AtomicUsize::new(0),
                 });
             PreparedProcessorInstance {
+                meter: Default::default(),
                 owner,
                 device_id,
                 device_type,
@@ -1933,6 +1999,7 @@ mod tests {
         feedback.reset();
         assert!(feedback.is_quiescent());
         let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -1968,6 +2035,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut successor = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -1995,6 +2063,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut incompatible_rate = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 9,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -2028,6 +2097,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let instance = |device_id| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -2075,6 +2145,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let instance = || PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id: 10,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -2112,6 +2183,7 @@ mod tests {
             .unwrap();
         let prepared: std::sync::Arc<dyn PreparedNativeProcessor> = std::sync::Arc::from(prepared);
         let make_instance = |device_id| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(3),
             device_id,
             device_type: DeviceTypeId::from_static("test.independent"),
@@ -2174,6 +2246,7 @@ mod tests {
         let matrix = StereoMatrix::new([[2.0, 0.0], [0.0, 2.0]]).unwrap();
         let make_chain = |bypassed| {
             NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+                meter: Default::default(),
                 owner: ProcessorChainOwner::Track(3),
                 device_id: 9,
                 device_type: DeviceTypeId::from_static("test.independent"),

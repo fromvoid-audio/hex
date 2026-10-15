@@ -190,13 +190,37 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
     )
 }
 
-pub(super) fn handoff(shape: &Shape) -> SessionPlayback {
+pub(super) fn handoff(shape: &Shape) -> Result<SessionPlayback, crate::SessionPlaybackError> {
     let mut previous = SessionPlayback::new(revision(shape, true, 100_000)).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     previous.render(&mut [[0.0; 2]; 96]).unwrap();
     let mut candidate = SessionPlayback::new(revision(shape, false, 100)).unwrap();
-    candidate.try_inherit_state_from(&mut previous).unwrap();
-    candidate
+    if let Err(error) = candidate.try_inherit_state_from(&mut previous) {
+        eprintln!(
+            "current handoff refusal: effects={} returns={} mutable={:?} track_pair_bytes={} return_pair_bytes={} instrument_pair_bytes={} error={error:?}",
+            shape.effect_tracks,
+            shape.returns,
+            shape.mutable,
+            previous
+                .device_chains
+                .iter()
+                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .sum::<usize>(),
+            previous
+                .return_chains
+                .iter()
+                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .sum::<usize>(),
+            previous
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .map(|owner| owner.declared_pair_bytes())
+                .sum::<usize>(),
+        );
+        return Err(error);
+    }
+    Ok(candidate)
 }
 
 pub(super) struct Ownership {

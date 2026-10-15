@@ -1670,6 +1670,7 @@ impl EditorView {
             revision: state.revision,
             source: drag::NativeDeviceDragSource::Browser { class, type_id },
             destination: Rc::new(Cell::new(None)),
+            return_destination: Rc::new(Cell::new(None)),
         });
         let row = div()
             .id(("browser-device", index))
