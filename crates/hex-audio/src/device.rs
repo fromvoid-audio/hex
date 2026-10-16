@@ -44,7 +44,6 @@ pub struct WorkerPreparedOutput {
     client: Option<prepared::Client>,
     pub sample_rate: u32,
     pub label: String,
-    pub spectrum: Option<SpectrumReader>,
     pub spectrum_error: Option<String>,
 }
 impl WorkerPreparedOutput {
@@ -94,7 +93,6 @@ impl Opened {
             client: Some(self.client.ok_or("worker command endpoint unavailable")?),
             sample_rate: self.sample_rate,
             label: self.label,
-            spectrum: self.spectrum,
             spectrum_error: self.spectrum_error,
         })
     }
@@ -121,7 +119,7 @@ fn open_prepared(
         return Err(format!("unsupported output format: {sample_format:?}"));
     }
 
-    let (capture, spectrum, spectrum_reaper, spectrum_error) =
+    let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
         if (8_000..=192_000).contains(&config.sample_rate) {
             let initial = SpectrumStamp {
                 target: SpectrumTargetId(0),
@@ -129,7 +127,12 @@ fn open_prepared(
                 sample_rate_hz: config.sample_rate,
                 applied_revision: 0,
             };
-            match spawn_spectrum_worker(initial) {
+            let spawned = if worker {
+                crate::spectrum_worker::spawn_native_spectrum_worker(initial)
+            } else {
+                spawn_spectrum_worker(initial)
+            };
+            match spawned {
                 Ok((capture, reader, reaper)) => (Some(capture), Some(reader), Some(reaper), None),
                 Err(error) => (None, None, None, Some(error.to_string())),
             }
@@ -151,9 +154,12 @@ fn open_prepared(
     let (control, callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {
-            if let Some(reaper) = spectrum_reaper {
-                let _ = reaper.shutdown_and_join();
-            }
+            // Even pre-channel failure transfers the actual worker/lease to
+            // persistent lifecycle custody; no consuming join loses a panic.
+            drop(lifecycle::StreamOwner::failed_preparation_custody(
+                lease,
+                spectrum_reaper,
+            ));
             return Err(error.to_string());
         }
     };
@@ -161,7 +167,11 @@ fn open_prepared(
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
         if worker {
             let (data, errors, terminals, client, publication) =
-                crate::native_callback_owner::reserve_native_worker(control, callback);
+                crate::native_callback_owner::reserve_native_worker(
+                    control,
+                    callback,
+                    spectrum.take(),
+                );
             (
                 data,
                 errors,

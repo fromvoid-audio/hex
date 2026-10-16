@@ -98,10 +98,38 @@ nonblocking worker open delivery, document-generation replacement and the UI
 client integration are still unfinished. Headless controls do not establish
 physical CPAL deadlines, OS dispose success, listening or native UI acceptance.
 
-A final production-constructor trace also found that capture-enabled output's
-existing spectrum worker still needs its capture queue, six analysis Boxes,
-rate-change replacement peak and result-channel/Reader lifetime added to the
-strict factory declaration. Its consuming Reaper join must retain panic custody.
-That bounded repair remains part of PR239 before claiming a complete production
-worker boundary; the current checkpoint does not certify it or expose a new UI
-streaming path.
+## capture-enabled native boundary
+
+The strict worker factory now constructs the existing spectrum Core on control
+before moving it to the analysis worker. An exhaustive owning visitor measures
+its two rolling/ordered Boxes, the kernel's four Boxes, actual capture-ring
+capacity, stop payload and lifecycle Reaper value. Capture and Reader inline
+storage lives in the already measured callback/client Boxes. The std result
+channel, stop pair and capture ring are three bounded opaque RESOURCE groups
+with six constructor endpoint/handle obligations; the one analysis thread is a
+separate bounded lifetime, not an OS/stack/TLS byte estimate.
+
+A private receipt correlates the actual capture buffer, Reader and Reaper. A
+same-format unrelated Reader or Reaper cannot cover that factory. Generic dynamic
+spectrum workers cannot supply the native receipt. The native path fixes analysis
+to its actual device sample rate and refuses a wrong-rate capture before queue
+mutation while consuming its sequence/gap. Therefore that constructor cannot
+enter the generic worker's old-plus-new-kernel replacement peak. Generic workers
+retain their existing rate-change behavior.
+
+The Reader is inside Client before terminal reservation; polling returns only
+bounded spectrum values. An independently owned Reader cannot escape the strict
+worker factory and survive terminal completion. Lifecycle retains the actual
+Reaper through a borrowed once-only join. A worker panic preserves its exact
+first payload and marks sticky failure; subsequent advance cannot retry or
+release the lease. Even failure during channel construction transfers the Reaper
+and exclusive lease into the existing unexposed lifecycle custody. No join runs
+on a UI/close/callback path.
+
+Headless controls cover actual fixed-rate worker analysis, wrong-rate refusal,
+Reader/Reaper cross-pair refusal, caller DATA reservation refusal, capture-enabled
+callback zero total/net allocation and the actual Reader-live lease barrier.
+Disabling the native rate guard or dropping the first worker panic payload makes
+the focused controls fail. This remains a staged source checkpoint: Session
+sink/facade/UI integration, final repository CI and native listening/UI acceptance
+are still outstanding.

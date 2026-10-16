@@ -47,6 +47,9 @@ pub(crate) struct NativeCandidateBoundary {
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
+    spectrum: Option<crate::spectrum_worker::NativeSpectrumReceipt>,
+    spectrum_reader_bound: bool,
+    spectrum_reaper_bound: bool,
 }
 impl NativeCandidateBoundary {
     pub(super) fn from_reserved(
@@ -66,7 +69,13 @@ impl NativeCandidateBoundary {
         {
             return None;
         }
+        let spectrum = data.callback.native_spectrum_receipt()?;
         let channels = data.callback.constructor_channel_storage()?;
+        let channels = if let Some(receipt) = spectrum {
+            channels.plus(receipt.storage)?
+        } else {
+            channels
+        };
         let data_bytes = std::mem::size_of_val(data)
             .checked_add(std::mem::size_of_val(errors))?
             .checked_add(cell_data)?
@@ -85,6 +94,9 @@ impl NativeCandidateBoundary {
             data_bytes,
             anchored: false,
             channels,
+            spectrum,
+            spectrum_reader_bound: spectrum.is_none(),
+            spectrum_reaper_bound: spectrum.is_none(),
         })
     }
     pub(super) fn with_worker_endpoints(
@@ -98,6 +110,12 @@ impl NativeCandidateBoundary {
         {
             return None;
         }
+        if client.owner_ref()?.native_spectrum_identity()?
+            != self.spectrum.map(|receipt| receipt.identity)
+        {
+            return None;
+        }
+        self.spectrum_reader_bound = true;
         let client_cell = client.guard().shared_cell()?;
         let publication_cell = publication.guard().shared_cell()?;
         self.endpoint_cells = Some([
@@ -158,10 +176,24 @@ impl NativeCandidateBoundary {
     pub(crate) fn channel_resources(&self) -> (usize, usize) {
         (self.channels.shared_groups, self.channels.shared_handles)
     }
+    pub(crate) fn anchor_spectrum_reaper(
+        &mut self,
+        identity: Option<crate::spectrum_worker::NativeSpectrumIdentity>,
+    ) {
+        self.spectrum_reaper_bound =
+            self.spectrum_reader_bound && self.spectrum.map(|receipt| receipt.identity) == identity;
+    }
+    pub(crate) fn analysis_workers(&self) -> usize {
+        usize::from(self.spectrum.is_some())
+    }
     pub(crate) fn data_bytes(&self) -> Option<usize> {
-        self.anchored.then_some(self.data_bytes)
+        (self.anchored && self.spectrum_reader_bound && self.spectrum_reaper_bound)
+            .then_some(self.data_bytes)
     }
     pub(crate) fn matches(&self, root: u64) -> bool {
-        self.anchored && self.root == root
+        self.anchored
+            && self.spectrum_reader_bound
+            && self.spectrum_reaper_bound
+            && self.root == root
     }
 }

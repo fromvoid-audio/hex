@@ -17,6 +17,10 @@ final client endpoint/lease release. The move-only client transfers its whole
 bundle on close/Drop; the lifecycle thread destroys actual endpoint Boxes.
 Split gain/publication admission uses one atomic word with matching terminal
 release and enqueue-failure rollback. Legacy Resident Control remains compatible.
+The strict capture-enabled factory also measures actual analysis buffers and
+capture capacity, keeps Reader inside Client, binds the actual Reaper, and uses
+persistent normal-join/first-panic custody. Native analysis is fixed to device rate;
+generic dynamic workers remain unchanged and cannot mint its native receipt.
 Session sink/desktop/UI wiring is still unfinished; no full-CI, native UI or
 delivery claim. See [source plan](docs/streamed-session-source-plan.md).
 

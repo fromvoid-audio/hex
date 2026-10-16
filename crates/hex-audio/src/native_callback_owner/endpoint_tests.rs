@@ -48,10 +48,19 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
         let records = Arc::new(Mutex::new(Vec::new()));
         let reservation = limits(&mut current);
         let lease = crate::lifecycle::Lease::acquire().unwrap();
-        let (control, callback) = prepared::channel(48_000).unwrap();
+        let initial = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 48000,
+            applied_revision: 0,
+        };
+        let (capture, reader, reaper) =
+            crate::spectrum_worker::spawn_native_spectrum_worker(initial).unwrap();
+        let spectrum_bytes = capture.native_receipt().unwrap().storage.data_bytes;
+        let (control, callback) = prepared::channel_with_spectrum(48_000, Some(capture)).unwrap();
         let root = control.native_candidate_root();
         let (mut data, errors, terminals, mut client, mut publication) =
-            reserve_native_worker(control, callback);
+            reserve_native_worker(control, callback, Some(reader));
         let client_address = client.owner_ref().unwrap() as *const _ as usize;
         let publication_address = publication.owner_ref().unwrap() as *const _ as usize;
         let observed = Arc::clone(&records);
@@ -70,9 +79,25 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
             ))
         });
         let native = NativeRetirement::new(terminals, root.clone());
-        let stream = crate::lifecycle::StreamOwner::prepared_custody(lease, None, native);
+        let stream = crate::lifecycle::StreamOwner::prepared_custody(lease, Some(reaper), native);
         let control = publication.control().unwrap();
         control.enable_native_custody().unwrap();
+        let native_bytes = control
+            .native_candidate_root()
+            .native_boundary_bytes()
+            .unwrap();
+        let mut too_small = reservation;
+        too_small.max_retained_data_bytes = native_bytes.checked_sub(spectrum_bytes).unwrap();
+        too_small.max_construction_peak_data_bytes = too_small.max_retained_data_bytes;
+        assert!(
+            control
+                .configure_audio_candidate_publication(too_small)
+                .is_err()
+        );
+        assert_eq!(
+            current.phase(),
+            hex_engine::AudioCandidateDisposalPhase::Owned
+        );
         control
             .configure_audio_candidate_publication(reservation)
             .unwrap();
@@ -172,7 +197,7 @@ fn worker_and_client_endpoints_return_in_either_order_and_unexposed_open_abandon
         let (control, callback) = prepared::channel(48_000).unwrap();
         let root = control.native_candidate_root();
         let (data, errors, terminals, client, publication) =
-            reserve_native_worker(control, callback);
+            reserve_native_worker(control, callback, None);
         let mut client = Some(client);
         let mut publication = Some(publication);
         let mut retirement = NativeRetirement::new(terminals, root.clone());
@@ -205,7 +230,7 @@ fn publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_
     let (control, callback) = prepared::channel(48_000).unwrap();
     let root = control.native_candidate_root();
     let (data, errors, terminals, mut client, mut publication) =
-        reserve_native_worker(control, callback);
+        reserve_native_worker(control, callback, None);
     let mut retirement = NativeRetirement::new(terminals, root);
     publication
         .control()
@@ -256,7 +281,7 @@ fn exposed_resident_client_permanently_refuses_later_constructor_conversion() {
     let (control, callback) = prepared::channel(48_000).unwrap();
     let root = control.native_candidate_root();
     let (data, errors, terminals, mut client, mut publication) =
-        reserve_native_worker(control, callback);
+        reserve_native_worker(control, callback, None);
     let mut retirement = NativeRetirement::new(terminals, root);
     let control = publication.control().unwrap();
     control.enable_native_custody().unwrap();
@@ -281,4 +306,60 @@ fn exposed_resident_client_permanently_refuses_later_constructor_conversion() {
     drop(data);
     drop(errors);
     crate::prepared::candidate_tests::finish(&mut retirement);
+}
+
+#[test]
+fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_constructor() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let reservation = limits(&mut owner);
+    for wrong_reader in [false, true] {
+        let initial = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 48000,
+            applied_revision: 0,
+        };
+        let (capture, reader, reaper) =
+            crate::spectrum_worker::spawn_native_spectrum_worker(initial).unwrap();
+        let (other_capture, other_reader, other_reaper) =
+            crate::spectrum_worker::spawn_native_spectrum_worker(initial).unwrap();
+        let (reader, unused_reader) = if wrong_reader {
+            (other_reader, reader)
+        } else {
+            (reader, other_reader)
+        };
+        let (control, callback) = prepared::channel_with_spectrum(48000, Some(capture)).unwrap();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, Some(reader));
+        let mut retirement = NativeRetirement::new(terminals, root.clone());
+        // Wrong Reader is refused at the four-terminal constructor; wrong
+        // Reaper is refused when persistent lifecycle custody is paired.
+        retirement.bind_spectrum_reaper(Some(&other_reaper));
+        let control = publication.control().unwrap();
+        control.enable_native_custody().unwrap();
+        assert!(root.native_boundary_bytes().is_none());
+        assert!(
+            control
+                .configure_audio_candidate_publication(reservation)
+                .is_err()
+        );
+        assert_eq!(
+            owner.phase(),
+            hex_engine::AudioCandidateDisposalPhase::Owned
+        );
+        assert!(client.preview_request().is_ok());
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        drop(other_capture);
+        drop(unused_reader);
+        reaper.shutdown_and_join().unwrap();
+        other_reaper.shutdown_and_join().unwrap();
+        crate::prepared::candidate_tests::finish(&mut retirement);
+    }
 }

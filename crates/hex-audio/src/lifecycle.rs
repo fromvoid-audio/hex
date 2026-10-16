@@ -99,12 +99,26 @@ impl StreamOwner {
         spectrum_reaper: Option<SpectrumReaper>,
         native: crate::native_callback_owner::NativeRetirement,
     ) -> Self {
+        native.bind_spectrum_reaper(spectrum_reaper.as_ref());
+        Self::unexposed_custody(lease, spectrum_reaper, Some(native))
+    }
+    pub(crate) fn failed_preparation_custody(
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+    ) -> Self {
+        Self::unexposed_custody(lease, spectrum_reaper, None)
+    }
+    fn unexposed_custody(
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+        native: Option<crate::native_callback_owner::NativeRetirement>,
+    ) -> Self {
         Self {
             retirement: Some(Retirement {
                 stream: None,
                 spectrum_reaper,
                 _lease: lease,
-                native: Some(native),
+                native,
                 backend_exposed: false,
                 stream_drop_pending: false,
                 stream_disposed: false,
@@ -569,11 +583,12 @@ fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
     )? {
         return Ok(false);
     }
-    if let Some(reaper) = retirement.spectrum_reaper.take() {
-        if reaper.shutdown_and_join().is_err() {
+    if let Some(reaper) = retirement.spectrum_reaper.as_mut() {
+        if reaper.advance_shutdown_on_control().is_err() {
             return Err(());
         }
     }
+    drop(retirement.spectrum_reaper.take());
     Ok(true)
 }
 

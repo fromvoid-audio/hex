@@ -127,6 +127,15 @@ impl Custody {
             bank.native = Some(boundary);
         }
     }
+    pub(super) fn anchor_native_spectrum(
+        &self,
+        identity: Option<crate::spectrum_worker::NativeSpectrumIdentity>,
+    ) {
+        let mut bank = lock(&self.bank);
+        if let Some(native) = bank.native.as_mut() {
+            native.anchor_spectrum_reaper(identity);
+        }
+    }
     pub(super) fn anchor_native_boundary(
         &self,
         root: u64,

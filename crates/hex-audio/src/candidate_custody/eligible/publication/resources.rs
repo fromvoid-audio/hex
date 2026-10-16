@@ -8,6 +8,7 @@ pub(super) struct RootResourceWitness {
     root_shared_groups: usize,
     shared_handle_bound: usize,
     lifecycle_workers: usize,
+    analysis_workers: usize,
     output_contexts: usize,
     source_workers: usize,
     catalog_channels: usize,
@@ -18,7 +19,7 @@ impl RootResourceWitness {
     pub(super) fn covers(&self, root: u64) -> bool {
         self.root == root && self.root_data != 0 && self.root_shared_groups != 0
             && self.shared_handle_bound >= self.root_shared_groups
-            && self.lifecycle_workers == 1 && self.output_contexts == 1
+            && self.lifecycle_workers == 1 && self.output_contexts == 1 && self.analysis_workers <= 1
             && self.source_workers <= 2 && self.catalog_channels <= 2
             // Counts are retained until actual source-pair/report closure;
             // zero sources legitimately need no reader or kernel handles.
@@ -102,6 +103,7 @@ pub(super) fn for_candidate(
             .and_then(|n| n.checked_add(summary.shared_resource_handles))
             .ok_or("resource count overflow")?,
         lifecycle_workers: 1,
+        analysis_workers: native.analysis_workers(),
         output_contexts: 1,
         source_workers: 0,
         catalog_channels: 0,

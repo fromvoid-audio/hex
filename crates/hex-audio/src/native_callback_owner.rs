@@ -172,6 +172,7 @@ pub(crate) fn reserve_native(
 pub(crate) fn reserve_native_worker(
     control: crate::prepared::Control,
     callback: Callback,
+    reader: Option<crate::spectrum_worker::SpectrumReader>,
 ) -> (
     Guard<NativeCallbackOwner>,
     Guard<ErrorCallbackOwner>,
@@ -181,7 +182,7 @@ pub(crate) fn reserve_native_worker(
 ) {
     let root = control.native_candidate_root();
     let status = Arc::clone(&control.status);
-    let (client, publication, endpoints) = control.reserve_worker_endpoints();
+    let (client, publication, endpoints) = control.reserve_worker_endpoints(reader);
     let (mut data, mut errors, terminals) = reserve_carriers(callback, status, Some(endpoints));
     if let Some(boundary) = NativeCandidateBoundary::from_reserved(&root, &mut data, &mut errors)
         .and_then(|boundary| boundary.with_worker_endpoints(&client, &publication))
@@ -446,6 +447,13 @@ impl NativeRetirement {
             .iter()
             .filter(|pages| pages.is_some())
             .count()
+    }
+    pub(crate) fn bind_spectrum_reaper(
+        &self,
+        reaper: Option<&crate::spectrum_worker::SpectrumReaper>,
+    ) {
+        self.root
+            .anchor_native_spectrum(reaper.and_then(|reaper| reaper.native_identity()));
     }
     pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
         self.root.clone()

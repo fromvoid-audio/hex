@@ -99,6 +99,13 @@ waits for preview owners too. No extra stream, callback allocation, locking or
 final PCM drop is needed. The media decoder and browser input remain outside
 this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
 
+The strict worker factory uses the same analysis implementation at the actual
+fixed device rate, with a private actual Capture/Reader/Reaper receipt. Its Reader
+is part of Client's terminal bundle; the Reaper stays in persistent lifecycle
+custody until normal join, retaining the first worker panic without retry. Generic
+`spawn_spectrum_worker` callers retain dynamic-rate analysis and do not gain this
+native constructor receipt. See [source/service integration](../../docs/streamed-session-source-plan.md#capture-enabled-native-boundary).
+
 ## Output spectrum analysis
 
 `spectrum` provides the fixed 4096-frame stereo FFT kernel; `spectrum_worker`

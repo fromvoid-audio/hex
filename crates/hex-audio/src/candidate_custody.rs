@@ -366,6 +366,12 @@ impl CandidateRoot {
     ) {
         self.0.eligible.record_native_boundary(boundary);
     }
+    pub(crate) fn anchor_native_spectrum(
+        &self,
+        identity: Option<crate::spectrum_worker::NativeSpectrumIdentity>,
+    ) {
+        self.0.eligible.anchor_native_spectrum(identity);
+    }
     pub(crate) fn anchor_native_boundary(
         &self,
         terminals: &crate::native_callback_owner::NativeTerminals,

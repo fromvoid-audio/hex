@@ -1377,6 +1377,13 @@ impl Drop for PublicationControl {
 }
 
 impl Callback {
+    pub(crate) fn native_spectrum_receipt(
+        &self,
+    ) -> Option<Option<crate::spectrum_worker::NativeSpectrumReceipt>> {
+        self.spectrum_capture
+            .as_ref()
+            .map_or(Some(None), |capture| capture.native_receipt().map(Some))
+    }
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {

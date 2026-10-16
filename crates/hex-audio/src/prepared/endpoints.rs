@@ -12,6 +12,7 @@ pub struct WorkerControl {
 }
 pub(crate) struct ClientEndpoints {
     sample_preview: crate::sample_preview::Control,
+    spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
@@ -26,7 +27,10 @@ pub(crate) struct EndpointTerminals {
     pub(crate) publication: Terminal<PublicationControl>,
 }
 impl Control {
-    pub(crate) fn reserve_worker_endpoints(self) -> (Client, WorkerControl, EndpointTerminals) {
+    pub(crate) fn reserve_worker_endpoints(
+        self,
+        spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
+    ) -> (Client, WorkerControl, EndpointTerminals) {
         let Self {
             sample_preview,
             commands,
@@ -40,6 +44,7 @@ impl Control {
         let status = Arc::clone(&publication.status);
         let (endpoints, client) = reserve(ClientEndpoints {
             sample_preview,
+            spectrum_reader,
             commands,
             spectrum_target,
             processor_audition,
@@ -239,6 +244,13 @@ impl Client {
             .owner_mut()
             .and_then(|e| e.gain_recording.try_receipt())
     }
+    pub fn spectrum_latest(&mut self) -> Option<crate::spectrum_worker::PublishedSpectrum> {
+        self.endpoints
+            .owner_mut()?
+            .spectrum_reader
+            .as_mut()?
+            .try_latest()
+    }
     pub fn spectrum_desired(&self) -> Option<spectrum_target::SpectrumTarget> {
         self.endpoints
             .owner_ref()
@@ -334,6 +346,13 @@ impl ClientEndpoints {
             .pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
         self.processor_audition.invalidate_current_immediately();
+    }
+    pub(crate) fn native_spectrum_identity(
+        &self,
+    ) -> Option<Option<crate::spectrum_worker::NativeSpectrumIdentity>> {
+        self.spectrum_reader
+            .as_ref()
+            .map_or(Some(None), |reader| reader.native_identity().map(Some))
     }
     pub(crate) fn matches(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
