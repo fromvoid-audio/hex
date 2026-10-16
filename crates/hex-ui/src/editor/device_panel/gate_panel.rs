@@ -3,7 +3,7 @@ use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView,
     parameter_control_with_presentation,
 };
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*};
 use hex_engine::{NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::ParameterId;
 use hex_project::DeviceId;
@@ -29,33 +29,13 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
-    hex_widgets::device_body(super::device_layout_style())
+    let first = gate_column(view, cx, device, identity, device_view, &PARAMETERS[..3]);
+    let second = gate_column(view, cx, device, identity, device_view, &PARAMETERS[3..]);
+    crate::device_composition::paired_rails(first, second)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
-        .w_full()
-        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
-        .flex()
-        .justify_between()
-        .gap(px(2.0))
-        .py(px(3.0))
-        .child(gate_column(
-            view,
-            cx,
-            device,
-            identity,
-            device_view,
-            &PARAMETERS[..3],
-        ))
-        .child(gate_column(
-            view,
-            cx,
-            device,
-            identity,
-            device_view,
-            &PARAMETERS[3..],
-        ))
 }
 
 fn gate_column(
@@ -66,7 +46,7 @@ fn gate_column(
     device_view: &NativeDeviceView,
     parameters: &[ParameterId],
 ) -> Div {
-    let mut controls = div().flex().flex_col().gap(px(2.0));
+    let mut controls = crate::device_composition::rail_column();
     for id in parameters {
         let control = device_view
             .parameters

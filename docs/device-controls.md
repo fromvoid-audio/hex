@@ -83,6 +83,55 @@ layout reflow. Production UI tests retain Vector focus/tab/gesture/row-containme
 coverage and check Sine/effect header/body alignment. This is source/scene evidence;
 physical macOS visual and input acceptance remains optional native testing.
 
+## Production compositions — pulse2473
+
+`hex-ui/src/device_composition.rs` is the pure production geometry seam used by
+Vector/Operator, Utility, Saturator, EQ8, Compressor, Gate, Auto Pan and registered
+generic/fallback panels. It accepts already-bound child elements, supplies the
+same 168px body and useful per-layout slots, and has no EditorView, project,
+engine, entity, gesture or audio dependency. Native review examples can include
+that same source module with `#[path]`, alongside the product theme module;
+Pulse2474 owns replacing historical gallery approximations with these calls.
+It is product composition, not another device widget or editing model.
+`wrapped_body` applies shared dense rounded sections to each bound fallback
+control slot without changing its width or control footprint; the section adds
+one pixel above/below the slot within the existing scrolling layout.
+`unsupported_body` supplies the same rounded, padded, scrollable ErrorDisplay
+for unsupported instrument, Track effect and Return effect states. The product
+owns the semantic error foreground and each caller retains its outer device ID.
+
+All body/section paint, rounded geometry, identity badges, focus artwork,
+section captions/dividers, selectable segments/rows and compact actions come
+from `hex-widgets`. The theme resolver supplies semantic neutral, selected,
+identity and hover colors, including contrast-checked text for both idle and
+hover action surfaces. Track, Return and instrument header actions now share
+one 12px footprint; device IDs do not choose header density or styling. Real
+callbacks, tooltips, bypass state and parameter/preview ownership are retained.
+
+Utility retains its 144px frame, 140px body and two 64px control columns. Shared
+rounded sections use vertical structural insets around these narrow columns,
+so full-width controls remain intact. Dense three-dial columns use the shared
+one-pixel radius/inset option: three 52px controls plus two 2px gaps still fit
+160px of content inside a 162px section. Short band rows use the same dense
+geometry. Standard larger sections retain 3px radii and 4px structural insets.
+Each content region has one section boundary; nested insets must not squeeze
+existing controls. Graph wrappers use rounded displays while preserving graph
+width, and widgets retain graph data/interaction ownership in their entities.
+
+Vector retains its fixed shell/detail/preview widths, 40px rows, 86px graph and
+stable page/tab slots. Inline captions keep intrinsic width, so readouts remain
+inside their detail rows; section captions may fill a column. The shared
+caption APIs distinguish these purposes without device-named variants. All
+parameter IDs, display codecs, laws, DSP, schema, focus/tab navigation, typed
+drafts, gestures and Track/Return semantics remain unchanged.
+
+Source/scene regressions cover rounded narrow/dense sections, full control
+sizes, clipping masks, short rows, header-action hover and contrast, plus actual
+Utility, Saturator and EQ8 composition bounds. Existing Vector navigation,
+invalid-draft, gesture and containment tests remain authoritative. This is not
+native GPU-pixel, physical-input or listening acceptance; optional native checks
+use the optimized delivered build.
+
 ## Interaction contract
 
 - Validate finite ranges/defaults and typed input. Linear, positive logarithmic
@@ -540,12 +589,17 @@ The connected001 isolated review process also crashed during a user-reported win
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
 
+The dated gray68/connected001 color observations above remain historical native
+evidence. Current neutral and identity colors follow the shared theme policy in
+Pulse2471–2473; their layout, spacing and navigation evidence is preserved.
+
 ## device card selection — 13 october 2026
 
 Left mouse-down anywhere in an instrument, track effect or Return effect card
-selects that device. The shared frame uses the accent border/title bar with dark
-title text; parameter controls keep their existing colors. Selecting another
-card replaces the selection, which persists after release and redraw. Capture
+selects that device. The shared frame highlights only the selected title bar
+with a contrast-checked foreground; the outer border, surround, body and
+parameter controls keep their neutral colors. Selecting another card replaces
+the selection, which persists after release and redraw. Capture
 routing allows knobs, toggles and drag grips to retain their own input handling.
 Selection is transient editor state keyed by DeviceId; it sends no project edit
 and clears when the panel owner changes, the selected device disappears or the

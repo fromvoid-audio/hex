@@ -29,6 +29,10 @@ widgets = (
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',
     'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
     'hex_widgets::device_split(',
+    # Shared production composition slots are already-bound native view elements.
+    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'range)', 'footer)', 'rail)',
+    'first)', 'second)', 'preview)', 'tabs)', 'rails)',
+    'hex_widgets::device_divider(', 'hex_widgets::device_identity_marker(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
