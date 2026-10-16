@@ -2616,6 +2616,22 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   listening and physical throughput remain manual gaps; no export UI/preroll or
   publication is included. Active Pulse30 prerequisite linking remains blocked.
 
+### export — pulse30 / pr152
+
+- Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
+  the canonical capture prerequisite, with sample ranges and cancellable preroll.
+- Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
+  old files survive cancellation, confirmed replacements remove routine backups,
+  new batches publish exclusively, and unexpected races return
+  truthful recovery errors. The finite behavior is documented in docs/export.md.
+- Final exact-source local checks and PR review remain gates. Native macOS,
+  listening and sustained throughput acceptance remain unverified.
+- User feedback11October: picker should start in home, read-only destinations
+  need a clear error, native overwrite confirmation is sufficient, no normal
+  export backup. Revised source needs fresh checks/build/user confirmation.
+  Finder drops2385, persistent selection2386 and multi-track selection2387 are
+  separate tickets; Return listening2388 and realistic long export2389 deferred.
+
 ### operator enable controls — pulse2335 / pr164
 
 - Strict version-8 state appends four canonical enable bools after the frozen
@@ -3150,4 +3166,3 @@ the negative control retains complete join/pool accounting with zero publication
 Normal and allocation-probe stream suites pass. Final exact-source CI is recorded
 with PR252. Production shutdown, queue bounds and native streaming admission are
 unchanged; no new native-device or physical-deadline acceptance is claimed.
-
