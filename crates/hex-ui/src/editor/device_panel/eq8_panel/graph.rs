@@ -12,7 +12,7 @@ pub(super) fn graph_entity(
         .eq8_graphs
         .entry(device)
         .or_insert_with(|| {
-            let style = super::super::control_style();
+            let style = theme::device_style(theme::DeviceStyleRole::Display);
             let entity = cx.new(|graph_cx| {
                 ResponseGraph::new(graph_cx, format!("eq8-response-{}", device.value()), style)
             });
@@ -34,7 +34,11 @@ pub(super) fn graph_entity(
     };
     let graph_entity = graph.entity.clone();
     graph_entity.update(cx, |graph, cx| {
-        let _ = graph.set_model(model, super::super::control_style(), cx);
+        let _ = graph.set_model(
+            model,
+            theme::device_style(theme::DeviceStyleRole::Display),
+            cx,
+        );
     });
     div()
         .id(ElementId::Name(

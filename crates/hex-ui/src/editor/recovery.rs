@@ -25,6 +25,7 @@ impl EditorView {
             self.error = Some(message.into());
             return;
         }
+        self.gain_recorder.discard();
         self.offline_cursor = position;
         if let Some(audio) = self.audio.take() {
             audio.control.stop();

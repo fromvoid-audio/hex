@@ -65,6 +65,18 @@ struct ReaderMetadata {
 }
 
 impl ResamplePlan {
+    /// Control-only identity check for the actual captured kernel owner. No
+    /// owner/Arc is returned and no source value or content infers identity.
+    pub fn uses_kernel_allocation(&self, other: &ResampleKernel) -> bool {
+        let Self {
+            kernel,
+            source_frames: _,
+            output_frames: _,
+            max_output_window_frames: _,
+        } = self;
+        kernel.shares_allocation_with(other)
+    }
+
     pub fn new(
         source_rate: u32,
         target_rate: u32,

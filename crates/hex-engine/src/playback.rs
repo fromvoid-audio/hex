@@ -5,6 +5,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod metronome;
+use metronome::Metronome;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
@@ -18,6 +21,8 @@ pub enum PlaybackCommand {
 /// Fixed-size action passed through the native callback command ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackAction {
+    /// Transient interactive click; never part of the saved project or export.
+    SetMetronome(bool),
     Transport(PlaybackCommand),
     Session(crate::SessionPlaybackCommand),
     /// Apply a valid clip or scene launch and start transport as one action.
@@ -69,6 +74,7 @@ impl SessionCapabilityStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackActionError {
+    MetronomeUnavailable,
     SessionUnavailable(crate::SessionPlaybackError),
     SessionNotPrepared,
     Session(crate::SessionPlaybackError),
@@ -87,6 +93,7 @@ pub enum PlaybackActionRejection {
     ReleaseCapacity = 7,
     Timing = 8,
     InvalidSessionAction = 9,
+    MetronomeUnavailable = 10,
 }
 
 impl PlaybackActionRejection {
@@ -101,12 +108,16 @@ impl PlaybackActionRejection {
             7 => Some(Self::ReleaseCapacity),
             8 => Some(Self::Timing),
             9 => Some(Self::InvalidSessionAction),
+            10 => Some(Self::MetronomeUnavailable),
             _ => None,
         }
     }
 
     pub const fn message(self) -> &'static str {
         match self {
+            Self::MetronomeUnavailable => {
+                "metronome requires prepared musical timing and sample storage"
+            }
             Self::SessionUnavailable => "session playback is unavailable for this revision",
             Self::SessionNotPrepared => "session playback was not prepared for this graph",
             Self::UnknownTrack => "session track is no longer available",
@@ -126,6 +137,7 @@ impl PlaybackActionError {
     /// Compact stable category for callback-to-control telemetry.
     pub const fn telemetry_rejection(self) -> PlaybackActionRejection {
         match self {
+            Self::MetronomeUnavailable => PlaybackActionRejection::MetronomeUnavailable,
             Self::SessionUnavailable(_) => PlaybackActionRejection::SessionUnavailable,
             Self::SessionNotPrepared => PlaybackActionRejection::SessionNotPrepared,
             Self::Session(crate::SessionPlaybackError::UnknownTrack) => {
@@ -262,6 +274,7 @@ impl PlaybackHandoffError {
 
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
 pub struct Playback {
+    metronome: Option<Box<Metronome>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
@@ -273,6 +286,53 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    pub(crate) fn new_audio_candidate(
+        revision: Arc<PreparedRevision>,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let runtime = SessionPlayback::new_audio_candidate(Arc::clone(&revision))?;
+        Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn validate_candidate_runtime_storage(
+        &self,
+        metadata: usize,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?
+            .validate_candidate_runtime_storage(metadata)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_populate_unsupported_tail(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.test_populate_unsupported_tail();
+        }
+    }
+    pub(crate) fn visit_candidate_groups(
+        &self,
+        visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            metronome,
+            project: _,
+            prepared_revision,
+            session_runtime,
+            linear_runtime,
+            session_unavailable: _,
+            position: _,
+            performance_frame: _,
+            performance_clock_exhausted: _,
+            playing: _,
+        } = self;
+        visit(9, 0, true)?; // actual Project handle
+        visit(10, 0, prepared_revision.is_some())?;
+        visit(11, 0, metronome.is_some())?;
+        visit(12, 0, session_runtime.is_some())?;
+        visit(13, 0, linear_runtime.is_some())?;
+        session_runtime
+            .as_ref()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?
+            .visit_candidate_groups(visit)
+    }
     pub fn new(project: Project) -> Self {
         Self::from_shared(Arc::new(project))
     }
@@ -281,7 +341,9 @@ impl Playback {
     /// This constructor deliberately keeps legacy Arrangement-only behavior.
     pub fn from_shared(project: Arc<Project>) -> Self {
         let linear_runtime = Some(Box::new(RendererRuntime::new(&project)));
+        let metronome = None;
         Self {
+            metronome,
             project,
             prepared_revision: None,
             session_runtime: None,
@@ -351,10 +413,14 @@ impl Playback {
     fn from_prerolled_session_runtime(runtime: SessionPlayback) -> Self {
         let prepared_revision = Arc::clone(runtime.prepared_revision());
         let project = Arc::clone(prepared_revision.arrangement());
+        let metronome = (!runtime.is_linear_arrangement_export())
+            .then(|| Metronome::prepare(project.sample_rate()).ok().map(Box::new))
+            .flatten();
         let position = runtime.arrangement_frame();
         let performance_frame = runtime.performance_frame();
         let playing = runtime.playing();
         Self {
+            metronome,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime: Some(Box::new(runtime)),
@@ -382,16 +448,18 @@ impl Playback {
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
         let project = Arc::clone(prepared_revision.arrangement());
+        let metronome = Metronome::prepare(project.sample_rate()).ok().map(Box::new);
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()
                 || project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()));
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()));
         let linear_runtime = (session_runtime.is_none() && !refuses_unowned_prepared_fallback)
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
+            metronome,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime,
@@ -406,6 +474,32 @@ impl Playback {
 
     pub fn prepared_revision(&self) -> Option<&Arc<PreparedRevision>> {
         self.prepared_revision.as_ref()
+    }
+
+    /// True only for an explicitly armed, admitted Session-capable runtime.
+    pub fn gain_recording_ready(&self, track: u64) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.gain_recording_ready(track))
+    }
+    /// Apply an absolute fader override. Construction and validation never allocate here.
+    pub fn set_gain_recording_override(&mut self, track: u64, gain: f32) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("gain recording requires session playback"))?
+            .set_gain_recording_override(track, gain)
+    }
+    pub fn clear_gain_recording_override(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.clear_gain_recording_override();
+        }
+    }
+    /// Arrangement content frame, known Main delivery delay and actual content loop pass.
+    /// Delivery delay excludes physical latency.
+    pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.gain_recording_clock(track))
     }
 
     /// Set or smoothly release one transient post-node processor audition on
@@ -507,6 +601,63 @@ impl Playback {
         }
     }
 
+    fn metronome_supported(&self) -> bool {
+        self.prepared_revision.is_some()
+            && self.metronome.is_some()
+            && !self
+                .session_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.is_linear_arrangement_export())
+    }
+
+    /// Last admitted transient click state, independent of project history.
+    pub fn metronome_enabled(&self) -> bool {
+        self.metronome
+            .as_ref()
+            .is_some_and(|metronome| metronome.enabled())
+    }
+
+    /// Preserve only the transient click toggle across an accepted fresh seek
+    /// of this exact prepared source, resetting its sample tail. The caller
+    /// must separately prove the same project context and publication fence.
+    /// Transport, route ownership and reconstructed DSP history are untouched.
+    /// Unsupported or different-source recipients retain their own state.
+    pub fn inherit_metronome_for_fresh_seek(&mut self, previous: &Self) {
+        let same_source = match (&self.prepared_revision, &previous.prepared_revision) {
+            (Some(next), Some(old)) => Arc::ptr_eq(next, old),
+            _ => false,
+        };
+        if !same_source || !self.metronome_supported() || !previous.metronome_supported() {
+            return;
+        }
+        if let Some(metronome) = self.metronome.as_mut() {
+            metronome.set_enabled(previous.metronome_enabled());
+            metronome.reset();
+        }
+    }
+
+    fn reset_metronome(&mut self) {
+        if let Some(metronome) = self.metronome.as_mut() {
+            metronome.reset();
+        }
+    }
+
+    fn mix_metronome(&mut self, start: u64, playing: bool, output: &mut [Frame]) {
+        if !playing {
+            self.reset_metronome();
+            return;
+        }
+        if let (Some(metronome), Some(revision)) = (&mut self.metronome, &self.prepared_revision) {
+            metronome.mix(
+                revision.session().timing(),
+                revision.session().meter_map(),
+                start,
+                self.project.loop_region(),
+                output,
+            );
+        }
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -578,7 +729,38 @@ impl Playback {
     }
 
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        let result = self.apply_action_inner(action);
+        if result.is_ok()
+            && matches!(
+                action,
+                PlaybackAction::Transport(
+                    PlaybackCommand::Stop
+                        | PlaybackCommand::Pause
+                        | PlaybackCommand::Seek(_)
+                        | PlaybackCommand::PlayFrom(_)
+                ) | PlaybackAction::Session(
+                    crate::SessionPlaybackCommand::Stop
+                        | crate::SessionPlaybackCommand::Pause
+                        | crate::SessionPlaybackCommand::Seek(_)
+                )
+            )
+        {
+            self.reset_metronome();
+        }
+        result
+    }
+
+    fn apply_action_inner(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
         match action {
+            PlaybackAction::SetMetronome(enabled) => {
+                if enabled && !self.metronome_supported() {
+                    return Err(PlaybackActionError::MetronomeUnavailable);
+                }
+                if let Some(metronome) = self.metronome.as_mut() {
+                    metronome.set_enabled(enabled);
+                }
+                Ok(())
+            }
             PlaybackAction::Transport(command) => {
                 if let Some(runtime) = self.session_runtime.as_mut() {
                     let command = match command {
@@ -673,6 +855,27 @@ impl Playback {
         self.performance_frame = previous.performance_frame();
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
+        self.inherit_metronome(previous);
+    }
+
+    fn inherit_metronome(&mut self, previous: &Self) {
+        if !self.metronome_supported() {
+            if let Some(metronome) = self.metronome.as_mut() {
+                metronome.set_enabled(false);
+            }
+            return;
+        }
+        let same_timing = match (&self.prepared_revision, &previous.prepared_revision) {
+            (Some(next), Some(old)) => {
+                next.session().timing().same_map(old.session().timing())
+                    && next.session().meter_map() == old.session().meter_map()
+                    && self.project.loop_region() == previous.project.loop_region()
+            }
+            _ => false,
+        };
+        if let (Some(next), Some(old)) = (&mut self.metronome, &previous.metronome) {
+            next.inherit(old, same_timing);
+        }
     }
 
     /// Inherit graph-local state at a publication boundary without allocating
@@ -741,10 +944,17 @@ impl Playback {
                 self.playing = previous.playing;
             }
         }
+        self.inherit_metronome(previous);
         Ok(())
     }
 
     /// Render either the selected mixed source or the legacy finite Arrangement.
+    pub fn set_device_metering(&mut self, enabled: bool) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.set_device_metering(enabled);
+        }
+    }
+
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
     }
@@ -757,10 +967,14 @@ impl Playback {
         output: &mut [Frame],
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
-            return runtime
+            runtime
                 .render_with_post_node_observer(output, observer)
-                .map_err(|error| Invalid(error.diagnostic_message()));
+                .map_err(|error| Invalid(error.diagnostic_message()))?;
+            self.mix_metronome(start, playing, output);
+            return Ok(());
         }
         if self.session_unavailable.is_some()
             && (self
@@ -771,7 +985,7 @@ impl Playback {
                     .project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }
@@ -791,6 +1005,7 @@ impl Playback {
         self.render_finite_arrangement_with_pages::<dyn MediaPages>(output, None)?;
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
+        self.mix_metronome(start, playing, output);
         Ok(())
     }
 
@@ -801,11 +1016,54 @@ impl Playback {
         output: &mut [Frame],
         pages: &mut P,
     ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
-            return runtime
+            runtime
                 .render_with_pages(output, pages)
-                .map_err(|error| Invalid(error.diagnostic_message()));
+                .map_err(|error| Invalid(error.diagnostic_message()))?;
+            self.mix_metronome(start, playing, output);
+            return Ok(());
         }
+        self.render_pages_fallback(output, pages)
+    }
+
+    /// Borrow pages and optional post-node observation for one block. Neither
+    /// borrow is retained; the observer must not allocate, block, clone owners
+    /// or retain samples. Observations commit only after successful block and
+    /// final output validation. Observed rendering requires a Session runtime;
+    /// refusal leaves output, clocks, page provider and playback state unchanged.
+    /// With no observer, the existing finite page-rendering fallback is retained.
+    pub fn render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime
+                .render_with_pages_and_post_node_observer(output, pages, observer)
+                .map_err(|error| Invalid(error.diagnostic_message()))?;
+            self.mix_metronome(start, playing, output);
+            return Ok(());
+        }
+        if observer.is_some() {
+            return Err(Invalid(
+                "post-node observation requires a prepared session runtime",
+            ));
+        }
+        self.render_pages_fallback(output, pages)
+    }
+
+    fn render_pages_fallback<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
         if self.session_unavailable.is_some()
             && (self
                 .prepared_revision
@@ -815,7 +1073,7 @@ impl Playback {
                     .project
                     .tracks()
                     .iter()
-                    .any(|track| track.has_stateful_devices() || track.has_instrument_source()))
+                    .any(|track| track.has_device_chain() || track.has_instrument_source()))
         {
             return Err(Invalid("prepared native playback runtime is unavailable"));
         }
@@ -832,6 +1090,7 @@ impl Playback {
         self.render_finite_arrangement_with_pages(output, Some(pages))?;
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
+        self.mix_metronome(start, playing, output);
         Ok(())
     }
 
@@ -943,7 +1202,7 @@ fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
             .project
             .tracks()
             .iter()
-            .any(crate::Track::has_stateful_devices)
+            .any(crate::Track::has_device_chain)
     {
         return true;
     }

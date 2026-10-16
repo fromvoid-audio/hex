@@ -19,6 +19,13 @@ payloads. `hex-project` deliberately depends on this shared contract while
 remaining independent of DSP implementations. It owns instance IDs, ordered
 per-track effects and structural envelope/history validation.
 
+Parameter descriptors are validated before either the effect or instrument
+registry admits a definition. Labels, optional units and choice labels must be
+nonempty, contain no Unicode uppercase or control characters, and occupy at most
+128 UTF-8 bytes each. A choice parameter exposes at most 256 alternatives;
+per-device parameter and registry type limits remain 256. These are static
+metadata admission limits, not a change to authored state or DSP processing.
+
 Type IDs are bounded lowercase namespace strings such as `hex.utility`;
 parameter IDs are stable within each type. Opaque payloads use immutable shared
 bytes so project/history clones retain state without copying each payload.
@@ -110,22 +117,25 @@ Exact transfer laws, filter designs and control interactions require original
 reference measurements; matching control names is not proof of parity. No
 proprietary implementation or assets are copied.
 
-## Stateful follow-ups
+## Mutable device lifecycle
 
-DC removal, bass mono and Operator require mutable DSP state. `hex-lattice` now
-defines a default-off mutable instrument runtime with fixed committed/scratch
-twins, bounded caller event slices, preflight, a finite declared release/output
-tail and committed-state quiescence query, plus hard reset. Engine admission
-still needs to gate analytic versus mutable preparation, transfer compatible
-state by stable device identity and instrument configuration, map source events
-to occurrence IDs, define route/tail ownership and retire runtime owners on
-control. Native and offline paths must share those processing rules.
+`hex-lattice` defines an optional mutable instrument runtime with fixed
+committed/scratch twins, bounded caller event slices, preflight, declared
+latency, a finite release/output tail, committed-state quiescence and hard reset.
+The engine now integrates this contract through canonical instrument preparation,
+Arrangement and Session event generation, compatible stable-ID history transfer,
+source occurrence IDs and captured outgoing instrument/suffix owners. Completed
+owners retire on control; callbacks do not destroy them. Native prepared playback
+and prepared offline export use the same registered processing rules. See
+[instrument slots](lattice-instruments.md) for exact admission, chase, loop and
+export limits; this does not admit arbitrary mutable processors or plugin hosts.
 
-Stage an explicit single instrument slot before Operator, preserving the current
-sine instrument as the migration default. Do not pretend a matrix represents a
-filter, nonlinear effect or instrument, and do not expose decorative unsupported
-DC/bass-mono/Operator controls while these dependencies remain open.
-
+Each track has one optional canonical instrument, freely positioned among its
+serial effects. Legacy projects migrate to the original sine instrument;
+removing the instrument silences MIDI while preserving audio and MIDI data.
+Stateful effects and instruments use their own runtime contracts rather than
+being represented by a matrix. The initial linear-only and test-only stages
+below are historical implementation boundaries, not current admission limits.
 
 Stateful processing runs once on each track's summed signal, before track mix.
 Current linear fusion remains valid. Captured outgoing releases retain their
@@ -146,10 +156,11 @@ control retirement are now implemented. Original Utility filters use the same
 registered codec and native/offline path. Scope, bounds, probes and open performance
 gates are recorded in [stateful lattice](stateful-lattice.md). Instruments now
 have a separate optional paired mutable-runtime contract with ordered caller-owned
-events, bounded per-definition capacity and declared tail quiescence. It is a
-test-only foundation; engine event generation, Arrangement/Session integration,
-outgoing tails, sustained chase and callback retirement/probes remain open. See
-[instrument slots](lattice-instruments.md).
+events, bounded per-definition capacity and declared tail quiescence, integrated
+with Arrangement/Session processing and prepared export. Registered mutable and
+built-in instrument fixtures exercise actual callback handoff and retirement.
+See [instrument slots](lattice-instruments.md) for supported discontinuities and
+remaining acceptance.
 
 ## eq eight
 
@@ -196,3 +207,37 @@ implementation. See [the EQ8 host contract](eq-eight-audition.md#transient-host-
 for the bounded audio lease, publication fences, pointer lifecycle and remaining
 native acceptance gates. Adding another capable device does not require a storage
 special case or a mutable type-erased escape hatch.
+
+## host gain staging
+
+[Native device gain staging](device-gain-staging.md) adds shared input/output
+sample-peak strips and manual host input/output trim. Memoryless effects retain separate
+runtime entries to expose each boundary. Host trim is neutral envelope metadata,
+independent of opaque device DSP payloads and synthesis/history identity; project
+schema 19 defaults prior documents to unity. Automatic matching is deferred.
+
+## Generic model/runtime source acceptance — Pulse16
+
+The current generic foundation has focused source coverage:
+
+- `hex-project` device and validated-history tests cover stable IDs, atomic
+  refusal, effect/instrument edits and Undo/Redo. `hex-storage` schema fixtures
+  round-trip opaque states and instrument position and migrate legacy documents.
+- Canonical chain tests move the single instrument through the persisted effect
+  gap, including insert/remove/recreate. Prepared Arrangement and Session tests
+  compare ordered prefix/suffix PCM; `hex-export` tests compare prepared mutable
+  hybrid export with an independent ordered oracle.
+- Mutable instrument tests cover same-frame event ordering, event-cap refusal,
+  transactional histories and old gate/suffix ownership. Stateful tail-bank
+  saturation refuses before mutating the live graph. Audio callback probes cover
+  mutable and built-in instrument processing, handoff and control retirement.
+- Prepared graph tests validate declared latency, compensation and unknown or
+  overflowing latency refusal. Metadata admission tests cover malformed text,
+  exact UTF-8 byte limits and bounded choices for both native registry classes.
+
+These source contracts do not establish native UI/listening acceptance, physical
+audio deadlines, general device/reference parity or larger workload support.
+The device-specific and acceptance tickets retain those obligations. In particular,
+existing export compatibility is preserved; additional export capability belongs
+to the owner's 0.2 scope. Historical checkpoint descriptions retain their original
+evidence and must not be read as fresh acceptance of current source.
