@@ -46,6 +46,21 @@ PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
   metadata stage supplies no new native listening, physical deadline, broad
   scalability or device-parity evidence.
 
+## never-installed constructor disposal — #2539 / PR234, 16 october 2026
+
+The real publication queue now carries an opaque constructor-owned candidate in
+non-admitting custody and rejects it before inheritance/active rendering. Exact
+root/runtime/slot identities, actual catalog leases/pairs and original-bank
+recovery stay retained through return pressure and control abandonment. Coupled
+native terminal guards are anchored before backend exposure; physical disposal
+requires both final releases and normal control-side destructor/pool completion.
+The narrow borrowed stream cleanup retains actual worker panic payloads and
+failed pool custody. Existing shutdown, DATA completeness refusals and all caps
+remain unchanged. New runtime/opaque costs stay Unknown. See
+[the owning contract](docs/never-installed-audio-disposal.md). PR234 records targeted and
+full exact-source verification status/evidence; PR235/236 and original24/177 native,
+performance and full-review acceptance remain outstanding.
+
 ## device lane drops integration — #2333 / PR183, 16 october 2026
 
 The existing canonical device-drop implementation now integrates current main.

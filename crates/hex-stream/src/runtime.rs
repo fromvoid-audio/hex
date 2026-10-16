@@ -24,6 +24,8 @@ pub use storage::{
     AudioStreamStorageSummary, OpaqueStreamCost, OpaqueStreamHandleGroup, StreamHandleLocation,
     StreamOwningHandleObligation, StreamSourceDomainObligation,
 };
+mod disposal;
+pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PagePoolReport {
@@ -326,9 +328,15 @@ impl StreamRuntime {
         let worker_finished = Arc::new(AtomicBool::new(false));
         #[cfg(test)]
         let worker_finished_signal = Arc::clone(&worker_finished);
+        #[cfg(test)]
+        let test_panic = disposal::take_worker_test_panic();
         let worker = thread::Builder::new()
             .name("hex-stream-worker".to_owned())
             .spawn(move || {
+                #[cfg(test)]
+                if let Some(payload) = test_panic {
+                    std::panic::resume_unwind(payload);
+                }
                 let pages = run_worker(
                     config,
                     definitions,
@@ -625,6 +633,11 @@ impl Drop for CatalogOwner {
 }
 
 impl StreamCallbackPages {
+    /// Pair a retained real catalog lease with this endpoint without cloning
+    /// owners or upgrading metadata equality into allocation identity.
+    pub fn matches_catalog(&self, lease: &CatalogLease) -> bool {
+        Arc::ptr_eq(&self.pair_id, &lease.pair_id) && Arc::ptr_eq(&self._owner, &lease.owner)
+    }
     /// Drain a bounded number of completed pages into the preallocated cache.
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.endpoint

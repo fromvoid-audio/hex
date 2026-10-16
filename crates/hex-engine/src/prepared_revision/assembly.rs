@@ -83,6 +83,43 @@ fn add_parts<T>(
     Ok(())
 }
 impl RevisionAssembly {
+    pub(crate) fn candidate_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> {
+        self.owner.iter().flat_map(|owner| {
+            owner
+                .arrangement
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter())
+                .filter_map(|clip| {
+                    clip.metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.streamed.as_deref())
+                })
+                .chain(
+                    owner
+                        .session
+                        .audio_clips()
+                        .iter()
+                        .filter_map(|clip| match clip.source() {
+                            crate::compile::PreparedAudioSource::Resident(_) => None,
+                            crate::compile::PreparedAudioSource::Streamed(metadata) => {
+                                Some(metadata.as_ref())
+                            }
+                        }),
+                )
+        })
+    }
+    /// Constructor-only control sharing. The returned handle is immediately
+    /// secured inside the opaque candidate, never exposed to an application.
+    pub(crate) fn candidate_root(&self) -> Result<std::sync::Arc<PreparedRevision>, Error> {
+        self.capacity()?;
+        let owner = self.owner.as_ref().ok_or(Error::UnsupportedGraph)?;
+        if owner.parts().is_none() {
+            return Err(Error::UnknownStorage);
+        }
+        Ok(std::sync::Arc::clone(owner.arc()))
+    }
+
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()

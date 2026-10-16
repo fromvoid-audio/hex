@@ -603,3 +603,12 @@ regression, macOS query tests and explicit cross-compilation limits.
 
 Musical audio roots, preparation/retention bounds and the engine→warp boundary
 are specified in [musical editing](musical-editing.md#preparation-and-retained-memory).
+
+## never-installed constructor custody
+
+The production `hex-audio -> hex-stream` edge is restricted to real catalog
+leases/pair identity and control-side disposal for admission-pending constructor
+candidates. Engine still has no stream/media/device-I/O dependency. The actual
+publication queue returns this opaque candidate before inheritance or rendering;
+legacy publication remains separate. [Never-installed disposal](never-installed-audio-disposal.md)
+describes terminal anchoring, retained failure and the unresolved native gates.
