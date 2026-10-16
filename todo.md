@@ -3105,3 +3105,15 @@ interrupted at step7 after main advanced; it is not merge evidence. Combined
 source checks, a fresh complete exact-candidate run and guarded optimized delivery
 remain outstanding. Native interaction/listening and Windows evidence remain
 separate from automated source checks.
+# 16 October 2026 — lfo assignment #2383 / pr173
+
+Recovered the existing canonical PR and preserved its commit history while
+integrating current main. The resulting change is limited to discoverable
+oscillator pitch mapping, selected-destination/depth readback and focused
+canonical/PCM/export/allocation coverage; inherited preset work stays outside
+this deliverable. Current shared widget styling and focus ownership are retained.
+See docs/operator-lfo-assignment.md for scope, reference limitations and the finite
+native checklist. Exact-source full CI and optimized delivery evidence are
+recorded separately with the PR/build; native/listening/reference review remains
+open, including deferred #2384 acceptance.
+
