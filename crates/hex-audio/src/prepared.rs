@@ -24,6 +24,8 @@ use std::time::Instant;
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
+mod eligible_publication;
+mod runtime_view;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -174,6 +176,7 @@ pub(crate) struct Publication {
 }
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
+    Eligible(crate::candidate_custody::ActiveEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::ActiveCandidate),
 }
@@ -181,21 +184,23 @@ impl ActivePublication {
     fn legacy(&self) -> Option<&Publication> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Candidate(_) => None,
+            Self::Candidate(_) | Self::Eligible(_) => None,
         }
     }
     fn legacy_mut(&mut self) -> Option<&mut Publication> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Candidate(_) => None,
+            Self::Candidate(_) | Self::Eligible(_) => None,
         }
     }
 }
 enum QueuedPublication {
+    Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::ReturnedCandidate),
 }
@@ -378,6 +383,12 @@ impl Default for Status {
 }
 
 impl Status {
+    pub(crate) fn candidate_boundary_data_bytes(&self) -> Option<usize> {
+        self.route_slots
+            .len()
+            .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
+    }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
             device_fault: AtomicBool::new(false),
@@ -722,6 +733,7 @@ pub struct Callback {
     #[cfg(test)]
     test_admit_candidate: bool,
     deferred: Option<Publication>,
+    deferred_eligible: Option<crate::candidate_custody::QueuedEligibleCandidate>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
     terminal_disposal_pending: bool,
@@ -730,6 +742,8 @@ pub struct Callback {
     route_slot_visits: usize,
     #[cfg(test)]
     test_transient_handoff_refusals: usize,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    test_eligible_transfer_allowance: Option<usize>,
     #[cfg(test)]
     test_after_fresh_fence_validation: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
@@ -813,6 +827,7 @@ pub fn channel_with_spectrum(
             #[cfg(test)]
             test_admit_candidate: false,
             deferred: None,
+            deferred_eligible: None,
             held_retirement: None,
             terminal_disposal_pending: false,
             published_route_key: None,
@@ -820,6 +835,8 @@ pub fn channel_with_spectrum(
             route_slot_visits: 0,
             #[cfg(test)]
             test_transient_handoff_refusals: 0,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            test_eligible_transfer_allowance: None,
             #[cfg(test)]
             test_after_fresh_fence_validation: None,
             #[cfg(test)]
@@ -951,7 +968,9 @@ impl Control {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        let reason = if self.gain_recording.target().is_some() {
+        let reason = if self.candidate_root.domains_configured() {
+            Some("constructor publication does not adopt legacy playback")
+        } else if self.gain_recording.target().is_some() {
             Some("finish gain recording before replacing playback")
         } else if self.closing.load(Acquire) {
             Some("playback is shutting down")
@@ -1114,6 +1133,12 @@ impl Control {
                 break;
             };
             match publication {
+                ReturnedPublication::Eligible(value) => {
+                    if let Err(value) = self.candidate_root.ingest_eligible(value) {
+                        self.held_control_return = Some(ReturnedPublication::Eligible(value));
+                        break;
+                    }
+                }
                 ReturnedPublication::Legacy(publication) => drop(publication),
                 ReturnedPublication::Candidate(returned) => {
                     if let Err(returned) = self.candidate_root.ingest(returned) {
@@ -1135,9 +1160,49 @@ impl Control {
     pub(crate) fn native_candidate_root(&self) -> crate::candidate_custody::CandidateRoot {
         self.candidate_root.clone()
     }
-    /// Accept custody only. The current admission check always refuses these
-    /// candidates before inheritance/active/render; accepted queueing is not an
-    /// installed revision or a complete-cost claim.
+    /// Opt in only on a vacant native channel. This reserves retained domain
+    /// DATA, not native installation, page readiness or complete scalar costs.
+    pub fn configure_audio_candidate_domains(
+        &mut self,
+        reservation: crate::AudioCandidateDomainReservation,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.revision != 0
+            || self.closing.load(Acquire)
+            || self.publication_pending.load(Acquire)
+            || self.held_control_return.is_some()
+            || self.latest_fresh_runtime_cancellation.is_some()
+        {
+            return Err("constructor publication requires a vacant native channel");
+        }
+        self.candidate_root.configure_domains(reservation)
+    }
+    /// Retains one actual factory pair in a fixed Root cell. Successful custody
+    /// may already be closing; the token does not promise publication/readiness.
+    pub fn register_audio_candidate_domain(
+        &mut self,
+        domain: crate::CandidateDomain,
+    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
+        self.candidate_root.register_domain(domain)
+    }
+    pub fn retire_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.retire_domain(token)
+    }
+    /// Moves an already READY scalar report; never joins or destroys endpoints.
+    pub fn recover_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> Option<hex_stream::PagePoolReport> {
+        self.candidate_root.recover_domain(token)
+    }
+    pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
+        self.candidate_root.domain_usage()
+    }
+    /// Accept disposal-only custody. Queue acceptance is not installation or a
+    /// complete-cost claim; the callback currently refuses this path before use.
     pub fn stage_audio_candidate(
         &mut self,
         owner: hex_engine::AudioCandidateOwner,
@@ -1217,6 +1282,14 @@ impl Callback {
         self.publication_pending.store(false, Release);
         Ok(())
     }
+    pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
+        Arc::ptr_eq(&self.status, status)
+    }
+    pub(crate) fn candidate_root_for_native_boundary(
+        &self,
+    ) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
     pub(crate) fn belongs_to_candidate_root(
         &self,
         root: &crate::candidate_custody::CandidateRoot,
@@ -1224,7 +1297,10 @@ impl Callback {
         self.candidate_root.same_root(root)
     }
     pub(crate) fn has_active_candidate(&self) -> bool {
-        matches!(self.active, Some(ActivePublication::Candidate(_)))
+        matches!(
+            self.active,
+            Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
+        )
     }
     pub(crate) fn extract_final_candidate_on_control(
         &mut self,
@@ -1239,13 +1315,28 @@ impl Callback {
         }
         // Prevalidated destination and authority; no provider/destructor occurs
         // between taking the active owner and securing its persistent terminal slot.
-        if let Some(ActivePublication::Candidate(active)) = self.active.take() {
-            match active.return_final(authority) {
+        match self.active.take() {
+            Some(ActivePublication::Candidate(active)) => match active.return_final(authority) {
                 Ok(returned) => *destination = Some(returned),
                 Err(active) => {
                     self.active = Some(ActivePublication::Candidate(active));
                     return false;
                 }
+            },
+            Some(ActivePublication::Eligible(active)) => match active.return_final(authority) {
+                Ok(returned) => {
+                    *destination = Some(crate::candidate_custody::FinalActiveReturn::Eligible(
+                        returned,
+                    ))
+                }
+                Err(active) => {
+                    self.active = Some(ActivePublication::Eligible(active));
+                    return false;
+                }
+            },
+            other => {
+                self.active = other;
+                return false;
             }
         }
         true
@@ -1273,12 +1364,21 @@ impl Callback {
         for _ in 0..2 {
             // one existing held return plus the one-slot input ring
             if self.held_retirement.is_none() {
-                self.held_retirement = self.publications.pop().ok().map(|queued| match queued {
-                    QueuedPublication::Legacy(value) => ReturnedPublication::Legacy(value),
-                    QueuedPublication::Candidate(value) => {
-                        ReturnedPublication::Candidate(value.reject_before_install())
-                    }
-                });
+                self.held_retirement = self
+                    .deferred_eligible
+                    .take()
+                    .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
+                    .or_else(|| {
+                        self.publications.pop().ok().map(|queued| match queued {
+                            QueuedPublication::Eligible(value) => {
+                                ReturnedPublication::Eligible(value.reject_before_install())
+                            }
+                            QueuedPublication::Legacy(value) => ReturnedPublication::Legacy(value),
+                            QueuedPublication::Candidate(value) => {
+                                ReturnedPublication::Candidate(value.reject_before_install())
+                            }
+                        })
+                    });
             }
             if matches!(
                 self.held_retirement.as_ref(),
@@ -1287,10 +1387,23 @@ impl Callback {
                 self.terminal_disposal_pending = true;
                 drop(self.held_retirement.take());
                 self.terminal_disposal_pending = false;
-            } else if let Some(ReturnedPublication::Candidate(value)) = self.held_retirement.take()
-            {
-                if let Err(value) = self.candidate_root.ingest(value) {
-                    self.held_retirement = Some(ReturnedPublication::Candidate(value));
+            } else if let Some(value) = self.held_retirement.take() {
+                let refused = match value {
+                    ReturnedPublication::Candidate(value) => self
+                        .candidate_root
+                        .ingest(value)
+                        .err()
+                        .map(ReturnedPublication::Candidate),
+                    ReturnedPublication::Eligible(value) => self
+                        .candidate_root
+                        .ingest_eligible(value)
+                        .err()
+                        .map(ReturnedPublication::Eligible),
+                    // Handled above without holding any owner across destruction.
+                    ReturnedPublication::Legacy(value) => Some(ReturnedPublication::Legacy(value)),
+                };
+                if let Some(value) = refused {
+                    self.held_retirement = Some(value);
                     return false;
                 }
             }
@@ -1337,6 +1450,14 @@ impl Callback {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
             self.status.playing.store(false, Relaxed);
+            if !self.retired.is_full()
+                && let Some(value) = self.deferred_eligible.take()
+            {
+                self.return_publication(ReturnedPublication::Eligible(
+                    value.reject_before_install(),
+                ));
+                self.publication_pending.store(false, Release);
+            }
             if !self.retired.is_full() {
                 if let Some(publication) = self.deferred.take() {
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
@@ -1352,7 +1473,11 @@ impl Callback {
                 }
             }
             if !self.retired.is_full() {
-                if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::current_mut)
+                {
                     active.playback.cancel_all_processor_auditions();
                 }
                 if matches!(self.active, Some(ActivePublication::Legacy(_)))
@@ -1364,6 +1489,13 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        QueuedPublication::Eligible(value) => {
+                            self.return_publication(ReturnedPublication::Eligible(
+                                value.reject_before_install(),
+                            ));
+                            self.publication_pending.store(false, Release);
+                            return;
+                        }
                         QueuedPublication::Legacy(publication) => publication,
                         QueuedPublication::Candidate(candidate) => {
                             self.return_publication(ReturnedPublication::Candidate(
@@ -1388,6 +1520,7 @@ impl Callback {
             if self.active.is_none()
                 && self.published_route_key.is_some()
                 && self.deferred.is_none()
+                && self.deferred_eligible.is_none()
                 && self.publications.is_empty()
             {
                 self.status.publish_empty_routes();
@@ -1395,6 +1528,7 @@ impl Callback {
             }
             if self.active.is_none()
                 && self.deferred.is_none()
+                && self.deferred_eligible.is_none()
                 && self.publications.is_empty()
                 && self.held_retirement.is_none()
                 && self.sample_preview.is_empty()
@@ -1404,12 +1538,19 @@ impl Callback {
             return;
         }
         if self.deferred.is_none()
+            && self.deferred_eligible.is_none()
             && (self.active.is_none() || !self.retired.is_full())
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                QueuedPublication::Eligible(value) => {
+                    self.deferred_eligible = Some(value);
+                }
                 QueuedPublication::Legacy(publication) => {
-                    if matches!(self.active, Some(ActivePublication::Candidate(_))) {
+                    if matches!(
+                        self.active,
+                        Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
+                    ) {
                         self.return_graph(publication);
                         self.consume_commands();
                         return;
@@ -1430,6 +1571,12 @@ impl Callback {
                     return;
                 }
             }
+        }
+
+        if self.deferred_eligible.is_some() {
+            self.advance_eligible_publication();
+            self.consume_commands();
+            return;
         }
 
         // A candidate with a transient release-capacity refusal remains owned
@@ -1611,7 +1758,10 @@ impl Callback {
                         .store(next.playback.session_capability_status() as u32, Relaxed);
                     // Candidate ownership cannot enter this legacy replacement
                     // path; the queue decision above retains it in the same slot.
-                    if matches!(self.active, Some(ActivePublication::Candidate(_))) {
+                    if matches!(
+                        self.active,
+                        Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
+                    ) {
                         self.return_graph(next);
                         self.consume_commands();
                         return;
@@ -1645,7 +1795,10 @@ impl Callback {
             return;
         };
         if let Some(previous) = boundary.previous
-            && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
         {
             if active.control_context_generation == previous.project_generation {
                 if boundary.clear_mode == processor_audition::ClearMode::Immediate {
@@ -1659,7 +1812,10 @@ impl Callback {
                 active.playback.cancel_all_processor_auditions();
             }
         } else if boundary.clear_mode == processor_audition::ClearMode::Immediate
-            && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
         {
             // A prior smooth release already cleared its lease target, but its
             // fade may still be audible. A later hard lifecycle cancel must
@@ -1678,7 +1834,11 @@ impl Callback {
         if self.processor_audition_rejected_epoch == epoch {
             return;
         }
-        let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) else {
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        else {
             return;
         };
         if active.playback.sample_rate() != target.sample_rate_hz
@@ -1739,7 +1899,11 @@ impl Callback {
             #[cfg(all(test, feature = "allocation-probe"))]
             self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
-            if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+            if let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
+            {
                 active.playback.apply(PlaybackCommand::Stop);
             }
             self.invalidate_processor_audition_request();
@@ -1764,7 +1928,11 @@ impl Callback {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
                 let mut invalidate_audition = false;
-                if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::current_mut)
+                {
                     match active.playback.try_apply_action(queued.action) {
                         Ok(()) => {
                             invalidate_audition =
@@ -1816,7 +1984,11 @@ impl Callback {
         #[cfg(all(test, feature = "allocation-probe"))]
         self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
         self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
-        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
             active.playback.apply(PlaybackCommand::Stop);
         }
         self.processor_audition.invalidate_current_immediately();
@@ -1833,7 +2005,11 @@ impl Callback {
         self.processor_audition.reject_current(epoch);
         self.processor_audition_rejected_epoch = epoch;
         self.processor_audition_lease = None;
-        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
             active.playback.cancel_all_processor_auditions();
         }
     }
@@ -1880,7 +2056,7 @@ impl Callback {
         let active_matches_target = self
             .active
             .as_ref()
-            .and_then(ActivePublication::legacy)
+            .and_then(ActivePublication::current)
             .is_some_and(|active| {
                 active.control_context_generation == target.project_generation
                     && active.revision >= target.activation_floor
@@ -1896,7 +2072,11 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
             let stage = &mut self.spectrum_stage;
             let mut observe = |identity, offset, frames: &[Frame]| {
                 stage.observe(identity, offset, frames);
@@ -1917,7 +2097,11 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
             active.playback.render(output)?;
         } else {
             output.fill([0.0; 2]);
@@ -1946,7 +2130,7 @@ impl Callback {
             && self
                 .active
                 .as_ref()
-                .and_then(ActivePublication::legacy)
+                .and_then(ActivePublication::current)
                 .is_some_and(|active| {
                     active.control_context_generation == target.project_generation
                         && active.revision >= target.activation_floor
@@ -1962,7 +2146,7 @@ impl Callback {
                     applied_revision: self
                         .active
                         .as_ref()
-                        .and_then(ActivePublication::legacy)
+                        .and_then(ActivePublication::current)
                         .map_or(0, |active| active.revision),
                 };
                 Some(capture.submit_at(
@@ -1982,7 +2166,11 @@ impl Callback {
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
         self.gain_recording.abort(reason);
-        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
             active.playback.clear_gain_recording_override();
         }
         if self
@@ -1997,7 +2185,10 @@ impl Callback {
     fn prepare_gain_recording_quantum(&mut self) {
         use crate::gain_recording::{AbortReason, Clock};
         let transport_epoch = self.status.transport_epoch.load(Acquire);
-        let active = self.active.as_mut().and_then(ActivePublication::legacy_mut);
+        let active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut);
         let live = self.gain_recording.prepare(|target| {
             let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
             if active.revision != target.audio_revision
@@ -2021,7 +2212,7 @@ impl Callback {
                 loop_pass,
             })
         });
-        if let Some(active) = active {
+        if let Some(mut active) = active {
             active.playback.clear_gain_recording_override();
             if let Some((track, gain)) = live {
                 if active
@@ -2040,7 +2231,7 @@ impl Callback {
         let end = self
             .active
             .as_ref()
-            .and_then(ActivePublication::legacy)
+            .and_then(ActivePublication::current)
             .map_or(0, |active| active.playback.performance_frame());
         self.gain_recording.finish_quantum(end, output_valid);
         if self.gain_recording.receipt_fault {
@@ -2049,7 +2240,7 @@ impl Callback {
     }
 
     fn publish_active_routes(&mut self, force: bool) {
-        let Some(active) = self.active.as_ref().and_then(ActivePublication::legacy) else {
+        let Some(active) = self.active.as_ref().and_then(ActivePublication::current) else {
             return;
         };
         let revision = active.revision;
@@ -2061,6 +2252,9 @@ impl Callback {
         }
 
         let capability = playback.session_capability_status();
+        self.status
+            .session_capability
+            .store(capability as u32, Relaxed);
         let count = if capability == SessionCapabilityStatus::Available {
             playback.session_route_count()
         } else {
@@ -2102,25 +2296,18 @@ impl Callback {
             }
             return;
         }
-        let ready = self
-            .active
-            .as_ref()
-            .and_then(ActivePublication::legacy)
-            .is_some_and(|active| {
-                active.playback.playing()
-                    && active
-                        .playback
-                        .prepared_revision()
-                        .and_then(|prepared| prepared.gain_recording_track())
-                        .is_some_and(|track| {
-                            active
-                                .playback
-                                .gain_recording_clock(track.value())
-                                .is_some()
+        let ready =
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .is_some_and(|active| {
+                    active.playback.playing()
+                        && active.playback.gain_recording_track().is_some_and(|track| {
+                            active.playback.gain_recording_clock(track).is_some()
                         })
-            });
+                });
         self.status.gain_recording_ready.store(ready, Release);
-        if let Some(active) = self.active.as_ref().and_then(ActivePublication::legacy) {
+        if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
             self.status
                 .position
                 .store(active.playback.position(), Relaxed);

@@ -17,6 +17,7 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod candidate_storage;
 mod mutable_checkpoint;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -418,14 +419,62 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self.routes.iter().position(|r| r.id == track)?;
+        self.device_chains
+            .get(index)?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        self.tail_groups
+            .get(index)?
+            .as_ref()?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
+        let slot = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        let chain = self.tail_groups.get(slot)?.as_ref()?;
+        Some((
+            !chain.committed_range_is_quiescent(0..chain.len()),
+            self.tail_output_active[slot],
+        ))
+    }
     #[cfg(test)]
     pub(crate) fn test_populate_unsupported_tail(&mut self) {
         self.tail_groups[0] = Some(hex_lattice::NativeRuntimeChain::empty());
     }
     /// Constructor-bound inventory of independently movable runtime owner
     /// locations, adapted from original177 owner_groups.rs. No callback visitor
-    /// or byte/handle completeness claim. The closed constructor class cannot
-    /// transfer child owners; vacant tail/context locations remain classified.
+    /// or byte/handle completeness claim. The closed constructor class permits
+    /// Utility Track/Tail transfers; other owning locations remain classified.
     pub(crate) fn visit_candidate_groups(
         &self,
         visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
@@ -1187,6 +1236,18 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         self.inherit_state(previous)
+    }
+
+    pub(crate) fn inherit_candidate_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.linear_arrangement_export || previous.linear_arrangement_export {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_with_groups(previous, Some(groups))
     }
 
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {

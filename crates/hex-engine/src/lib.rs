@@ -18,8 +18,11 @@ use std::{fmt, sync::Arc};
 mod audio_candidate;
 mod audio_storage;
 pub use audio_candidate::{
+    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateIdentity,
-    AudioCandidateOwner, AudioCandidateRefusal,
+    AudioCandidateOwner, AudioCandidateRefusal, AudioCandidateRuntimeDisposed,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

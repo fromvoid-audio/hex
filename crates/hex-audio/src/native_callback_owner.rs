@@ -2,6 +2,8 @@
 //! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
 use crate::prepared::{Callback, Status};
+mod resources;
+pub(crate) use resources::NativeCandidateBoundary;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -131,17 +133,23 @@ pub(crate) fn reserve_native(
     Guard<ErrorCallbackOwner>,
     NativeTerminals,
 ) {
-    let (data_guard, data) = reserve(NativeCallbackOwner {
+    let root = callback.candidate_root_for_native_boundary();
+    let (mut data_guard, data) = reserve(NativeCallbackOwner {
         callback,
         status: Arc::clone(&status),
         #[cfg(test)]
         probe: None,
     });
-    let (error_guard, errors) = reserve(ErrorCallbackOwner {
+    let (mut error_guard, errors) = reserve(ErrorCallbackOwner {
         status,
         #[cfg(test)]
         probe: None,
     });
+    if let Some(boundary) =
+        NativeCandidateBoundary::from_reserved(&root, &mut data_guard, &mut error_guard)
+    {
+        root.record_native_boundary(boundary);
+    }
     (data_guard, error_guard, NativeTerminals { data, errors })
 }
 
@@ -289,6 +297,7 @@ impl NativeRetirement {
         terminals: NativeTerminals,
         root: crate::candidate_custody::CandidateRoot,
     ) -> Self {
+        root.anchor_native_boundary(&terminals);
         Self {
             terminals: Some(terminals),
             data: None,

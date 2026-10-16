@@ -13,9 +13,10 @@ mod worker;
 pub use endpoint::EndpointStats;
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
-    AudioStreamStorageSummary, CatalogLease, OpaqueStreamCost, OpaqueStreamHandleGroup,
-    PagePoolReport, PreparedStreamDisposal, ShutdownError, StreamBusy, StreamCallbackPages,
-    StreamControl, StreamDisposalError, StreamDisposalPhase, StreamHandleLocation,
+    AudioStreamStorageSummary, CatalogLease, ConstructorStreamDomain, OpaqueStreamCost,
+    OpaqueStreamHandleGroup, PagePoolReport, PreparedStreamDisposal, ShutdownError, StreamBusy,
+    StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
+    StreamDomainConstructorSummary, StreamDomainSealRefusal, StreamHandleLocation,
     StreamOwningHandleObligation, StreamPairMismatch, StreamRuntime, StreamSourceDomainObligation,
 };
 pub use types::{

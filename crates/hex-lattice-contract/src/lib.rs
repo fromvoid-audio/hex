@@ -359,6 +359,27 @@ impl NativeDeviceState {
     pub fn output_gain_linear(&self) -> f32 {
         10.0_f32.powf(self.output_gain_db() / 20.0)
     }
+    /// Physical observations of this state's immutable payload handle. These
+    /// counts/bytes establish neither constructor provenance nor lifetime
+    /// closure. The payload Arc itself never escapes.
+    pub fn payload_storage_observation(&self) -> (usize, usize, usize) {
+        let Self {
+            type_id: _,
+            state_version: _,
+            payload,
+            input_gain_millidb: _,
+            output_gain_millidb: _,
+        } = self;
+        (
+            payload.len(),
+            Arc::strong_count(payload),
+            Arc::weak_count(payload),
+        )
+    }
+    /// Actual shared backing identity, independently of equal state bytes.
+    pub fn shares_payload_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.payload, &other.payload)
+    }
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }

@@ -3420,6 +3420,35 @@ unsupported tail/context population; broader transfer fanout remains #24/177.
 Exact-source CI and remaining native evidence are recorded with PR235; no native
 admission, OS-stop success, deadline, listening or complete-cost claim is made.
 
+### 16 october 2026 — streaming constructor-origin checkpoint (pulse2541 / pr236)
+
+- Added closed concrete Utility preparation with both host trims, full nested
+  state-payload/meter/prepared allocation and independent-handle declarations;
+  preserved original source banks and the generic incomplete-ledger refusal.
+- Connected a reserved original177-derived origin journal to real Session chain
+  swaps and normal Runtime Box destruction with atomic archive fanout. Real
+  filter decay and exact primary/scratch Box pairs prove A→B→C subset movement;
+  copied z history receives no original transfer credit.
+- Added two actual Root domain cells with original-pair cap refusal, exact
+  incarnation tokens and persistent lifecycle cleanup. Pair/metadata destruction
+  precedes READY; cell occupancy and DATA remain until report consumption.
+  Vacant opt-in refuses legacy mixing without changing default legacy channels.
+- Reserved actual runtime/archive/receipt backings and retained covering anchors
+  before splitting an owner. Four focused controls cover original-input refusal,
+  normal runtime/origin/metadata cleanup before bank recovery, autonomous abandoned
+  bank/report destruction on control, and pre-allocation metadata-cap refusal.
+- Connected actual ring reservation and terminal-serialized split/fill to callback
+  preinstall rejection, held-return pressure and original-bank lifecycle recovery.
+  Control-first terminal draining completes autonomous cleanup; no install ACK is
+  issued on rejection. The same-owner active slot now uses actual sealed native
+  resources for resident install/ACK, PCM/Stop, real Utility A→B→C subset transfer
+  and coupled terminal return. Verified streamed domains reuse the actual pair,
+  refuse wrong context and retain report barriers; installation remains readiness-
+  refused. Exact cancellation, actual transfer-pressure Retry, both release orders,
+  missing carrier/resource pressure and post-extraction destructor panic have
+  focused controls. Final integrated local-CI evidence will be recorded with PR236;
+  fresh-runtime policies, readiness and full24/177/native acceptance remain open.
+
 
 ## 16 October 2026 — Operator reference layout correction
 
